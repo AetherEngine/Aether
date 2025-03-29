@@ -1,0 +1,17 @@
+.{
+    .name = .sample,
+    .version = "0.0.0",
+    .fingerprint = 0xf10b76c3c9d055d0, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.14.0",
+    .dependencies = .{
+        .aether = .{
+            .path = "..",
+        },
+    },
+
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
