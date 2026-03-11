@@ -1,0 +1,13 @@
+(engine) [debug]: GLFW 3.4.0 Wayland X11 GLX Null EGL OSMesa monotonic shared
+(engine) [debug]: Requesting OpenGL Core 4.6!
+(engine) [debug]: OpenGL 4.6.0 NVIDIA 580.126.18
+(engine) [debug]: GLSL 4.60 NVIDIA
+(engine) [debug]: Vendor: NVIDIA Corporation
+(engine) [debug]: Renderer: NVIDIA GeForce RTX 5080/PCIe/SSE2
+(engine) [info]: FPS: 24600
+(engine) [info]: FPS: 45548
+(engine) [info]: FPS: 45383
+(engine) [info]: FPS: 45345
+(engine) [info]: FPS: 45376
+(engine) [info]: FPS: 45816
+(engine) [info]: FPS: 45523
