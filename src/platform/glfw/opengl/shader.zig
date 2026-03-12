@@ -1,17 +1,17 @@
 const std = @import("std");
 const gl = @import("gl");
-const zm = @import("zmath");
+const Mat4 = @import("../../../math/math.zig").Mat4;
 const assert = std.debug.assert;
 const Util = @import("../../../util/util.zig");
 
 pub const ShaderState = struct {
-    view: zm.Mat,
-    proj: zm.Mat,
+    view: Mat4,
+    proj: Mat4,
 };
 
 pub var state: ShaderState = .{
-    .view = zm.identity(),
-    .proj = zm.identity(),
+    .view = Mat4.identity(),
+    .proj = Mat4.identity(),
 };
 
 var ubo: gl.uint = 0;
@@ -63,7 +63,7 @@ pub const Shader = struct {
         gl.UseProgram(self.shader_program);
     }
 
-    pub fn update_model(self: *const Shader, model: *const zm.Mat) void {
+    pub fn update_model(self: *const Shader, model: *const Mat4) void {
         gl.UniformMatrix4fv(self.model_loc, 1, gl.FALSE, @ptrCast(model));
     }
 

@@ -1,7 +1,7 @@
+const Vec3 = @import("../math/math.zig").Vec3;
 const Clip = @import("../audio/clip.zig");
 const Util = @import("../util/util.zig");
 const Self = @This();
-const zm = @import("zmath");
 
 ptr: *anyopaque,
 tab: *const VTable,
@@ -10,15 +10,15 @@ pub const VTable = struct {
     // --- API Setup / Lifecycle ---
     init: *const fn (ctx: *anyopaque) anyerror!void,
     deinit: *const fn (ctx: *anyopaque) void,
-    set_listener_position: *const fn (ctx: *anyopaque, pos: zm.Vec) void,
-    set_listener_direction: *const fn (ctx: *anyopaque, dir: zm.Vec) void,
+    set_listener_position: *const fn (ctx: *anyopaque, pos: Vec3) void,
+    set_listener_direction: *const fn (ctx: *anyopaque, dir: Vec3) void,
 
     // --- Audio Clip (raw) ---
     load_clip: *const fn (ctx: *anyopaque, path: [:0]const u8) anyerror!Clip.Handle,
     unload_clip: *const fn (ctx: *anyopaque, handle: Clip.Handle) void,
     play_clip: *const fn (ctx: *anyopaque, handle: Clip.Handle) void,
     stop_clip: *const fn (ctx: *anyopaque, handle: Clip.Handle) void,
-    set_clip_position: *const fn (ctx: *anyopaque, handle: Clip.Handle, pos: zm.Vec) void,
+    set_clip_position: *const fn (ctx: *anyopaque, handle: Clip.Handle, pos: Vec3) void,
 };
 
 /// Initializes the Audio API. Must be called before any other audio functions.

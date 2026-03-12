@@ -61,12 +61,6 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    // zmath provides SIMD optimized mathematics
-    const zmath = b.dependency("zmath", .{
-        .target = target,
-        .optimize = optimize,
-    });
-
     // zigglgen provides Zig bindings for OpenGL
     const gl_bindings = @import("zigglgen").generateBindingsModule(b, .{
         .api = .gl,
@@ -90,7 +84,6 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "glfw", .module = zglfw.module("glfw") },
             .{ .name = "gl", .module = gl_bindings },
-            .{ .name = "zmath", .module = zmath.module("root") },
             .{ .name = "vulkan", .module = vulkan },
             .{ .name = "options", .module = options_module },
         },
@@ -109,7 +102,6 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "aether", .module = mod },
-                .{ .name = "zmath", .module = zmath.module("root") },
                 .{ .name = "options", .module = options_module },
             },
         }),

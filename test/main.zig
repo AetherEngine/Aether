@@ -1,6 +1,6 @@
 const std = @import("std");
-const zm = @import("zmath");
 const ae = @import("aether");
+const Math = ae.Math;
 const Core = ae.Core;
 const Util = ae.Util;
 const Rendering = ae.Rendering;
@@ -83,13 +83,13 @@ const MyState = struct {
 
     fn update(ctx: *anyopaque, dt: f32) anyerror!void {
         var self = Util.ctx_to_self(MyState, ctx);
-        self.transform.rot[2] += 60.0 * dt; // Rotate around Z axis
+        self.transform.rot.z += 60.0 * dt; // Rotate around Z axis
     }
 
     fn draw(ctx: *anyopaque, _: f32) anyerror!void {
         var self = Util.ctx_to_self(MyState, ctx);
 
-        Rendering.gfx.api.set_proj_matrix(&zm.orthographicRh(
+        Rendering.gfx.api.set_proj_matrix(&Math.Mat4.orthographicRh(
             2 * @as(f32, @floatFromInt(Rendering.gfx.surface.get_width())) / @as(f32, @floatFromInt(Rendering.gfx.surface.get_height())),
             2,
             0,

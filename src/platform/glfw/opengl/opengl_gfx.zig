@@ -2,7 +2,7 @@ const std = @import("std");
 const Util = @import("../../../util/util.zig");
 const glfw = @import("glfw");
 const gl = @import("gl");
-const zm = @import("zmath");
+const Mat4 = @import("../../../math/math.zig").Mat4;
 
 const shader = @import("shader.zig");
 const gfx = @import("../../gfx.zig");
@@ -45,8 +45,8 @@ fn init(ctx: *anyopaque) !void {
     gl.Viewport(0, 0, @intCast(gfx.surface.get_width()), @intCast(gfx.surface.get_height()));
 
     try shader.init();
-    shader.state.proj = zm.identity();
-    shader.state.view = zm.identity();
+    shader.state.proj = Mat4.identity();
+    shader.state.view = Mat4.identity();
     shader.update_ubo();
 }
 
@@ -93,13 +93,13 @@ fn end_frame(ctx: *anyopaque) void {
     gfx.surface.draw();
 }
 
-fn set_proj_matrix(ctx: *anyopaque, mat: *const zm.Mat) void {
+fn set_proj_matrix(ctx: *anyopaque, mat: *const Mat4) void {
     _ = ctx;
     shader.state.proj = mat.*;
     shader.update_ubo();
 }
 
-fn set_view_matrix(ctx: *anyopaque, mat: *const zm.Mat) void {
+fn set_view_matrix(ctx: *anyopaque, mat: *const Mat4) void {
     _ = ctx;
     shader.state.view = mat.*;
     shader.update_ubo();
@@ -191,7 +191,7 @@ fn update_mesh(ctx: *anyopaque, handle: Mesh.Handle, data: []const u8) void {
     gl.NamedBufferSubData(mesh.vbo, 0, @intCast(data.len), data.ptr);
 }
 
-fn draw_mesh(ctx: *anyopaque, handle: Mesh.Handle, model: *const zm.Mat, count: usize) void {
+fn draw_mesh(ctx: *anyopaque, handle: Mesh.Handle, model: *const Mat4, count: usize) void {
     _ = ctx;
 
     const mesh = meshes.get_element(handle) orelse return;

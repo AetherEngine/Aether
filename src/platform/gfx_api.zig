@@ -1,4 +1,4 @@
-const zm = @import("zmath");
+const Mat4 = @import("../math/math.zig").Mat4;
 const Util = @import("../util/util.zig");
 const Rendering = @import("../rendering/rendering.zig");
 const Mesh = Rendering.mesh;
@@ -17,8 +17,8 @@ pub const VTable = struct {
 
     // --- API State ---
     set_clear_color: *const fn (ctx: *anyopaque, r: f32, g: f32, b: f32, a: f32) void,
-    set_proj_matrix: *const fn (ctx: *anyopaque, mat: *const zm.Mat) void,
-    set_view_matrix: *const fn (ctx: *anyopaque, mat: *const zm.Mat) void,
+    set_proj_matrix: *const fn (ctx: *anyopaque, mat: *const Mat4) void,
+    set_view_matrix: *const fn (ctx: *anyopaque, mat: *const Mat4) void,
 
     // --- Frame Management ---
     start_frame: *const fn (ctx: *anyopaque) bool,
@@ -35,7 +35,7 @@ pub const VTable = struct {
     create_mesh: *const fn (ctx: *anyopaque, pipeline: Pipeline.Handle) anyerror!Mesh.Handle,
     destroy_mesh: *const fn (ctx: *anyopaque, mesh: Mesh.Handle) void,
     update_mesh: *const fn (ctx: *anyopaque, mesh: Mesh.Handle, data: []const u8) void,
-    draw_mesh: *const fn (ctx: *anyopaque, mesh: Mesh.Handle, model: *const zm.Mat, count: usize) void,
+    draw_mesh: *const fn (ctx: *anyopaque, mesh: Mesh.Handle, model: *const Mat4, count: usize) void,
 
     // --- Texture API (raw) ---
     create_texture: *const fn (ctx: *anyopaque, width: u32, height: u32, data: []const u8) anyerror!Texture.Handle,
@@ -79,14 +79,14 @@ pub inline fn end_frame(self: *const Self) void {
 /// This matrix transforms 3D coordinates into 2D screen space.
 /// Typically, this is set once per frame or when the window is resized.
 /// TODO: Support setting 2D orthographic projection and make sure it's used when drawing 2D elements.
-pub inline fn set_proj_matrix(self: *const Self, mat: *const zm.Mat) void {
+pub inline fn set_proj_matrix(self: *const Self, mat: *const Mat4) void {
     self.tab.set_proj_matrix(self.ptr, mat);
 }
 
 /// Sets the view matrix used for rendering.
 /// This matrix represents the camera's position and orientation in the scene.
 /// It is typically updated each frame based on camera movement.
-pub inline fn set_view_matrix(self: *const Self, mat: *const zm.Mat) void {
+pub inline fn set_view_matrix(self: *const Self, mat: *const Mat4) void {
     self.tab.set_view_matrix(self.ptr, mat);
 }
 

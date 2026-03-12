@@ -1,7 +1,7 @@
 const std = @import("std");
 const Util = @import("../../../util/util.zig");
 const glfw = @import("glfw");
-const zm = @import("zmath");
+const Mat4 = @import("../../../math/math.zig").Mat4;
 
 const vk = @import("vulkan");
 const gfx = @import("../../gfx.zig");
@@ -29,13 +29,13 @@ const MeshData = struct {
 };
 
 pub const ShaderState = struct {
-    view: zm.Mat,
-    proj: zm.Mat,
+    view: Mat4,
+    proj: Mat4,
 };
 
 pub var state: ShaderState = .{
-    .view = zm.identity(),
-    .proj = zm.identity(),
+    .view = Mat4.identity(),
+    .proj = Mat4.identity(),
 };
 
 pub const UBO = struct {
@@ -45,12 +45,12 @@ pub const UBO = struct {
 };
 
 pub const DrawState = struct {
-    mat: zm.Mat,
+    mat: Mat4,
     tex_id: u32,
 };
 
 pub var draw_state = DrawState{
-    .mat = zm.identity(),
+    .mat = Mat4.identity(),
     .tex_id = 0,
 };
 
@@ -490,12 +490,12 @@ fn end_frame(ctx: *anyopaque) void {
     }
 }
 
-fn set_proj_matrix(ctx: *anyopaque, mat: *const zm.Mat) void {
+fn set_proj_matrix(ctx: *anyopaque, mat: *const Mat4) void {
     _ = ctx;
     ubos[swapchain.image_index].mapped_ptr.proj = mat.*;
 }
 
-fn set_view_matrix(ctx: *anyopaque, mat: *const zm.Mat) void {
+fn set_view_matrix(ctx: *anyopaque, mat: *const Mat4) void {
     _ = ctx;
     ubos[swapchain.image_index].mapped_ptr.view = mat.*;
 }
@@ -819,7 +819,7 @@ fn update_mesh(ctx: *anyopaque, handle: u32, data: []const u8) void {
     });
 }
 
-fn draw_mesh(ctx: *anyopaque, handle: u32, model: *const zm.Mat, count: usize) void {
+fn draw_mesh(ctx: *anyopaque, handle: u32, model: *const Mat4, count: usize) void {
     _ = ctx;
 
     draw_state.mat = model.*;

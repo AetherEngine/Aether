@@ -1,5 +1,5 @@
 const std = @import("std");
-const zm = @import("zmath");
+const Mat4 = @import("../math/math.zig").Mat4;
 const Pipeline = @import("pipeline.zig");
 const Platform = @import("../platform/platform.zig");
 const gfx = Platform.gfx;
@@ -39,7 +39,7 @@ pub fn Mesh(comptime V: type) type {
             gfx.api.tab.update_mesh(gfx.api.ptr, self.handle, std.mem.sliceAsBytes(self.vertices.items));
         }
 
-        pub fn draw(self: *Self, mat: *const zm.Mat) void {
+        pub fn draw(self: *Self, mat: *const Mat4) void {
             gfx.api.tab.draw_mesh(gfx.api.ptr, self.handle, mat, self.vertices.items.len);
         }
     };

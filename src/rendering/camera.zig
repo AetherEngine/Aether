@@ -1,13 +1,15 @@
 const std = @import("std");
+const math = @import("../math/math.zig");
+const Vec3 = math.Vec3;
+const Mat4 = math.Mat4;
 
 const Platform = @import("../platform/platform.zig");
 const gfx = Platform.gfx;
-const zm = @import("zmath");
 
 fov: f32,
 yaw: f32,
 pitch: f32,
-target: *const zm.Vec,
+target: *const Vec3,
 
 const Self = @This();
 
@@ -18,24 +20,23 @@ pub fn update(self: *Self) void {
 }
 
 /// Computes and returns the camera's projection matrix based on its field of view and the current aspect ratio.
-pub fn get_projection_matrix(self: *Self) zm.Mat {
+pub fn get_projection_matrix(self: *Self) Mat4 {
     const width: f32 = @floatFromInt(gfx.surface.get_width());
     const height: f32 = @floatFromInt(gfx.surface.get_height());
-
-    return zm.perspectiveFovRhGl(std.math.degreesToRadians(self.fov), width / height, 0.3, 250.0);
+    return Mat4.perspectiveFovRhGl(std.math.degreesToRadians(self.fov), width / height, 0.3, 250.0);
 }
 
-/// Computes and returns the camera's view matrix based on its yaw and pitch angles, from the pespective of the target position.
-pub fn get_view_matrix(self: *Self) zm.Mat {
+/// Computes and returns the camera's view matrix based on its yaw and pitch angles, from the perspective of the target position.
+pub fn get_view_matrix(self: *Self) Mat4 {
     const yaw = std.math.degreesToRadians(self.yaw);
     const pitch = std.math.degreesToRadians(self.pitch);
 
     // Negative because we want to move the world opposite to the camera
-    const t = zm.translation(-self.target[0], -self.target[1], -self.target[2]);
+    const t = Mat4.translation(-self.target.x, -self.target.y, -self.target.z);
 
     // Negative because we want to rotate the world opposite to the camera
-    const ry = zm.rotationY(yaw);
-    const rx = zm.rotationX(pitch);
+    const ry = Mat4.rotationY(yaw);
+    const rx = Mat4.rotationX(pitch);
 
-    return zm.mul(zm.mul(t, ry), rx);
+    return Mat4.mul(Mat4.mul(t, ry), rx);
 }
