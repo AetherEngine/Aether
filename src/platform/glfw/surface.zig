@@ -84,7 +84,7 @@ fn deinit(ctx: *anyopaque) void {
 
     glfw.destroyWindow(self.window);
 
-    Util.allocator().destroy(self);
+    Util.allocator(.render).destroy(self);
 }
 
 fn update(ctx: *anyopaque) bool {

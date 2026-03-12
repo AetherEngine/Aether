@@ -1,46 +1,57 @@
 const std = @import("std");
 const Mat4 = @import("../math/math.zig").Mat4;
 const Pipeline = @import("pipeline.zig");
+const Util = @import("../util/util.zig");
 const Platform = @import("../platform/platform.zig");
 const gfx = Platform.gfx;
+
 pub const Handle = u32;
 
-/// A generic mesh type that holds vertex data and interfaces with the graphics API.
-/// The mesh is defined by a vertex struct type `V` and an array of attribute specifications.
-/// The vertex struct `V` should contain fields that correspond to the attributes defined in `specs`.
-/// The attribute specifications define how the fields of the vertex struct map to shader attribute locations.
-/// The mesh provides methods to create, update, and draw the mesh using the underlying graphics API.
-/// The vertex data is stored in a dynamic array, allowing for flexible mesh sizes.
-/// The mesh must be initialized with an allocator to manage its vertex data.
-/// The mesh must be deinitialized to free its resources when no longer needed.
+/// A generic mesh parameterised by vertex type `V`.
+///
+/// Vertex data is stored in `vertices` (an unmanaged ArrayList backed by the
+/// render pool). Use `append` to add vertices without touching the allocator
+/// directly. `update` must be called after any change to push data to the GPU.
 pub fn Mesh(comptime V: type) type {
     return struct {
         const Self = @This();
 
         pub const Vertex = V;
 
-        handle: Handle,
+        handle:   Handle,
         vertices: std.ArrayList(Vertex),
 
-        pub fn new(allocator: std.mem.Allocator, pipeline: Pipeline.Handle) !Self {
+        pub fn new(pipeline: Pipeline.Handle) !Self {
             return .{
-                .handle = try gfx.api.tab.create_mesh(gfx.api.ptr, pipeline),
-                .vertices = try std.ArrayList(V).initCapacity(allocator, 32),
+                .handle   = try gfx.api.tab.create_mesh(gfx.api.ptr, pipeline),
+                .vertices = try std.ArrayList(V).initCapacity(Util.allocator(.render), 32),
             };
         }
 
-        pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
+        pub fn deinit(self: *Self) void {
             gfx.api.tab.destroy_mesh(gfx.api.ptr, self.handle);
-            self.vertices.deinit(allocator);
+            self.vertices.deinit(Util.allocator(.render));
             self.handle = 0;
         }
 
+        /// Append a slice of vertices, growing the render-pool buffer as needed.
+        pub fn append(self: *Self, verts: []const V) !void {
+            try self.vertices.appendSlice(Util.allocator(.render), verts);
+        }
+
+        /// Push the current vertex data to the GPU. Call after any `append` or
+        /// direct modification of `vertices.items`.
         pub fn update(self: *Self) void {
-            gfx.api.tab.update_mesh(gfx.api.ptr, self.handle, std.mem.sliceAsBytes(self.vertices.items));
+            gfx.api.tab.update_mesh(
+                gfx.api.ptr, self.handle,
+                std.mem.sliceAsBytes(self.vertices.items),
+            );
         }
 
         pub fn draw(self: *Self, mat: *const Mat4) void {
-            gfx.api.tab.draw_mesh(gfx.api.ptr, self.handle, mat, self.vertices.items.len);
+            gfx.api.tab.draw_mesh(
+                gfx.api.ptr, self.handle, mat, self.vertices.items.len,
+            );
         }
     };
 }

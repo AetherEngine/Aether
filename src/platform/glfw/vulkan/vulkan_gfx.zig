@@ -106,7 +106,7 @@ fn destroy_command_pool() void {
 }
 
 fn create_uniform_buffers() !void {
-    ubos = try Util.allocator().alloc(UBO, swapchain.swap_images.len);
+    ubos = try Util.allocator(.render).alloc(UBO, swapchain.swap_images.len);
 
     for (ubos) |*ubo| {
         ubo.buffer = context.logical_device.createBuffer(&.{
@@ -131,7 +131,7 @@ fn destroy_uniform_buffers() void {
         context.logical_device.destroyBuffer(ubo.buffer, null);
         context.logical_device.freeMemory(ubo.memory, null);
     }
-    Util.allocator().free(ubos);
+    Util.allocator(.render).free(ubos);
 }
 
 fn create_texture_set_layout() !void {
@@ -269,14 +269,14 @@ fn destroy_descriptor_pool() void {
 }
 
 fn create_descriptor_sets() !void {
-    const layouts = try Util.allocator().alloc(vk.DescriptorSetLayout, swapchain.swap_images.len);
-    defer Util.allocator().free(layouts);
+    const layouts = try Util.allocator(.render).alloc(vk.DescriptorSetLayout, swapchain.swap_images.len);
+    defer Util.allocator(.render).free(layouts);
 
     for (layouts) |*layout| {
         layout.* = descriptor_set_layout;
     }
 
-    descriptor_sets = try Util.allocator().alloc(vk.DescriptorSet, swapchain.swap_images.len);
+    descriptor_sets = try Util.allocator(.render).alloc(vk.DescriptorSet, swapchain.swap_images.len);
 
     try context.logical_device.allocateDescriptorSets(&vk.DescriptorSetAllocateInfo{
         .descriptor_pool = descriptor_pool,
@@ -308,15 +308,15 @@ fn create_descriptor_sets() !void {
 
 fn destroy_descriptor_sets() void {
     context.logical_device.freeDescriptorSets(descriptor_pool, @intCast(swapchain.swap_images.len), @ptrCast(descriptor_sets.ptr)) catch unreachable;
-    Util.allocator().free(descriptor_sets);
+    Util.allocator(.render).free(descriptor_sets);
 }
 
 fn init(ctx: *anyopaque) !void {
     _ = ctx;
 
-    context = try Context.init(Util.allocator(), "AetherEngine");
+    context = try Context.init(Util.allocator(.render), "AetherEngine");
     swapchain = try Swapchain.init(&context);
-    gc = GarbageCollector.init(Util.allocator());
+    gc = GarbageCollector.init(Util.allocator(.render));
 
     try create_command_pool();
     try create_uniform_buffers();
@@ -555,8 +555,8 @@ fn create_pipeline(ctx: *anyopaque, layout: Pipeline.VertexLayout, vs: ?[:0]alig
         .primitive_restart_enable = .false,
     };
 
-    const vertex_attribute_descriptions = try Util.allocator().alloc(vk.VertexInputAttributeDescription, layout.attributes.len);
-    defer Util.allocator().free(vertex_attribute_descriptions);
+    const vertex_attribute_descriptions = try Util.allocator(.render).alloc(vk.VertexInputAttributeDescription, layout.attributes.len);
+    defer Util.allocator(.render).free(vertex_attribute_descriptions);
     for (vertex_attribute_descriptions, 0..) |*desc, i| {
         const attr = layout.attributes[i];
 

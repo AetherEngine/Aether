@@ -44,24 +44,26 @@ const MyState = struct {
             pipeline = try Rendering.Pipeline.new(Vertex.Layout, &vert_spv, &frag_spv);
         }
 
-        self.mesh = try MyMesh.new(Util.allocator(), pipeline);
+        self.mesh = try MyMesh.new(pipeline);
         self.transform = Rendering.Transform.new();
 
         // const png_bytes = @embedFile("test.png");
-        self.texture = try Rendering.Texture.load(Util.allocator(), self.io, "test.png");
+        self.texture = try Rendering.Texture.load(self.io, "test.png");
 
-        try self.mesh.vertices.appendSlice(Util.allocator(), &.{
+        try self.mesh.append(&.{
             Vertex{ .pos = .{ -0.5, -0.5, 0.0 }, .color = .{ 255, 255, 255, 255 }, .uv = .{ 0.0, 1.0 } },
             Vertex{ .pos = .{ 0.5, -0.5, 0.0 }, .color = .{ 255, 255, 255, 255 }, .uv = .{ 1.0, 1.0 } },
             Vertex{ .pos = .{ 0.0, 0.5, 0.0 }, .color = .{ 255, 255, 255, 255 }, .uv = .{ 0.5, 0.0 } },
         });
         self.mesh.update();
+
+        Util.report();
     }
 
     fn deinit(ctx: *anyopaque) void {
         var self = Util.ctx_to_self(MyState, ctx);
-        self.texture.deinit(Util.allocator());
-        self.mesh.deinit(Util.allocator());
+        self.texture.deinit();
+        self.mesh.deinit();
         Rendering.Pipeline.deinit(pipeline);
     }
 
@@ -103,11 +105,18 @@ const MyState = struct {
 var pipeline: Rendering.Pipeline.Handle = undefined;
 
 pub fn main(init: std.process.Init) !void {
+    const memory = try init.arena.allocator().alloc(u8, 32 * 1024 * 1024);
+
+    const config = Util.MemoryConfig{
+        .render = 8 * 1024 * 1024,
+        .audio = 2 * 1024 * 1024,
+        .game = 2 * 1024 * 1024,
+        .user = 16 * 1024 * 1024,
+        .scratch = 4 * 1024 * 1024,
+    };
     var state: MyState = undefined;
     state.io = init.io;
-
-    try ae.App.init(init.io, 1280, 720, "Aether", Options.config.gfx, false, false, &state.state());
+    try ae.App.init(init.io, memory, config, 1280, 720, "Aether", Options.config.gfx, false, false, &state.state());
     defer ae.App.deinit(init.io);
-
     try ae.App.main_loop(init.io);
 }

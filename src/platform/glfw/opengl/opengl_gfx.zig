@@ -58,7 +58,7 @@ fn deinit(ctx: *anyopaque) void {
     gl.makeProcTableCurrent(null);
     procs = undefined;
 
-    Util.allocator().destroy(self);
+    Util.allocator(.render).destroy(self);
 }
 
 fn set_clear_color(ctx: *anyopaque, r: f32, g: f32, b: f32, a: f32) void {

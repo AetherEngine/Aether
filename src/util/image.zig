@@ -18,12 +18,15 @@ const png_signature = "\x89PNG\r\n\x1a\n";
 
 /// Decode PNG bytes → RGBA8. Caller owns returned slice.
 pub fn load_png(allocator: std.mem.Allocator, data: []const u8) ![]u8 {
-    var img = try load_png_ex(allocator, data, .rgba8);
+    var img = try load_png_ex(allocator, allocator, data, .rgba8);
     return img.data;
 }
 
 /// Decode PNG bytes with explicit color mode. Caller owns image.data.
-pub fn load_png_ex(allocator: std.mem.Allocator, data: []const u8, mode: ColorMode) !Image {
+/// `scratch` is used for all temporary allocations during decoding.
+/// `render` is used for the final pixel buffer stored in `image.data`.
+pub fn load_png_ex(scratch: std.mem.Allocator, render: std.mem.Allocator, data: []const u8, mode: ColorMode) !Image {
+    const allocator = scratch;
     if (data.len < 8) return error.InvalidPNG;
     if (!std.mem.eql(u8, data[0..8], png_signature)) return error.InvalidPNG;
 
@@ -187,7 +190,7 @@ pub fn load_png_ex(allocator: std.mem.Allocator, data: []const u8, mode: ColorMo
 
     // Convert unfiltered scanlines to RGBA8
     const pixel_count: usize = @as(usize, width) * height;
-    const rgba8 = try allocator.alloc(u8, pixel_count * 4);
+    const rgba8 = try render.alloc(u8, pixel_count * 4);
 
     for (0..height) |y| {
         const row = unfiltered[y * raw_stride .. (y + 1) * raw_stride];
@@ -275,8 +278,8 @@ pub fn load_png_ex(allocator: std.mem.Allocator, data: []const u8, mode: ColorMo
     }
 
     // Convert RGBA8 → RGBA5551 (little-endian u16 per pixel)
-    const rgba5551 = allocator.alloc(u8, pixel_count * 2) catch |err| {
-        allocator.free(rgba8);
+    const rgba5551 = render.alloc(u8, pixel_count * 2) catch |err| {
+        render.free(rgba8);
         return err;
     };
     for (0..pixel_count) |i| {
@@ -288,7 +291,7 @@ pub fn load_png_ex(allocator: std.mem.Allocator, data: []const u8, mode: ColorMo
         rgba5551[i * 2] = @truncate(pixel);
         rgba5551[i * 2 + 1] = @truncate(pixel >> 8);
     }
-    allocator.free(rgba8);
+    render.free(rgba8);
 
     return .{ .width = width, .height = height, .data = rgba5551, .mode = .rgba5551 };
 }
