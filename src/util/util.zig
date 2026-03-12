@@ -4,6 +4,7 @@ const assert = std.debug.assert;
 const GPA = std.heap.GeneralPurposeAllocator(.{});
 const logger = @import("logger.zig");
 pub const CircularBuffer = @import("circular_buffer.zig").CircularBuffer;
+pub const Image = @import("image.zig");
 
 var initialized = false;
 var gpa: GPA = undefined;
