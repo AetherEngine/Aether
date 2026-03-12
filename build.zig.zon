@@ -41,8 +41,8 @@
             .hash = "zigglgen-0.5.0-zigglr_CLwBs1aABtYVtxNPo1SB8AzgKMVouoqULqkDQ",
         },
         .vulkan = .{
-            .url = "git+https://github.com/Snektron/vulkan-zig#387f016d344549d22ee6076867600164b9381e6d",
-            .hash = "vulkan-0.0.0-r7Ytx79nAwBmZuO_pzuHeDEbxORZ3AfWGYC73RfY6oK7",
+            .url = "git+https://github.com/Snektron/vulkan-zig#9413f6018e9bc46b6704699c73b5fdb0653d74e2",
+            .hash = "vulkan-0.0.0-r7Ytx9JnAwBaC8fe592M6RX1jSYC_zYqGwuQJ6ujvUrV",
         },
         .vulkan_headers = .{
             .url = "https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/heads/vulkan-sdk-1.4.304.tar.gz",
