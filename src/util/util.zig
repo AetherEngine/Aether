@@ -8,6 +8,11 @@ pub const CircularBuffer = @import("circular_buffer.zig").CircularBuffer;
 pub const Image = @import("image.zig");
 pub const MemoryConfig = memory.MemoryConfig;
 pub const Pool = memory.Pool;
+pub const Allocator = memory.PoolAllocator;
+
+comptime {
+    std.testing.refAllDecls(@This());
+}
 
 var initialized = false;
 var pools: [@typeInfo(Pool).@"enum".fields.len]memory.PoolAllocator = undefined;

@@ -211,7 +211,7 @@ pub fn present(self: *Self, cmdbuf: vk.CommandBuffer) !PresentState {
 
     // Step 2: Submit the command buffer
     const wait_stage = [_]vk.PipelineStageFlags{.{ .color_attachment_output_bit = true }};
-    try self.context.logical_device.queueSubmit(self.context.graphics_queue.handle, 1, &[_]vk.SubmitInfo{.{
+    try self.context.logical_device.queueSubmit(self.context.graphics_queue.handle, &[_]vk.SubmitInfo{.{
         .wait_semaphore_count = 1,
         .p_wait_semaphores = @ptrCast(&current.image_acquired),
         .p_wait_dst_stage_mask = &wait_stage,
@@ -298,6 +298,6 @@ const SwapImage = struct {
     }
 
     fn waitForFence(self: SwapImage, context: *const Context) !void {
-        _ = try context.logical_device.waitForFences(1, @ptrCast(&self.frame_fence), .true, std.math.maxInt(u64));
+        _ = try context.logical_device.waitForFences(@ptrCast(&self.frame_fence), .true, std.math.maxInt(u64));
     }
 };

@@ -100,7 +100,7 @@ fn create_command_pool() !void {
 }
 
 fn destroy_command_pool() void {
-    context.logical_device.freeCommandBuffers(command_pool, @intCast(swapchain.swap_images.len), command_buffers.ptr);
+    context.logical_device.freeCommandBuffers(command_pool, command_buffers);
     context.allocator.free(command_buffers);
     context.logical_device.destroyCommandPool(command_pool, null);
 }
@@ -201,7 +201,7 @@ fn create_texture_descriptor_pool_and_set(actual_count: u32) !void {
 }
 
 fn destroy_texture_descriptor_pool_and_set() void {
-    context.logical_device.freeDescriptorSets(tex_pool, 1, @ptrCast(&tex_set)) catch unreachable;
+    context.logical_device.freeDescriptorSets(tex_pool, @ptrCast(&tex_set)) catch unreachable;
     context.logical_device.destroyDescriptorPool(tex_pool, null);
     tex_set = .null_handle;
     tex_pool = .null_handle;
@@ -302,12 +302,12 @@ fn create_descriptor_sets() !void {
             .p_texel_buffer_view = undefined,
         };
 
-        context.logical_device.updateDescriptorSets(1, @ptrCast(&descriptor_write), 0, null);
+        context.logical_device.updateDescriptorSets(@ptrCast(&descriptor_write), null);
     }
 }
 
 fn destroy_descriptor_sets() void {
-    context.logical_device.freeDescriptorSets(descriptor_pool, @intCast(swapchain.swap_images.len), @ptrCast(descriptor_sets.ptr)) catch unreachable;
+    context.logical_device.freeDescriptorSets(descriptor_pool, descriptor_sets) catch unreachable;
     Util.allocator(.render).free(descriptor_sets);
 }
 
@@ -368,8 +368,8 @@ fn start_frame(ctx: *anyopaque) bool {
 
     // Garbage collect resources
     const current = swapchain.currentSwapImage();
-    _ = context.logical_device.waitForFences(1, @ptrCast(&current.frame_fence), .true, std.math.maxInt(u64)) catch unreachable;
-    context.logical_device.resetFences(1, @ptrCast(&current.frame_fence)) catch unreachable;
+    _ = context.logical_device.waitForFences(@ptrCast(&current.frame_fence), .true, std.math.maxInt(u64)) catch unreachable;
+    context.logical_device.resetFences(@ptrCast(&current.frame_fence)) catch unreachable;
     context.logical_device.resetCommandBuffer(command_buffer.handle, .{}) catch unreachable;
     gc.frame_index = swapchain.image_index;
     gc.collect();
@@ -394,8 +394,8 @@ fn start_frame(ctx: *anyopaque) bool {
 
     const clear_value = vk.ClearValue{ .color = .{ .float_32 = clear_color } };
 
-    command_buffer.setViewport(0, 1, @ptrCast(&viewport));
-    command_buffer.setScissor(0, 1, @ptrCast(&scissor));
+    command_buffer.setViewport(0, @ptrCast(&viewport));
+    command_buffer.setScissor(0, @ptrCast(&scissor));
 
     const pre = vk.ImageMemoryBarrier2{
         .src_stage_mask = .{ .color_attachment_output_bit = true, .top_of_pipe_bit = true },
@@ -669,7 +669,7 @@ fn create_pipeline(ctx: *anyopaque, layout: Pipeline.VertexLayout, vs: ?[:0]alig
     };
 
     var pipeline: vk.Pipeline = .null_handle;
-    if (try context.logical_device.createGraphicsPipelines(.null_handle, 1, @ptrCast(&graphics_pipeline_create_info), null, @ptrCast(&pipeline)) != .success) {
+    if (try context.logical_device.createGraphicsPipelines(.null_handle, @ptrCast(&graphics_pipeline_create_info), null, @ptrCast(&pipeline)) != .success) {
         return error.PipelineCreationFailed;
     }
 
@@ -702,7 +702,7 @@ fn bind_pipeline(ctx: *anyopaque, handle: Pipeline.Handle) void {
         descriptor_sets[swapchain.image_index],
         tex_set,
     };
-    command_buffer.bindDescriptorSets(.graphics, pd.layout, 0, @intCast(sets.len), &sets, 0, null);
+    command_buffer.bindDescriptorSets(.graphics, pd.layout, 0, &sets, null);
 }
 
 fn create_mesh(ctx: *anyopaque, pipeline: Pipeline.Handle) anyerror!u32 {
@@ -779,7 +779,7 @@ fn update_mesh(ctx: *anyopaque, handle: u32, data: []const u8) void {
         .dst_offset = 0,
         .size = data.len,
     };
-    cmdbuf.copyBuffer(staging_buffer, mesh.buffer, 1, @ptrCast(&region));
+    cmdbuf.copyBuffer(staging_buffer, mesh.buffer, @ptrCast(&region));
 
     const barrier = vk.BufferMemoryBarrier2{
         .src_stage_mask = .{ .copy_bit = true },
@@ -806,10 +806,10 @@ fn update_mesh(ctx: *anyopaque, handle: u32, data: []const u8) void {
         .p_command_buffers = @ptrCast(&cmdbuf_handle),
     };
 
-    context.logical_device.queueSubmit(context.graphics_queue.handle, 1, @ptrCast(&submit_info), .null_handle) catch unreachable;
+    context.logical_device.queueSubmit(context.graphics_queue.handle, @ptrCast(&submit_info), .null_handle) catch unreachable;
     context.logical_device.queueWaitIdle(context.graphics_queue.handle) catch unreachable;
 
-    context.logical_device.freeCommandBuffers(command_pool, 1, @ptrCast(&cmdbuf_handle));
+    context.logical_device.freeCommandBuffers(command_pool, @ptrCast(&cmdbuf_handle));
 
     meshes.update_element(handle, MeshData{
         .buffer = mesh.buffer,
@@ -828,7 +828,7 @@ fn draw_mesh(ctx: *anyopaque, handle: u32, model: *const Mat4, count: usize) voi
     const p_data = pipelines.get_element(m_data.pipeline) orelse return;
 
     const offset = [_]vk.DeviceSize{0};
-    command_buffer.bindVertexBuffers(0, 1, @ptrCast(&m_data.buffer), &offset);
+    command_buffer.bindVertexBuffers(0, @ptrCast(&m_data.buffer), &offset);
     command_buffer.pushConstants(p_data.layout, .{ .vertex_bit = true, .fragment_bit = true }, 0, @sizeOf(DrawState), &draw_state);
     command_buffer.draw(@intCast(count), 1, 0, 0);
 }
@@ -931,7 +931,7 @@ fn create_texture(ctx: *anyopaque, width: u32, height: u32, data: []const u8) an
         .image_offset = .{ .x = 0, .y = 0, .z = 0 },
         .image_extent = .{ .width = width, .height = height, .depth = 1 },
     };
-    cmdbuf.copyBufferToImage(staging, image, .transfer_dst_optimal, 1, @ptrCast(&copy));
+    cmdbuf.copyBufferToImage(staging, image, .transfer_dst_optimal, @ptrCast(&copy));
 
     // transfer dst -> shader read
     const post_barrier = vk.ImageMemoryBarrier2{
@@ -958,10 +958,10 @@ fn create_texture(ctx: *anyopaque, width: u32, height: u32, data: []const u8) an
         .command_buffer_count = 1,
         .p_command_buffers = @ptrCast(&cmdbuf_handle),
     };
-    try context.logical_device.queueSubmit(context.graphics_queue.handle, 1, @ptrCast(&submit), .null_handle);
+    try context.logical_device.queueSubmit(context.graphics_queue.handle, @ptrCast(&submit), .null_handle);
     try context.logical_device.queueWaitIdle(context.graphics_queue.handle);
 
-    context.logical_device.freeCommandBuffers(command_pool, 1, @ptrCast(&cmdbuf_handle));
+    context.logical_device.freeCommandBuffers(command_pool, @ptrCast(&cmdbuf_handle));
 
     context.logical_device.destroyBuffer(staging, null);
     context.logical_device.freeMemory(staging_mem, null);
@@ -1019,7 +1019,7 @@ fn create_texture(ctx: *anyopaque, width: u32, height: u32, data: []const u8) an
     };
 
     const writes = [_]vk.WriteDescriptorSet{ write_sampler, write_image };
-    context.logical_device.updateDescriptorSets(@intCast(writes.len), @ptrCast(&writes), 0, null);
+    context.logical_device.updateDescriptorSets(&writes, null);
 
     return idx;
 }
@@ -1034,39 +1034,24 @@ fn destroy_texture(ctx: *anyopaque, handle: u32) void {
 
     const rec = textures.get_element(handle) orelse return;
 
+    // Null out the image slot in the bindless array (binding 1).
+    // Binding 0 is a single shared sampler (element 0 only) — don't touch it here.
     const null_img = vk.DescriptorImageInfo{
         .sampler = .null_handle,
         .image_view = .null_handle,
         .image_layout = .undefined,
     };
-    const null_smp = vk.DescriptorImageInfo{
-        .sampler = .null_handle,
-        .image_view = .null_handle,
-        .image_layout = .undefined,
+    const clear_image = vk.WriteDescriptorSet{
+        .dst_set = tex_set,
+        .dst_binding = 1,
+        .dst_array_element = handle,
+        .descriptor_count = 1,
+        .descriptor_type = .sampled_image,
+        .p_image_info = @ptrCast(&null_img),
+        .p_buffer_info = undefined,
+        .p_texel_buffer_view = undefined,
     };
-    const clears = [_]vk.WriteDescriptorSet{
-        vk.WriteDescriptorSet{
-            .dst_set = tex_set,
-            .dst_binding = 0,
-            .dst_array_element = handle,
-            .descriptor_count = 1,
-            .descriptor_type = .sampler,
-            .p_image_info = @ptrCast(&null_img),
-            .p_buffer_info = undefined,
-            .p_texel_buffer_view = undefined,
-        },
-        vk.WriteDescriptorSet{
-            .dst_set = tex_set,
-            .dst_binding = 1,
-            .dst_array_element = handle,
-            .descriptor_count = 1,
-            .descriptor_type = .sampled_image,
-            .p_image_info = @ptrCast(&null_smp),
-            .p_buffer_info = undefined,
-            .p_texel_buffer_view = undefined,
-        },
-    };
-    context.logical_device.updateDescriptorSets(@intCast(clears.len), @ptrCast(&clears), 0, null);
+    context.logical_device.updateDescriptorSets(@ptrCast(&clear_image), null);
 
     _ = context.logical_device.deviceWaitIdle() catch {};
 
