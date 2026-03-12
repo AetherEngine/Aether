@@ -7,33 +7,29 @@ const Rendering = ae.Rendering;
 const Audio = ae.Audio;
 const State = Core.State;
 const Options = @import("options");
-const core = @import("core");
 
 pub const std_options = Util.std_options;
 
 const Vertex = struct {
     pos: [3]f32,
     color: [4]u8,
-    // uv: [2]f32,
+    uv: [2]f32,
 
     pub const Attributes = Rendering.Pipeline.attributes_from_struct(@This(), &[_]Rendering.Pipeline.AttributeSpec{
         .{ .field = "pos", .location = 0 },
         .{ .field = "color", .location = 1 },
-        // .{ .field = "uv", .location = 2 },
+        .{ .field = "uv", .location = 2 },
     });
     pub const Layout = Rendering.Pipeline.layout_from_struct(@This(), &Attributes);
 };
 
 const MyMesh = Rendering.Mesh(Vertex);
 
-var client_rbuf: [4096]u8 = undefined;
-var client_wbuf: [4096]u8 = undefined;
-var server_rbuf: [4096]u8 = undefined;
-var server_wbuf: [4096]u8 = undefined;
-
 const MyState = struct {
     mesh: MyMesh,
     transform: Rendering.Transform,
+    texture: Rendering.Texture,
+    io: std.Io,
 
     fn init(ctx: *anyopaque) anyerror!void {
         var self = Util.ctx_to_self(MyState, ctx);
@@ -51,28 +47,20 @@ const MyState = struct {
         self.mesh = try MyMesh.new(Util.allocator(), pipeline);
         self.transform = Rendering.Transform.new();
 
+        // const png_bytes = @embedFile("test.png");
+        self.texture = try Rendering.Texture.load(Util.allocator(), self.io, "test.png");
+
         try self.mesh.vertices.appendSlice(Util.allocator(), &.{
-            Vertex{
-                .pos = .{ -0.5, -0.5, 0.0 },
-                .color = .{ 255, 0, 0, 255 },
-                // .uv = .{ 0.0, 0.0 },
-            },
-            Vertex{
-                .pos = .{ 0.5, -0.5, 0.0 },
-                .color = .{ 0, 255, 0, 255 },
-                // .uv = .{ 1.0, 0.0 },
-            },
-            Vertex{
-                .pos = .{ 0.0, 0.5, 0.0 },
-                .color = .{ 0, 0, 255, 255 },
-                // .uv = .{ 0.5, 1.0 },
-            },
+            Vertex{ .pos = .{ -0.5, -0.5, 0.0 }, .color = .{ 255, 255, 255, 255 }, .uv = .{ 0.0, 1.0 } },
+            Vertex{ .pos = .{ 0.5, -0.5, 0.0 }, .color = .{ 255, 255, 255, 255 }, .uv = .{ 1.0, 1.0 } },
+            Vertex{ .pos = .{ 0.0, 0.5, 0.0 }, .color = .{ 255, 255, 255, 255 }, .uv = .{ 0.5, 0.0 } },
         });
         self.mesh.update();
     }
 
     fn deinit(ctx: *anyopaque) void {
         var self = Util.ctx_to_self(MyState, ctx);
+        self.texture.deinit(Util.allocator());
         self.mesh.deinit(Util.allocator());
         Rendering.Pipeline.deinit(pipeline);
     }
@@ -83,7 +71,7 @@ const MyState = struct {
 
     fn update(ctx: *anyopaque, dt: f32) anyerror!void {
         var self = Util.ctx_to_self(MyState, ctx);
-        self.transform.rot.z += 60.0 * dt; // Rotate around Z axis
+        self.transform.rot.z += 60.0 * dt;
     }
 
     fn draw(ctx: *anyopaque, _: f32) anyerror!void {
@@ -97,7 +85,7 @@ const MyState = struct {
         ));
 
         Rendering.Pipeline.bind(pipeline);
-
+        self.texture.bind();
         self.mesh.draw(&self.transform.get_matrix());
     }
 
@@ -116,8 +104,9 @@ var pipeline: Rendering.Pipeline.Handle = undefined;
 
 pub fn main(init: std.process.Init) !void {
     var state: MyState = undefined;
+    state.io = init.io;
 
-    try ae.App.init(init.io, 1280, 720, "CrossCraft Classic-Z", Options.config.gfx, false, false, &state.state());
+    try ae.App.init(init.io, 1280, 720, "Aether", Options.config.gfx, false, false, &state.state());
     defer ae.App.deinit(init.io);
 
     try ae.App.main_loop(init.io);

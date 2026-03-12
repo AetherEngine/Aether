@@ -15,14 +15,25 @@ handle: Handle,
 data: []u8,
 
 /// Loads a PNG image from the specified file path into GPU memory.
-pub fn load(allocator: std.mem.Allocator, path: []const u8) !Texture {
-    var file = try std.fs.cwd().openFile(path, .{});
-    defer file.close();
+pub fn load(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !Texture {
+    var file = try std.Io.Dir.cwd().openFile(io, path, .{});
+    defer file.close(io);
 
-    const buffer = try file.readToEndAlloc(allocator, std.math.maxInt(u24));
+    var temp: [4096]u8 = undefined;
+    var reader = file.reader(io, &temp);
+
+    const len = try reader.getSize();
+
+    const buffer = try allocator.alloc(u8, len);
     defer allocator.free(buffer);
 
-    var img = try Image.load_png_ex(allocator, buffer, .rgba8);
+    try reader.interface.readSliceAll(buffer);
+    return load_memory(allocator, buffer);
+}
+
+/// Loads a PNG image from in-memory bytes into GPU memory.
+pub fn load_memory(allocator: std.mem.Allocator, png_bytes: []const u8) !Texture {
+    var img = try Image.load_png_ex(allocator, png_bytes, .rgba8);
     errdefer img.deinit(allocator);
 
     return Texture{

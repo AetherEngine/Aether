@@ -42,8 +42,8 @@ pub fn load_png_ex(allocator: std.mem.Allocator, data: []const u8, mode: ColorMo
     var trns_rgb: [3]u16 = .{ 0, 0, 0 };
     var has_trns = false;
 
-    var idat_buf = std.ArrayList(u8).init(allocator);
-    defer idat_buf.deinit();
+    var idat_buf: std.ArrayList(u8) = .empty;
+    defer idat_buf.deinit(allocator);
 
     // Parse chunks
     while (pos + 12 <= data.len) {
@@ -97,7 +97,7 @@ pub fn load_png_ex(allocator: std.mem.Allocator, data: []const u8, mode: ColorMo
                 else => {},
             }
         } else if (std.mem.eql(u8, chunk_type, "IDAT")) {
-            try idat_buf.appendSlice(chunk_data);
+            try idat_buf.appendSlice(allocator, chunk_data);
         } else if (std.mem.eql(u8, chunk_type, "IEND")) {
             break;
         }
