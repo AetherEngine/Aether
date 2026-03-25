@@ -4,7 +4,7 @@ const builtin = @import("builtin");
 
 const Surface = @import("../surface.zig");
 const Self = @This();
-const API = @import("options").@"build.Gfx";
+const api = @import("options").config.gfx;
 
 window: *glfw.Window,
 width: c_int,
@@ -16,7 +16,7 @@ pub var mouse_delta: [2]f32 = @splat(0);
 pub var cursor_x: f64 = 0;
 pub var cursor_y: f64 = 0;
 
-fn init(ctx: *anyopaque, width: u32, height: u32, title: [:0]const u8, fullscreen: bool, sync: bool, api: API) !void {
+fn init(ctx: *anyopaque, width: u32, height: u32, title: [:0]const u8, fullscreen: bool, sync: bool) !void {
     const self = Util.ctx_to_self(Self, ctx);
 
     self.active_joystick = 0;

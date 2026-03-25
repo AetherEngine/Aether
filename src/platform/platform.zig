@@ -8,8 +8,8 @@ const App = @import("../app.zig");
 pub const GraphicsAPI = @import("options").@"build.Gfx";
 
 /// Initializes the platform subsystems: graphics and audio.
-pub fn init(width: u32, height: u32, title: [:0]const u8, fullscreen: bool, sync: bool, comptime api: GraphicsAPI) !void {
-    try gfx.init(width, height, title, fullscreen, sync, api);
+pub fn init(width: u32, height: u32, title: [:0]const u8, fullscreen: bool, sync: bool) !void {
+    try gfx.init(width, height, title, fullscreen, sync);
 }
 
 /// Updates the platform subsystems. This should be called once per frame.

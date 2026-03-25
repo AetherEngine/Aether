@@ -6,12 +6,12 @@ const Platform = @import("platform/platform.zig");
 pub var running = true;
 var vsync = true;
 
-pub fn init(io: std.Io, mem: []u8, config: Util.MemoryConfig, width: u32, height: u32, title: [:0]const u8, comptime api: Platform.GraphicsAPI, fullscreen: bool, sync: bool, state: *const Core.State) !void {
+pub fn init(io: std.Io, mem: []u8, config: Util.MemoryConfig, width: u32, height: u32, title: [:0]const u8, fullscreen: bool, sync: bool, state: *const Core.State) !void {
     vsync = sync;
 
     // Allocator is first
     try Util.init(io, mem, config);
-    try Platform.init(width, height, title, fullscreen, sync, api);
+    try Platform.init(width, height, title, fullscreen, sync);
     try Core.input.init(Util.allocator(.game));
     try Core.state_machine.init(state);
 }

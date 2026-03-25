@@ -4,10 +4,7 @@ const Math = ae.Math;
 const Core = ae.Core;
 const Util = ae.Util;
 const Rendering = ae.Rendering;
-const Audio = ae.Audio;
 const State = Core.State;
-const Options = @import("options");
-
 pub const std_options = Util.std_options;
 
 const Vertex = struct {
@@ -34,15 +31,9 @@ const MyState = struct {
     fn init(ctx: *anyopaque) anyerror!void {
         var self = Util.ctx_to_self(MyState, ctx);
 
-        if (Options.config.gfx == .opengl) {
-            const vert align(@alignOf(u32)) = @embedFile("shaders/basic.vert").*;
-            const frag align(@alignOf(u32)) = @embedFile("shaders/basic.frag").*;
-            pipeline = try Rendering.Pipeline.new(Vertex.Layout, &vert, &frag);
-        } else {
-            const vert_spv align(@alignOf(u32)) = @embedFile("vertex_shader").*;
-            const frag_spv align(@alignOf(u32)) = @embedFile("fragment_shader").*;
-            pipeline = try Rendering.Pipeline.new(Vertex.Layout, &vert_spv, &frag_spv);
-        }
+        const vert align(@alignOf(u32)) = @embedFile("basic_vert").*;
+        const frag align(@alignOf(u32)) = @embedFile("basic_frag").*;
+        pipeline = try Rendering.Pipeline.new(Vertex.Layout, &vert, &frag);
 
         self.mesh = try MyMesh.new(pipeline);
         self.transform = Rendering.Transform.new();
@@ -116,7 +107,7 @@ pub fn main(init: std.process.Init) !void {
     };
     var state: MyState = undefined;
     state.io = init.io;
-    try ae.App.init(init.io, memory, config, 1280, 720, "Aether", Options.config.gfx, false, false, &state.state());
+    try ae.App.init(init.io, memory, config, 1280, 720, "Aether", false, false, &state.state());
     defer ae.App.deinit(init.io);
     try ae.App.main_loop(init.io);
 }
