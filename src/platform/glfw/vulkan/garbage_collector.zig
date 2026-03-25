@@ -10,7 +10,7 @@ const GcItem = union(enum) {
 const MaxFrames = 3;
 
 allocator: std.mem.Allocator,
-buckets: [MaxFrames]std.ArrayList(GcItem) = .{ .{}, .{}, .{} },
+buckets: [MaxFrames]std.ArrayList(GcItem) = .{ .empty, .empty, .empty },
 frame_index: usize = 0,
 
 const Self = @This();

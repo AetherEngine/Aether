@@ -18,7 +18,7 @@ const png_signature = "\x89PNG\r\n\x1a\n";
 
 /// Decode PNG bytes → RGBA8. Caller owns returned slice.
 pub fn load_png(allocator: std.mem.Allocator, data: []const u8) ![]u8 {
-    var img = try load_png_ex(allocator, allocator, data, .rgba8);
+    const img = try load_png_ex(allocator, allocator, data, .rgba8);
     return img.data;
 }
 
@@ -69,11 +69,26 @@ pub fn load_png_ex(scratch: std.mem.Allocator, render: std.mem.Allocator, data: 
             if (compression_method != 0) return error.InvalidPNG;
             if (filter_method != 0) return error.InvalidPNG;
             switch (color_type) {
-                0 => switch (bit_depth) { 8, 16 => {}, else => return error.UnsupportedColorType },
-                2 => switch (bit_depth) { 8, 16 => {}, else => return error.UnsupportedColorType },
-                3 => switch (bit_depth) { 1, 2, 4, 8 => {}, else => return error.UnsupportedColorType },
-                4 => switch (bit_depth) { 8, 16 => {}, else => return error.UnsupportedColorType },
-                6 => switch (bit_depth) { 8, 16 => {}, else => return error.UnsupportedColorType },
+                0 => switch (bit_depth) {
+                    8, 16 => {},
+                    else => return error.UnsupportedColorType,
+                },
+                2 => switch (bit_depth) {
+                    8, 16 => {},
+                    else => return error.UnsupportedColorType,
+                },
+                3 => switch (bit_depth) {
+                    1, 2, 4, 8 => {},
+                    else => return error.UnsupportedColorType,
+                },
+                4 => switch (bit_depth) {
+                    8, 16 => {},
+                    else => return error.UnsupportedColorType,
+                },
+                6 => switch (bit_depth) {
+                    8, 16 => {},
+                    else => return error.UnsupportedColorType,
+                },
                 else => return error.UnsupportedColorType,
             }
             ihdr_found = true;
@@ -202,11 +217,17 @@ pub fn load_png_ex(scratch: std.mem.Allocator, render: std.mem.Allocator, data: 
                         const gray16 = std.mem.readInt(u16, row[x * 2 ..][0..2], .big);
                         const v: u8 = @truncate(gray16 >> 8);
                         const alpha: u8 = if (has_trns and gray16 == trns_gray) 0 else 255;
-                        rgba8[d] = v; rgba8[d + 1] = v; rgba8[d + 2] = v; rgba8[d + 3] = alpha;
+                        rgba8[d] = v;
+                        rgba8[d + 1] = v;
+                        rgba8[d + 2] = v;
+                        rgba8[d + 3] = alpha;
                     } else {
                         const v = row[x];
                         const alpha: u8 = if (has_trns and v == @as(u8, @truncate(trns_gray))) 0 else 255;
-                        rgba8[d] = v; rgba8[d + 1] = v; rgba8[d + 2] = v; rgba8[d + 3] = alpha;
+                        rgba8[d] = v;
+                        rgba8[d + 1] = v;
+                        rgba8[d + 2] = v;
+                        rgba8[d + 3] = alpha;
                     }
                 },
                 2 => { // RGB
@@ -227,7 +248,10 @@ pub fn load_png_ex(scratch: std.mem.Allocator, render: std.mem.Allocator, data: 
                             r == @as(u8, @truncate(trns_rgb[0])) and
                             g == @as(u8, @truncate(trns_rgb[1])) and
                             b == @as(u8, @truncate(trns_rgb[2]))) 0 else 255;
-                        rgba8[d] = r; rgba8[d + 1] = g; rgba8[d + 2] = b; rgba8[d + 3] = alpha;
+                        rgba8[d] = r;
+                        rgba8[d + 1] = g;
+                        rgba8[d + 2] = b;
+                        rgba8[d + 3] = alpha;
                     }
                 },
                 3 => { // Indexed
@@ -248,11 +272,17 @@ pub fn load_png_ex(scratch: std.mem.Allocator, render: std.mem.Allocator, data: 
                     if (bit_depth == 16) {
                         const v: u8 = row[x * 4];
                         const a: u8 = row[x * 4 + 2];
-                        rgba8[d] = v; rgba8[d + 1] = v; rgba8[d + 2] = v; rgba8[d + 3] = a;
+                        rgba8[d] = v;
+                        rgba8[d + 1] = v;
+                        rgba8[d + 2] = v;
+                        rgba8[d + 3] = a;
                     } else {
                         const v = row[x * 2];
                         const a = row[x * 2 + 1];
-                        rgba8[d] = v; rgba8[d + 1] = v; rgba8[d + 2] = v; rgba8[d + 3] = a;
+                        rgba8[d] = v;
+                        rgba8[d + 1] = v;
+                        rgba8[d + 2] = v;
+                        rgba8[d + 3] = a;
                     }
                 },
                 6 => { // RGBA

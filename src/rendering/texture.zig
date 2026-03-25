@@ -8,7 +8,7 @@ pub const Handle = u32;
 
 const Texture = @This();
 
-width:  u32,
+width: u32,
 height: u32,
 handle: Handle,
 /// Decoded pixel data kept alive in the render pool for platforms that need
@@ -39,7 +39,7 @@ pub fn load(io: std.Io, path: []const u8) !Texture {
 /// Intermediate decode buffers use the scratch pool; the final pixel data
 /// uses the render pool.
 pub fn load_memory(png_bytes: []const u8) !Texture {
-    var img = try Image.load_png_ex(
+    const img = try Image.load_png_ex(
         Util.allocator(.scratch),
         Util.allocator(.render),
         png_bytes,
@@ -48,11 +48,14 @@ pub fn load_memory(png_bytes: []const u8) !Texture {
     errdefer Util.allocator(.render).free(img.data);
 
     return Texture{
-        .width  = img.width,
+        .width = img.width,
         .height = img.height,
-        .data   = img.data,
+        .data = img.data,
         .handle = try gfx.api.tab.create_texture(
-            gfx.api.ptr, img.width, img.height, img.data,
+            gfx.api.ptr,
+            img.width,
+            img.height,
+            img.data,
         ),
     };
 }
