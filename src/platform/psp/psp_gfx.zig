@@ -58,10 +58,21 @@ fn init(_: *anyopaque) !void {
     gu.depth_func(.GreaterOrEqual);
     gu.enable(.DepthTest);
     gu.shade_model(.Smooth);
-    gu.front_face(.Clockwise);
+    gu.front_face(.CounterClockwise);
     gu.enable(.CullFace);
     gu.disable(.ClipPlanes);
     gu.enable(.Texture2D);
+
+    // Initialize all matrix modes to identity so hardware registers are never garbage.
+    gum.matrix_mode(.Projection);
+    gum.load_identity();
+    gum.matrix_mode(.View);
+    gum.load_identity();
+    gum.matrix_mode(.Model);
+    gum.load_identity();
+    gum.matrix_mode(.Texture);
+    gum.load_identity();
+    gum.update_matrix();
 
     gu.finish();
     gu.sync(.Finish, .wait);

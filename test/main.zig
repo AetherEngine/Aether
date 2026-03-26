@@ -26,10 +26,10 @@ fn psp_cwd() std.Io.Dir {
     return .{ .handle = -1 };
 }
 
-const Vertex = struct {
-    pos: [3]f32,
-    color: [4]u8,
+const Vertex = extern struct {
     uv: [2]f32,
+    color: [4]u8,
+    pos: [3]f32,
 
     pub const Attributes = Rendering.Pipeline.attributes_from_struct(@This(), &[_]Rendering.Pipeline.AttributeSpec{
         .{ .field = "pos", .location = 0 },
