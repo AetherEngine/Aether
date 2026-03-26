@@ -111,6 +111,11 @@ pub fn addGame(b: *std.Build, opts: GameOptions) *std.Build.Step.Compile {
             .optimize = opts.optimize,
         });
 
+        const glfw = b.dependency("glfw_zig", .{
+            .target = opts.target,
+            .optimize = opts.optimize,
+        });
+
         const gl_bindings = @import("zigglgen").generateBindingsModule(b, .{
             .api = .gl,
             .version = .@"4.5",
@@ -125,10 +130,12 @@ pub fn addGame(b: *std.Build, opts: GameOptions) *std.Build.Step.Compile {
         mod.addImport("glfw", zglfw.module("glfw"));
         mod.addImport("gl", gl_bindings);
         mod.addImport("vulkan", vulkan);
-        mod.linkSystemLibrary("glfw3", .{});
 
         if (opts.target.result.os.tag == .macos) {
             mod.linkSystemLibrary("vulkan", .{});
+            mod.linkSystemLibrary("glfw3", .{});
+        } else {
+            mod.linkLibrary(glfw.artifact("glfw"));
         }
     }
 
@@ -148,6 +155,10 @@ pub fn addGame(b: *std.Build, opts: GameOptions) *std.Build.Step.Compile {
 
     if (config.platform == .psp) {
         pspsdk.configurePspExecutable(exe);
+    }
+
+    if (config.platform == .windows and (opts.optimize == .ReleaseFast or opts.optimize == .ReleaseSmall)) {
+        exe.subsystem = .windows;
     }
 
     return exe;
