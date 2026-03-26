@@ -7,7 +7,8 @@ var file_writer: std.Io.File.Writer = undefined;
 var writer: *std.Io.Writer = undefined;
 
 pub fn init(io: std.Io) !void {
-    file_log = try std.Io.Dir.cwd().createFile(io, "aether.log", .{ .truncate = true });
+    const log_path = if (builtin.os.tag == .psp) "ms0:/aether.log" else "aether.log";
+    file_log = try std.Io.Dir.cwd().createFile(io, log_path, .{ .truncate = true });
     file_writer = file_log.writer(io, &log_buffer);
     writer = &file_writer.interface;
 }

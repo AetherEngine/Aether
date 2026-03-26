@@ -22,11 +22,17 @@ pub const Input = enum(u8) {
     default,
 };
 
+pub const PspDisplayMode = enum {
+    rgba8888,
+    rgb565,
+};
+
 pub const Config = struct {
     platform: Platform,
     gfx: Gfx,
     audio: Audio = Audio.default,
     input: Input = Input.default,
+    psp_display_mode: PspDisplayMode = .rgba8888,
 
     pub fn resolve(target: std.Build.ResolvedTarget, overrides: Overrides) Config {
         const plat: Platform = switch (target.result.os.tag) {
@@ -49,11 +55,13 @@ pub const Config = struct {
         return .{
             .platform = plat,
             .gfx = overrides.gfx orelse default_gfx,
+            .psp_display_mode = overrides.psp_display_mode orelse .rgba8888,
         };
     }
 
     pub const Overrides = struct {
         gfx: ?Gfx = null,
+        psp_display_mode: ?PspDisplayMode = null,
     };
 };
 
@@ -204,6 +212,7 @@ pub fn build(b: *std.Build) void {
 
     const overrides: Config.Overrides = .{
         .gfx = b.option(Gfx, "gfx", "Graphics backend override (default: auto-detect from target)"),
+        .psp_display_mode = b.option(PspDisplayMode, "psp-display", "PSP display mode: rgba8888 (32-bit, default) or rgb565 (16-bit)"),
     };
 
     const config = Config.resolve(target, overrides);

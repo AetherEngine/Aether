@@ -2,7 +2,6 @@ const std = @import("std");
 const Util = @import("../../util/util.zig");
 const Surface = @import("../surface.zig");
 const sdk = @import("pspsdk");
-const gu = sdk.gu;
 const ctrl = sdk.ctrl;
 const Self = @This();
 
@@ -32,7 +31,6 @@ fn update(_: *anyopaque) bool {
 
 fn draw(ctx: *anyopaque) void {
     const self = Util.ctx_to_self(Self, ctx);
-    gu.swap_buffers();
     if (self.sync) {
         sdk.display.wait_vblank_start() catch {};
     }

@@ -85,6 +85,7 @@ const MyState = struct {
     fn draw(ctx: *anyopaque, _: f32) anyerror!void {
         var self = Util.ctx_to_self(MyState, ctx);
 
+        Rendering.gfx.api.set_clear_color(1, 0, 0, 1);
         Rendering.gfx.api.set_proj_matrix(&Math.Mat4.orthographicRh(
             2 * @as(f32, @floatFromInt(Rendering.gfx.surface.get_width())) / @as(f32, @floatFromInt(Rendering.gfx.surface.get_height())),
             2,
