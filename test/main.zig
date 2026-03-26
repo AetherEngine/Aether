@@ -121,7 +121,7 @@ pub fn main(init: std.process.Init) !void {
         .scratch = 4 * 1024 * 1024,
     };
     var state: MyState = undefined;
-    try ae.App.init(init.io, memory, config, 1280, 720, "Aether", false, true, &state.state());
+    try ae.App.init(init.io, memory, config, 1280, 720, "Aether", false, false, &state.state());
     defer ae.App.deinit();
     try ae.App.main_loop();
 }

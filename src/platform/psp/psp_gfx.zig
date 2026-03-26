@@ -25,6 +25,12 @@ const gu_pixel_format: gu.types.GuPixelFormat = switch (options.config.psp_displ
     .rgb565 => .Psm5650,
 };
 
+const display = sdk.display;
+const kernel = sdk.kernel;
+const ge = sdk.ge;
+
+const VBLANK_INT = 30;
+
 const VertexType = sdk.VertexType;
 
 const PipelineData = struct {
@@ -39,20 +45,49 @@ const Self = @This();
 
 var display_list: [0x40000]u32 align(16) = [_]u32{0} ** 0x40000;
 
+// Triple buffer: 3 buffers with relative (for GU) and absolute (for set_frame_buf) addresses.
+// At any time: one is being drawn to, one is ready (finished), one is being displayed.
+var buffers_rel: [3]?*anyopaque = .{ null, null, null };
+var buffers_abs: [3]?*anyopaque = .{ null, null, null };
+var draw_idx: u2 = 0; // buffer GU is rendering into
+var pending_idx: ?u2 = null; // buffer GE is finishing, not yet safe to display
+var ready_idx: ?u2 = null; // buffer finished rendering, waiting for display
+var display_idx: u2 = 0; // buffer currently shown by LCD
+
+fn vblank_handler(_: c_int, _: c_int, _: ?*anyopaque) callconv(.c) c_int {
+    if (ready_idx) |ri| {
+        // Show the ready buffer
+        display.set_frame_buf(buffers_abs[ri], SCR_BUF_WIDTH, display_pixel_format, .immediate) catch {};
+        display_idx = ri;
+        ready_idx = null;
+    }
+    return -1;
+}
+
 clear_color: u24 = 0x000000,
 
 fn init(ctx: *anyopaque) !void {
     const self = Util.ctx_to_self(Self, ctx);
     self.clear_color = 0xFFFFFF;
 
-    const fbp0 = sdk.extra.vram.allocVramRelative(SCR_BUF_WIDTH, SCREEN_HEIGHT, gu_pixel_format);
-    const fbp1 = sdk.extra.vram.allocVramRelative(SCR_BUF_WIDTH, SCREEN_HEIGHT, gu_pixel_format);
+    const vram_base = @intFromPtr(ge.edram_get_addr());
+    const uncached: usize = 0x40000000;
+
+    // Display buffer first so it gets VRAM offset 0 (avoids null relative pointer issue)
+    display_idx = 0;
+    draw_idx = 1;
+    ready_idx = null;
+
+    for (0..3) |i| {
+        buffers_rel[i] = sdk.extra.vram.allocVramRelative(SCR_BUF_WIDTH, SCREEN_HEIGHT, gu_pixel_format);
+        buffers_abs[i] = @ptrFromInt(@intFromPtr(buffers_rel[i]) + vram_base | uncached);
+    }
     const zbp = sdk.extra.vram.allocVramRelative(SCR_BUF_WIDTH, SCREEN_HEIGHT, .Psm4444);
 
     gu.init();
     gu.start(.Direct, &display_list);
-    gu.draw_buffer(display_pixel_format, fbp0, SCR_BUF_WIDTH);
-    gu.disp_buffer(SCREEN_WIDTH, SCREEN_HEIGHT, fbp1, SCR_BUF_WIDTH);
+    gu.draw_buffer(display_pixel_format, buffers_rel[draw_idx], SCR_BUF_WIDTH);
+    gu.disp_buffer(SCREEN_WIDTH, SCREEN_HEIGHT, buffers_rel[display_idx], SCR_BUF_WIDTH);
     gu.depth_buffer(zbp, SCR_BUF_WIDTH);
     gu.offset(2048 - (SCREEN_WIDTH / 2), 2048 - (SCREEN_HEIGHT / 2));
     gu.viewport(2048, 2048, SCREEN_WIDTH, SCREEN_HEIGHT);
@@ -81,11 +116,20 @@ fn init(ctx: *anyopaque) !void {
     gu.finish();
     gu.sync(.Finish, .wait);
 
-    try sdk.display.wait_vblank_start();
-    gu.display(true);
+    try display.wait_vblank_start();
+    gu.display(false);
+
+    // Set frame buf AFTER gu.display(false), since gu.display(false)
+    // internally calls sceDisplaySetFrameBuf(NULL) and would override us.
+    try display.set_frame_buf(buffers_abs[display_idx], SCR_BUF_WIDTH, display_pixel_format, .next_vblank);
+
+    try kernel.register_sub_intr_handler(VBLANK_INT, 0, @ptrCast(@constCast(&vblank_handler)), null);
+    try kernel.enable_sub_intr(VBLANK_INT, 0);
 }
 
 fn deinit(_: *anyopaque) void {
+    kernel.disable_sub_intr(VBLANK_INT, 0) catch {};
+    kernel.release_sub_intr_handler(VBLANK_INT, 0) catch {};
     gu.term();
 }
 
@@ -116,6 +160,14 @@ fn set_view_matrix(_: *anyopaque, mat: *const Mat4) void {
 fn start_frame(ctx: *anyopaque) bool {
     const self = Util.ctx_to_self(Self, ctx);
 
+    // Wait for previous frame's GE to finish, then promote pending → ready.
+    // The sync should be near-instant since CPU did update/tick in between.
+    if (pending_idx) |pi| {
+        gu.sync(.Finish, .wait);
+        ready_idx = pi;
+        pending_idx = null;
+    }
+
     gu.start(.Direct, &display_list);
     gu.clear_color(self.clear_color);
     gu.clear_depth(1);
@@ -125,12 +177,40 @@ fn start_frame(ctx: *anyopaque) bool {
     return true;
 }
 
+fn is_buf_free(idx: u2) bool {
+    // Snapshot volatile state to avoid race with vblank handler
+    const cur_display = display_idx;
+    const cur_ready = ready_idx;
+    const cur_pending = pending_idx;
+    if (idx == cur_display) return false;
+    if (cur_ready != null and idx == cur_ready.?) return false;
+    if (cur_pending != null and idx == cur_pending.?) return false;
+    return true;
+}
+
+fn next_draw_idx() u2 {
+    for (0..3) |i| {
+        const idx: u2 = @intCast(i);
+        if (is_buf_free(idx)) return idx;
+    }
+    // All busy — reuse the ready buffer (drops a frame)
+    return ready_idx orelse draw_idx;
+}
+
 fn end_frame(_: *anyopaque) void {
     gu.finish();
-    gu.sync(.Finish, .wait);
 
-    sdk.display.wait_vblank_start() catch {};
-    gu.swap_buffers();
+    // Don't sync — let the GE finish asynchronously while CPU does update/tick.
+    // Mark as pending; start_frame will sync and promote to ready.
+    pending_idx = draw_idx;
+
+    // Pick the free buffer. Set it as GU's disp_buffer so that swap_buffers
+    // will move it into frame_buffer (the GE draw target).
+    const free = next_draw_idx();
+    gu.disp_buffer(SCREEN_WIDTH, SCREEN_HEIGHT, buffers_rel[free], SCR_BUF_WIDTH);
+    _ = gu.swap_buffers();
+    // After swap: frame_buffer = old disp (free), disp_buffer = old frame (just rendered)
+    draw_idx = free;
 }
 
 fn create_pipeline(_: *anyopaque, layout: Pipeline.VertexLayout, _: ?[:0]align(4) const u8, _: ?[:0]align(4) const u8) !Pipeline.Handle {
