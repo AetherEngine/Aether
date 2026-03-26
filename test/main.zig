@@ -57,9 +57,9 @@ const MyState = struct {
 
         self.texture = try Rendering.Texture.load("test.png");
         try self.mesh.append(&.{
-            Vertex{ .pos = .{ -0.5, -0.5, 0.0 }, .color = .{ 255, 255, 255, 255 }, .uv = .{ 0.0, 1.0 } },
-            Vertex{ .pos = .{ 0.5, -0.5, 0.0 }, .color = .{ 255, 255, 255, 255 }, .uv = .{ 1.0, 1.0 } },
-            Vertex{ .pos = .{ 0.0, 0.5, 0.0 }, .color = .{ 255, 255, 255, 255 }, .uv = .{ 0.5, 0.0 } },
+            Vertex{ .pos = .{ -0.5, -0.5, 0.0 }, .color = .{ 255, 0, 0, 255 }, .uv = .{ 0.0, 1.0 } },
+            Vertex{ .pos = .{ 0.5, -0.5, 0.0 }, .color = .{ 0, 255, 0, 255 }, .uv = .{ 1.0, 1.0 } },
+            Vertex{ .pos = .{ 0.0, 0.5, 0.0 }, .color = .{ 0, 0, 255, 255 }, .uv = .{ 0.5, 0.0 } },
         });
         self.mesh.update();
 
@@ -85,7 +85,6 @@ const MyState = struct {
     fn draw(ctx: *anyopaque, _: f32) anyerror!void {
         var self = Util.ctx_to_self(MyState, ctx);
 
-        Rendering.gfx.api.set_clear_color(1, 0, 0, 1);
         Rendering.gfx.api.set_proj_matrix(&Math.Mat4.orthographicRh(
             2 * @as(f32, @floatFromInt(Rendering.gfx.surface.get_width())) / @as(f32, @floatFromInt(Rendering.gfx.surface.get_height())),
             2,
@@ -122,7 +121,7 @@ pub fn main(init: std.process.Init) !void {
         .scratch = 4 * 1024 * 1024,
     };
     var state: MyState = undefined;
-    try ae.App.init(init.io, memory, config, 1280, 720, "Aether", false, false, &state.state());
+    try ae.App.init(init.io, memory, config, 1280, 720, "Aether", false, true, &state.state());
     defer ae.App.deinit();
     try ae.App.main_loop();
 }

@@ -5,6 +5,7 @@ const Pipeline = Rendering.Pipeline;
 const Mesh = Rendering.mesh;
 const Texture = Rendering.Texture;
 const GFXAPI = @import("../gfx_api.zig");
+const gfx = @import("../gfx.zig");
 
 const sdk = @import("pspsdk");
 const gu = sdk.gu;
@@ -40,7 +41,10 @@ var display_list: [0x40000]u32 align(16) = [_]u32{0} ** 0x40000;
 
 clear_color: u24 = 0x000000,
 
-fn init(_: *anyopaque) !void {
+fn init(ctx: *anyopaque) !void {
+    const self = Util.ctx_to_self(Self, ctx);
+    self.clear_color = 0xFFFFFF;
+
     const fbp0 = sdk.extra.vram.allocVramRelative(SCR_BUF_WIDTH, SCREEN_HEIGHT, gu_pixel_format);
     const fbp1 = sdk.extra.vram.allocVramRelative(SCR_BUF_WIDTH, SCREEN_HEIGHT, gu_pixel_format);
     const zbp = sdk.extra.vram.allocVramRelative(SCR_BUF_WIDTH, SCREEN_HEIGHT, .Psm4444);
@@ -114,9 +118,9 @@ fn start_frame(ctx: *anyopaque) bool {
 
     gu.start(.Direct, &display_list);
     gu.clear_color(self.clear_color);
-    gu.clear_depth(0);
+    gu.clear_depth(1);
     gu.clear(@intFromEnum(sdk.ClearBitFlags.ColorBuffer) |
-        @intFromEnum(sdk.ClearBitFlags.DepthBuffer));
+        @intFromEnum(sdk.ClearBitFlags.DepthBuffer) | @intFromEnum(sdk.ClearBitFlags.StencilBuffer));
 
     return true;
 }
@@ -125,10 +129,10 @@ fn end_frame(_: *anyopaque) void {
     gu.finish();
     gu.sync(.Finish, .wait);
 
-    // Present — surface.draw() is not called from the main loop,
-    // so swap and vsync must happen here (matches OpenGL/Vulkan pattern).
+    sdk.display.wait_vblank_start() catch {};
     gu.swap_buffers();
 }
+
 fn create_pipeline(_: *anyopaque, layout: Pipeline.VertexLayout, _: ?[:0]align(4) const u8, _: ?[:0]align(4) const u8) !Pipeline.Handle {
     var vtype = VertexType{
         .vertex = .Vertex32Bitf, // always required
@@ -259,7 +263,7 @@ fn bind_texture(_: *anyopaque, handle: Texture.Handle) void {
         @ptrCast(@alignCast(tex.data)),
     );
     gu.tex_func(.Modulate, .Rgba);
-    gu.tex_filter(.Linear, .Linear);
+    gu.tex_filter(.Nearest, .Nearest);
     gu.tex_scale(1.0, 1.0);
     gu.tex_offset(0.0, 0.0);
 }
