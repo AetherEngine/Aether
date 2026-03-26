@@ -10,22 +10,51 @@ User code is structured as hooks into the engine via a `State` interface. You im
 ## Features
 
 - **Cross-platform**: Windows, Linux, macOS (PSP/3DS planned)
-- **Multiple graphics backends**: OpenGL 4.5 (Windows/Linux), Vulkan (Windows/macOS/Linux) — selected at compile time
+- **Multiple graphics backends**: OpenGL 4.5, Vulkan — selected at compile time, overridable with `-Dgfx=opengl`
 - **Fixed-step game loop**: 144 Hz updates, 20 Hz ticks, uncapped rendering
 - **Action-based input system**: keyboard, mouse, and gamepad with callback bindings
 - **Generic mesh & pipeline API**: define vertex layouts from structs using comptime reflection
+- **Budgeted memory pools**: render, audio, game, user, and scratch — no hidden heap allocations
 
 ## Requirements
 
-- Zig **0.15.2** or later
+- Zig **0.16.0-dev** or later (see `build.zig.zon` for exact minimum)
 - GLFW 3 (system library)
-- Vulkan SDK (Windows/macOS only)
+- Vulkan SDK (for `glslc` shader compiler and Vulkan headers)
 
 ## Getting Started
 
-Add Aether as a dependency in your `build.zig.zon`, then import and use it:
+Add Aether as a dependency in your `build.zig.zon`, then set up your `build.zig`:
 
 ```zig
+const aether = @import("aether");
+
+pub fn build(b: *std.Build) void {
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
+
+    const exe = aether.addGame(b, .{
+        .name = "my_game",
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    aether.addShader(b, exe, config, "basic", .{
+        .glsl_vert = b.path("shaders/basic.vert"),
+        .glsl_frag = b.path("shaders/basic.frag"),
+        .vulkan_vert = b.path("shaders/basic_vk.vert"),
+        .vulkan_frag = b.path("shaders/basic_vk.frag"),
+    });
+
+    b.installArtifact(exe);
+}
+```
+
+Then write your game code:
+
+```zig
+const std = @import("std");
 const ae = @import("aether");
 
 const MyState = struct {
@@ -44,11 +73,28 @@ const MyState = struct {
 };
 
 pub fn main(init: std.process.Init) !void {
+    const memory = try init.arena.allocator().alloc(u8, 32 * 1024 * 1024);
+    const config = ae.Util.MemoryConfig{
+        .render = 8 * 1024 * 1024,
+        .audio = 2 * 1024 * 1024,
+        .game = 2 * 1024 * 1024,
+        .user = 16 * 1024 * 1024,
+        .scratch = 4 * 1024 * 1024,
+    };
     var my_state: MyState = undefined;
-    try ae.App.init(init.io, 1280, 720, "My Game", .default, false, true, &my_state.state());
-    defer ae.App.deinit(init.io);
-    try ae.App.main_loop(init.io);
+    try ae.App.init(init.io, memory, config, 1280, 720, "My Game", false, true, &my_state.state());
+    defer ae.App.deinit();
+    try ae.App.main_loop();
 }
+```
+
+Platform and graphics backend are available as comptime constants for per-platform configuration:
+
+```zig
+const memory_config: ae.Util.MemoryConfig = switch (ae.platform) {
+    .psp => .{ .render = 512 * 1024, .audio = 256 * 1024, ... },
+    else => .{ .render = 8 * 1024 * 1024, .audio = 2 * 1024 * 1024, ... },
+};
 ```
 
 ## Building
@@ -58,7 +104,10 @@ pub fn main(init: std.process.Init) !void {
 zig build run
 
 # Run tests
-zig build test --summary all
+zig build test
+
+# Override graphics backend
+zig build run -Dgfx=opengl
 ```
 
 ## Input System
@@ -92,7 +141,7 @@ const Vertex = struct {
 const MyMesh = Rendering.Mesh(Vertex);
 ```
 
-Shaders are embedded at compile time with `@embedFile`. OpenGL uses GLSL; Vulkan uses pre-compiled SPIR-V.
+Shaders are registered via `addShader` in your `build.zig` and embedded at compile time. The build system handles GLSL vs SPIR-V compilation automatically based on the target backend.
 
 ## License
 

@@ -1062,6 +1062,8 @@ fn destroy_texture(ctx: *anyopaque, handle: u32) void {
     _ = textures.remove_element(handle);
 }
 
+fn force_texture_resident(_: *anyopaque, _: u32) void {}
+
 pub fn gfx_api(self: *Self) GFXAPI {
     return GFXAPI{
         .ptr = self,
@@ -1080,6 +1082,7 @@ pub fn gfx_api(self: *Self) GFXAPI {
             .create_texture = create_texture,
             .bind_texture = bind_texture,
             .destroy_texture = destroy_texture,
+            .force_texture_resident = force_texture_resident,
             .create_pipeline = create_pipeline,
             .destroy_pipeline = destroy_pipeline,
             .bind_pipeline = bind_pipeline,

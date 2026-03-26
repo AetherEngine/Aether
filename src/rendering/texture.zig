@@ -60,6 +60,12 @@ pub fn deinit(self: *Texture) void {
     Util.allocator(.render).free(self.data);
 }
 
+/// Forces the texture into fast GPU-resident memory (e.g. VRAM on PSP).
+/// No-op on platforms where textures are already GPU-resident (OpenGL, Vulkan).
+pub fn force_resident(self: *const Texture) void {
+    gfx.api.tab.force_texture_resident(gfx.api.ptr, self.handle);
+}
+
 /// Binds the texture for the next draw call.
 pub fn bind(self: *const Texture) void {
     gfx.api.tab.bind_texture(gfx.api.ptr, self.handle);

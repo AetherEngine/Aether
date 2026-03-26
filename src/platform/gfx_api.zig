@@ -41,6 +41,7 @@ pub const VTable = struct {
     create_texture: *const fn (ctx: *anyopaque, width: u32, height: u32, data: []const u8) anyerror!Texture.Handle,
     bind_texture: *const fn (ctx: *anyopaque, handle: Texture.Handle) void,
     destroy_texture: *const fn (ctx: *anyopaque, handle: Texture.Handle) void,
+    force_texture_resident: *const fn (ctx: *anyopaque, handle: Texture.Handle) void,
 };
 
 /// Starts the Graphics API. Must be called before any other graphics functions.
