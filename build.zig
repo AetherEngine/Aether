@@ -92,7 +92,11 @@ pub fn addGame(b: *std.Build, opts: GameOptions) *std.Build.Step.Compile {
 
     // --- platform-specific engine dependencies ---
     if (config.platform == .psp) {
-        // PSP: no GLFW/GL/Vulkan
+        const psp_dep = b.dependency("pspsdk", .{
+            .target = opts.target,
+            .optimize = opts.optimize,
+        });
+        mod.addImport("pspsdk", psp_dep.module("pspsdk"));
     } else {
         const zglfw = b.dependency("zglfw", .{
             .target = opts.target,

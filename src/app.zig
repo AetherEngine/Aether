@@ -34,13 +34,14 @@ pub fn main_loop() !void {
     const io = Util.io();
     const US_PER_S: u64 = std.time.us_per_s;
 
-    // Fixed-step rates
-    const UPDATES_HZ: u32 = 144;
+    const options = @import("options");
+    // Fixed-step rates — PSP targets 60 Hz display
+    const UPDATES_HZ: u32 = if (options.config.platform == .psp) 60 else 144;
     const TICKS_HZ: u32 = 20;
     const UPDATE_US: u64 = US_PER_S / UPDATES_HZ;
     const TICK_US: u64 = US_PER_S / TICKS_HZ;
 
-    var clock = std.Io.Clock.boot;
+    var clock = std.Io.Clock.real;
 
     var last_us: i64 = @truncate(@divTrunc(clock.now(io).toNanoseconds(), 1000));
     var update_accum: i64 = 0;
@@ -88,10 +89,11 @@ pub fn main_loop() !void {
 
         // ---- FPS counting ----
         fps_count += 1;
-        if (now_us >= fps_window_end) {
+        const end_us: i64 = @truncate(@divTrunc(clock.now(io).toNanoseconds(), 1000));
+        if (end_us >= fps_window_end) {
             Util.engine_logger.info("FPS: {}", .{fps_count});
             fps_count = 0;
-            fps_window_end += US_PER_S;
+            fps_window_end = end_us + US_PER_S;
         }
     }
 }
