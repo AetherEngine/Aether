@@ -16,10 +16,9 @@ handle: Handle,
 data: []u8,
 
 /// Loads a PNG from `path` into GPU memory.
-/// File bytes are read into the scratch pool and freed after decode.
 /// The decoded pixel buffer lives in the render pool.
-pub fn load(io: std.Io, path: []const u8) !Texture {
-    const scratch = Util.allocator(.scratch);
+pub fn load(path: []const u8) !Texture {
+    const io = Util.io();
 
     var file = try std.Io.Dir.cwd().openFile(io, path, .{});
     defer file.close(io);
@@ -27,22 +26,17 @@ pub fn load(io: std.Io, path: []const u8) !Texture {
     var temp: [4096]u8 = undefined;
     var reader = file.reader(io, &temp);
 
-    const len = try reader.getSize();
-    const buffer = try scratch.alloc(u8, len);
-    defer scratch.free(buffer);
-
-    try reader.interface.readSliceAll(buffer);
-    return load_memory(buffer);
+    return load_from_reader(&reader.interface);
 }
 
-/// Loads a PNG from in-memory bytes into GPU memory.
+/// Loads a PNG from any reader into GPU memory.
 /// Intermediate decode buffers use the scratch pool; the final pixel data
 /// uses the render pool.
-pub fn load_memory(png_bytes: []const u8) !Texture {
+pub fn load_from_reader(reader: *std.Io.Reader) !Texture {
     const img = try Image.load_png_ex(
         Util.allocator(.scratch),
         Util.allocator(.render),
-        png_bytes,
+        reader,
         .rgba8,
     );
     errdefer Util.allocator(.render).free(img.data);

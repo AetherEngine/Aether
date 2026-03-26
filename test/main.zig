@@ -26,7 +26,6 @@ const MyState = struct {
     mesh: MyMesh,
     transform: Rendering.Transform,
     texture: Rendering.Texture,
-    io: std.Io,
 
     fn init(ctx: *anyopaque) anyerror!void {
         var self = Util.ctx_to_self(MyState, ctx);
@@ -39,7 +38,7 @@ const MyState = struct {
         self.transform = Rendering.Transform.new();
 
         // const png_bytes = @embedFile("test.png");
-        self.texture = try Rendering.Texture.load(self.io, "test.png");
+        self.texture = try Rendering.Texture.load("test.png");
 
         try self.mesh.append(&.{
             Vertex{ .pos = .{ -0.5, -0.5, 0.0 }, .color = .{ 255, 255, 255, 255 }, .uv = .{ 0.0, 1.0 } },
@@ -106,8 +105,7 @@ pub fn main(init: std.process.Init) !void {
         .scratch = 4 * 1024 * 1024,
     };
     var state: MyState = undefined;
-    state.io = init.io;
     try ae.App.init(init.io, memory, config, 1280, 720, "Aether", false, false, &state.state());
-    defer ae.App.deinit(init.io);
-    try ae.App.main_loop(init.io);
+    defer ae.App.deinit();
+    try ae.App.main_loop();
 }

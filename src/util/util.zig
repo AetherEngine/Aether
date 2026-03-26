@@ -16,6 +16,12 @@ comptime {
 
 var initialized = false;
 var pools: [@typeInfo(Pool).@"enum".fields.len]memory.PoolAllocator = undefined;
+var _io: std.Io = undefined;
+
+pub fn io() std.Io {
+    assert(initialized);
+    return _io;
+}
 
 pub const std_options: std.Options = .{
     .log_level = if (builtin.mode == .Debug) .debug else .info,
@@ -25,9 +31,11 @@ pub const std_options: std.Options = .{
 pub const engine_logger = std.log.scoped(.engine);
 pub const game_logger = std.log.scoped(.game);
 
-pub fn init(io: std.Io, mem: []u8, config: MemoryConfig) !void {
+pub fn init(sys_io: std.Io, mem: []u8, config: MemoryConfig) !void {
     assert(!initialized);
     assert(config.total() <= mem.len);
+
+    _io = sys_io;
 
     var offset: usize = 0;
     inline for (std.meta.fields(Pool), 0..) |f, i| {
@@ -36,16 +44,16 @@ pub fn init(io: std.Io, mem: []u8, config: MemoryConfig) !void {
         offset += budget;
     }
 
-    try logger.init(io);
+    try logger.init(_io);
     initialized = true;
 
     assert(initialized);
 }
 
-pub fn deinit(io: std.Io) void {
+pub fn deinit() void {
     assert(initialized);
 
-    logger.deinit(io);
+    logger.deinit(_io);
     initialized = false;
 
     assert(!initialized);

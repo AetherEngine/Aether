@@ -16,21 +16,23 @@ pub const Image = struct {
 
 const png_signature = "\x89PNG\r\n\x1a\n";
 
-/// Decode PNG bytes → RGBA8. Caller owns returned slice.
-pub fn load_png(allocator: std.mem.Allocator, data: []const u8) ![]u8 {
-    const img = try load_png_ex(allocator, allocator, data, .rgba8);
+/// Decode PNG from a reader → RGBA8. Caller owns returned slice.
+pub fn load_png(allocator: std.mem.Allocator, reader: *std.Io.Reader) ![]u8 {
+    const img = try load_png_ex(allocator, allocator, reader, .rgba8);
     return img.data;
 }
 
-/// Decode PNG bytes with explicit color mode. Caller owns image.data.
+/// Decode PNG from a reader with explicit color mode. Caller owns image.data.
 /// `scratch` is used for all temporary allocations during decoding.
 /// `render` is used for the final pixel buffer stored in `image.data`.
-pub fn load_png_ex(scratch: std.mem.Allocator, render: std.mem.Allocator, data: []const u8, mode: ColorMode) !Image {
+pub fn load_png_ex(scratch: std.mem.Allocator, render: std.mem.Allocator, reader: *std.Io.Reader, mode: ColorMode) !Image {
     const allocator = scratch;
-    if (data.len < 8) return error.InvalidPNG;
-    if (!std.mem.eql(u8, data[0..8], png_signature)) return error.InvalidPNG;
 
-    var pos: usize = 8;
+    // Verify PNG signature
+    var sig_buf: [8]u8 = undefined;
+    try reader.readSliceAll(&sig_buf);
+    if (!std.mem.eql(u8, &sig_buf, png_signature)) return error.InvalidPNG;
+
     var width: u32 = 0;
     var height: u32 = 0;
     var bit_depth: u8 = 0;
@@ -49,22 +51,23 @@ pub fn load_png_ex(scratch: std.mem.Allocator, render: std.mem.Allocator, data: 
     defer idat_buf.deinit(allocator);
 
     // Parse chunks
-    while (pos + 12 <= data.len) {
-        const length = std.mem.readInt(u32, data[pos..][0..4], .big);
-        const chunk_type = data[pos + 4 .. pos + 8];
-        if (pos + 8 + length > data.len) return error.InvalidPNG;
-        const chunk_data = data[pos + 8 .. pos + 8 + length];
-        pos += 12 + length;
+    while (true) {
+        var chunk_header: [8]u8 = undefined;
+        reader.readSliceAll(&chunk_header) catch break;
+        const length = std.mem.readInt(u32, chunk_header[0..4], .big);
+        const chunk_type = chunk_header[4..8];
 
         if (std.mem.eql(u8, chunk_type, "IHDR")) {
-            if (chunk_data.len < 13) return error.InvalidPNG;
-            width = std.mem.readInt(u32, chunk_data[0..4], .big);
-            height = std.mem.readInt(u32, chunk_data[4..8], .big);
-            bit_depth = chunk_data[8];
-            color_type = chunk_data[9];
-            const compression_method = chunk_data[10];
-            const filter_method = chunk_data[11];
-            const interlace_method = chunk_data[12];
+            if (length < 13) return error.InvalidPNG;
+            var ihdr: [13]u8 = undefined;
+            try reader.readSliceAll(&ihdr);
+            width = std.mem.readInt(u32, ihdr[0..4], .big);
+            height = std.mem.readInt(u32, ihdr[4..8], .big);
+            bit_depth = ihdr[8];
+            color_type = ihdr[9];
+            const compression_method = ihdr[10];
+            const filter_method = ihdr[11];
+            const interlace_method = ihdr[12];
             if (interlace_method != 0) return error.UnsupportedInterlacing;
             if (compression_method != 0) return error.InvalidPNG;
             if (filter_method != 0) return error.InvalidPNG;
@@ -92,12 +95,22 @@ pub fn load_png_ex(scratch: std.mem.Allocator, render: std.mem.Allocator, data: 
                 else => return error.UnsupportedColorType,
             }
             ihdr_found = true;
+            // Skip remaining bytes + CRC
+            try skipBytes(reader, length - 13 + 4);
         } else if (std.mem.eql(u8, chunk_type, "PLTE")) {
-            palette_len = @intCast(chunk_data.len / 3);
+            const chunk_data = try scratch.alloc(u8, length);
+            defer scratch.free(chunk_data);
+            try reader.readSliceAll(chunk_data);
+            palette_len = @intCast(length / 3);
             for (0..palette_len) |i| {
                 palette[i] = .{ chunk_data[i * 3], chunk_data[i * 3 + 1], chunk_data[i * 3 + 2] };
             }
+            // Skip CRC
+            try skipBytes(reader, 4);
         } else if (std.mem.eql(u8, chunk_type, "tRNS")) {
+            const chunk_data = try scratch.alloc(u8, length);
+            defer scratch.free(chunk_data);
+            try reader.readSliceAll(chunk_data);
             has_trns = true;
             switch (color_type) {
                 0 => if (chunk_data.len >= 2) {
@@ -114,10 +127,19 @@ pub fn load_png_ex(scratch: std.mem.Allocator, render: std.mem.Allocator, data: 
                 },
                 else => {},
             }
+            // Skip CRC
+            try skipBytes(reader, 4);
         } else if (std.mem.eql(u8, chunk_type, "IDAT")) {
-            try idat_buf.appendSlice(allocator, chunk_data);
+            const prev_len = idat_buf.items.len;
+            try idat_buf.resize(allocator, prev_len + length);
+            try reader.readSliceAll(idat_buf.items[prev_len..]);
+            // Skip CRC
+            try skipBytes(reader, 4);
         } else if (std.mem.eql(u8, chunk_type, "IEND")) {
             break;
+        } else {
+            // Skip unknown chunk data + CRC
+            try skipBytes(reader, length + 4);
         }
     }
 
@@ -324,6 +346,16 @@ pub fn load_png_ex(scratch: std.mem.Allocator, render: std.mem.Allocator, data: 
     render.free(rgba8);
 
     return .{ .width = width, .height = height, .data = rgba5551, .mode = .rgba5551 };
+}
+
+fn skipBytes(reader: *std.Io.Reader, n: usize) !void {
+    var remaining = n;
+    var buf: [256]u8 = undefined;
+    while (remaining > 0) {
+        const to_read = @min(remaining, buf.len);
+        try reader.readSliceAll(buf[0..to_read]);
+        remaining -= to_read;
+    }
 }
 
 fn paethPredictor(a: u8, b: u8, c: u8) u8 {

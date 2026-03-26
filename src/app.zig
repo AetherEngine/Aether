@@ -16,21 +16,22 @@ pub fn init(io: std.Io, mem: []u8, config: Util.MemoryConfig, width: u32, height
     try Core.state_machine.init(state);
 }
 
-pub fn deinit(io: std.Io) void {
+pub fn deinit() void {
     Core.state_machine.deinit();
     Core.input.deinit();
 
     Platform.deinit();
 
     // Allocator is last
-    Util.deinit(io);
+    Util.deinit();
 }
 
 pub fn quit() void {
     running = false;
 }
 
-pub fn main_loop(io: std.Io) !void {
+pub fn main_loop() !void {
+    const io = Util.io();
     const US_PER_S: u64 = std.time.us_per_s;
 
     // Fixed-step rates
