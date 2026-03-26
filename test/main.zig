@@ -5,7 +5,26 @@ const Core = ae.Core;
 const Util = ae.Util;
 const Rendering = ae.Rendering;
 const State = Core.State;
+
+// TODO: Make these options stuff nice
 pub const std_options = Util.std_options;
+
+const sdk = if (ae.platform == .psp) @import("pspsdk") else void;
+comptime {
+    if (sdk != void)
+        asm (sdk.extra.module.module_info("My App Name", .{ .mode = .User }, 1, 0));
+}
+
+pub const psp_stack_size: u32 = 1024 * 1024;
+
+// PSP: override panic/IO handlers that would otherwise pull in posix symbols.
+pub const panic = if (ae.platform == .psp) sdk.extra.debug.panic else std.debug.FullPanic(std.debug.defaultPanic);
+pub const std_options_debug_threaded_io = if (ae.platform == .psp) null else std.Io.Threaded.global_single_threaded;
+pub const std_options_debug_io = if (ae.platform == .psp) sdk.extra.Io.psp_io else std.Io.Threaded.global_single_threaded.io();
+pub const std_options_cwd = if (ae.platform == .psp) psp_cwd else null;
+fn psp_cwd() std.Io.Dir {
+    return .{ .handle = -1 };
+}
 
 const Vertex = struct {
     pos: [3]f32,
@@ -29,7 +48,6 @@ const MyState = struct {
 
     fn init(ctx: *anyopaque) anyerror!void {
         var self = Util.ctx_to_self(MyState, ctx);
-
         const vert align(@alignOf(u32)) = @embedFile("basic_vert").*;
         const frag align(@alignOf(u32)) = @embedFile("basic_frag").*;
         pipeline = try Rendering.Pipeline.new(Vertex.Layout, &vert, &frag);
@@ -37,9 +55,7 @@ const MyState = struct {
         self.mesh = try MyMesh.new(pipeline);
         self.transform = Rendering.Transform.new();
 
-        // const png_bytes = @embedFile("test.png");
         self.texture = try Rendering.Texture.load("test.png");
-
         try self.mesh.append(&.{
             Vertex{ .pos = .{ -0.5, -0.5, 0.0 }, .color = .{ 255, 255, 255, 255 }, .uv = .{ 0.0, 1.0 } },
             Vertex{ .pos = .{ 0.5, -0.5, 0.0 }, .color = .{ 255, 255, 255, 255 }, .uv = .{ 1.0, 1.0 } },

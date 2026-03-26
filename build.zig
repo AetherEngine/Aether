@@ -1,4 +1,5 @@
 const std = @import("std");
+const pspsdk = @import("pspsdk");
 
 pub const Platform = enum {
     windows,
@@ -32,6 +33,7 @@ pub const Config = struct {
             .windows => .windows,
             .macos => .macos,
             .linux => .linux,
+            .psp => .psp,
             else => |t| {
                 std.debug.panic("Unsupported OS! {}\n", .{t});
             },
@@ -76,23 +78,6 @@ pub const ShaderPaths = struct {
 pub fn addGame(b: *std.Build, opts: GameOptions) *std.Build.Step.Compile {
     const config = Config.resolve(opts.target, opts.overrides);
 
-    // --- engine dependencies ---
-    const zglfw = b.dependency("zglfw", .{
-        .target = opts.target,
-        .optimize = opts.optimize,
-    });
-
-    const gl_bindings = @import("zigglgen").generateBindingsModule(b, .{
-        .api = .gl,
-        .version = .@"4.5",
-        .profile = .core,
-        .extensions = &.{},
-    });
-
-    const vulkan = b.dependency("vulkan", .{
-        .registry = b.dependency("vulkan_headers", .{}).path("registry/vk.xml"),
-    }).module("vulkan-zig");
-
     const options = b.addOptions();
     options.addOption(Config, "config", config);
     const options_module = options.createModule();
@@ -101,16 +86,38 @@ pub fn addGame(b: *std.Build, opts: GameOptions) *std.Build.Step.Compile {
         .root_source_file = b.path("src/root.zig"),
         .target = opts.target,
         .imports = &.{
-            .{ .name = "glfw", .module = zglfw.module("glfw") },
-            .{ .name = "gl", .module = gl_bindings },
-            .{ .name = "vulkan", .module = vulkan },
             .{ .name = "options", .module = options_module },
         },
     });
-    mod.linkSystemLibrary("glfw3", .{});
 
-    if (opts.target.result.os.tag == .macos) {
-        mod.linkSystemLibrary("vulkan", .{});
+    // --- platform-specific engine dependencies ---
+    if (config.platform == .psp) {
+        // PSP: no GLFW/GL/Vulkan
+    } else {
+        const zglfw = b.dependency("zglfw", .{
+            .target = opts.target,
+            .optimize = opts.optimize,
+        });
+
+        const gl_bindings = @import("zigglgen").generateBindingsModule(b, .{
+            .api = .gl,
+            .version = .@"4.5",
+            .profile = .core,
+            .extensions = &.{},
+        });
+
+        const vulkan = b.dependency("vulkan", .{
+            .registry = b.dependency("vulkan_headers", .{}).path("registry/vk.xml"),
+        }).module("vulkan-zig");
+
+        mod.addImport("glfw", zglfw.module("glfw"));
+        mod.addImport("gl", gl_bindings);
+        mod.addImport("vulkan", vulkan);
+        mod.linkSystemLibrary("glfw3", .{});
+
+        if (opts.target.result.os.tag == .macos) {
+            mod.linkSystemLibrary("vulkan", .{});
+        }
     }
 
     // --- user executable ---
@@ -120,11 +127,16 @@ pub fn addGame(b: *std.Build, opts: GameOptions) *std.Build.Step.Compile {
             .root_source_file = opts.root_source_file,
             .target = opts.target,
             .optimize = opts.optimize,
+            .strip = if (config.platform == .psp) false else null,
             .imports = &.{
                 .{ .name = "aether", .module = mod },
             },
         }),
     });
+
+    if (config.platform == .psp) {
+        pspsdk.configurePspExecutable(exe);
+    }
 
     return exe;
 }
@@ -166,7 +178,17 @@ pub fn addShader(b: *std.Build, exe: *std.Build.Step.Compile, config: Config, co
                 .root_source_file = paths.glsl_frag,
             });
         },
-        .default => {},
+        .default => {
+            // Provide empty stubs so @embedFile(name ++ "_vert") still compiles.
+            const empty = b.addWriteFiles();
+            const stub = empty.add(name ++ "_stub", "");
+            exe.root_module.addAnonymousImport(name ++ "_vert", .{
+                .root_source_file = stub,
+            });
+            exe.root_module.addAnonymousImport(name ++ "_frag", .{
+                .root_source_file = stub,
+            });
+        },
     }
 }
 
@@ -180,6 +202,8 @@ pub fn build(b: *std.Build) void {
         .gfx = b.option(Gfx, "gfx", "Graphics backend override (default: auto-detect from target)"),
     };
 
+    const config = Config.resolve(target, overrides);
+
     const exe = addGame(b, .{
         .name = "Aether",
         .root_source_file = b.path("test/main.zig"),
@@ -188,8 +212,6 @@ pub fn build(b: *std.Build) void {
         .overrides = overrides,
     });
 
-    const config = Config.resolve(target, overrides);
-
     addShader(b, exe, config, "basic", .{
         .glsl_vert = b.path("test/shaders/basic.vert"),
         .glsl_frag = b.path("test/shaders/basic.frag"),
@@ -197,7 +219,14 @@ pub fn build(b: *std.Build) void {
         .vulkan_frag = b.path("test/shaders/basic_vk.frag"),
     });
 
-    b.installArtifact(exe);
+    if (config.platform == .psp) {
+        _ = pspsdk.addEbootSteps(b, exe, .{
+            .title = "Aether",
+            .output_dir = "Aether-PSP",
+        });
+    } else {
+        b.installArtifact(exe);
+    }
 
     const run_step = b.step("run", "Run the app");
     const run_cmd = b.addRunArtifact(exe);
@@ -208,12 +237,14 @@ pub fn build(b: *std.Build) void {
         run_cmd.addArgs(args);
     }
 
-    // Engine unit tests
-    const mod_tests = b.addTest(.{
-        .root_module = exe.root_module.import_table.get("aether").?,
-    });
-    const run_mod_tests = b.addRunArtifact(mod_tests);
+    // Engine unit tests (desktop only)
+    if (config.platform != .psp) {
+        const mod_tests = b.addTest(.{
+            .root_module = exe.root_module.import_table.get("aether").?,
+        });
+        const run_mod_tests = b.addRunArtifact(mod_tests);
 
-    const test_step = b.step("test", "Run tests");
-    test_step.dependOn(&run_mod_tests.step);
+        const test_step = b.step("test", "Run tests");
+        test_step.dependOn(&run_mod_tests.step);
+    }
 }

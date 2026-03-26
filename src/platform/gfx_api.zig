@@ -98,7 +98,16 @@ const GraphicsAPI = @import("platform.zig").GraphicsAPI;
 pub fn make_api(comptime api: GraphicsAPI) !Self {
     const builtin = @import("builtin");
     switch (api) {
-        .default, .opengl => {
+        .default => {
+            if (builtin.os.tag == .psp) {
+                const PspGfx = @import("psp/psp_gfx.zig");
+                var psp = try Util.allocator(.render).create(PspGfx);
+                return psp.gfx_api();
+            } else {
+                @compileError("No default graphics backend for this platform");
+            }
+        },
+        .opengl => {
             if (builtin.os.tag == .macos) @compileError("OpenGL is not supported on macOS, use Vulkan instead.");
 
             const OpenGLAPI = @import("glfw/opengl/opengl_gfx.zig");

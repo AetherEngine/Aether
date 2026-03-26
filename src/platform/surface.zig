@@ -55,6 +55,10 @@ pub fn make_surface() !Self {
         const GLFWSurface = @import("glfw/surface.zig");
         var glfw_surface = try Util.allocator(.render).create(GLFWSurface);
         return glfw_surface.surface();
+    } else if (builtin.os.tag == .psp) {
+        const PspSurface = @import("psp/surface.zig");
+        var psp_surface = try Util.allocator(.render).create(PspSurface);
+        return psp_surface.surface();
     } else {
         @compileError("No surface implementation for this platform");
     }

@@ -14,7 +14,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 
 /// All block boundaries and user-data pointers are aligned to this.
-pub const BLOCK_ALIGN: usize = 16;
+pub const BLOCK_ALIGN: usize = 2 * @sizeOf(usize);
 
 /// Prepended to every block, free or allocated.
 const BlockHeader = extern struct {
@@ -26,8 +26,8 @@ const BlockHeader = extern struct {
 };
 
 comptime {
-    assert(@sizeOf(BlockHeader) == 16);
-    assert(@alignOf(BlockHeader) == 8);
+    assert(@sizeOf(BlockHeader) == 2 * @sizeOf(usize));
+    assert(@sizeOf(BlockHeader) == BLOCK_ALIGN);
 }
 
 /// Treap key: sort primarily by block size (best-fit search), break ties by

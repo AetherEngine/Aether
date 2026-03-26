@@ -1,7 +1,10 @@
 const std = @import("std");
 const builtin = @import("builtin");
 pub const gfx = @import("gfx.zig");
-pub const input = @import("glfw/input.zig");
+pub const input = if (builtin.os.tag == .psp)
+    @import("psp/input.zig")
+else
+    @import("glfw/input.zig");
 
 const App = @import("../app.zig");
 

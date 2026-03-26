@@ -34,7 +34,7 @@ pub fn aether_log_fn(
     const prefix = scope_prefix ++ "[" ++ comptime level.asText() ++ "]: ";
 
     writer.print(prefix ++ format ++ "\n", args) catch {};
-    if (builtin.mode == .Debug) {
-        std.debug.print(prefix ++ format ++ "\n", args);
-    }
+    // if (builtin.mode == .Debug or builtin.mode == .ReleaseSafe) {
+    std.debug.print(prefix ++ format ++ "\n", args);
+    // }
 }
