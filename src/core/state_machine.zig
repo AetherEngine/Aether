@@ -2,6 +2,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 
 const State = @import("State.zig");
+const Util = @import("../util/util.zig");
 
 var initialized: bool = false;
 var curr_state: *const State = undefined;
@@ -38,12 +39,12 @@ pub fn tick() anyerror!void {
     try curr_state.tick();
 }
 
-pub fn update(dt: f32) anyerror!void {
+pub fn update(dt: f32, budget: *const Util.BudgetContext) anyerror!void {
     assert(initialized);
-    try curr_state.update(dt);
+    try curr_state.update(dt, budget);
 }
 
-pub fn draw(dt: f32) anyerror!void {
+pub fn draw(dt: f32, budget: *const Util.BudgetContext) anyerror!void {
     assert(initialized);
-    try curr_state.draw(dt);
+    try curr_state.draw(dt, budget);
 }

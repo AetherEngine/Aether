@@ -15,7 +15,7 @@ comptime {
         asm (sdk.extra.module.module_info("My App Name", .{ .mode = .User }, 1, 0));
 }
 
-pub const psp_stack_size: u32 = 1024 * 1024;
+pub const psp_stack_size: u32 = 256 * 1024;
 
 // PSP: override panic/IO handlers that would otherwise pull in posix symbols.
 pub const panic = if (ae.platform == .psp) sdk.extra.debug.panic else std.debug.FullPanic(std.debug.defaultPanic);
@@ -41,6 +41,7 @@ const Vertex = extern struct {
 
 const MyMesh = Rendering.Mesh(Vertex);
 
+
 const MyState = struct {
     mesh: MyMesh,
     transform: Rendering.Transform,
@@ -63,6 +64,7 @@ const MyState = struct {
         });
         self.mesh.update();
 
+
         Util.report();
     }
 
@@ -77,12 +79,12 @@ const MyState = struct {
         _ = ctx;
     }
 
-    fn update(ctx: *anyopaque, dt: f32) anyerror!void {
+    fn update(ctx: *anyopaque, dt: f32, _: *const Util.BudgetContext) anyerror!void {
         var self = Util.ctx_to_self(MyState, ctx);
         self.transform.rot.z += 60.0 * dt;
     }
 
-    fn draw(ctx: *anyopaque, _: f32) anyerror!void {
+    fn draw(ctx: *anyopaque, _: f32, _: *const Util.BudgetContext) anyerror!void {
         var self = Util.ctx_to_self(MyState, ctx);
 
         Rendering.gfx.api.set_proj_matrix(&Math.Mat4.orthographicRh(
@@ -121,7 +123,7 @@ pub fn main(init: std.process.Init) !void {
         .scratch = 4 * 1024 * 1024,
     };
     var state: MyState = undefined;
-    try ae.App.init(init.io, memory, config, 1280, 720, "Aether", false, false, &state.state());
+    try ae.App.init(init.io, memory, config, 1280, 720, "Aether", false, true, &state.state());
     defer ae.App.deinit();
     try ae.App.main_loop();
 }

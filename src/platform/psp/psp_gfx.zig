@@ -43,7 +43,7 @@ var bound_pipeline: Pipeline.Handle = 0;
 
 const Self = @This();
 
-var display_list: [0x40000]u32 align(16) = [_]u32{0} ** 0x40000;
+var display_list: [0x10000]u32 align(16) = [_]u32{0} ** 0x10000;
 
 // Triple buffer: 3 buffers with relative (for GU) and absolute (for set_frame_buf) addresses.
 // At any time: one is being drawn to, one is ready (finished), one is being displayed.
@@ -177,24 +177,18 @@ fn start_frame(ctx: *anyopaque) bool {
     return true;
 }
 
-fn is_buf_free(idx: u2) bool {
+fn next_draw_idx() u2 {
     // Snapshot volatile state to avoid race with vblank handler
     const cur_display = display_idx;
     const cur_ready = ready_idx;
-    const cur_pending = pending_idx;
-    if (idx == cur_display) return false;
-    if (cur_ready != null and idx == cur_ready.?) return false;
-    if (cur_pending != null and idx == cur_pending.?) return false;
-    return true;
-}
 
-fn next_draw_idx() u2 {
+    // Pick a buffer that's not being displayed and not ready
     for (0..3) |i| {
         const idx: u2 = @intCast(i);
-        if (is_buf_free(idx)) return idx;
+        if (idx != cur_display and (cur_ready == null or idx != cur_ready.?)) return idx;
     }
     // All busy — reuse the ready buffer (drops a frame)
-    return ready_idx orelse draw_idx;
+    return cur_ready orelse draw_idx;
 }
 
 fn end_frame(_: *anyopaque) void {

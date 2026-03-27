@@ -9,6 +9,9 @@ pub const Image = @import("image.zig");
 pub const MemoryConfig = memory.MemoryConfig;
 pub const Pool = memory.Pool;
 pub const Allocator = memory.PoolAllocator;
+pub const Estimator = @import("estimator.zig").Estimator;
+pub const Confidence = @import("estimator.zig").Confidence;
+pub const BudgetContext = @import("budget_context.zig").BudgetContext;
 
 comptime {
     std.testing.refAllDecls(@This());
