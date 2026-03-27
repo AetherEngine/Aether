@@ -43,26 +43,101 @@ var bound_pipeline: Pipeline.Handle = 0;
 
 const Self = @This();
 
-var display_list: [0x10000]u32 align(16) = [_]u32{0} ** 0x10000;
+const Swapchain = struct {
+    const BUFFER_COUNT = 3;
 
-// Triple buffer: 3 buffers with relative (for GU) and absolute (for set_frame_buf) addresses.
-// At any time: one is being drawn to, one is ready (finished), one is being displayed.
-var buffers_rel: [3]?*anyopaque = .{ null, null, null };
-var buffers_abs: [3]?*anyopaque = .{ null, null, null };
-var draw_idx: u2 = 0; // buffer GU is rendering into
-var pending_idx: ?u2 = null; // buffer GE is finishing, not yet safe to display
-var ready_idx: ?u2 = null; // buffer finished rendering, waiting for display
-var display_idx: u2 = 0; // buffer currently shown by LCD
+    const State = struct {
+        draw_idx: u2 = 0,
+        display_idx: u2 = 0,
+        ready_display: ?u2 = null,
+        ready_queue: [BUFFER_COUNT]u2 = .{ 0, 0, 0 },
+        ready_count: u2 = 0,
+    };
 
-fn vblank_handler(_: c_int, _: c_int, _: ?*anyopaque) callconv(.c) c_int {
-    if (ready_idx) |ri| {
-        // Show the ready buffer
-        display.set_frame_buf(buffers_abs[ri], SCR_BUF_WIDTH, display_pixel_format, .immediate) catch {};
-        display_idx = ri;
-        ready_idx = null;
+    display_list: [0x10000]u32 align(16) = [_]u32{0} ** 0x10000,
+    buffers_rel: [BUFFER_COUNT]?*anyopaque = .{ null, null, null },
+    buffers_abs: [BUFFER_COUNT]?*anyopaque = .{ null, null, null },
+    state_storage: State = .{},
+
+    fn state(self: *Swapchain) *volatile State {
+        return @ptrCast(&self.state_storage);
     }
-    return -1;
-}
+
+    fn init(self: *Swapchain) void {
+        const vram_base = @intFromPtr(ge.edram_get_addr());
+        const uncached: usize = 0x40000000;
+
+        self.state().display_idx = 0;
+        self.state().draw_idx = 1;
+        self.state().ready_count = 0;
+        self.state().ready_display = null;
+
+        for (0..BUFFER_COUNT) |i| {
+            self.buffers_rel[i] = sdk.extra.vram.allocVramRelative(SCR_BUF_WIDTH, SCREEN_HEIGHT, gu_pixel_format);
+            self.buffers_abs[i] = @ptrFromInt(@intFromPtr(self.buffers_rel[i]) + vram_base | uncached);
+        }
+    }
+
+    fn next_draw_idx(self: *Swapchain) u2 {
+        const s = self.state();
+        const cur_display = s.display_idx;
+        const cur_ready = s.ready_display;
+
+        for (0..BUFFER_COUNT) |i| {
+            const idx: u2 = @intCast(i);
+            if (idx == cur_display) continue;
+            if (cur_ready != null and idx == cur_ready.?) continue;
+            return idx;
+        }
+        return s.draw_idx;
+    }
+
+    fn push_ready(self: *Swapchain, idx: u2) void {
+        const s = self.state();
+        if (s.ready_count < BUFFER_COUNT) {
+            s.ready_queue[s.ready_count] = idx;
+            s.ready_count += 1;
+        }
+    }
+
+    fn pop_ready(self: *Swapchain) ?u2 {
+        const s = self.state();
+        if (s.ready_count > 0) {
+            const disp = s.ready_queue[0];
+            var i: u2 = 0;
+            while (i < s.ready_count - 1) : (i += 1) {
+                s.ready_queue[i] = s.ready_queue[i + 1];
+            }
+            s.ready_count -= 1;
+            return disp;
+        }
+        return null;
+    }
+
+    fn ge_finish_callback(_: c_int) void {
+        const intr = kernel.cpu_suspend_intr();
+        defer kernel.cpu_resume_intr_with_sync(intr);
+
+        if (swapchain.pop_ready()) |disp| {
+            swapchain.state().ready_display = disp;
+        }
+    }
+
+    fn vblank_handler(_: c_int, _: c_int, _: ?*anyopaque) callconv(.c) c_int {
+        const intr = kernel.cpu_suspend_intr();
+        defer kernel.cpu_resume_intr_with_sync(intr);
+
+        const s = swapchain.state();
+        if (s.ready_display) |disp| {
+            display.set_frame_buf(swapchain.buffers_abs[disp], SCR_BUF_WIDTH, display_pixel_format, .immediate) catch {};
+            s.display_idx = disp;
+            s.ready_display = null;
+        }
+        return -1;
+    }
+};
+
+var swapchain: Swapchain = .{};
 
 clear_color: u24 = 0x000000,
 
@@ -70,24 +145,15 @@ fn init(ctx: *anyopaque) !void {
     const self = Util.ctx_to_self(Self, ctx);
     self.clear_color = 0xFFFFFF;
 
-    const vram_base = @intFromPtr(ge.edram_get_addr());
-    const uncached: usize = 0x40000000;
-
-    // Display buffer first so it gets VRAM offset 0 (avoids null relative pointer issue)
-    display_idx = 0;
-    draw_idx = 1;
-    ready_idx = null;
-
-    for (0..3) |i| {
-        buffers_rel[i] = sdk.extra.vram.allocVramRelative(SCR_BUF_WIDTH, SCREEN_HEIGHT, gu_pixel_format);
-        buffers_abs[i] = @ptrFromInt(@intFromPtr(buffers_rel[i]) + vram_base | uncached);
-    }
+    swapchain.init();
     const zbp = sdk.extra.vram.allocVramRelative(SCR_BUF_WIDTH, SCREEN_HEIGHT, .Psm4444);
+    const s = swapchain.state();
 
     gu.init();
-    gu.start(.Direct, &display_list);
-    gu.draw_buffer(display_pixel_format, buffers_rel[draw_idx], SCR_BUF_WIDTH);
-    gu.disp_buffer(SCREEN_WIDTH, SCREEN_HEIGHT, buffers_rel[display_idx], SCR_BUF_WIDTH);
+    _ = gu.set_callback(4, Swapchain.ge_finish_callback); // GuCallbackId.Finish = 4
+    gu.start(.Direct, &swapchain.display_list);
+    gu.draw_buffer(display_pixel_format, swapchain.buffers_rel[s.draw_idx], SCR_BUF_WIDTH);
+    gu.disp_buffer(SCREEN_WIDTH, SCREEN_HEIGHT, swapchain.buffers_rel[s.display_idx], SCR_BUF_WIDTH);
     gu.depth_buffer(zbp, SCR_BUF_WIDTH);
     gu.offset(2048 - (SCREEN_WIDTH / 2), 2048 - (SCREEN_HEIGHT / 2));
     gu.viewport(2048, 2048, SCREEN_WIDTH, SCREEN_HEIGHT);
@@ -121,15 +187,16 @@ fn init(ctx: *anyopaque) !void {
 
     // Set frame buf AFTER gu.display(false), since gu.display(false)
     // internally calls sceDisplaySetFrameBuf(NULL) and would override us.
-    try display.set_frame_buf(buffers_abs[display_idx], SCR_BUF_WIDTH, display_pixel_format, .next_vblank);
+    try display.set_frame_buf(swapchain.buffers_abs[s.display_idx], SCR_BUF_WIDTH, display_pixel_format, .next_vblank);
 
-    try kernel.register_sub_intr_handler(VBLANK_INT, 0, @ptrCast(@constCast(&vblank_handler)), null);
+    try kernel.register_sub_intr_handler(VBLANK_INT, 0, @ptrCast(@constCast(&Swapchain.vblank_handler)), null);
     try kernel.enable_sub_intr(VBLANK_INT, 0);
 }
 
 fn deinit(_: *anyopaque) void {
     kernel.disable_sub_intr(VBLANK_INT, 0) catch {};
     kernel.release_sub_intr_handler(VBLANK_INT, 0) catch {};
+    _ = gu.set_callback(4, null); // clear GE finish callback
     gu.term();
 }
 
@@ -160,15 +227,10 @@ fn set_view_matrix(_: *anyopaque, mat: *const Mat4) void {
 fn start_frame(ctx: *anyopaque) bool {
     const self = Util.ctx_to_self(Self, ctx);
 
-    // Wait for previous frame's GE to finish, then promote pending → ready.
-    // The sync should be near-instant since CPU did update/tick in between.
-    if (pending_idx) |pi| {
-        gu.sync(.Finish, .wait);
-        ready_idx = pi;
-        pending_idx = null;
-    }
+    // Wait for previous frame's GE to finish before reusing the display list buffer.
+    gu.sync(.List, .wait);
 
-    gu.start(.Direct, &display_list);
+    gu.start(.Direct, &swapchain.display_list);
     gu.clear_color(self.clear_color);
     gu.clear_depth(1);
     gu.clear(@intFromEnum(sdk.ClearBitFlags.ColorBuffer) |
@@ -177,34 +239,24 @@ fn start_frame(ctx: *anyopaque) bool {
     return true;
 }
 
-fn next_draw_idx() u2 {
-    // Snapshot volatile state to avoid race with vblank handler
-    const cur_display = display_idx;
-    const cur_ready = ready_idx;
-
-    // Pick a buffer that's not being displayed and not ready
-    for (0..3) |i| {
-        const idx: u2 = @intCast(i);
-        if (idx != cur_display and (cur_ready == null or idx != cur_ready.?)) return idx;
-    }
-    // All busy — reuse the ready buffer (drops a frame)
-    return cur_ready orelse draw_idx;
-}
-
 fn end_frame(_: *anyopaque) void {
+    {
+        const intr = kernel.cpu_suspend_intr();
+        defer kernel.cpu_resume_intr_with_sync(intr);
+
+        const s = swapchain.state();
+
+        // Push current draw buffer to ready queue BEFORE gu.finish(),
+        // since the GE finish callback may fire immediately after finish.
+        swapchain.push_ready(s.draw_idx);
+
+        // Pick the next free buffer.
+        s.draw_idx = swapchain.next_draw_idx();
+    }
+
     gu.finish();
 
-    // Don't sync — let the GE finish asynchronously while CPU does update/tick.
-    // Mark as pending; start_frame will sync and promote to ready.
-    pending_idx = draw_idx;
-
-    // Pick the free buffer. Set it as GU's disp_buffer so that swap_buffers
-    // will move it into frame_buffer (the GE draw target).
-    const free = next_draw_idx();
-    gu.disp_buffer(SCREEN_WIDTH, SCREEN_HEIGHT, buffers_rel[free], SCR_BUF_WIDTH);
-    _ = gu.swap_buffers();
-    // After swap: frame_buffer = old disp (free), disp_buffer = old frame (just rendered)
-    draw_idx = free;
+    gu.draw_buffer(display_pixel_format, swapchain.buffers_rel[swapchain.state().draw_idx], SCR_BUF_WIDTH);
 }
 
 fn create_pipeline(_: *anyopaque, layout: Pipeline.VertexLayout, _: ?[:0]align(4) const u8, _: ?[:0]align(4) const u8) !Pipeline.Handle {
