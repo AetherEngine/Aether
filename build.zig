@@ -150,10 +150,6 @@ pub fn addGame(b: *std.Build, opts: GameOptions) *std.Build.Step.Compile {
         }),
     });
 
-    if (config.platform == .psp) {
-        pspsdk.configurePspExecutable(exe);
-    }
-
     if (config.platform == .windows and (opts.optimize == .ReleaseFast or opts.optimize == .ReleaseSmall)) {
         exe.subsystem = .windows;
     }
@@ -194,39 +190,6 @@ fn addSlangStep(b: *std.Build, slangc: ?std.Build.LazyPath, args: []const []cons
     return output;
 }
 
-pub const ExportOptions = struct {
-    /// PSP: title shown on the XMB. Ignored on other platforms.
-    title: []const u8 = "",
-    /// PSP: subdirectory under zig-out/bin/ for EBOOT artifacts.
-    /// Defaults to the executable name. Ignored on other platforms.
-    output_dir: ?[]const u8 = null,
-    /// PSP: optional PBP assets.
-    icon0: ?std.Build.LazyPath = null,
-    icon1: ?std.Build.LazyPath = null,
-    pic0: ?std.Build.LazyPath = null,
-    pic1: ?std.Build.LazyPath = null,
-    snd0: ?std.Build.LazyPath = null,
-};
-
-/// Installs the game executable with platform-appropriate packaging.
-/// On desktop this calls `b.installArtifact`. On PSP this runs the
-/// ELF -> PRX -> SFO -> EBOOT.PBP pipeline via pspsdk.
-pub fn exportArtifact(b: *std.Build, exe: *std.Build.Step.Compile, config: Config, opts: ExportOptions) void {
-    if (config.platform == .psp) {
-        _ = pspsdk.addEbootSteps(b, exe, .{
-            .title = opts.title,
-            .icon0 = opts.icon0,
-            .icon1 = opts.icon1,
-            .pic0 = opts.pic0,
-            .pic1 = opts.pic1,
-            .snd0 = opts.snd0,
-            .output_dir = opts.output_dir,
-        });
-    } else {
-        b.installArtifact(exe);
-    }
-}
-
 /// Registers a shader pair for the game executable. Slang sources are
 /// compiled to SPIR-V (Vulkan) or GLSL (OpenGL) via slangc. On
 /// shaderless platforms (PSP), empty stubs are provided.
@@ -250,14 +213,14 @@ pub fn addShader(b: *std.Build, exe: *std.Build.Step.Compile, config: Config, co
         .opengl => {
             const slangc = slangcPath(b);
             const vert = addSlangStep(b, slangc, &.{
-                "-target",  "glsl",       "-matrix-layout-column-major",
-                "-profile", "glsl_460",   "-entry",               "vertexMain",
-                "-stage",   "vertex",
+                "-target",    "glsl",     "-matrix-layout-column-major",
+                "-profile",   "glsl_460", "-entry",
+                "vertexMain", "-stage",   "vertex",
             }, name ++ ".vert.glsl", paths.slang);
             const frag = addSlangStep(b, slangc, &.{
-                "-target",  "glsl",         "-matrix-layout-column-major",
-                "-profile", "glsl_460",     "-entry",               "fragmentMain",
-                "-stage",   "fragment",
+                "-target",      "glsl",     "-matrix-layout-column-major",
+                "-profile",     "glsl_460", "-entry",
+                "fragmentMain", "-stage",   "fragment",
             }, name ++ ".frag.glsl", paths.slang);
             if (vert) |v| exe.root_module.addAnonymousImport(name ++ "_vert", .{ .root_source_file = v });
             if (frag) |f| exe.root_module.addAnonymousImport(name ++ "_frag", .{ .root_source_file = f });
@@ -299,11 +262,6 @@ pub fn build(b: *std.Build) void {
 
     addShader(b, exe, config, "basic", .{
         .slang = b.path("test/shaders/basic.slang"),
-    });
-
-    exportArtifact(b, exe, config, .{
-        .title = "Aether",
-        .output_dir = "Aether-PSP",
     });
 
     const run_step = b.step("run", "Run the app");
