@@ -9,12 +9,19 @@ pub const ShaderState = struct {
     proj: Mat4,
 };
 
+const PerObject = struct {
+    model: Mat4,
+};
+
 pub var state: ShaderState = .{
     .view = Mat4.identity(),
     .proj = Mat4.identity(),
 };
 
+var per_object: PerObject = .{ .model = Mat4.identity() };
+
 var ubo: gl.uint = 0;
+var per_object_ubo: gl.uint = 0;
 var initialized = false;
 
 pub fn init() !void {
@@ -25,7 +32,12 @@ pub fn init() !void {
     gl.NamedBufferStorage(ubo, @sizeOf(ShaderState), &state, gl.DYNAMIC_STORAGE_BIT);
     gl.BindBufferBase(gl.UNIFORM_BUFFER, 0, ubo);
 
+    gl.CreateBuffers(1, @ptrCast(&per_object_ubo));
+    gl.NamedBufferStorage(per_object_ubo, @sizeOf(PerObject), &per_object, gl.DYNAMIC_STORAGE_BIT);
+    gl.BindBufferBase(gl.UNIFORM_BUFFER, 1, per_object_ubo);
+
     assert(ubo != 0);
+    assert(per_object_ubo != 0);
     assert(initialized);
 }
 
@@ -33,18 +45,23 @@ pub fn update_ubo() void {
     gl.NamedBufferSubData(ubo, 0, @sizeOf(ShaderState), &state);
 }
 
+pub fn update_per_object(model: *const Mat4) void {
+    per_object.model = model.*;
+    gl.NamedBufferSubData(per_object_ubo, 0, @sizeOf(PerObject), &per_object);
+}
+
 pub fn deinit() void {
     assert(initialized);
     initialized = false;
 
     gl.DeleteBuffers(1, @ptrCast(&ubo));
+    gl.DeleteBuffers(1, @ptrCast(&per_object_ubo));
 
     assert(!initialized);
 }
 
 pub const Shader = struct {
     shader_program: gl.uint = 0,
-    model_loc: gl.int = -1,
 
     pub fn init(vs: [:0]const u8, fs: [:0]const u8) !Shader {
         var self = Shader{};
@@ -53,9 +70,6 @@ pub const Shader = struct {
         const frag_shader = try compile_shader(fs, gl.FRAGMENT_SHADER);
         self.shader_program = try link_shader(vert_shader, frag_shader);
 
-        self.model_loc = gl.GetUniformLocation(self.shader_program, "u_model");
-        assert(self.model_loc != -1);
-
         return self;
     }
 
@@ -63,26 +77,22 @@ pub const Shader = struct {
         gl.UseProgram(self.shader_program);
     }
 
-    pub fn update_model(self: *const Shader, model: *const Mat4) void {
-        gl.UniformMatrix4fv(self.model_loc, 1, gl.FALSE, @ptrCast(model));
-    }
-
     pub fn deinit(self: *Shader) void {
         gl.DeleteProgram(self.shader_program);
         self.shader_program = 0;
-        self.model_loc = -1;
     }
 };
 
-/// Compile a shader from source code.
-fn compile_shader(source: [:0]const u8, shader_type: gl.uint) !gl.uint {
+/// Load and specialize a SPIR-V shader binary.
+fn compile_shader(spirv: [:0]const u8, shader_type: gl.uint) !gl.uint {
     const shader = gl.CreateShader(shader_type);
 
-    const pointers = [_][*]const u8{source.ptr};
-    gl.ShaderSource(shader, 1, @ptrCast(&pointers), null);
+    gl.ShaderBinary(1, @ptrCast(&shader), gl.SHADER_BINARY_FORMAT_SPIR_V_ARB, spirv.ptr, @intCast(spirv.len));
+
+    const no_constants: [0]gl.uint = .{};
+    gl.SpecializeShaderARB(shader, "main", 0, &no_constants, &no_constants);
 
     var success: c_uint = 0;
-    gl.CompileShader(shader);
     gl.GetShaderiv(shader, gl.COMPILE_STATUS, @ptrCast(&success));
     if (success == 0) {
         var buf: [512]u8 = @splat(0);

@@ -53,8 +53,28 @@
             .hash = "pspsdk-0.7.0-BZphyrkBDQBYL8hm4boqg4D9z0yd2NcBNOD7TuSZCO1r",
         },
         .glfw_zig = .{
-            .url = "git+https://github.com/tiawl/glfw.zig?ref=zig-nightly#1f7738bfb7a4b04fb604f8b5799e86963533c51b",
-            .hash = "glfw_zig-1.0.1-NrvYo5vSGQD37hU8ur7n_d2tAUq-R_0j0wFllb0LNW7b",
+            .url = "git+https://github.com/tiawl/glfw.zig?ref=zig-nightly#6d7465afb4db06f23cee0b8dec2200640f6d45e0",
+            .hash = "glfw_zig-1.0.1-NrvYo_vSGQC5wr82ns8Loyd6wE4MBJTkG_MkpfbZlBSp",
+        },
+        .slangc_linux_x86_64 = .{
+            .url = "https://github.com/shader-slang/slang/releases/download/v2026.5.1/slang-2026.5.1-linux-x86_64.tar.gz",
+            .hash = "N-V-__8AAAWfsAuS3nAA1Z8L9Nm9R_MF-pow2JF8eGfDpBY0",
+            .lazy = true,
+        },
+        .slangc_macos_x86_64 = .{
+            .url = "https://github.com/shader-slang/slang/releases/download/v2026.5.1/slang-2026.5.1-macos-x86_64.tar.gz",
+            .hash = "N-V-__8AAN4QmQIAgVnYzbAnG8sQpuPRgWdOrdAczXCBNkRR",
+            .lazy = true,
+        },
+        .slangc_macos_aarch64 = .{
+            .url = "https://github.com/shader-slang/slang/releases/download/v2026.5.1/slang-2026.5.1-macos-aarch64.tar.gz",
+            .hash = "N-V-__8AAMl01gh0_gIVX_pET51cfod5vXoysynBqbRx1W6G",
+            .lazy = true,
+        },
+        .slangc_windows_x86_64 = .{
+            .url = "https://github.com/shader-slang/slang/releases/download/v2026.5.1/slang-2026.5.1-windows-x86_64.tar.gz",
+            .hash = "N-V-__8AACq8xwniDHepX3dSVOR6SbR2ojXxJIePnmSmhIg1",
+            .lazy = true,
         },
     },
     .paths = .{

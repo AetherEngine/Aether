@@ -197,7 +197,7 @@ fn draw_mesh(ctx: *anyopaque, handle: Mesh.Handle, model: *const Mat4, count: us
     const mesh = meshes.get_element(handle) orelse return;
     const pl = pipelines.get_element(mesh.pipeline) orelse return;
 
-    pl.program.update_model(model);
+    shader.update_per_object(model);
     gl.VertexArrayVertexBuffer(pl.vao, 0, mesh.vbo, 0, @intCast(pl.layout.stride));
     gl.DrawArrays(gl.TRIANGLES, 0, @intCast(count));
 }
@@ -220,7 +220,7 @@ fn create_texture(ctx: *anyopaque, width: u32, height: u32, data: []const u8) an
 
 fn bind_texture(ctx: *anyopaque, handle: u32) void {
     _ = ctx;
-    gl.BindTextureUnit(0, handle);
+    gl.BindTextureUnit(2, handle);
 }
 
 fn destroy_texture(ctx: *anyopaque, handle: u32) void {

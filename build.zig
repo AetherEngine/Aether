@@ -74,10 +74,7 @@ pub const GameOptions = struct {
 };
 
 pub const ShaderPaths = struct {
-    glsl_vert: std.Build.LazyPath,
-    glsl_frag: std.Build.LazyPath,
-    vulkan_vert: std.Build.LazyPath,
-    vulkan_frag: std.Build.LazyPath,
+    slang: std.Build.LazyPath,
 };
 
 /// Creates an executable with the Aether engine module and all platform
@@ -120,7 +117,7 @@ pub fn addGame(b: *std.Build, opts: GameOptions) *std.Build.Step.Compile {
             .api = .gl,
             .version = .@"4.5",
             .profile = .core,
-            .extensions = &.{},
+            .extensions = &.{.ARB_gl_spirv},
         });
 
         const vulkan = b.dependency("vulkan", .{
@@ -164,42 +161,71 @@ pub fn addGame(b: *std.Build, opts: GameOptions) *std.Build.Step.Compile {
     return exe;
 }
 
-/// Registers a shader pair for the game executable. On Vulkan targets,
-/// the Vulkan GLSL sources are compiled to SPIR-V via glslc. On OpenGL
-/// targets, the GLSL sources are embedded directly. On shaderless
-/// platforms, this is a no-op.
+fn slangcPath(b: *std.Build) ?std.Build.LazyPath {
+    const builtin = @import("builtin");
+    const dep_name = switch (builtin.os.tag) {
+        .linux => switch (builtin.cpu.arch) {
+            .x86_64 => "slangc_linux_x86_64",
+            else => @compileError("No slangc binary for this Linux architecture"),
+        },
+        .macos => switch (builtin.cpu.arch) {
+            .x86_64 => "slangc_macos_x86_64",
+            .aarch64 => "slangc_macos_aarch64",
+            else => @compileError("No slangc binary for this macOS architecture"),
+        },
+        .windows => switch (builtin.cpu.arch) {
+            .x86_64 => "slangc_windows_x86_64",
+            else => @compileError("No slangc binary for this Windows architecture"),
+        },
+        else => @compileError("No slangc binary for this OS"),
+    };
+    const dep = b.lazyDependency(dep_name, .{}) orelse return null;
+    return dep.path("bin/slangc");
+}
+
+fn addSlangStep(b: *std.Build, slangc: ?std.Build.LazyPath, args: []const []const u8, comptime output_name: []const u8, input: std.Build.LazyPath) ?std.Build.LazyPath {
+    const sc = slangc orelse return null;
+    const run = std.Build.Step.Run.create(b, "slangc " ++ output_name);
+    run.addFileArg(sc);
+    run.addArgs(args);
+    run.addArg("-o");
+    const output = run.addOutputFileArg(output_name);
+    run.addFileArg(input);
+    return output;
+}
+
+/// Registers a shader pair for the game executable. Slang sources are
+/// compiled to SPIR-V (Vulkan) or GLSL (OpenGL) via slangc. On
+/// shaderless platforms (PSP), empty stubs are provided.
 pub fn addShader(b: *std.Build, exe: *std.Build.Step.Compile, config: Config, comptime name: []const u8, paths: ShaderPaths) void {
     switch (config.gfx) {
         .vulkan => {
-            const vert_cmd = b.addSystemCommand(&.{
-                "glslc",
-                "--target-env=vulkan1.3",
-                "-o",
-            });
-            const vert_spv = vert_cmd.addOutputFileArg(name ++ ".vert.spv");
-            vert_cmd.addFileArg(paths.vulkan_vert);
-            exe.root_module.addAnonymousImport(name ++ "_vert", .{
-                .root_source_file = vert_spv,
-            });
-
-            const frag_cmd = b.addSystemCommand(&.{
-                "glslc",
-                "--target-env=vulkan1.3",
-                "-o",
-            });
-            const frag_spv = frag_cmd.addOutputFileArg(name ++ ".frag.spv");
-            frag_cmd.addFileArg(paths.vulkan_frag);
-            exe.root_module.addAnonymousImport(name ++ "_frag", .{
-                .root_source_file = frag_spv,
-            });
+            const slangc = slangcPath(b);
+            const vert = addSlangStep(b, slangc, &.{
+                "-target",  "spirv",  "-emit-spirv-directly", "-matrix-layout-column-major",
+                "-DVULKAN", "-entry", "vertexMain",           "-stage",
+                "vertex",
+            }, name ++ ".vert.spv", paths.slang);
+            const frag = addSlangStep(b, slangc, &.{
+                "-target",  "spirv",  "-emit-spirv-directly", "-matrix-layout-column-major",
+                "-DVULKAN", "-entry", "fragmentMain",         "-stage",
+                "fragment",
+            }, name ++ ".frag.spv", paths.slang);
+            if (vert) |v| exe.root_module.addAnonymousImport(name ++ "_vert", .{ .root_source_file = v });
+            if (frag) |f| exe.root_module.addAnonymousImport(name ++ "_frag", .{ .root_source_file = f });
         },
         .opengl => {
-            exe.root_module.addAnonymousImport(name ++ "_vert", .{
-                .root_source_file = paths.glsl_vert,
-            });
-            exe.root_module.addAnonymousImport(name ++ "_frag", .{
-                .root_source_file = paths.glsl_frag,
-            });
+            const slangc = slangcPath(b);
+            const vert = addSlangStep(b, slangc, &.{
+                "-target", "spirv",      "-emit-spirv-directly", "-matrix-layout-column-major",
+                "-entry",  "vertexMain", "-stage",               "vertex",
+            }, name ++ ".vert.spv", paths.slang);
+            const frag = addSlangStep(b, slangc, &.{
+                "-target", "spirv",        "-emit-spirv-directly", "-matrix-layout-column-major",
+                "-entry",  "fragmentMain", "-stage",               "fragment",
+            }, name ++ ".frag.spv", paths.slang);
+            if (vert) |v| exe.root_module.addAnonymousImport(name ++ "_vert", .{ .root_source_file = v });
+            if (frag) |f| exe.root_module.addAnonymousImport(name ++ "_frag", .{ .root_source_file = f });
         },
         .default => {
             // Provide empty stubs so @embedFile(name ++ "_vert") still compiles.
@@ -237,10 +263,7 @@ pub fn build(b: *std.Build) void {
     });
 
     addShader(b, exe, config, "basic", .{
-        .glsl_vert = b.path("test/shaders/basic.vert"),
-        .glsl_frag = b.path("test/shaders/basic.frag"),
-        .vulkan_vert = b.path("test/shaders/basic_vk.vert"),
-        .vulkan_frag = b.path("test/shaders/basic_vk.frag"),
+        .slang = b.path("test/shaders/basic.slang"),
     });
 
     if (config.platform == .psp) {
