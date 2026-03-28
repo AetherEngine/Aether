@@ -77,86 +77,6 @@ pub const ShaderPaths = struct {
     slang: std.Build.LazyPath,
 };
 
-/// Creates an executable with the Aether engine module and all platform
-/// dependencies wired up. Returns the compile step so the caller can
-/// further customize it (install, add run steps, etc.).
-pub fn addGame(b: *std.Build, opts: GameOptions) *std.Build.Step.Compile {
-    const config = Config.resolve(opts.target, opts.overrides);
-
-    const options = b.addOptions();
-    options.addOption(Config, "config", config);
-    const options_module = options.createModule();
-
-    const mod = b.addModule("Aether", .{
-        .root_source_file = b.path("src/root.zig"),
-        .target = opts.target,
-        .imports = &.{
-            .{ .name = "options", .module = options_module },
-        },
-    });
-
-    // --- platform-specific engine dependencies ---
-    if (config.platform == .psp) {
-        const psp_dep = b.dependency("pspsdk", .{
-            .target = opts.target,
-            .optimize = opts.optimize,
-        });
-        mod.addImport("pspsdk", psp_dep.module("pspsdk"));
-    } else {
-        const zglfw = b.dependency("zglfw", .{
-            .target = opts.target,
-            .optimize = opts.optimize,
-        });
-
-        const glfw = b.dependency("glfw_zig", .{
-            .target = opts.target,
-            .optimize = opts.optimize,
-        });
-
-        const gl_bindings = @import("zigglgen").generateBindingsModule(b, .{
-            .api = .gl,
-            .version = .@"4.5",
-            .profile = .core,
-            .extensions = &.{.ARB_gl_spirv},
-        });
-
-        const vulkan = b.dependency("vulkan", .{
-            .registry = b.dependency("vulkan_headers", .{}).path("registry/vk.xml"),
-        }).module("vulkan-zig");
-
-        mod.addImport("glfw", zglfw.module("glfw"));
-        mod.addImport("gl", gl_bindings);
-        mod.addImport("vulkan", vulkan);
-
-        if (opts.target.result.os.tag == .macos) {
-            mod.linkSystemLibrary("vulkan", .{});
-            mod.linkSystemLibrary("glfw3", .{});
-        } else {
-            mod.linkLibrary(glfw.artifact("glfw"));
-        }
-    }
-
-    // --- user executable ---
-    const exe = b.addExecutable(.{
-        .name = opts.name,
-        .root_module = b.createModule(.{
-            .root_source_file = opts.root_source_file,
-            .target = opts.target,
-            .optimize = opts.optimize,
-            .strip = if (config.platform == .psp) false else null,
-            .imports = &.{
-                .{ .name = "aether", .module = mod },
-            },
-        }),
-    });
-
-    if (config.platform == .windows and (opts.optimize == .ReleaseFast or opts.optimize == .ReleaseSmall)) {
-        exe.subsystem = .windows;
-    }
-
-    return exe;
-}
-
 fn slangcPath(b: *std.Build) ?std.Build.LazyPath {
     const builtin = @import("builtin");
     const dep_name = switch (builtin.os.tag) {
@@ -252,12 +172,68 @@ pub fn build(b: *std.Build) void {
 
     const config = Config.resolve(target, overrides);
 
-    const exe = addGame(b, .{
-        .name = "Aether",
-        .root_source_file = b.path("test/main.zig"),
+    const options = b.addOptions();
+    options.addOption(Config, "config", config);
+    const options_module = options.createModule();
+
+    const mod = b.addModule("Aether", .{
+        .root_source_file = b.path("src/root.zig"),
         .target = target,
-        .optimize = optimize,
-        .overrides = overrides,
+        .imports = &.{
+            .{ .name = "options", .module = options_module },
+        },
+    });
+
+    if (config.platform == .psp) {
+        const psp_dep = b.dependency("pspsdk", .{
+            .target = target,
+            .optimize = optimize,
+        });
+        mod.addImport("pspsdk", psp_dep.module("pspsdk"));
+    } else {
+        const zglfw = b.dependency("zglfw", .{
+            .target = target,
+            .optimize = optimize,
+        });
+
+        const glfw = b.dependency("glfw_zig", .{
+            .target = target,
+            .optimize = optimize,
+        });
+
+        const gl_bindings = @import("zigglgen").generateBindingsModule(b, .{
+            .api = .gl,
+            .version = .@"4.5",
+            .profile = .core,
+            .extensions = &.{.ARB_gl_spirv},
+        });
+
+        const vulkan = b.dependency("vulkan", .{
+            .registry = b.dependency("vulkan_headers", .{}).path("registry/vk.xml"),
+        }).module("vulkan-zig");
+
+        mod.addImport("glfw", zglfw.module("glfw"));
+        mod.addImport("gl", gl_bindings);
+        mod.addImport("vulkan", vulkan);
+
+        if (target.result.os.tag == .macos) {
+            mod.linkSystemLibrary("vulkan", .{});
+            mod.linkSystemLibrary("glfw3", .{});
+        } else {
+            mod.linkLibrary(glfw.artifact("glfw"));
+        }
+    }
+
+    const exe = b.addExecutable(.{
+        .name = "test",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "aether", .module = mod },
+            },
+        }),
     });
 
     addShader(b, exe, config, "basic", .{
