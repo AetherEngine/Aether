@@ -63,12 +63,12 @@ pub fn deinit() void {
 pub const Shader = struct {
     shader_program: gl.uint = 0,
 
-    pub fn init(vs: [:0]const u8, fs: [:0]const u8) !Shader {
+    pub fn init(vs_src: [:0]const u8, fs_src: [:0]const u8) !Shader {
         var self = Shader{};
 
-        const vert_shader = try compile_shader(vs, gl.VERTEX_SHADER);
-        const frag_shader = try compile_shader(fs, gl.FRAGMENT_SHADER);
-        self.shader_program = try link_shader(vert_shader, frag_shader);
+        const vert = try compile_shader(vs_src, gl.VERTEX_SHADER);
+        const frag = try compile_shader(fs_src, gl.FRAGMENT_SHADER);
+        self.shader_program = try link_shader(vert, frag);
 
         return self;
     }
@@ -83,26 +83,23 @@ pub const Shader = struct {
     }
 };
 
-/// Load and specialize a SPIR-V shader binary.
-fn compile_shader(spirv: [:0]const u8, shader_type: gl.uint) !gl.uint {
-    const shader = gl.CreateShader(shader_type);
+fn compile_shader(source: [:0]const u8, shader_type: gl.uint) !gl.uint {
+    const s = gl.CreateShader(shader_type);
 
-    gl.ShaderBinary(1, @ptrCast(&shader), gl.SHADER_BINARY_FORMAT_SPIR_V_ARB, spirv.ptr, @intCast(spirv.len));
-
-    const no_constants: [0]gl.uint = .{};
-    gl.SpecializeShaderARB(shader, "main", 0, &no_constants, &no_constants);
+    gl.ShaderSource(s, 1, @ptrCast(&source.ptr), null);
+    gl.CompileShader(s);
 
     var success: c_uint = 0;
-    gl.GetShaderiv(shader, gl.COMPILE_STATUS, @ptrCast(&success));
+    gl.GetShaderiv(s, gl.COMPILE_STATUS, @ptrCast(&success));
     if (success == 0) {
         var buf: [512]u8 = @splat(0);
         var len: c_uint = 0;
-        gl.GetShaderInfoLog(shader, 512, @ptrCast(&len), &buf);
+        gl.GetShaderInfoLog(s, 512, @ptrCast(&len), &buf);
         Util.engine_logger.err("Shader compilation failed:\n{s}\n", .{buf[0..len]});
         return error.ShaderCompilationFailed;
     }
 
-    return shader;
+    return s;
 }
 
 /// Consumes the input shaders and returns a linked program.

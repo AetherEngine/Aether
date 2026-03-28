@@ -49,10 +49,7 @@ struct PerObject {
 ConstantBuffer<PerObject> perObject;
 
 [[vk::binding(2, 0)]]
-Texture2D u_texture;
-
-[[vk::binding(2, 0)]]
-SamplerState u_sampler;
+Sampler2D u_combinedTexture;
 
 float4x4 getModel() { return perObject.model; }
 
@@ -76,6 +73,6 @@ float4 fragmentMain(VertexOutput input) : SV_Target {
     uint idx = NonUniformResourceIndex(pc.textureIndex);
     return g_textures[idx].Sample(g_sampler, input.uv) * input.color;
 #else
-    return u_texture.Sample(u_sampler, input.uv) * input.color;
+    return u_combinedTexture.Sample(input.uv) * input.color;
 #endif
 }

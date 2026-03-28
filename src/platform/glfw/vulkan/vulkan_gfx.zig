@@ -315,7 +315,7 @@ fn init(ctx: *anyopaque) !void {
     _ = ctx;
 
     context = try Context.init(Util.allocator(.render), "AetherEngine");
-    swapchain = try Swapchain.init(&context);
+    swapchain = try Swapchain.init(&context, gfx.sync);
     gc = GarbageCollector.init(Util.allocator(.render));
 
     try create_command_pool();

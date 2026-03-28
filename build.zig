@@ -217,13 +217,15 @@ pub fn addShader(b: *std.Build, exe: *std.Build.Step.Compile, config: Config, co
         .opengl => {
             const slangc = slangcPath(b);
             const vert = addSlangStep(b, slangc, &.{
-                "-target", "spirv",      "-emit-spirv-directly", "-matrix-layout-column-major",
-                "-entry",  "vertexMain", "-stage",               "vertex",
-            }, name ++ ".vert.spv", paths.slang);
+                "-target",  "glsl",       "-matrix-layout-column-major",
+                "-profile", "glsl_460",   "-entry",               "vertexMain",
+                "-stage",   "vertex",
+            }, name ++ ".vert.glsl", paths.slang);
             const frag = addSlangStep(b, slangc, &.{
-                "-target", "spirv",        "-emit-spirv-directly", "-matrix-layout-column-major",
-                "-entry",  "fragmentMain", "-stage",               "fragment",
-            }, name ++ ".frag.spv", paths.slang);
+                "-target",  "glsl",         "-matrix-layout-column-major",
+                "-profile", "glsl_460",     "-entry",               "fragmentMain",
+                "-stage",   "fragment",
+            }, name ++ ".frag.glsl", paths.slang);
             if (vert) |v| exe.root_module.addAnonymousImport(name ++ "_vert", .{ .root_source_file = v });
             if (frag) |f| exe.root_module.addAnonymousImport(name ++ "_frag", .{ .root_source_file = f });
         },

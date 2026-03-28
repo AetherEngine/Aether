@@ -143,7 +143,7 @@ clear_color: u24 = 0x000000,
 
 fn init(ctx: *anyopaque) !void {
     const self = Util.ctx_to_self(Self, ctx);
-    self.clear_color = 0xFFFFFF;
+    self.clear_color = 0x000000;
 
     swapchain.init();
     const zbp = sdk.extra.vram.allocVramRelative(SCR_BUF_WIDTH, SCREEN_HEIGHT, .Psm4444);

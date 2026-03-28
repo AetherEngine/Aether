@@ -127,10 +127,12 @@ fn create_pipeline(ctx: *anyopaque, layout: Pipeline.VertexLayout, v_shader: ?[:
         gl.VertexArrayAttribBinding(vao, a.location, a.binding);
     }
 
+    const program = try shader.Shader.init(v_shader.?, f_shader.?);
+
     const pipeline = pipelines.add_element(.{
         .layout = layout,
         .vao = vao,
-        .program = try shader.Shader.init(v_shader.?, f_shader.?),
+        .program = program,
     }) orelse return error.OutOfPipelines;
 
     return @intCast(pipeline);

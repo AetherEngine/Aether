@@ -12,6 +12,7 @@ pub const PresentState = enum {
 };
 
 context: *Context,
+vsync: bool,
 surface_capabilities: vk.SurfaceCapabilitiesKHR,
 chain: vk.SwapchainKHR,
 surface_format: vk.SurfaceFormatKHR,
@@ -57,6 +58,8 @@ fn choose_swap_extent(self: *Self) !vk.Extent2D {
 }
 
 fn choose_present_mode(self: *Self) !vk.PresentModeKHR {
+    if (self.vsync) return .fifo_khr;
+
     const present_modes = try self.context.instance.getPhysicalDeviceSurfacePresentModesAllocKHR(
         self.context.physical_device,
         self.context.surface,
@@ -165,9 +168,10 @@ fn create_swapchain_images(self: *Self, format: vk.Format) ![]SwapImage {
     return swap_images;
 }
 
-pub fn init(context: *Context) !Self {
+pub fn init(context: *Context, vsync: bool) !Self {
     var self: Self = undefined;
     self.context = context;
+    self.vsync = vsync;
 
     try self.create_swapchain(.null_handle);
 
