@@ -194,6 +194,39 @@ fn addSlangStep(b: *std.Build, slangc: ?std.Build.LazyPath, args: []const []cons
     return output;
 }
 
+pub const ExportOptions = struct {
+    /// PSP: title shown on the XMB. Ignored on other platforms.
+    title: []const u8 = "",
+    /// PSP: subdirectory under zig-out/bin/ for EBOOT artifacts.
+    /// Defaults to the executable name. Ignored on other platforms.
+    output_dir: ?[]const u8 = null,
+    /// PSP: optional PBP assets.
+    icon0: ?std.Build.LazyPath = null,
+    icon1: ?std.Build.LazyPath = null,
+    pic0: ?std.Build.LazyPath = null,
+    pic1: ?std.Build.LazyPath = null,
+    snd0: ?std.Build.LazyPath = null,
+};
+
+/// Installs the game executable with platform-appropriate packaging.
+/// On desktop this calls `b.installArtifact`. On PSP this runs the
+/// ELF -> PRX -> SFO -> EBOOT.PBP pipeline via pspsdk.
+pub fn exportArtifact(b: *std.Build, exe: *std.Build.Step.Compile, config: Config, opts: ExportOptions) void {
+    if (config.platform == .psp) {
+        _ = pspsdk.addEbootSteps(b, exe, .{
+            .title = opts.title,
+            .icon0 = opts.icon0,
+            .icon1 = opts.icon1,
+            .pic0 = opts.pic0,
+            .pic1 = opts.pic1,
+            .snd0 = opts.snd0,
+            .output_dir = opts.output_dir,
+        });
+    } else {
+        b.installArtifact(exe);
+    }
+}
+
 /// Registers a shader pair for the game executable. Slang sources are
 /// compiled to SPIR-V (Vulkan) or GLSL (OpenGL) via slangc. On
 /// shaderless platforms (PSP), empty stubs are provided.
@@ -268,14 +301,10 @@ pub fn build(b: *std.Build) void {
         .slang = b.path("test/shaders/basic.slang"),
     });
 
-    if (config.platform == .psp) {
-        _ = pspsdk.addEbootSteps(b, exe, .{
-            .title = "Aether",
-            .output_dir = "Aether-PSP",
-        });
-    } else {
-        b.installArtifact(exe);
-    }
+    exportArtifact(b, exe, config, .{
+        .title = "Aether",
+        .output_dir = "Aether-PSP",
+    });
 
     const run_step = b.step("run", "Run the app");
     const run_cmd = b.addRunArtifact(exe);
