@@ -106,12 +106,13 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
     });
 
     // --- platform-specific engine dependencies ---
-    if (config.platform == .psp) {
-        const psp_dep = owner.dependency("pspsdk", .{
-            .target = opts.target,
-            .optimize = opts.optimize,
-        });
-        mod.addImport("pspsdk", psp_dep.module("pspsdk"));
+    const psp_dep = if (config.platform == .psp) owner.dependency("pspsdk", .{
+        .target = opts.target,
+        .optimize = opts.optimize,
+    }) else null;
+
+    if (psp_dep) |pd| {
+        mod.addImport("pspsdk", pd.module("pspsdk"));
     } else {
         const zglfw = owner.dependency("zglfw", .{
             .target = opts.target,
@@ -160,8 +161,17 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
         }),
     });
 
-    if (config.platform == .psp) {
-        pspsdk.configurePspExecutable(exe);
+    if (psp_dep) |pd| {
+        // Inline PSP config — pspsdk.configurePspExecutable uses
+        // dependencyFromBuildZig on exe.step.owner which fails when
+        // the exe is owned by a downstream builder.
+        if (exe.root_module.import_table.get("pspsdk") == null) {
+            exe.root_module.addImport("pspsdk", mod.import_table.get("pspsdk").?);
+        }
+        exe.link_eh_frame_hdr = true;
+        exe.link_emit_relocs = true;
+        exe.entry = .{ .symbol_name = "module_start" };
+        exe.setLinkerScript(pd.path("tools/linkfile.ld"));
     }
 
     if (config.platform == .windows and (opts.optimize == .ReleaseFast or opts.optimize == .ReleaseSmall)) {
@@ -221,20 +231,67 @@ pub const ExportOptions = struct {
 /// Installs the game executable with platform-appropriate packaging.
 /// On desktop this calls `b.installArtifact`. On PSP this runs the
 /// ELF -> PRX -> SFO -> EBOOT.PBP pipeline via pspsdk.
-pub fn exportArtifact(b: *std.Build, exe: *std.Build.Step.Compile, config: Config, opts: ExportOptions) void {
+pub fn exportArtifact(owner: *std.Build, b: *std.Build, exe: *std.Build.Step.Compile, config: Config, opts: ExportOptions) void {
     if (config.platform == .psp) {
-        _ = pspsdk.addEbootSteps(b, exe, .{
-            .title = opts.title,
-            .icon0 = opts.icon0,
-            .icon1 = opts.icon1,
-            .pic0 = opts.pic0,
-            .pic1 = opts.pic1,
-            .snd0 = opts.snd0,
-            .output_dir = opts.output_dir,
-        });
+        // Resolve pspsdk artifacts from `owner` (which has pspsdk in
+        // its dep tree), but run the pipeline on `b` so install steps
+        // register on the downstream project's builder.
+        const psp_dep = owner.dependency("pspsdk", .{});
+        _ = pspEbootPipeline(b, exe, psp_dep, opts);
     } else {
         b.installArtifact(exe);
     }
+}
+
+/// Runs the ELF -> PRX -> SFO -> EBOOT.PBP pipeline. Resolves tool
+/// artifacts from `psp_dep` but creates all build/install steps on `b`
+/// so they register on the downstream project's builder.
+fn pspEbootPipeline(b: *std.Build, exe: *std.Build.Step.Compile, psp_dep: *std.Build.Dependency, opts: ExportOptions) pspsdk.PspEboot {
+    const mk_prx = b.addRunArtifact(psp_dep.artifact("zPRXGen"));
+    mk_prx.addArtifactArg(exe);
+    const prx_file = mk_prx.addOutputFileArg("app.prx");
+
+    const mk_sfo = b.addRunArtifact(psp_dep.artifact("zSFOTool"));
+    mk_sfo.addArg("write");
+    mk_sfo.addArg(opts.title);
+    const sfo_file = mk_sfo.addOutputFileArg("PARAM.SFO");
+
+    const pack_pbp = b.addRunArtifact(psp_dep.artifact("zPBPTool"));
+    pack_pbp.addArg("pack");
+    const eboot_file = pack_pbp.addOutputFileArg("EBOOT.PBP");
+    pack_pbp.addFileArg(sfo_file);
+
+    if (opts.icon0) |p| pack_pbp.addFileArg(p) else pack_pbp.addArg("NULL");
+    if (opts.icon1) |p| pack_pbp.addFileArg(p) else pack_pbp.addArg("NULL");
+    if (opts.pic0) |p| pack_pbp.addFileArg(p) else pack_pbp.addArg("NULL");
+    if (opts.pic1) |p| pack_pbp.addFileArg(p) else pack_pbp.addArg("NULL");
+    if (opts.snd0) |p| pack_pbp.addFileArg(p) else pack_pbp.addArg("NULL");
+    pack_pbp.addFileArg(prx_file);
+    pack_pbp.addArg("NULL");
+
+    const result = pspsdk.PspEboot{
+        .elf = exe,
+        .prx = prx_file,
+        .eboot = eboot_file,
+    };
+
+    if (opts.output_dir) |dir| {
+        const alloc = b.allocator;
+        b.getInstallStep().dependOn(&b.addInstallBinFile(
+            result.eboot,
+            std.mem.concat(alloc, u8, &.{ dir, "/EBOOT.PBP" }) catch @panic("OOM"),
+        ).step);
+        b.getInstallStep().dependOn(&b.addInstallBinFile(
+            result.prx,
+            std.mem.concat(alloc, u8, &.{ dir, "/app.prx" }) catch @panic("OOM"),
+        ).step);
+        b.getInstallStep().dependOn(&b.addInstallArtifact(result.elf, .{
+            .dest_dir = .{ .override = .{ .custom = std.mem.concat(alloc, u8, &.{ "bin/", dir }) catch @panic("OOM") } },
+            .dest_sub_path = "app.elf",
+        }).step);
+    }
+
+    return result;
 }
 
 /// Registers a shader pair for the game executable. Slang sources are
@@ -317,7 +374,7 @@ pub fn build(b: *std.Build) void {
         .slang = b.path("test/shaders/basic.slang"),
     });
 
-    exportArtifact(b, exe, config, .{
+    exportArtifact(b, b, exe, config, .{
         .title = "Aether",
         .output_dir = "Aether-PSP",
     });
