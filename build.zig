@@ -123,7 +123,7 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
             .optimize = opts.optimize,
         });
 
-        const gl_bindings = @import("zigglgen").generateBindingsModule(b, .{
+        const gl_bindings = @import("zigglgen").generateBindingsModule(owner, .{
             .api = .gl,
             .version = .@"4.5",
             .profile = .core,
