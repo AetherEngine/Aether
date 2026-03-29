@@ -45,8 +45,8 @@
             .hash = "N-V-__8AACUYwwHkOfRNOmzhES0A0wAstELzgG-GdNu-uUE5",
         },
         .pspsdk = .{
-            .url = "git+https://github.com/zPSP-Dev/Zig-PSP#c3ba5b83a5433a05d0df9217a9a0c8ac3b2b2e4b",
-            .hash = "pspsdk-0.7.0-BZphyhSQDQDHKkJGP6potPIphe4nSvRy4oiw3O-nbOFO",
+            .url = "git+https://github.com/zPSP-Dev/Zig-PSP#5d0eb5c01b88b482aa238deb2e39c0db5f92b452",
+            .hash = "pspsdk-0.7.0-BZphytyTDQBGtzDxTj-b-fNpYfi0CwmMdtunD5iTwPK7",
         },
         .glfw_zig = .{
             .url = "git+https://github.com/tiawl/glfw.zig?ref=zig-nightly#6d7465afb4db06f23cee0b8dec2200640f6d45e0",
