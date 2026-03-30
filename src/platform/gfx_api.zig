@@ -119,5 +119,10 @@ pub fn make_api(comptime api: GraphicsAPI) !Self {
             var vulkan = try Util.allocator(.render).create(VulkanAPI);
             return vulkan.gfx_api();
         },
+        .headless => {
+            const HeadlessGfx = @import("headless/headless_gfx.zig");
+            var headless = try Util.allocator(.render).create(HeadlessGfx);
+            return headless.gfx_api();
+        },
     }
 }
