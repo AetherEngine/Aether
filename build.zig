@@ -12,6 +12,7 @@ pub const Gfx = enum {
     default,
     opengl,
     vulkan,
+    headless,
 };
 
 pub const Audio = enum(u8) {
@@ -71,6 +72,13 @@ pub const GameOptions = struct {
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode = .Debug,
     overrides: Config.Overrides = .{},
+};
+
+pub const HeadlessOptions = struct {
+    name: []const u8,
+    root_source_file: std.Build.LazyPath,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode = .Debug,
 };
 
 pub const ShaderPaths = struct {
@@ -177,6 +185,47 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
     if (config.platform == .windows and (opts.optimize == .ReleaseFast or opts.optimize == .ReleaseSmall)) {
         exe.subsystem = .windows;
     }
+
+    return exe;
+}
+
+/// Creates an executable with the Aether engine module in headless mode
+/// (no graphics, no windowing, no input). Useful for servers, tools, and
+/// tests that only need engine logic (math, state machine, allocator).
+///
+/// Usage is the same as `addGame` but without graphics dependencies:
+///
+///     const exe = Aether.addHeadless(ae_dep.builder, b, .{ ... });
+///
+pub fn addHeadless(owner: *std.Build, b: *std.Build, opts: HeadlessOptions) *std.Build.Step.Compile {
+    const config = Config{
+        .platform = Config.resolve(opts.target, .{}).platform,
+        .gfx = .headless,
+    };
+
+    const options = b.addOptions();
+    options.addOption(Config, "config", config);
+    const options_module = options.createModule();
+
+    const mod = b.addModule("Aether", .{
+        .root_source_file = owner.path("src/root.zig"),
+        .target = opts.target,
+        .imports = &.{
+            .{ .name = "options", .module = options_module },
+        },
+    });
+
+    const exe = b.addExecutable(.{
+        .name = opts.name,
+        .root_module = b.createModule(.{
+            .root_source_file = opts.root_source_file,
+            .target = opts.target,
+            .optimize = opts.optimize,
+            .imports = &.{
+                .{ .name = "aether", .module = mod },
+            },
+        }),
+    });
 
     return exe;
 }
@@ -335,7 +384,7 @@ pub fn addShader(owner: *std.Build, b: *std.Build, exe: *std.Build.Step.Compile,
             if (vert) |v| exe.root_module.addAnonymousImport(name ++ "_vert", .{ .root_source_file = v });
             if (frag) |f| exe.root_module.addAnonymousImport(name ++ "_frag", .{ .root_source_file = f });
         },
-        .default => {
+        .default, .headless => {
             // Provide empty stubs so @embedFile(name ++ "_vert") still compiles.
             const empty = b.addWriteFiles();
             const stub = empty.add(name ++ "_stub", "");
