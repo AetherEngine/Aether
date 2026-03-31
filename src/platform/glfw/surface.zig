@@ -46,7 +46,7 @@ fn init(ctx: *anyopaque, width: u32, height: u32, title: [:0]const u8, fullscree
     }
 
     glfw.windowHint(glfw.Resizable, 0);
-    glfw.windowHint(glfw.SRGBCapable, 1);
+    glfw.windowHint(glfw.SRGBCapable, 0);
 
     if (fullscreen) {
         const monitor = glfw.getPrimaryMonitor();

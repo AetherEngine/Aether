@@ -22,7 +22,7 @@ image_index: u32,
 
 fn choose_swap_surface_format(self: *Self) !vk.SurfaceFormatKHR {
     const preferred = vk.SurfaceFormatKHR{
-        .format = .b8g8r8a8_srgb,
+        .format = .b8g8r8a8_unorm,
         .color_space = .srgb_nonlinear_khr,
     };
 

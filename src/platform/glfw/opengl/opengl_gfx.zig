@@ -35,7 +35,6 @@ fn init(ctx: *anyopaque) !void {
 
     if (!procs.init(glfw.getProcAddress)) @panic("Failed to initialize OpenGL");
     gl.makeProcTableCurrent(&procs);
-    gl.Enable(gl.FRAMEBUFFER_SRGB);
 
     Util.engine_logger.debug("OpenGL {s}", .{gl.GetString(gl.VERSION).?});
     Util.engine_logger.debug("GLSL {s}", .{gl.GetString(gl.SHADING_LANGUAGE_VERSION).?});
