@@ -75,7 +75,7 @@ var tex_pool: vk.DescriptorPool = .null_handle;
 var tex_set: vk.DescriptorSet = .null_handle;
 var tex_sampler: vk.Sampler = .null_handle;
 
-const TextureRec = struct { image: vk.Image, memory: vk.DeviceMemory, view: vk.ImageView };
+const TextureRec = struct { image: vk.Image, memory: vk.DeviceMemory, view: vk.ImageView, width: u32, height: u32 };
 var textures = Util.CircularBuffer(TextureRec, TEXTURE_CAP).init();
 
 var pipelines = Util.CircularBuffer(PipelineData, 16).init();
@@ -974,7 +974,7 @@ fn create_texture(ctx: *anyopaque, width: u32, height: u32, data: []const u8) an
         .components = .{ .r = .identity, .g = .identity, .b = .identity, .a = .identity },
     }, null);
 
-    const rec = TextureRec{ .image = image, .memory = memory, .view = view };
+    const rec = TextureRec{ .image = image, .memory = memory, .view = view, .width = width, .height = height };
     const handle_opt = textures.add_element(rec);
     if (handle_opt == null) {
         context.logical_device.destroyImageView(view, null);
@@ -1022,6 +1022,116 @@ fn create_texture(ctx: *anyopaque, width: u32, height: u32, data: []const u8) an
     context.logical_device.updateDescriptorSets(&writes, null);
 
     return idx;
+}
+
+fn update_texture(ctx: *anyopaque, handle: u32, data: []const u8) void {
+    _ = ctx;
+
+    const rec = textures.get_element(handle) orelse return;
+
+    const byte_count = data.len;
+
+    const staging = context.logical_device.createBuffer(&.{
+        .size = byte_count,
+        .usage = .{ .transfer_src_bit = true },
+        .sharing_mode = .exclusive,
+    }, null) catch return;
+
+    const staging_reqs = context.logical_device.getBufferMemoryRequirements(staging);
+    const staging_mem = context.allocate_gpu_buffer(staging_reqs, .{ .host_visible_bit = true, .host_coherent_bit = true }) catch return;
+    context.logical_device.bindBufferMemory(staging, staging_mem, 0) catch return;
+
+    {
+        const mapped = context.logical_device.mapMemory(staging_mem, 0, vk.WHOLE_SIZE, .{}) catch return;
+        defer context.logical_device.unmapMemory(staging_mem);
+        const dst: [*]u8 = @ptrCast(@alignCast(mapped));
+        @memcpy(dst, data);
+    }
+
+    var cmdbuf_handle: vk.CommandBuffer = undefined;
+    context.logical_device.allocateCommandBuffers(&.{
+        .command_pool = command_pool,
+        .level = .primary,
+        .command_buffer_count = 1,
+    }, @ptrCast(&cmdbuf_handle)) catch return;
+
+    const cmdbuf = vk.CommandBufferProxy.init(cmdbuf_handle, context.logical_device.wrapper);
+    cmdbuf.beginCommandBuffer(&.{ .flags = .{ .one_time_submit_bit = true } }) catch return;
+
+    const subrange = vk.ImageSubresourceRange{
+        .aspect_mask = .{ .color_bit = true },
+        .base_mip_level = 0,
+        .level_count = 1,
+        .base_array_layer = 0,
+        .layer_count = 1,
+    };
+
+    // shader read -> transfer dst
+    const pre_barrier = vk.ImageMemoryBarrier2{
+        .src_stage_mask = .{ .fragment_shader_bit = true },
+        .src_access_mask = .{ .shader_read_bit = true },
+        .dst_stage_mask = .{ .copy_bit = true },
+        .dst_access_mask = .{ .transfer_write_bit = true },
+        .old_layout = .shader_read_only_optimal,
+        .new_layout = .transfer_dst_optimal,
+        .src_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
+        .dst_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
+        .image = rec.image,
+        .subresource_range = subrange,
+    };
+    cmdbuf.pipelineBarrier2(&.{
+        .image_memory_barrier_count = 1,
+        .p_image_memory_barriers = @ptrCast(&pre_barrier),
+    });
+
+    const w = rec.width;
+    const h = rec.height;
+
+    const copy = vk.BufferImageCopy{
+        .buffer_offset = 0,
+        .buffer_row_length = 0,
+        .buffer_image_height = 0,
+        .image_subresource = .{
+            .aspect_mask = .{ .color_bit = true },
+            .mip_level = 0,
+            .base_array_layer = 0,
+            .layer_count = 1,
+        },
+        .image_offset = .{ .x = 0, .y = 0, .z = 0 },
+        .image_extent = .{ .width = w, .height = h, .depth = 1 },
+    };
+    cmdbuf.copyBufferToImage(staging, rec.image, .transfer_dst_optimal, @ptrCast(&copy));
+
+    // transfer dst -> shader read
+    const post_barrier = vk.ImageMemoryBarrier2{
+        .src_stage_mask = .{ .copy_bit = true },
+        .src_access_mask = .{ .transfer_write_bit = true },
+        .dst_stage_mask = .{ .fragment_shader_bit = true },
+        .dst_access_mask = .{ .shader_read_bit = true },
+        .old_layout = .transfer_dst_optimal,
+        .new_layout = .shader_read_only_optimal,
+        .src_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
+        .dst_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
+        .image = rec.image,
+        .subresource_range = subrange,
+    };
+    cmdbuf.pipelineBarrier2(&.{
+        .image_memory_barrier_count = 1,
+        .p_image_memory_barriers = @ptrCast(&post_barrier),
+    });
+
+    cmdbuf.endCommandBuffer() catch return;
+
+    const submit = vk.SubmitInfo{
+        .command_buffer_count = 1,
+        .p_command_buffers = @ptrCast(&cmdbuf_handle),
+    };
+    context.logical_device.queueSubmit(context.graphics_queue.handle, @ptrCast(&submit), .null_handle) catch return;
+    _ = context.logical_device.queueWaitIdle(context.graphics_queue.handle) catch {};
+
+    context.logical_device.freeCommandBuffers(command_pool, @ptrCast(&cmdbuf_handle));
+    context.logical_device.destroyBuffer(staging, null);
+    context.logical_device.freeMemory(staging_mem, null);
 }
 
 fn bind_texture(ctx: *anyopaque, handle: u32) void {
@@ -1080,6 +1190,7 @@ pub fn gfx_api(self: *Self) GFXAPI {
             .update_mesh = update_mesh,
             .draw_mesh = draw_mesh,
             .create_texture = create_texture,
+            .update_texture = update_texture,
             .bind_texture = bind_texture,
             .destroy_texture = destroy_texture,
             .force_texture_resident = force_texture_resident,

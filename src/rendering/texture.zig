@@ -60,6 +60,12 @@ pub fn deinit(self: *Texture) void {
     Util.allocator(.render).free(self.data);
 }
 
+/// Pushes the current contents of `data` to the GPU.
+/// Modify `data` directly, then call `update()` to apply the changes.
+pub fn update(self: *const Texture) void {
+    gfx.api.tab.update_texture(gfx.api.ptr, self.handle, self.data);
+}
+
 /// Forces the texture into fast GPU-resident memory (e.g. VRAM on PSP).
 /// No-op on platforms where textures are already GPU-resident (OpenGL, Vulkan).
 pub fn force_resident(self: *const Texture) void {

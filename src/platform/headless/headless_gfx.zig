@@ -44,6 +44,7 @@ fn create_texture(_: *anyopaque, _: u32, _: u32, _: []const u8) !Texture.Handle 
     return 0;
 }
 
+fn update_texture(_: *anyopaque, _: Texture.Handle, _: []const u8) void {}
 fn bind_texture(_: *anyopaque, _: Texture.Handle) void {}
 fn destroy_texture(_: *anyopaque, _: Texture.Handle) void {}
 fn force_texture_resident(_: *anyopaque, _: Texture.Handle) void {}
@@ -65,6 +66,7 @@ pub fn gfx_api(self: *Self) GFXAPI {
         .update_mesh = update_mesh,
         .draw_mesh = draw_mesh,
         .create_texture = create_texture,
+        .update_texture = update_texture,
         .bind_texture = bind_texture,
         .destroy_texture = destroy_texture,
         .force_texture_resident = force_texture_resident,

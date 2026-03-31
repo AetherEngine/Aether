@@ -220,6 +220,16 @@ fn create_texture(ctx: *anyopaque, width: u32, height: u32, data: []const u8) an
     return tex;
 }
 
+fn update_texture(ctx: *anyopaque, handle: u32, data: []const u8) void {
+    _ = ctx;
+    // Query current texture dimensions from OpenGL.
+    var w: gl.int = 0;
+    var h: gl.int = 0;
+    gl.GetTextureLevelParameteriv(handle, 0, gl.TEXTURE_WIDTH, @ptrCast(&w));
+    gl.GetTextureLevelParameteriv(handle, 0, gl.TEXTURE_HEIGHT, @ptrCast(&h));
+    gl.TextureSubImage2D(handle, 0, 0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, data.ptr);
+}
+
 fn bind_texture(ctx: *anyopaque, handle: u32) void {
     _ = ctx;
     gl.BindTextureUnit(2, handle);
@@ -248,6 +258,7 @@ pub fn gfx_api(self: *Self) GFXAPI {
             .update_mesh = update_mesh,
             .draw_mesh = draw_mesh,
             .create_texture = create_texture,
+            .update_texture = update_texture,
             .bind_texture = bind_texture,
             .destroy_texture = destroy_texture,
             .force_texture_resident = force_texture_resident,

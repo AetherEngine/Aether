@@ -366,6 +366,8 @@ var textures = Util.CircularBuffer(TextureData, 4096).init();
 var bound_texture: Texture.Handle = 0;
 
 fn create_texture(_: *anyopaque, width: u32, height: u32, data: []const u8) !Texture.Handle {
+    sdk.kernel.dcache_writeback_range(data.ptr, @intCast(data.len));
+
     const handle = textures.add_element(.{
         .width = width,
         .height = height,
@@ -374,6 +376,13 @@ fn create_texture(_: *anyopaque, width: u32, height: u32, data: []const u8) !Tex
     }) orelse return error.OutOfTextures;
 
     return @intCast(handle);
+}
+
+fn update_texture(_: *anyopaque, handle: Texture.Handle, data: []const u8) void {
+    var tex = textures.get_element(handle) orelse return;
+    tex.data = data.ptr;
+    sdk.kernel.dcache_writeback_range(data.ptr, @intCast(data.len));
+    textures.update_element(handle, tex);
 }
 
 fn bind_texture(_: *anyopaque, handle: Texture.Handle) void {
@@ -434,6 +443,7 @@ pub fn gfx_api(self: *Self) GFXAPI {
             .update_mesh = update_mesh,
             .draw_mesh = draw_mesh,
             .create_texture = create_texture,
+            .update_texture = update_texture,
             .bind_texture = bind_texture,
             .destroy_texture = destroy_texture,
             .force_texture_resident = force_texture_resident,
