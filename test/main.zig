@@ -27,20 +27,20 @@ fn psp_cwd() std.Io.Dir {
 }
 
 const Vertex = extern struct {
-    uv: [2]f32,
-    color: [4]u8,
-    pos: [3]f32,
+    uv: [2]i16,
+    color: u32,
+    pos: [3]i16,
+    _pad: i16 = 0,
 
     pub const Attributes = Rendering.Pipeline.attributes_from_struct(@This(), &[_]Rendering.Pipeline.AttributeSpec{
-        .{ .field = "pos", .location = 0 },
-        .{ .field = "color", .location = 1 },
-        .{ .field = "uv", .location = 2 },
+        .{ .field = "pos", .location = 0, .usage = .position },
+        .{ .field = "color", .location = 1, .usage = .color },
+        .{ .field = "uv", .location = 2, .usage = .uv },
     });
     pub const Layout = Rendering.Pipeline.layout_from_struct(@This(), &Attributes);
 };
 
 const MyMesh = Rendering.Mesh(Vertex);
-
 
 const MyState = struct {
     mesh: MyMesh,
@@ -58,12 +58,11 @@ const MyState = struct {
 
         self.texture = try Rendering.Texture.load("test.png");
         try self.mesh.append(&.{
-            Vertex{ .pos = .{ -0.5, -0.5, 0.0 }, .color = .{ 255, 0, 0, 255 }, .uv = .{ 0.0, 1.0 } },
-            Vertex{ .pos = .{ 0.5, -0.5, 0.0 }, .color = .{ 0, 255, 0, 255 }, .uv = .{ 1.0, 1.0 } },
-            Vertex{ .pos = .{ 0.0, 0.5, 0.0 }, .color = .{ 0, 0, 255, 255 }, .uv = .{ 0.5, 0.0 } },
+            Vertex{ .pos = .{ -16383, -16383, 0 }, .color = 0xFF0000FF, .uv = .{ 0, 32767 } },
+            Vertex{ .pos = .{ 16383, -16383, 0 }, .color = 0xFF00FF00, .uv = .{ 32767, 32767 } },
+            Vertex{ .pos = .{ 0, 16383, 0 }, .color = 0xFFFF0000, .uv = .{ 16383, 0 } },
         });
         self.mesh.update();
-
 
         Util.report();
     }

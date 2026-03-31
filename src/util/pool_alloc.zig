@@ -18,7 +18,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 
 /// All block boundaries and user-data pointers are aligned to this.
-pub const BLOCK_ALIGN: usize = 2 * @sizeOf(usize);
+pub const BLOCK_ALIGN: usize = 16;
 
 /// Prepended to every block, free or allocated.
 const BlockHeader = extern struct {
@@ -27,10 +27,11 @@ const BlockHeader = extern struct {
     size_flags: usize,
     /// Size of the immediately preceding physical block; 0 for the first block.
     prev_size: usize,
+    /// Pad to BLOCK_ALIGN so block boundaries stay aligned on 32-bit targets.
+    _pad: [BLOCK_ALIGN - 2 * @sizeOf(usize)]u8 = .{0} ** (BLOCK_ALIGN - 2 * @sizeOf(usize)),
 };
 
 comptime {
-    assert(@sizeOf(BlockHeader) == 2 * @sizeOf(usize));
     assert(@sizeOf(BlockHeader) == BLOCK_ALIGN);
 }
 
