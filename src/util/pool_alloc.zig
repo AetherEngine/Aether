@@ -7,6 +7,10 @@
 //! Free blocks embed a `FreeTree.Node` at the start of their payload (intrusive).
 //! The treap is keyed by (size, address): best_fit() is one O(log n) descent.
 //!
+//! Over-aligned requests (alignment > BLOCK_ALIGN) are handled by over-allocating
+//! and storing a back-offset immediately before the user pointer, the same
+//! strategy used by the page allocator.
+//!
 //! alloc — O(log n): best_fit descent + optional split + one insertion
 //! free  — O(log n): up to two coalesce removals + one insertion
 
@@ -44,7 +48,7 @@ const FreeTree = std.Treap(Key, cmp_key);
 /// Minimum free-block size: header + intrusive treap node.
 pub const MIN_BLOCK: usize = @sizeOf(BlockHeader) + @sizeOf(FreeTree.Node);
 
-// ── block helpers ─────────────────────────────────────────────────────────────
+// -- block helpers -------------------------------------------------------------
 
 inline fn blk_sz(h: *const BlockHeader) usize {
     return h.size_flags & ~@as(usize, 1);
@@ -65,7 +69,20 @@ inline fn blk_key(h: *BlockHeader) Key {
     return .{ .size = blk_sz(h), .addr = @intFromPtr(h) };
 }
 
-// ── treap wrappers ────────────────────────────────────────────────────────────
+/// Recover the block header from a user pointer, accounting for over-alignment.
+/// For standard alignment (<= BLOCK_ALIGN), the header sits directly before the
+/// user data. For over-aligned allocations, a back-offset stored immediately
+/// before the user pointer indicates the distance to the block header.
+inline fn user_to_blk(ptr: [*]u8, alignment: std.mem.Alignment) *BlockHeader {
+    const user_addr = @intFromPtr(ptr);
+    if (alignment.toByteUnits() > BLOCK_ALIGN) {
+        const back: *const usize = @ptrFromInt(user_addr - @sizeOf(usize));
+        return @ptrFromInt(user_addr - back.*);
+    }
+    return @ptrFromInt(user_addr - @sizeOf(BlockHeader));
+}
+
+// -- treap wrappers ------------------------------------------------------------
 
 fn tree_insert(tree: *FreeTree, h: *BlockHeader) void {
     var entry = tree.getEntryFor(blk_key(h));
@@ -94,7 +111,7 @@ fn best_fit(tree: *FreeTree, min_size: usize) ?*BlockHeader {
     return if (best) |n| node_blk(n) else null;
 }
 
-// ── public allocator ──────────────────────────────────────────────────────────
+// -- public allocator ----------------------------------------------------------
 
 pub const PoolAlloc = struct {
     buf: []u8,
@@ -145,28 +162,26 @@ pub const PoolAlloc = struct {
         self.* = init(self.buf, self.name);
     }
 
-    // ── vtable callbacks ──────────────────────────────────────────────────────
+    // -- vtable callbacks ------------------------------------------------------
 
     fn alloc_fn(ctx: *anyopaque, n: usize, alignment: std.mem.Alignment, _: usize) ?[*]u8 {
         const self: *PoolAlloc = @ptrCast(@alignCast(ctx));
+        const align_bytes = alignment.toByteUnits();
+        const over_aligned = align_bytes > BLOCK_ALIGN;
 
-        if (alignment.toByteUnits() > BLOCK_ALIGN) {
-            std.debug.panic("pool '{s}': unsupported alignment {d} (max {d})", .{
-                self.name, alignment.toByteUnits(), BLOCK_ALIGN,
-            });
-        }
+        // For over-aligned requests, reserve extra space for alignment padding
+        // and a back-offset (usize) stored immediately before the user pointer.
+        const overhead: usize = if (over_aligned)
+            @sizeOf(BlockHeader) + @sizeOf(usize) + align_bytes - 1
+        else
+            @sizeOf(BlockHeader);
 
         // Round the request up to a full block size (header + payload, aligned).
         // Must be at least MIN_BLOCK so the block can hold an intrusive treap node
         // if it is ever freed without adjacent free neighbours to coalesce with.
-        const need = @max(roundup(@sizeOf(BlockHeader) + n, BLOCK_ALIGN), MIN_BLOCK);
+        const need = @max(roundup(overhead + n, BLOCK_ALIGN), MIN_BLOCK);
 
-        const h = best_fit(&self.tree, need) orelse {
-            std.debug.panic(
-                "pool '{s}': out of memory (used={d}, budget={d}, requested={d})",
-                .{ self.name, self.used, self.budget, n },
-            );
-        };
+        const h = best_fit(&self.tree, need) orelse return null;
         tree_remove(&self.tree, h);
 
         const found = blk_sz(h);
@@ -184,22 +199,63 @@ pub const PoolAlloc = struct {
         blk_next(h).prev_size = blk_sz(h);
         self.used += blk_sz(h);
 
+        if (over_aligned) {
+            const header_addr = @intFromPtr(h);
+            const min_user = header_addr + @sizeOf(BlockHeader) + @sizeOf(usize);
+            const user_addr = std.mem.alignForward(usize, min_user, align_bytes);
+            const back: *usize = @ptrFromInt(user_addr - @sizeOf(usize));
+            back.* = user_addr - header_addr;
+            return @ptrFromInt(user_addr);
+        }
         return @ptrFromInt(@intFromPtr(h) + @sizeOf(BlockHeader));
     }
 
-    fn resize_fn(_: *anyopaque, _: []u8, _: std.mem.Alignment, _: usize, _: usize) bool {
-        return false;
+    fn resize_fn(ctx: *anyopaque, buf: []u8, alignment: std.mem.Alignment, new_len: usize, _: usize) bool {
+        const self: *PoolAlloc = @ptrCast(@alignCast(ctx));
+        const h = user_to_blk(buf.ptr, alignment);
+        const cur_sz = blk_sz(h);
+        const user_offset = @intFromPtr(buf.ptr) - @intFromPtr(h);
+
+        // Shrink or already fits within block slack
+        if (new_len <= cur_sz - user_offset) return true;
+
+        // Growth: check if next physical block is free and large enough
+        const nx = blk_next(h);
+        if (blk_used(nx)) return false;
+
+        const combined = cur_sz + blk_sz(nx);
+        if (new_len > combined - user_offset) return false;
+
+        // Absorb the next free block
+        tree_remove(&self.tree, nx);
+
+        const needed = @max(roundup(user_offset + new_len, BLOCK_ALIGN), MIN_BLOCK);
+        if (combined >= needed + MIN_BLOCK) {
+            // Split: use needed, return remainder to tree
+            h.size_flags = needed | 1;
+            const sp: *BlockHeader = @ptrFromInt(@intFromPtr(h) + needed);
+            sp.* = .{ .size_flags = combined - needed, .prev_size = needed };
+            blk_next(sp).prev_size = combined - needed;
+            tree_insert(&self.tree, sp);
+        } else {
+            // Absorb entire block
+            h.size_flags = combined | 1;
+            blk_next(h).prev_size = combined;
+        }
+
+        self.used += blk_sz(h) - cur_sz;
+        return true;
     }
 
     fn remap_fn(_: *anyopaque, _: []u8, _: std.mem.Alignment, _: usize, _: usize) ?[*]u8 {
+        // Signal to the caller that it must do the alloc + copy + free itself.
         return null;
     }
 
-    fn free_fn(ctx: *anyopaque, buf: []u8, _: std.mem.Alignment, _: usize) void {
+    fn free_fn(ctx: *anyopaque, buf: []u8, alignment: std.mem.Alignment, _: usize) void {
         const self: *PoolAlloc = @ptrCast(@alignCast(ctx));
 
-        // Recover the block header: user data starts exactly one header past it.
-        var h: *BlockHeader = @ptrFromInt(@intFromPtr(buf.ptr) - @sizeOf(BlockHeader));
+        var h = user_to_blk(buf.ptr, alignment);
         assert(blk_used(h));
 
         const sz = blk_sz(h);
@@ -236,7 +292,7 @@ inline fn roundup(n: usize, a: usize) usize {
     return (n + a - 1) & ~(a - 1);
 }
 
-// ── tests ─────────────────────────────────────────────────────────────────────
+// -- tests ---------------------------------------------------------------------
 
 const testing = std.testing;
 
@@ -273,13 +329,10 @@ test "pool_alloc: coalesce forward" {
 
     const a = try ally.alloc(u8, 64);
     const b = try ally.alloc(u8, 64);
-    // Free in physical order — b is the next block after a, so freeing a first
-    // then b should coalesce b forward into a's (now-free) block.
     ally.free(a);
     ally.free(b);
     try testing.expectEqual(@as(usize, 0), pa.used);
 
-    // Pool should be fully recovered: a large alloc must succeed.
     const big = try ally.alloc(u8, 128);
     ally.free(big);
     try testing.expectEqual(@as(usize, 0), pa.used);
@@ -292,8 +345,6 @@ test "pool_alloc: coalesce backward" {
 
     const a = try ally.alloc(u8, 64);
     const b = try ally.alloc(u8, 64);
-    // Free in reverse physical order — freeing b first, then a should trigger
-    // the backward coalesce path when a is freed (prev block is free).
     ally.free(b);
     ally.free(a);
     try testing.expectEqual(@as(usize, 0), pa.used);
@@ -312,10 +363,8 @@ test "pool_alloc: coalesce both directions" {
     const b = try ally.alloc(u8, 64);
     const c = try ally.alloc(u8, 64);
 
-    // Leave b allocated, free the neighbours.
     ally.free(a);
     ally.free(c);
-    // Freeing b must coalesce forward with c's old block AND backward with a's.
     ally.free(b);
     try testing.expectEqual(@as(usize, 0), pa.used);
 }
@@ -325,7 +374,6 @@ test "pool_alloc: returned pointers are BLOCK_ALIGN-aligned" {
     var pa = PoolAlloc.init(buf[0..], "test");
     const ally = pa.allocator();
 
-    // Odd sizes to stress the rounding logic.
     const a = try ally.alloc(u8, 1);
     const b = try ally.alloc(u8, 3);
     const c = try ally.alloc(u8, 17);
@@ -347,7 +395,6 @@ test "pool_alloc: reset restores full capacity" {
     var pa = PoolAlloc.init(buf[0..], "test");
     const ally = pa.allocator();
 
-    // Deliberately do NOT free these — reset should reclaim everything.
     _ = try ally.alloc(u8, 512);
     _ = try ally.alloc(u8, 256);
     try testing.expect(pa.used > 0);
@@ -355,19 +402,30 @@ test "pool_alloc: reset restores full capacity" {
     pa.reset();
     try testing.expectEqual(@as(usize, 0), pa.used);
 
-    // A large allocation must succeed after reset.
     const big = try pa.allocator().alloc(u8, 1024);
     pa.allocator().free(big);
 }
 
-test "pool_alloc: resize always returns false" {
+test "pool_alloc: resize shrink and grow" {
     var buf: [4096]u8 align(BLOCK_ALIGN) = undefined;
     var pa = PoolAlloc.init(buf[0..], "test");
     const ally = pa.allocator();
 
-    const slice = try ally.alloc(u8, 64);
-    try testing.expect(!ally.resize(slice, 128));
-    ally.free(slice);
+    const a = try ally.alloc(u8, 64);
+    const b = try ally.alloc(u8, 64);
+
+    // Shrink: always succeeds (wastes the tail)
+    try testing.expect(ally.resize(a, 32));
+
+    // Grow with occupied next block: must fail
+    try testing.expect(!ally.resize(a, 256));
+
+    // Free the next block, now growth can absorb it
+    ally.free(b);
+    try testing.expect(ally.resize(a, 100));
+
+    ally.free(a);
+    try testing.expectEqual(@as(usize, 0), pa.used);
 }
 
 test "pool_alloc: block contents are writable" {
@@ -390,10 +448,41 @@ test "pool_alloc: interleaved alloc and free" {
     const a = try ally.alloc(u8, 32);
     const b = try ally.alloc(u8, 32);
     ally.free(a);
-    const c = try ally.alloc(u8, 32); // may reuse a's slot
+    const c = try ally.alloc(u8, 32);
     const d = try ally.alloc(u8, 32);
     ally.free(c);
     ally.free(b);
     ally.free(d);
     try testing.expectEqual(@as(usize, 0), pa.used);
+}
+
+test "pool_alloc: over-alignment" {
+    var buf: [8192]u8 align(BLOCK_ALIGN) = undefined;
+    var pa = PoolAlloc.init(buf[0..], "test");
+    const ally = pa.allocator();
+    const over_align = comptime std.mem.Alignment.fromByteUnits(BLOCK_ALIGN * 2);
+
+    // Allocate with alignment > BLOCK_ALIGN via raw vtable call.
+    const raw = ally.vtable.alloc(ally.ptr, 64, over_align, 0) orelse
+        return error.TestUnexpectedResult;
+
+    // Verify alignment
+    try testing.expectEqual(@as(usize, 0), @intFromPtr(raw) % (BLOCK_ALIGN * 2));
+
+    // Writable
+    @memset(raw[0..64], 0xAB);
+    try testing.expectEqual(@as(u8, 0xAB), raw[0]);
+
+    // Free and verify cleanup
+    ally.vtable.free(ally.ptr, raw[0..64], over_align, 0);
+    try testing.expectEqual(@as(usize, 0), pa.used);
+}
+
+test "pool_alloc: OOM returns error" {
+    var buf: [512]u8 align(BLOCK_ALIGN) = undefined;
+    var pa = PoolAlloc.init(buf[0..], "test");
+    const ally = pa.allocator();
+
+    // Request more than available — must get OutOfMemory, not a panic.
+    try testing.expectError(error.OutOfMemory, ally.alloc(u8, 4096));
 }

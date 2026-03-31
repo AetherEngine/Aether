@@ -13,7 +13,7 @@ height: u32,
 handle: Handle,
 /// Decoded pixel data kept alive in the render pool for platforms that need
 /// CPU-side pixel data beyond the initial GPU upload.
-data: []u8,
+data: []align(16) u8,
 
 /// Loads a PNG from `path` into GPU memory.
 /// The decoded pixel buffer lives in the render pool.

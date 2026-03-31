@@ -6,7 +6,7 @@ pub const ColorMode = enum { rgba8, rgba5551 };
 pub const Image = struct {
     width: u32,
     height: u32,
-    data: []u8,
+    data: []align(16) u8,
     mode: ColorMode,
 
     pub fn deinit(self: *Image, allocator: std.mem.Allocator) void {
@@ -227,7 +227,7 @@ pub fn load_png_ex(scratch: std.mem.Allocator, render: std.mem.Allocator, reader
 
     // Convert unfiltered scanlines to RGBA8
     const pixel_count: usize = @as(usize, width) * height;
-    const rgba8 = try render.alloc(u8, pixel_count * 4);
+    const rgba8 = try render.alignedAlloc(u8, .fromByteUnits(16), pixel_count * 4);
 
     for (0..height) |y| {
         const row = unfiltered[y * raw_stride .. (y + 1) * raw_stride];
@@ -330,7 +330,7 @@ pub fn load_png_ex(scratch: std.mem.Allocator, render: std.mem.Allocator, reader
     }
 
     // Convert RGBA8 → RGBA5551 (little-endian u16 per pixel)
-    const rgba5551 = render.alloc(u8, pixel_count * 2) catch |err| {
+    const rgba5551 = render.alignedAlloc(u8, .fromByteUnits(16), pixel_count * 2) catch |err| {
         render.free(rgba8);
         return err;
     };
