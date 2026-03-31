@@ -3,25 +3,39 @@ const gfx = Platform.gfx;
 
 pub const Handle = u32;
 
-// TODO: support more attribute formats
+pub const AttributeUsage = enum {
+    position,
+    uv,
+    color,
+    normal,
+};
+
 pub const AttributeFormat = enum(u8) {
     f32x2,
     f32x3,
     unorm8x4,
+    unorm16x2,
+    unorm16x3,
+    snorm16x2,
+    snorm16x3,
 
     fn infer(comptime T: type) AttributeFormat {
         return switch (T) {
             [2]f32 => .f32x2,
             [3]f32 => .f32x3,
-            [4]u8 => .unorm8x4,
+            [4]u8, u32 => .unorm8x4,
+            [2]u16 => .unorm16x2,
+            [3]u16 => .unorm16x3,
+            [2]i16 => .snorm16x2,
+            [3]i16 => .snorm16x3,
             else => @compileError("Unsupported attribute field type"),
         };
     }
 
     pub fn count(self: AttributeFormat) usize {
         return switch (self) {
-            .f32x2 => 2,
-            .f32x3 => 3,
+            .f32x2, .unorm16x2, .snorm16x2 => 2,
+            .f32x3, .unorm16x3, .snorm16x3 => 3,
             .unorm8x4 => 4,
         };
     }
@@ -33,6 +47,7 @@ pub const Attribute = struct {
     offset: usize,
     size: usize,
     format: AttributeFormat,
+    usage: AttributeUsage,
 };
 
 pub const VertexLayout = struct {
@@ -44,6 +59,7 @@ pub const AttributeSpec = struct {
     field: []const u8,
     location: u8,
     binding: u8 = 0,
+    usage: AttributeUsage,
 };
 
 pub fn attributes_from_struct(comptime V: type, comptime specs: []const AttributeSpec) [specs.len]Attribute {
@@ -57,6 +73,7 @@ pub fn attributes_from_struct(comptime V: type, comptime specs: []const Attribut
             .size = format.count(),
             .offset = @offsetOf(V, s.field),
             .format = format,
+            .usage = s.usage,
         };
     }
 

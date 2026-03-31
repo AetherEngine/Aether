@@ -167,6 +167,8 @@ fn init(ctx: *anyopaque) !void {
     gu.enable(.CullFace);
     gu.disable(.ClipPlanes);
     gu.enable(.Texture2D);
+    gu.tex_scale(1.0, 1.0);
+    gu.tex_offset(0.0, 0.0);
 
     // Initialize all matrix modes to identity so hardware registers are never garbage.
     gum.matrix_mode(.Projection);
@@ -261,20 +263,35 @@ fn end_frame(_: *anyopaque) void {
 
 fn create_pipeline(_: *anyopaque, layout: Pipeline.VertexLayout, _: ?[:0]align(4) const u8, _: ?[:0]align(4) const u8) !Pipeline.Handle {
     var vtype = VertexType{
-        .vertex = .Vertex32Bitf, // always required
+        .vertex = .Vertex32Bitf, // default, overridden by position attribute
         .transform = .Transform3D,
     };
 
     for (layout.attributes) |attr| {
-        switch (attr.format) {
-            .f32x3 => {
-                // location 0 = position (already set above)
+        switch (attr.usage) {
+            .position => {
+                vtype.vertex = switch (attr.format) {
+                    .f32x3 => .Vertex32Bitf,
+                    .unorm16x3, .snorm16x3 => .Vertex16Bit,
+                    else => .Vertex32Bitf,
+                };
             },
-            .unorm8x4 => {
+            .uv => {
+                vtype.uv = switch (attr.format) {
+                    .f32x2 => .Texture32Bitf,
+                    .unorm16x2, .snorm16x2 => .Texture16Bit,
+                    else => .Texture32Bitf,
+                };
+            },
+            .color => {
                 vtype.color = .Color8888;
             },
-            .f32x2 => {
-                vtype.uv = .Texture32Bitf;
+            .normal => {
+                vtype.normal = switch (attr.format) {
+                    .f32x3 => .Normal32Bitf,
+                    .unorm16x3, .snorm16x3 => .Normal16Bit,
+                    else => .Normal32Bitf,
+                };
             },
         }
     }

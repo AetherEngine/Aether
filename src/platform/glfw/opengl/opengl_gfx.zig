@@ -120,9 +120,11 @@ fn create_pipeline(ctx: *anyopaque, layout: Pipeline.VertexLayout, v_shader: ?[:
         gl.VertexArrayAttribFormat(vao, a.location, @intCast(a.size), switch (a.format) {
             .f32x2, .f32x3 => gl.FLOAT,
             .unorm8x4 => gl.UNSIGNED_BYTE,
+            .unorm16x2, .unorm16x3 => gl.UNSIGNED_SHORT,
+            .snorm16x2, .snorm16x3 => gl.SHORT,
         }, switch (a.format) {
             .f32x2, .f32x3 => gl.FALSE,
-            .unorm8x4 => gl.TRUE,
+            .unorm8x4, .unorm16x2, .unorm16x3, .snorm16x2, .snorm16x3 => gl.TRUE,
         }, @intCast(a.offset));
         gl.VertexArrayAttribBinding(vao, a.location, a.binding);
     }

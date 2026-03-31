@@ -568,6 +568,10 @@ fn create_pipeline(ctx: *anyopaque, layout: Pipeline.VertexLayout, vs: ?[:0]alig
                 .f32x2 => .r32g32_sfloat,
                 .f32x3 => .r32g32b32_sfloat,
                 .unorm8x4 => .r8g8b8a8_unorm,
+                .unorm16x2 => .r16g16_unorm,
+                .unorm16x3 => .r16g16b16_unorm,
+                .snorm16x2 => .r16g16_snorm,
+                .snorm16x3 => .r16g16b16_snorm,
             },
         };
     }
