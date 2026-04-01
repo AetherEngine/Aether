@@ -13,10 +13,10 @@ pub var sync: bool = true;
 /// Initializes the graphics subsystem with the specified parameters.
 /// Must be called before any other graphics functions.
 /// Returns an error if initialization fails.
-pub fn init(width: u32, height: u32, title: [:0]const u8, fullscreen: bool, vsync: bool) !void {
+pub fn init(width: u32, height: u32, title: [:0]const u8, fullscreen: bool, vsync: bool, resizable: bool) !void {
     sync = vsync;
     surface = try Surface.make_surface();
-    try surface.init(width, height, title, fullscreen, vsync);
+    try surface.init(width, height, title, fullscreen, vsync, resizable);
 
     api = try GFXAPI.make_api(options_gfx);
     try api.init();

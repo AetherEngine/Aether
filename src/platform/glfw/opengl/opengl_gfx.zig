@@ -11,6 +11,7 @@ const Rendering = @import("../../../rendering/rendering.zig");
 const Mesh = Rendering.mesh;
 const Pipeline = Rendering.Pipeline;
 const GFXAPI = @import("../../gfx_api.zig");
+const GLFWSurface = @import("../surface.zig");
 const Self = @This();
 
 var procs: gl.ProcTable = undefined;
@@ -49,10 +50,20 @@ fn init(ctx: *anyopaque) !void {
     shader.state.proj = Mat4.identity();
     shader.state.view = Mat4.identity();
     shader.update_ubo();
+
+    GLFWSurface.on_resize = resize_render;
+}
+
+fn resize_render() void {
+    var dummy: u8 = 0;
+    if (start_frame(@ptrCast(&dummy))) {
+        end_frame(@ptrCast(&dummy));
+    }
 }
 
 fn deinit(ctx: *anyopaque) void {
     const self = Util.ctx_to_self(Self, ctx);
+    GLFWSurface.on_resize = null;
 
     shader.deinit();
 

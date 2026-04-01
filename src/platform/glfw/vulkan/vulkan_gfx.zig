@@ -14,6 +14,7 @@ const Self = @This();
 const Context = @import("context.zig");
 const Swapchain = @import("swapchain.zig");
 const GarbageCollector = @import("garbage_collector.zig");
+const GLFWSurface = @import("../surface.zig");
 
 const PipelineData = struct {
     layout: vk.PipelineLayout,
@@ -327,10 +328,21 @@ fn init(ctx: *anyopaque) !void {
     try create_texture_set_layout();
     try create_texture_descriptor_pool_and_set(4096);
     try create_texture_sampler();
+
+    GLFWSurface.on_resize = resize_render;
+}
+
+fn resize_render() void {
+    swap_state = .suboptimal;
+    var dummy: u8 = 0;
+    if (start_frame(@ptrCast(&dummy))) {
+        end_frame(@ptrCast(&dummy));
+    }
 }
 
 fn deinit(ctx: *anyopaque) void {
     _ = ctx;
+    GLFWSurface.on_resize = null;
     context.logical_device.deviceWaitIdle() catch {};
 
     destroy_texture_sampler();
@@ -361,6 +373,12 @@ fn start_frame(ctx: *anyopaque) bool {
     if (gfx.surface.get_width() == 0 or gfx.surface.get_height() == 0) {
         @branchHint(.unlikely);
         return false;
+    }
+
+    if (swap_state == .suboptimal) {
+        @branchHint(.unlikely);
+        swapchain.recreate() catch return false;
+        swap_state = .optimal;
     }
 
     // Acquire next command buffer
@@ -480,14 +498,6 @@ fn end_frame(ctx: *anyopaque) void {
         error.OutOfDateKHR => .suboptimal,
         else => unreachable,
     };
-
-    if (swap_state == .suboptimal) {
-        if (gfx.surface.get_width() == 0 or gfx.surface.get_height() == 0) {
-            swap_state = .optimal; // Reset state to avoid loop
-            return; // Skip recreate until restored
-        }
-        swapchain.recreate() catch unreachable;
-    }
 }
 
 fn set_proj_matrix(ctx: *anyopaque, mat: *const Mat4) void {

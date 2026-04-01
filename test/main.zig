@@ -114,15 +114,17 @@ var pipeline: Rendering.Pipeline.Handle = undefined;
 pub fn main(init: std.process.Init) !void {
     const memory = try init.arena.allocator().alloc(u8, 32 * 1024 * 1024);
 
-    const config = Util.MemoryConfig{
-        .render = 8 * 1024 * 1024,
-        .audio = 2 * 1024 * 1024,
-        .game = 2 * 1024 * 1024,
-        .user = 16 * 1024 * 1024,
-        .scratch = 4 * 1024 * 1024,
-    };
     var state: MyState = undefined;
-    try ae.App.init(init.io, memory, config, 1280, 720, "Aether", false, true, &state.state());
+    try ae.App.init(init.io, memory, .{
+        .memory = .{
+            .render = 8 * 1024 * 1024,
+            .audio = 2 * 1024 * 1024,
+            .game = 2 * 1024 * 1024,
+            .user = 16 * 1024 * 1024,
+            .scratch = 4 * 1024 * 1024,
+        },
+        .resizable = true,
+    }, &state.state());
     defer ae.App.deinit();
     try ae.App.main_loop();
 }

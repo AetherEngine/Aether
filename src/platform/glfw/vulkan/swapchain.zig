@@ -121,14 +121,20 @@ fn create_swapchain(self: *Self, old_handle: vk.SwapchainKHR) !void {
 
     self.surface_format = surface_format;
 
+    errdefer {
+        self.context.logical_device.destroySwapchainKHR(self.chain, null);
+        self.chain = .null_handle;
+    }
+
     // Destroy the old swapchain if it exists
     if (old_handle != .null_handle) {
         self.context.logical_device.destroySwapchainKHR(old_handle, null);
     }
 
     self.swap_images = try self.create_swapchain_images(surface_format.format);
-    errdefer self.destroy_swapchain_images();
+}
 
+fn acquire_initial_image(self: *Self) !void {
     var next_image_acquired = try self.context.logical_device.createSemaphore(&.{}, null);
     errdefer self.context.logical_device.destroySemaphore(next_image_acquired, null);
 
@@ -147,7 +153,6 @@ fn create_swapchain(self: *Self, old_handle: vk.SwapchainKHR) !void {
 fn destroy_swapchain_images(self: *Self) void {
     for (self.swap_images) |si| si.deinit(self.context);
     self.context.allocator.free(self.swap_images);
-    self.context.logical_device.destroySemaphore(self.next_image_acquired, null);
 }
 
 fn create_swapchain_images(self: *Self, format: vk.Format) ![]SwapImage {
@@ -174,30 +179,39 @@ pub fn init(context: *Context, vsync: bool) !Self {
     self.vsync = vsync;
 
     try self.create_swapchain(.null_handle);
+    errdefer self.destroy_swapchain_images();
+    try self.acquire_initial_image();
 
     return self;
 }
 
 pub fn recreate(self: *Self) !void {
-    const context = self.context;
-    const old_handle = self.chain;
+    self.context.logical_device.deviceWaitIdle() catch {};
 
-    self.destroy_swapchain_images();
-    // set current handle to NULL_HANDLE to signal that the current swapchain does no longer need to be
-    // de-initialized if we fail to recreate it.
+    if (self.chain != .null_handle) {
+        self.destroy_swapchain_images();
+        self.context.logical_device.destroySemaphore(self.next_image_acquired, null);
+    }
+
+    const old_handle = self.chain;
     self.chain = .null_handle;
-    self.create_swapchain(old_handle) catch |err| switch (err) {
-        error.SwapchainCreationFailed => {
-            context.logical_device.destroySwapchainKHR(old_handle, null);
-            return err;
-        },
-        else => return err,
+
+    // create_swapchain has an internal errdefer that cleans up self.chain on failure,
+    // so self.chain == .null_handle on error -- safe to retry next frame.
+    try self.create_swapchain(old_handle);
+
+    self.acquire_initial_image() catch |err| {
+        self.destroy_swapchain_images();
+        self.context.logical_device.destroySwapchainKHR(self.chain, null);
+        self.chain = .null_handle;
+        return err;
     };
 }
 
 pub fn deinit(self: *Self) void {
     if (self.chain == .null_handle) return;
     self.destroy_swapchain_images();
+    self.context.logical_device.destroySemaphore(self.next_image_acquired, null);
     self.context.logical_device.destroySwapchainKHR(self.chain, null);
 }
 

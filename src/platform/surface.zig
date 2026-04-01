@@ -6,7 +6,7 @@ ptr: *anyopaque,
 tab: *const VTable,
 
 pub const VTable = struct {
-    init: *const fn (ctx: *anyopaque, width: u32, height: u32, title: [:0]const u8, fullscreen: bool, sync: bool) anyerror!void,
+    init: *const fn (ctx: *anyopaque, width: u32, height: u32, title: [:0]const u8, fullscreen: bool, sync: bool, resizable: bool) anyerror!void,
     deinit: *const fn (ctx: *anyopaque) void,
 
     update: *const fn (ctx: *anyopaque) bool,
@@ -19,8 +19,8 @@ pub const VTable = struct {
 /// Initializes the surface with the given parameters.
 /// Must be called before any other surface functions.
 /// Returns an error if initialization fails.
-pub inline fn init(self: *Self, width: u32, height: u32, title: [:0]const u8, fullscreen: bool, sync: bool) !void {
-    try self.tab.init(self.ptr, width, height, title, fullscreen, sync);
+pub inline fn init(self: *Self, width: u32, height: u32, title: [:0]const u8, fullscreen: bool, sync: bool, resizable: bool) !void {
+    try self.tab.init(self.ptr, width, height, title, fullscreen, sync, resizable);
 }
 
 /// Shuts down the surface and frees all associated resources.
