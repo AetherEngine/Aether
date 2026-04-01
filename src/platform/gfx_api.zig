@@ -38,8 +38,8 @@ pub const VTable = struct {
     draw_mesh: *const fn (ctx: *anyopaque, mesh: Mesh.Handle, model: *const Mat4, count: usize) void,
 
     // --- Texture API (raw) ---
-    create_texture: *const fn (ctx: *anyopaque, width: u32, height: u32, data: []const u8) anyerror!Texture.Handle,
-    update_texture: *const fn (ctx: *anyopaque, handle: Texture.Handle, data: []const u8) void,
+    create_texture: *const fn (ctx: *anyopaque, width: u32, height: u32, data: []align(16) u8) anyerror!Texture.Handle,
+    update_texture: *const fn (ctx: *anyopaque, handle: Texture.Handle, data: []align(16) u8) void,
     bind_texture: *const fn (ctx: *anyopaque, handle: Texture.Handle) void,
     destroy_texture: *const fn (ctx: *anyopaque, handle: Texture.Handle) void,
     force_texture_resident: *const fn (ctx: *anyopaque, handle: Texture.Handle) void,

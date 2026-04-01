@@ -40,11 +40,11 @@ fn destroy_mesh(_: *anyopaque, _: Mesh.Handle) void {}
 fn update_mesh(_: *anyopaque, _: Mesh.Handle, _: []const u8) void {}
 fn draw_mesh(_: *anyopaque, _: Mesh.Handle, _: *const Mat4, _: usize) void {}
 
-fn create_texture(_: *anyopaque, _: u32, _: u32, _: []const u8) !Texture.Handle {
+fn create_texture(_: *anyopaque, _: u32, _: u32, _: []align(16) u8) !Texture.Handle {
     return 0;
 }
 
-fn update_texture(_: *anyopaque, _: Texture.Handle, _: []const u8) void {}
+fn update_texture(_: *anyopaque, _: Texture.Handle, _: []align(16) u8) void {}
 fn bind_texture(_: *anyopaque, _: Texture.Handle) void {}
 fn destroy_texture(_: *anyopaque, _: Texture.Handle) void {}
 fn force_texture_resident(_: *anyopaque, _: Texture.Handle) void {}

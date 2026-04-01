@@ -379,12 +379,74 @@ const TextureData = struct {
     height: u32,
     data: [*]const u8,
     in_vram: bool,
+    swizzled: bool,
 };
+
+fn swizzle_in_place(data: []align(16) u8, width: u32, height: u32) void {
+    const width_bytes = width * 4; // RGBA8888
+    if (width_bytes * height < 8 * 1024) return;
+
+    const alloc = Util.allocator(.scratch);
+    const tmp = alloc.alignedAlloc(u8, .fromByteUnits(16), data.len) catch return;
+    defer alloc.free(tmp);
+
+    @memcpy(tmp, data);
+
+    const width_blocks = width_bytes / 16;
+    const height_blocks = height / 8;
+    const src_pitch = (width_bytes - 16) / 4;
+    const src_row = width_bytes * 8;
+
+    var dst: [*]u32 = @ptrCast(@alignCast(data.ptr));
+    var ysrc: [*]const u8 = tmp.ptr;
+
+    for (0..height_blocks) |_| {
+        var xsrc = ysrc;
+        for (0..width_blocks) |_| {
+            var src: [*]const u32 = @ptrCast(@alignCast(xsrc));
+            for (0..8) |_| {
+                dst[0] = src[0];
+                dst[1] = src[1];
+                dst[2] = src[2];
+                dst[3] = src[3];
+                dst += 4;
+                src += 4 + src_pitch;
+            }
+            xsrc += 16;
+        }
+        ysrc += src_row;
+    }
+}
+
+/// Map a linear (x, y) pixel coordinate to its byte offset in swizzled layout.
+pub fn swizzled_offset(x: u32, y: u32, width: u32) usize {
+    const bytes_per_pixel = 4; // RGBA8888
+    const width_bytes = width * bytes_per_pixel;
+
+    const block_x = (x * bytes_per_pixel) / 16;
+    const block_y = y / 8;
+    const blocks_per_row = width_bytes / 16;
+
+    const block_index = block_y * blocks_per_row + block_x;
+    const block_start = block_index * 16 * 8; // each block is 16 bytes * 8 rows
+
+    const local_x = (x * bytes_per_pixel) % 16;
+    const local_y = y % 8;
+
+    return block_start + local_y * 16 + local_x;
+}
 
 var textures = Util.CircularBuffer(TextureData, 4096).init();
 var bound_texture: Texture.Handle = 0;
 
-fn create_texture(_: *anyopaque, width: u32, height: u32, data: []const u8) !Texture.Handle {
+fn create_texture(_: *anyopaque, width: u32, height: u32, data: []align(16) u8) !Texture.Handle {
+    const width_bytes = width * 4;
+    const should_swizzle = width_bytes * height >= 8 * 1024;
+
+    if (should_swizzle) {
+        swizzle_in_place(data, width, height);
+    }
+
     sdk.kernel.dcache_writeback_range(data.ptr, @intCast(data.len));
 
     const handle = textures.add_element(.{
@@ -392,23 +454,27 @@ fn create_texture(_: *anyopaque, width: u32, height: u32, data: []const u8) !Tex
         .height = height,
         .data = data.ptr,
         .in_vram = false,
+        .swizzled = should_swizzle,
     }) orelse return error.OutOfTextures;
 
     return @intCast(handle);
 }
 
-fn update_texture(_: *anyopaque, handle: Texture.Handle, data: []const u8) void {
-    var tex = textures.get_element(handle) orelse return;
-    tex.data = data.ptr;
+fn update_texture(_: *anyopaque, handle: Texture.Handle, data: []align(16) u8) void {
+    const tex = textures.get_element(handle) orelse return;
+
+    if (tex.swizzled) {
+        swizzle_in_place(data, tex.width, tex.height);
+    }
+
     sdk.kernel.dcache_writeback_range(data.ptr, @intCast(data.len));
-    textures.update_element(handle, tex);
 }
 
 fn bind_texture(_: *anyopaque, handle: Texture.Handle) void {
     bound_texture = handle;
     const tex = textures.get_element(handle) orelse return;
 
-    gu.tex_mode(.Psm8888, 0, .Single, .Linear);
+    gu.tex_mode(.Psm8888, 0, .Single, if (tex.swizzled) .Swizzled else .Linear);
     gu.tex_image(
         0,
         @intCast(tex.width),

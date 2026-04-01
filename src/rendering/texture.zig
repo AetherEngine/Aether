@@ -1,8 +1,10 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const Image = @import("../util/image.zig");
 const Util = @import("../util/util.zig");
 const Platform = @import("../platform/platform.zig");
 const gfx = Platform.gfx;
+const psp_gfx = if (builtin.os.tag == .psp) @import("../platform/psp/psp_gfx.zig") else struct {};
 
 pub const Handle = u32;
 
@@ -70,6 +72,29 @@ pub fn update(self: *const Texture) void {
 /// No-op on platforms where textures are already GPU-resident (OpenGL, Vulkan).
 pub fn force_resident(self: *const Texture) void {
     gfx.api.tab.force_texture_resident(gfx.api.ptr, self.handle);
+}
+
+/// Returns the RGBA pixel at (x, y), accounting for swizzled layout on PSP.
+pub fn get_pixel(self: *const Texture, x: u32, y: u32) [4]u8 {
+    const offset = pixel_offset(self, x, y);
+    return self.data[offset..][0..4].*;
+}
+
+/// Sets the RGBA pixel at (x, y), accounting for swizzled layout on PSP.
+/// Call `update()` after all modifications to push changes to the GPU.
+pub fn set_pixel(self: *Texture, x: u32, y: u32, rgba: [4]u8) void {
+    const offset = pixel_offset(self, x, y);
+    self.data[offset..][0..4].* = rgba;
+}
+
+fn pixel_offset(self: *const Texture, x: u32, y: u32) usize {
+    if (builtin.os.tag == .psp) {
+        const width_bytes = self.width * 4;
+        if (width_bytes * self.height >= 8 * 1024) {
+            return psp_gfx.swizzled_offset(x, y, self.width);
+        }
+    }
+    return (@as(usize, y) * self.width + x) * 4;
 }
 
 /// Binds the texture for the next draw call.
