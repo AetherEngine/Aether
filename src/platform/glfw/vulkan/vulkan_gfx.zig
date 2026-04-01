@@ -84,6 +84,11 @@ var meshes = Util.CircularBuffer(MeshData, 2048).init();
 
 var swap_state: Swapchain.PresentState = .optimal;
 
+const depth_format: vk.Format = .d32_sfloat;
+var depth_image: vk.Image = .null_handle;
+var depth_image_view: vk.ImageView = .null_handle;
+var depth_image_memory: vk.DeviceMemory = .null_handle;
+
 fn create_command_pool() !void {
     command_pool = try context.logical_device.createCommandPool(&.{
         .queue_family_index = context.graphics_queue.family,
@@ -312,6 +317,61 @@ fn destroy_descriptor_sets() void {
     Util.allocator(.render).free(descriptor_sets);
 }
 
+fn create_depth_image() !void {
+    const width: u32 = @intCast(gfx.surface.get_width());
+    const height: u32 = @intCast(gfx.surface.get_height());
+
+    depth_image = try context.logical_device.createImage(&.{
+        .image_type = .@"2d",
+        .format = depth_format,
+        .extent = .{ .width = width, .height = height, .depth = 1 },
+        .mip_levels = 1,
+        .array_layers = 1,
+        .samples = .{ .@"1_bit" = true },
+        .tiling = .optimal,
+        .usage = .{ .depth_stencil_attachment_bit = true },
+        .sharing_mode = .exclusive,
+        .initial_layout = .undefined,
+    }, null);
+    errdefer {
+        context.logical_device.destroyImage(depth_image, null);
+        depth_image = .null_handle;
+    }
+
+    const mem_reqs = context.logical_device.getImageMemoryRequirements(depth_image);
+    depth_image_memory = try context.allocate_gpu_buffer(mem_reqs, .{ .device_local_bit = true });
+    errdefer {
+        context.logical_device.freeMemory(depth_image_memory, null);
+        depth_image_memory = .null_handle;
+    }
+
+    try context.logical_device.bindImageMemory(depth_image, depth_image_memory, 0);
+
+    depth_image_view = try context.logical_device.createImageView(&.{
+        .image = depth_image,
+        .view_type = .@"2d",
+        .format = depth_format,
+        .components = .{ .r = .identity, .g = .identity, .b = .identity, .a = .identity },
+        .subresource_range = .{
+            .aspect_mask = .{ .depth_bit = true },
+            .base_mip_level = 0,
+            .level_count = 1,
+            .base_array_layer = 0,
+            .layer_count = 1,
+        },
+    }, null);
+}
+
+fn destroy_depth_image() void {
+    if (depth_image == .null_handle) return;
+    context.logical_device.destroyImageView(depth_image_view, null);
+    context.logical_device.destroyImage(depth_image, null);
+    context.logical_device.freeMemory(depth_image_memory, null);
+    depth_image = .null_handle;
+    depth_image_view = .null_handle;
+    depth_image_memory = .null_handle;
+}
+
 fn init(ctx: *anyopaque) !void {
     _ = ctx;
 
@@ -320,6 +380,7 @@ fn init(ctx: *anyopaque) !void {
     gc = GarbageCollector.init(Util.allocator(.render));
 
     try create_command_pool();
+    try create_depth_image();
     try create_uniform_buffers();
     try create_descriptor_set_layout();
     try create_descriptor_pool();
@@ -352,6 +413,7 @@ fn deinit(ctx: *anyopaque) void {
     destroy_descriptor_pool();
     destroy_descriptor_set_layout();
     destroy_uniform_buffers();
+    destroy_depth_image();
     destroy_command_pool();
     swapchain.deinit();
     gc.deinit();
@@ -378,6 +440,8 @@ fn start_frame(ctx: *anyopaque) bool {
     if (swap_state == .suboptimal) {
         @branchHint(.unlikely);
         swapchain.recreate() catch return false;
+        destroy_depth_image();
+        create_depth_image() catch return false;
         swap_state = .optimal;
     }
 
@@ -434,12 +498,42 @@ fn start_frame(ctx: *anyopaque) bool {
         },
     };
 
+    const depth_pre = vk.ImageMemoryBarrier2{
+        .src_stage_mask = .{ .early_fragment_tests_bit = true, .late_fragment_tests_bit = true },
+        .src_access_mask = .{},
+        .dst_stage_mask = .{ .early_fragment_tests_bit = true, .late_fragment_tests_bit = true },
+        .dst_access_mask = .{ .depth_stencil_attachment_write_bit = true },
+        .old_layout = .undefined,
+        .new_layout = .depth_attachment_optimal,
+        .src_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
+        .dst_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
+        .image = depth_image,
+        .subresource_range = .{
+            .aspect_mask = .{ .depth_bit = true },
+            .base_mip_level = 0,
+            .level_count = 1,
+            .base_array_layer = 0,
+            .layer_count = 1,
+        },
+    };
+
+    const barriers = [_]vk.ImageMemoryBarrier2{ pre, depth_pre };
     const pre_dep = vk.DependencyInfo{
-        .image_memory_barrier_count = 1,
-        .p_image_memory_barriers = @ptrCast(&pre),
+        .image_memory_barrier_count = 2,
+        .p_image_memory_barriers = &barriers,
     };
 
     command_buffer.pipelineBarrier2(&pre_dep);
+
+    const depth_attachment = vk.RenderingAttachmentInfo{
+        .image_layout = .depth_attachment_optimal,
+        .image_view = depth_image_view,
+        .resolve_mode = .{},
+        .resolve_image_layout = .undefined,
+        .load_op = .clear,
+        .store_op = .dont_care,
+        .clear_value = .{ .depth_stencil = .{ .depth = 1.0, .stencil = 0 } },
+    };
 
     command_buffer.beginRendering(&.{
         .layer_count = 1,
@@ -458,6 +552,7 @@ fn start_frame(ctx: *anyopaque) bool {
             .store_op = .store,
             .clear_value = clear_value,
         }),
+        .p_depth_attachment = &depth_attachment,
     });
 
     return true;
@@ -658,7 +753,7 @@ fn create_pipeline(ctx: *anyopaque, layout: Pipeline.VertexLayout, vs: ?[:0]alig
         .view_mask = 0,
         .color_attachment_count = 1,
         .p_color_attachment_formats = @ptrCast(&swapchain.surface_format.format),
-        .depth_attachment_format = .undefined,
+        .depth_attachment_format = depth_format,
         .stencil_attachment_format = .undefined,
     };
 
@@ -675,7 +770,33 @@ fn create_pipeline(ctx: *anyopaque, layout: Pipeline.VertexLayout, vs: ?[:0]alig
         .layout = pl,
         .base_pipeline_handle = .null_handle,
         .base_pipeline_index = -1,
-        .p_depth_stencil_state = null,
+        .p_depth_stencil_state = &vk.PipelineDepthStencilStateCreateInfo{
+            .depth_test_enable = .true,
+            .depth_write_enable = .true,
+            .depth_compare_op = .less,
+            .depth_bounds_test_enable = .false,
+            .stencil_test_enable = .false,
+            .front = .{
+                .fail_op = .keep,
+                .pass_op = .keep,
+                .depth_fail_op = .keep,
+                .compare_op = .always,
+                .compare_mask = 0,
+                .write_mask = 0,
+                .reference = 0,
+            },
+            .back = .{
+                .fail_op = .keep,
+                .pass_op = .keep,
+                .depth_fail_op = .keep,
+                .compare_op = .always,
+                .compare_mask = 0,
+                .write_mask = 0,
+                .reference = 0,
+            },
+            .min_depth_bounds = 0.0,
+            .max_depth_bounds = 1.0,
+        },
         .p_tessellation_state = null,
         .render_pass = .null_handle,
         .subpass = 0,
