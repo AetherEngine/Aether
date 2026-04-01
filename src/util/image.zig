@@ -1,7 +1,7 @@
 const std = @import("std");
 const flate = std.compress.flate;
 
-pub const ColorMode = enum { rgba8, rgba5551 };
+pub const ColorMode = enum { rgba8, rgba5551, rgba4444 };
 
 pub const Image = struct {
     width: u32,
@@ -329,23 +329,40 @@ pub fn load_png_ex(scratch: std.mem.Allocator, render: std.mem.Allocator, reader
         return .{ .width = width, .height = height, .data = rgba8, .mode = .rgba8 };
     }
 
-    // Convert RGBA8 → RGBA5551 (little-endian u16 per pixel)
-    const rgba5551 = render.alignedAlloc(u8, .fromByteUnits(16), pixel_count * 2) catch |err| {
+    // 16-bit conversion: allocate half the buffer
+    const out16 = render.alignedAlloc(u8, .fromByteUnits(16), pixel_count * 2) catch |err| {
         render.free(rgba8);
         return err;
     };
-    for (0..pixel_count) |i| {
-        const r: u16 = rgba8[i * 4] >> 3;
-        const g: u16 = rgba8[i * 4 + 1] >> 3;
-        const b: u16 = rgba8[i * 4 + 2] >> 3;
-        const a: u16 = if (rgba8[i * 4 + 3] >= 128) 1 else 0;
-        const pixel: u16 = (r << 11) | (g << 6) | (b << 1) | a;
-        rgba5551[i * 2] = @truncate(pixel);
-        rgba5551[i * 2 + 1] = @truncate(pixel >> 8);
+
+    switch (mode) {
+        .rgba5551 => {
+            for (0..pixel_count) |i| {
+                const r: u16 = rgba8[i * 4] >> 3;
+                const g: u16 = rgba8[i * 4 + 1] >> 3;
+                const b: u16 = rgba8[i * 4 + 2] >> 3;
+                const a: u16 = if (rgba8[i * 4 + 3] >= 128) 1 else 0;
+                const pixel: u16 = (r << 11) | (g << 6) | (b << 1) | a;
+                out16[i * 2] = @truncate(pixel);
+                out16[i * 2 + 1] = @truncate(pixel >> 8);
+            }
+        },
+        .rgba4444 => {
+            for (0..pixel_count) |i| {
+                const r: u16 = rgba8[i * 4] >> 4;
+                const g: u16 = rgba8[i * 4 + 1] >> 4;
+                const b: u16 = rgba8[i * 4 + 2] >> 4;
+                const a: u16 = rgba8[i * 4 + 3] >> 4;
+                const pixel: u16 = (a << 12) | (b << 8) | (g << 4) | r;
+                out16[i * 2] = @truncate(pixel);
+                out16[i * 2 + 1] = @truncate(pixel >> 8);
+            }
+        },
+        .rgba8 => unreachable,
     }
     render.free(rgba8);
 
-    return .{ .width = width, .height = height, .data = rgba5551, .mode = .rgba5551 };
+    return .{ .width = width, .height = height, .data = out16, .mode = mode };
 }
 
 fn skipBytes(reader: *std.Io.Reader, n: usize) !void {

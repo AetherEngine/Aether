@@ -25,6 +25,15 @@ const gu_pixel_format: gu.types.GuPixelFormat = switch (options.config.psp_displ
     .rgb565 => .Psm5650,
 };
 
+const tex_pixel_format: gu.types.GuPixelFormat = switch (options.config.psp_display_mode) {
+    .rgba8888 => .Psm8888,
+    .rgb565 => .Psm4444,
+};
+const tex_bpp: u32 = switch (options.config.psp_display_mode) {
+    .rgba8888 => 4,
+    .rgb565 => 2,
+};
+
 const display = sdk.display;
 const kernel = sdk.kernel;
 const ge = sdk.ge;
@@ -383,7 +392,7 @@ const TextureData = struct {
 };
 
 fn swizzle_in_place(data: []align(16) u8, width: u32, height: u32) void {
-    const width_bytes = width * 4; // RGBA8888
+    const width_bytes = width * tex_bpp;
     if (width_bytes * height < 8 * 1024) return;
 
     const alloc = Util.allocator(.scratch);
@@ -420,7 +429,7 @@ fn swizzle_in_place(data: []align(16) u8, width: u32, height: u32) void {
 
 /// Map a linear (x, y) pixel coordinate to its byte offset in swizzled layout.
 pub fn swizzled_offset(x: u32, y: u32, width: u32) usize {
-    const bytes_per_pixel = 4; // RGBA8888
+    const bytes_per_pixel = tex_bpp;
     const width_bytes = width * bytes_per_pixel;
 
     const block_x = (x * bytes_per_pixel) / 16;
@@ -440,7 +449,7 @@ var textures = Util.CircularBuffer(TextureData, 4096).init();
 var bound_texture: Texture.Handle = 0;
 
 fn create_texture(_: *anyopaque, width: u32, height: u32, data: []align(16) u8) !Texture.Handle {
-    const width_bytes = width * 4;
+    const width_bytes = width * tex_bpp;
     const should_swizzle = width_bytes * height >= 8 * 1024;
 
     if (should_swizzle) {
@@ -474,7 +483,7 @@ fn bind_texture(_: *anyopaque, handle: Texture.Handle) void {
     bound_texture = handle;
     const tex = textures.get_element(handle) orelse return;
 
-    gu.tex_mode(.Psm8888, 0, .Single, if (tex.swizzled) .Swizzled else .Linear);
+    gu.tex_mode(tex_pixel_format, 0, .Single, if (tex.swizzled) .Swizzled else .Linear);
     gu.tex_image(
         0,
         @intCast(tex.width),
@@ -497,11 +506,11 @@ fn force_texture_resident(_: *anyopaque, handle: Texture.Handle) void {
     var tex = textures.get_element(handle) orelse return;
     if (tex.in_vram) return;
 
-    const size = tex.width * tex.height * 4; // RGBA8888
+    const size = tex.width * tex.height * tex_bpp;
     const vram_ptr = sdk.extra.vram.allocVramAbsolute(
         tex.width,
         tex.height,
-        .Psm8888,
+        tex_pixel_format,
     ) orelse @panic("force_texture_resident: VRAM allocation failed");
 
     const dst: [*]u8 = @ptrCast(vram_ptr);
