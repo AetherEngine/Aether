@@ -7,7 +7,7 @@ const Self = @This();
 
 sync: bool,
 
-fn init(ctx: *anyopaque, _: u32, _: u32, _: [:0]const u8, _: bool, sync: bool) !void {
+fn init(ctx: *anyopaque, _: u32, _: u32, _: [:0]const u8, _: bool, sync: bool, _: bool) !void {
     const self = Util.ctx_to_self(Self, ctx);
     self.sync = sync;
 
