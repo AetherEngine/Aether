@@ -4,6 +4,7 @@ const Image = @import("../util/image.zig");
 const Util = @import("../util/util.zig");
 const Platform = @import("../platform/platform.zig");
 const gfx = Platform.gfx;
+const options = @import("options");
 const psp_gfx = if (builtin.os.tag == .psp) @import("../platform/psp/psp_gfx.zig") else struct {};
 
 pub const Handle = u32;
@@ -35,11 +36,16 @@ pub fn load(path: []const u8) !Texture {
 /// Intermediate decode buffers use the scratch pool; the final pixel data
 /// uses the render pool.
 pub fn load_from_reader(reader: *std.Io.Reader) !Texture {
+    const color_mode: Image.ColorMode = if (builtin.os.tag == .psp and options.config.psp_display_mode == .rgb565)
+        .rgba4444
+    else
+        .rgba8;
+
     const img = try Image.load_png_ex(
         Util.allocator(.scratch),
         Util.allocator(.render),
         reader,
-        .rgba8,
+        color_mode,
     );
     errdefer Util.allocator(.render).free(img.data);
 
@@ -74,27 +80,52 @@ pub fn force_resident(self: *const Texture) void {
     gfx.api.tab.force_texture_resident(gfx.api.ptr, self.handle);
 }
 
-/// Returns the RGBA pixel at (x, y), accounting for swizzled layout on PSP.
+/// Returns the RGBA pixel at (x, y), accounting for swizzled layout and
+/// pixel format on PSP.
 pub fn get_pixel(self: *const Texture, x: u32, y: u32) [4]u8 {
     const offset = pixel_offset(self, x, y);
+    if (builtin.os.tag == .psp and options.config.psp_display_mode == .rgb565) {
+        const lo: u16 = self.data[offset];
+        const hi: u16 = self.data[offset + 1];
+        const pixel = lo | (hi << 8);
+        return .{
+            @truncate((pixel & 0x000F) << 4 | (pixel & 0x000F)),
+            @truncate((pixel & 0x00F0) | (pixel >> 4 & 0x000F)),
+            @truncate((pixel >> 4 & 0x00F0) | (pixel >> 8 & 0x000F)),
+            @truncate((pixel >> 8 & 0x00F0) | (pixel >> 12)),
+        };
+    }
     return self.data[offset..][0..4].*;
 }
 
-/// Sets the RGBA pixel at (x, y), accounting for swizzled layout on PSP.
-/// Call `update()` after all modifications to push changes to the GPU.
+/// Sets the RGBA pixel at (x, y), accounting for swizzled layout and
+/// pixel format on PSP. Call `update()` after all modifications to push
+/// changes to the GPU.
 pub fn set_pixel(self: *Texture, x: u32, y: u32, rgba: [4]u8) void {
     const offset = pixel_offset(self, x, y);
+    if (builtin.os.tag == .psp and options.config.psp_display_mode == .rgb565) {
+        const r: u16 = rgba[0] >> 4;
+        const g: u16 = rgba[1] >> 4;
+        const b: u16 = rgba[2] >> 4;
+        const a: u16 = rgba[3] >> 4;
+        const pixel: u16 = (a << 12) | (b << 8) | (g << 4) | r;
+        self.data[offset] = @truncate(pixel);
+        self.data[offset + 1] = @truncate(pixel >> 8);
+        return;
+    }
     self.data[offset..][0..4].* = rgba;
 }
 
+const tex_bpp: u32 = if (builtin.os.tag == .psp and options.config.psp_display_mode == .rgb565) 2 else 4;
+
 fn pixel_offset(self: *const Texture, x: u32, y: u32) usize {
     if (builtin.os.tag == .psp) {
-        const width_bytes = self.width * 4;
+        const width_bytes = self.width * tex_bpp;
         if (width_bytes * self.height >= 8 * 1024) {
             return psp_gfx.swizzled_offset(x, y, self.width);
         }
     }
-    return (@as(usize, y) * self.width + x) * 4;
+    return (@as(usize, y) * self.width + x) * tex_bpp;
 }
 
 /// Binds the texture for the next draw call.
