@@ -968,7 +968,7 @@ fn draw_mesh(ctx: *anyopaque, handle: u32, model: *const Mat4, count: usize) voi
     command_buffer.draw(@intCast(count), 1, 0, 0);
 }
 
-fn create_texture(ctx: *anyopaque, width: u32, height: u32, data: []const u8) anyerror!u32 {
+fn create_texture(ctx: *anyopaque, width: u32, height: u32, data: []align(16) u8) anyerror!u32 {
     _ = ctx;
 
     if (width == 0 or height == 0) return error.InvalidTextureSize;
@@ -1159,7 +1159,7 @@ fn create_texture(ctx: *anyopaque, width: u32, height: u32, data: []const u8) an
     return idx;
 }
 
-fn update_texture(ctx: *anyopaque, handle: u32, data: []const u8) void {
+fn update_texture(ctx: *anyopaque, handle: u32, data: []align(16) u8) void {
     _ = ctx;
 
     const rec = textures.get_element(handle) orelse return;

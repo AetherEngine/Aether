@@ -220,7 +220,7 @@ fn draw_mesh(ctx: *anyopaque, handle: Mesh.Handle, model: *const Mat4, count: us
     gl.DrawArrays(gl.TRIANGLES, 0, @intCast(count));
 }
 
-fn create_texture(ctx: *anyopaque, width: u32, height: u32, data: []const u8) anyerror!u32 {
+fn create_texture(ctx: *anyopaque, width: u32, height: u32, data: []align(16) u8) anyerror!u32 {
     _ = ctx;
 
     var tex: gl.uint = 0;
@@ -236,7 +236,7 @@ fn create_texture(ctx: *anyopaque, width: u32, height: u32, data: []const u8) an
     return tex;
 }
 
-fn update_texture(ctx: *anyopaque, handle: u32, data: []const u8) void {
+fn update_texture(ctx: *anyopaque, handle: u32, data: []align(16) u8) void {
     _ = ctx;
     // Query current texture dimensions from OpenGL.
     var w: gl.int = 0;
