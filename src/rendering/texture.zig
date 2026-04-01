@@ -18,6 +18,41 @@ handle: Handle,
 /// CPU-side pixel data beyond the initial GPU upload.
 data: []align(16) u8,
 
+/// Creates a texture from raw RGBA pixel data.
+/// The data is copied into the render pool.
+pub fn load_from_data(width: u32, height: u32, pixels: []const u8) !Texture {
+    const size = @as(usize, width) * height * tex_bpp;
+    if (pixels.len < size) return error.InsufficientData;
+
+    const data = try Util.allocator(.render).alignedAlloc(u8, .fromByteUnits(16), size);
+    errdefer Util.allocator(.render).free(data);
+    @memcpy(data, pixels[0..size]);
+
+    return Texture{
+        .width = width,
+        .height = height,
+        .data = data,
+        .handle = try gfx.api.tab.create_texture(
+            gfx.api.ptr,
+            width,
+            height,
+            data,
+        ),
+    };
+}
+
+/// 4x4 solid white default texture, initialized by `init()`.
+pub var Default: Texture = undefined;
+
+pub fn init_defaults() !void {
+    const pixels = comptime blk: {
+        var data: [4 * 4 * 4]u8 = undefined;
+        @memset(&data, 0xFF);
+        break :blk data;
+    };
+    Default = try load_from_data(4, 4, &pixels);
+}
+
 /// Loads a PNG from `path` into GPU memory.
 /// The decoded pixel buffer lives in the render pool.
 pub fn load(path: []const u8) !Texture {

@@ -2,6 +2,7 @@ const std = @import("std");
 const Core = @import("core/core.zig");
 const Util = @import("util/util.zig");
 const Platform = @import("platform/platform.zig");
+const Rendering = @import("rendering/rendering.zig");
 
 pub var running = true;
 var vsync = true;
@@ -22,6 +23,7 @@ pub fn init(io: std.Io, mem: []u8, config: Config, state: *const Core.State) !vo
     // Allocator is first
     try Util.init(io, mem, config.memory);
     try Platform.init(config.width, config.height, config.title, config.fullscreen, config.vsync, config.resizable);
+    try Rendering.Texture.init_defaults();
     try Core.input.init(Util.allocator(.game));
     try Core.state_machine.init(state);
 }
@@ -29,6 +31,7 @@ pub fn init(io: std.Io, mem: []u8, config: Config, state: *const Core.State) !vo
 pub fn deinit() void {
     Core.state_machine.deinit();
     Core.input.deinit();
+    Rendering.Texture.Default.deinit();
 
     Platform.deinit();
 
