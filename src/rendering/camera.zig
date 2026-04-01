@@ -23,7 +23,7 @@ pub fn update(self: *Self) void {
 pub fn get_projection_matrix(self: *Self) Mat4 {
     const width: f32 = @floatFromInt(gfx.surface.get_width());
     const height: f32 = @floatFromInt(gfx.surface.get_height());
-    return Mat4.perspectiveFovRhGl(std.math.degreesToRadians(self.fov), width / height, 0.3, 250.0);
+    return Mat4.perspectiveFovRh(std.math.degreesToRadians(self.fov), width / height, 0.3, 250.0);
 }
 
 /// Computes and returns the camera's view matrix based on its yaw and pitch angles, from the perspective of the target position.

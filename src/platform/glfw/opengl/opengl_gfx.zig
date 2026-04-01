@@ -42,6 +42,8 @@ fn init(ctx: *anyopaque) !void {
     Util.engine_logger.debug("Renderer: {s}", .{gl.GetString(gl.RENDERER).?});
 
     gl.Viewport(0, 0, @intCast(gfx.surface.get_width()), @intCast(gfx.surface.get_height()));
+    gl.ClipControl(gl.LOWER_LEFT, gl.ZERO_TO_ONE);
+    gl.Enable(gl.DEPTH_TEST);
 
     try shader.init();
     shader.state.proj = Mat4.identity();

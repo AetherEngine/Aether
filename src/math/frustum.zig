@@ -27,7 +27,7 @@ const Self = @This();
 
 /// Extract the six frustum planes from a combined view-projection matrix.
 /// Uses the Gribb/Hartmann method adapted for row-major, row-vector matrices.
-/// Assumes OpenGL NDC (z in [-1, 1]).
+/// Assumes z in [0, 1] NDC.
 pub fn fromViewProjection(vp: Mat4) Self {
     const m = vp.data;
     var self: Self = undefined;
@@ -53,10 +53,10 @@ pub fn fromViewProjection(vp: Mat4) Self {
         .normal = Vec3.new(-m[0][1] + m[0][3], -m[1][1] + m[1][3], -m[2][1] + m[2][3]),
         .d = -m[3][1] + m[3][3],
     });
-    // Near:   col2 + col3  (OpenGL: z in [-1,1])
+    // Near:   col2  (z in [0,1])
     self.planes[4] = Plane.normalize(.{
-        .normal = Vec3.new(m[0][2] + m[0][3], m[1][2] + m[1][3], m[2][2] + m[2][3]),
-        .d = m[3][2] + m[3][3],
+        .normal = Vec3.new(m[0][2], m[1][2], m[2][2]),
+        .d = m[3][2],
     });
     // Far:   -col2 + col3
     self.planes[5] = Plane.normalize(.{
