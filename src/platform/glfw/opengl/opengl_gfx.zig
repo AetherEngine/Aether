@@ -45,6 +45,8 @@ fn init(ctx: *anyopaque) !void {
     gl.Viewport(0, 0, @intCast(gfx.surface.get_width()), @intCast(gfx.surface.get_height()));
     gl.ClipControl(gl.LOWER_LEFT, gl.ZERO_TO_ONE);
     gl.Enable(gl.DEPTH_TEST);
+    gl.Enable(gl.BLEND);
+    gl.BlendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
     try shader.init();
     shader.state.proj = Mat4.identity();

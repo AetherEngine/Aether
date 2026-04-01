@@ -716,12 +716,12 @@ fn create_pipeline(ctx: *anyopaque, layout: Pipeline.VertexLayout, vs: ?[:0]alig
     };
 
     const pipeline_color_blend_attachment_state = vk.PipelineColorBlendAttachmentState{
-        .blend_enable = .false,
-        .src_color_blend_factor = .one,
-        .dst_color_blend_factor = .zero,
+        .blend_enable = .true,
+        .src_color_blend_factor = .src_alpha,
+        .dst_color_blend_factor = .one_minus_src_alpha,
         .color_blend_op = .add,
         .src_alpha_blend_factor = .one,
-        .dst_alpha_blend_factor = .zero,
+        .dst_alpha_blend_factor = .one_minus_src_alpha,
         .alpha_blend_op = .add,
         .color_write_mask = .{
             .r_bit = true,
