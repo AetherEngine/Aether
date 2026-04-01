@@ -82,19 +82,19 @@ pub fn rotationZ(angle: f32) Self {
     } };
 }
 
-/// Right-handed perspective, OpenGL NDC (z in [-1, 1]).
+/// Right-handed perspective, z in [0, 1].
 /// fov is the full vertical field-of-view in radians.
-pub fn perspectiveFovRhGl(fov: f32, aspect: f32, near: f32, far: f32) Self {
+pub fn perspectiveFovRh(fov: f32, aspect: f32, near: f32, far: f32) Self {
     const f = 1.0 / @tan(fov * 0.5);
     return .{ .data = .{
-        .{ f / aspect, 0, 0,                              0  },
-        .{ 0,          f, 0,                              0  },
-        .{ 0,          0, (near + far) / (near - far),   -1  },
-        .{ 0,          0, 2.0 * far * near / (near - far), 0  },
+        .{ f / aspect, 0, 0,                          0  },
+        .{ 0,          f, 0,                          0  },
+        .{ 0,          0, far / (near - far),        -1  },
+        .{ 0,          0, near * far / (near - far),  0  },
     } };
 }
 
-/// Right-handed orthographic, Vulkan NDC (z in [0, 1]).
+/// Right-handed orthographic, z in [0, 1].
 /// width and height are the full extents of the view volume.
 pub fn orthographicRh(width: f32, height: f32, near: f32, far: f32) Self {
     return .{ .data = .{
