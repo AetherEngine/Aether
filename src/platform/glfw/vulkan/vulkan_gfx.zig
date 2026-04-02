@@ -32,12 +32,6 @@ const MeshData = struct {
 pub const ShaderState = struct {
     view: Mat4,
     proj: Mat4,
-    fog_enabled: u32 = 0,
-    fog_start: f32 = 0.0,
-    fog_end: f32 = 0.0,
-    _pad: u32 = 0,
-    fog_color: [3]f32 = .{ 0.0, 0.0, 0.0 },
-    _pad2: u32 = 0,
 };
 
 pub var state: ShaderState = .{
@@ -54,6 +48,11 @@ pub const UBO = struct {
 pub const DrawState = struct {
     mat: Mat4,
     tex_id: u32,
+    fog_enabled: u32 = 0,
+    fog_start: f32 = 0.0,
+    fog_end: f32 = 0.0,
+    fog_color: [3]f32 = .{ 0.0, 0.0, 0.0 },
+    _pad: u32 = 0,
 };
 
 pub var draw_state = DrawState{
@@ -444,11 +443,10 @@ fn set_alpha_blend(_: *anyopaque, enabled: bool) void {
 }
 
 fn set_fog(_: *anyopaque, enabled: bool, start: f32, end: f32, r: f32, g: f32, b: f32) void {
-    const ptr = ubos[swapchain.image_index].mapped_ptr;
-    ptr.fog_enabled = @intFromBool(enabled);
-    ptr.fog_start = start;
-    ptr.fog_end = end;
-    ptr.fog_color = .{ r, g, b };
+    draw_state.fog_enabled = @intFromBool(enabled);
+    draw_state.fog_start = start;
+    draw_state.fog_end = end;
+    draw_state.fog_color = .{ r, g, b };
 }
 
 fn start_frame(ctx: *anyopaque) bool {
