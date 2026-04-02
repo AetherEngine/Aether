@@ -45,6 +45,9 @@ fn init(ctx: *anyopaque) !void {
     gl.Viewport(0, 0, @intCast(gfx.surface.get_width()), @intCast(gfx.surface.get_height()));
     gl.ClipControl(gl.LOWER_LEFT, gl.ZERO_TO_ONE);
     gl.Enable(gl.DEPTH_TEST);
+    gl.Enable(gl.CULL_FACE);
+    gl.FrontFace(gl.CCW);
+    gl.CullFace(gl.BACK);
     gl.Enable(gl.BLEND);
     gl.BlendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
