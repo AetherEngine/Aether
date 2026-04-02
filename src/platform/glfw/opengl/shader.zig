@@ -7,6 +7,12 @@ const Util = @import("../../../util/util.zig");
 pub const ShaderState = struct {
     view: Mat4,
     proj: Mat4,
+    fog_enabled: u32 = 0,
+    fog_start: f32 = 0.0,
+    fog_end: f32 = 0.0,
+    _pad: u32 = 0,
+    fog_color: [3]f32 = .{ 0.0, 0.0, 0.0 },
+    _pad2: u32 = 0,
 };
 
 const PerObject = struct {
