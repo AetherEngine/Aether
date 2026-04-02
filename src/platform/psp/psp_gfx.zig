@@ -326,7 +326,8 @@ fn bind_pipeline(_: *anyopaque, handle: Pipeline.Handle) void {
 }
 const MeshData = struct {
     pipeline: Pipeline.Handle,
-    data: ?[]u8,
+    data: ?[*]const u8,
+    len: usize,
 };
 
 var meshes = Util.CircularBuffer(MeshData, 2048).init();
@@ -335,36 +336,22 @@ fn create_mesh(_: *anyopaque, pipeline: Pipeline.Handle) !Mesh.Handle {
     const handle = meshes.add_element(.{
         .pipeline = pipeline,
         .data = null,
+        .len = 0,
     }) orelse return error.OutOfMeshes;
 
     return @intCast(handle);
 }
 
 fn destroy_mesh(_: *anyopaque, handle: Mesh.Handle) void {
-    const mesh = meshes.get_element(handle) orelse return;
-    if (mesh.data) |buf| {
-        Util.allocator(.render).free(buf);
-    }
     _ = meshes.remove_element(handle);
 }
 
 fn update_mesh(_: *anyopaque, handle: Mesh.Handle, data: []const u8) void {
     var mesh = meshes.get_element(handle) orelse return;
 
-    // Reallocate if the size changed
-    if (mesh.data) |buf| {
-        if (buf.len != data.len) {
-            Util.allocator(.render).free(buf);
-            mesh.data = null;
-        }
-    }
-
-    if (mesh.data == null) {
-        mesh.data = Util.allocator(.render).alloc(u8, data.len) catch return;
-    }
-
-    @memcpy(mesh.data.?, data);
-    sdk.kernel.dcache_writeback_range(mesh.data.?.ptr, @intCast(data.len));
+    mesh.data = data.ptr;
+    mesh.len = data.len;
+    sdk.kernel.dcache_writeback_range(data.ptr, @intCast(data.len));
 
     meshes.update_element(handle, mesh);
 }
@@ -372,7 +359,7 @@ fn update_mesh(_: *anyopaque, handle: Mesh.Handle, data: []const u8) void {
 fn draw_mesh(_: *anyopaque, handle: Mesh.Handle, model: *const Mat4, count: usize) void {
     const mesh = meshes.get_element(handle) orelse return;
     const pl = pipelines.get_element(mesh.pipeline) orelse return;
-    const buf = mesh.data orelse return;
+    const data = mesh.data orelse return;
 
     gum.matrix_mode(.Model);
     gum.load_matrix(to_psp_matrix(model));
@@ -382,7 +369,7 @@ fn draw_mesh(_: *anyopaque, handle: Mesh.Handle, model: *const Mat4, count: usiz
         pl.vertex_type,
         @intCast(count),
         null,
-        buf.ptr,
+        data,
     );
 }
 const TextureData = struct {
