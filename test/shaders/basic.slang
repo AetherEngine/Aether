@@ -14,12 +14,14 @@ struct VertexOutput {
 struct CameraState {
     float4x4 view;
     float4x4 proj;
+#ifndef VULKAN
     uint fogEnabled;
     float fogStart;
     float fogEnd;
     uint _pad;
     float3 fogColor;
     uint _pad2;
+#endif
 };
 
 #ifdef VULKAN
@@ -30,6 +32,10 @@ ConstantBuffer<CameraState> camera;
 struct PushConstants {
     float4x4 model;
     uint textureIndex;
+    uint fogEnabled;
+    float fogStart;
+    float fogEnd;
+    float3 fogColor;
 };
 
 [[vk::push_constant]]
@@ -86,9 +92,16 @@ float4 fragmentMain(VertexOutput input) : SV_Target {
 #else
     float4 color = u_combinedTexture.Sample(input.uv) * input.color;
 #endif
+#ifdef VULKAN
+    if (pc.fogEnabled != 0) {
+        float factor = clamp((pc.fogEnd - input.viewDepth) / (pc.fogEnd - pc.fogStart), 0.0, 1.0);
+        color.rgb = lerp(pc.fogColor, color.rgb, factor);
+    }
+#else
     if (camera.fogEnabled != 0) {
         float factor = clamp((camera.fogEnd - input.viewDepth) / (camera.fogEnd - camera.fogStart), 0.0, 1.0);
         color.rgb = lerp(camera.fogColor, color.rgb, factor);
     }
+#endif
     return color;
 }
