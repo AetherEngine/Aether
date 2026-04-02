@@ -35,10 +35,7 @@ const tex_bpp: u32 = switch (options.config.psp_display_mode) {
 };
 
 const display = sdk.display;
-const kernel = sdk.kernel;
 const ge = sdk.ge;
-
-const VBLANK_INT = 30;
 
 const VertexType = sdk.VertexType;
 
@@ -53,33 +50,20 @@ var bound_pipeline: Pipeline.Handle = 0;
 const Self = @This();
 
 const Swapchain = struct {
-    const BUFFER_COUNT = 3;
-
-    const State = struct {
-        draw_idx: u2 = 0,
-        display_idx: u2 = 0,
-        ready_display: ?u2 = null,
-        ready_queue: [BUFFER_COUNT]u2 = .{ 0, 0, 0 },
-        ready_count: u2 = 0,
-    };
+    const BUFFER_COUNT = 2;
 
     display_list: [0x10000]u32 align(16) = [_]u32{0} ** 0x10000,
-    buffers_rel: [BUFFER_COUNT]?*anyopaque = .{ null, null, null },
-    buffers_abs: [BUFFER_COUNT]?*anyopaque = .{ null, null, null },
-    state_storage: State = .{},
-
-    fn state(self: *Swapchain) *volatile State {
-        return @ptrCast(&self.state_storage);
-    }
+    buffers_rel: [BUFFER_COUNT]?*anyopaque = .{ null, null },
+    buffers_abs: [BUFFER_COUNT]?*anyopaque = .{ null, null },
+    draw_idx: u1 = 1,
+    display_idx: u1 = 0,
 
     fn init(self: *Swapchain) void {
         const vram_base = @intFromPtr(ge.edram_get_addr());
         const uncached: usize = 0x40000000;
 
-        self.state().display_idx = 0;
-        self.state().draw_idx = 1;
-        self.state().ready_count = 0;
-        self.state().ready_display = null;
+        self.display_idx = 0;
+        self.draw_idx = 1;
 
         for (0..BUFFER_COUNT) |i| {
             self.buffers_rel[i] = sdk.extra.vram.allocVramRelative(SCR_BUF_WIDTH, SCREEN_HEIGHT, gu_pixel_format);
@@ -87,62 +71,9 @@ const Swapchain = struct {
         }
     }
 
-    fn next_draw_idx(self: *Swapchain) u2 {
-        const s = self.state();
-        const cur_display = s.display_idx;
-        const cur_ready = s.ready_display;
-
-        for (0..BUFFER_COUNT) |i| {
-            const idx: u2 = @intCast(i);
-            if (idx == cur_display) continue;
-            if (cur_ready != null and idx == cur_ready.?) continue;
-            return idx;
-        }
-        return s.draw_idx;
-    }
-
-    fn push_ready(self: *Swapchain, idx: u2) void {
-        const s = self.state();
-        if (s.ready_count < BUFFER_COUNT) {
-            s.ready_queue[s.ready_count] = idx;
-            s.ready_count += 1;
-        }
-    }
-
-    fn pop_ready(self: *Swapchain) ?u2 {
-        const s = self.state();
-        if (s.ready_count > 0) {
-            const disp = s.ready_queue[0];
-            var i: u2 = 0;
-            while (i < s.ready_count - 1) : (i += 1) {
-                s.ready_queue[i] = s.ready_queue[i + 1];
-            }
-            s.ready_count -= 1;
-            return disp;
-        }
-        return null;
-    }
-
-    fn ge_finish_callback(_: c_int) void {
-        const intr = kernel.cpu_suspend_intr();
-        defer kernel.cpu_resume_intr_with_sync(intr);
-
-        if (swapchain.pop_ready()) |disp| {
-            swapchain.state().ready_display = disp;
-        }
-    }
-
-    fn vblank_handler(_: c_int, _: c_int, _: ?*anyopaque) callconv(.c) c_int {
-        const intr = kernel.cpu_suspend_intr();
-        defer kernel.cpu_resume_intr_with_sync(intr);
-
-        const s = swapchain.state();
-        if (s.ready_display) |disp| {
-            display.set_frame_buf(swapchain.buffers_abs[disp], SCR_BUF_WIDTH, display_pixel_format, .immediate) catch {};
-            s.display_idx = disp;
-            s.ready_display = null;
-        }
-        return -1;
+    fn swap(self: *Swapchain) void {
+        self.draw_idx = ~self.draw_idx;
+        self.display_idx = ~self.display_idx;
     }
 };
 
@@ -156,13 +87,11 @@ fn init(ctx: *anyopaque) !void {
 
     swapchain.init();
     const zbp = sdk.extra.vram.allocVramRelative(SCR_BUF_WIDTH, SCREEN_HEIGHT, .Psm4444);
-    const s = swapchain.state();
 
     gu.init();
-    _ = gu.set_callback(4, Swapchain.ge_finish_callback); // GuCallbackId.Finish = 4
     gu.start(.Direct, &swapchain.display_list);
-    gu.draw_buffer(display_pixel_format, swapchain.buffers_rel[s.draw_idx], SCR_BUF_WIDTH);
-    gu.disp_buffer(SCREEN_WIDTH, SCREEN_HEIGHT, swapchain.buffers_rel[s.display_idx], SCR_BUF_WIDTH);
+    gu.draw_buffer(display_pixel_format, swapchain.buffers_rel[swapchain.draw_idx], SCR_BUF_WIDTH);
+    gu.disp_buffer(SCREEN_WIDTH, SCREEN_HEIGHT, swapchain.buffers_rel[swapchain.display_idx], SCR_BUF_WIDTH);
     gu.depth_buffer(zbp, SCR_BUF_WIDTH);
     gu.offset(2048 - (SCREEN_WIDTH / 2), 2048 - (SCREEN_HEIGHT / 2));
     gu.viewport(2048, 2048, SCREEN_WIDTH, SCREEN_HEIGHT);
@@ -202,16 +131,10 @@ fn init(ctx: *anyopaque) !void {
 
     // Set frame buf AFTER gu.display(false), since gu.display(false)
     // internally calls sceDisplaySetFrameBuf(NULL) and would override us.
-    try display.set_frame_buf(swapchain.buffers_abs[s.display_idx], SCR_BUF_WIDTH, display_pixel_format, .next_vblank);
-
-    try kernel.register_sub_intr_handler(VBLANK_INT, 0, @ptrCast(@constCast(&Swapchain.vblank_handler)), null);
-    try kernel.enable_sub_intr(VBLANK_INT, 0);
+    try display.set_frame_buf(swapchain.buffers_abs[swapchain.display_idx], SCR_BUF_WIDTH, display_pixel_format, .next_vblank);
 }
 
 fn deinit(_: *anyopaque) void {
-    kernel.disable_sub_intr(VBLANK_INT, 0) catch {};
-    kernel.release_sub_intr_handler(VBLANK_INT, 0) catch {};
-    _ = gu.set_callback(4, null); // clear GE finish callback
     gu.term();
 }
 
@@ -242,9 +165,6 @@ fn set_view_matrix(_: *anyopaque, mat: *const Mat4) void {
 fn start_frame(ctx: *anyopaque) bool {
     const self = Util.ctx_to_self(Self, ctx);
 
-    // Wait for previous frame's GE to finish before reusing the display list buffer.
-    gu.sync(.List, .wait);
-
     gu.start(.Direct, &swapchain.display_list);
     gu.clear_color(self.clear_color);
     gu.clear_depth(1);
@@ -255,23 +175,14 @@ fn start_frame(ctx: *anyopaque) bool {
 }
 
 fn end_frame(_: *anyopaque) void {
-    {
-        const intr = kernel.cpu_suspend_intr();
-        defer kernel.cpu_resume_intr_with_sync(intr);
-
-        const s = swapchain.state();
-
-        // Push current draw buffer to ready queue BEFORE gu.finish(),
-        // since the GE finish callback may fire immediately after finish.
-        swapchain.push_ready(s.draw_idx);
-
-        // Pick the next free buffer.
-        s.draw_idx = swapchain.next_draw_idx();
-    }
-
     gu.finish();
+    gu.sync(.Finish, .wait);
 
-    gu.draw_buffer(display_pixel_format, swapchain.buffers_rel[swapchain.state().draw_idx], SCR_BUF_WIDTH);
+    display.wait_vblank_start() catch {};
+    display.set_frame_buf(swapchain.buffers_abs[swapchain.draw_idx], SCR_BUF_WIDTH, display_pixel_format, .immediate) catch {};
+
+    swapchain.swap();
+    gu.draw_buffer(display_pixel_format, swapchain.buffers_rel[swapchain.draw_idx], SCR_BUF_WIDTH);
 }
 
 fn create_pipeline(_: *anyopaque, layout: Pipeline.VertexLayout, _: ?[:0]align(4) const u8, _: ?[:0]align(4) const u8) !Pipeline.Handle {
