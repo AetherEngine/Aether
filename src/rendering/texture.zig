@@ -77,7 +77,7 @@ pub fn load_from_reader(reader: *std.Io.Reader) !Texture {
         .rgba8;
 
     const img = try Image.load_png_ex(
-        Util.allocator(.scratch),
+        Util.allocator(.render),
         Util.allocator(.render),
         reader,
         color_mode,
