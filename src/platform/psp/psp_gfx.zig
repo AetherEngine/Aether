@@ -395,7 +395,7 @@ fn swizzle_in_place(data: []align(16) u8, width: u32, height: u32) void {
     const width_bytes = width * tex_bpp;
     if (width_bytes * height < 8 * 1024) return;
 
-    const alloc = Util.allocator(.scratch);
+    const alloc = Util.allocator(.render);
     const tmp = alloc.alignedAlloc(u8, .fromByteUnits(16), data.len) catch return;
     defer alloc.free(tmp);
 

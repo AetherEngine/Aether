@@ -5,13 +5,12 @@ pub const MemoryConfig = struct {
     audio:   usize,
     game:    usize,
     user:    usize,
-    scratch: usize,
 
     pub fn total(self: MemoryConfig) usize {
-        return self.render + self.audio + self.game + self.user + self.scratch;
+        return self.render + self.audio + self.game + self.user;
     }
 };
 
-pub const Pool = enum { render, audio, game, user, scratch };
+pub const Pool = enum { render, audio, game, user };
 
-pub const PoolAllocator = pool_alloc.PoolAlloc;
+pub const PoolAlloc = pool_alloc.PoolAlloc;

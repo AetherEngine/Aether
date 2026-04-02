@@ -117,11 +117,10 @@ pub fn main(init: std.process.Init) !void {
     var state: MyState = undefined;
     try ae.App.init(init.io, memory, .{
         .memory = .{
-            .render = 8 * 1024 * 1024,
+            .render = 12 * 1024 * 1024,
             .audio = 2 * 1024 * 1024,
             .game = 2 * 1024 * 1024,
             .user = 16 * 1024 * 1024,
-            .scratch = 4 * 1024 * 1024,
         },
         .resizable = true,
     }, &state.state());
