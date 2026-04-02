@@ -139,7 +139,13 @@ fn deinit(_: *anyopaque) void {
 }
 
 fn set_alpha_blend(_: *anyopaque, enabled: bool) void {
-    if (enabled) gu.enable(.Blend) else gu.disable(.Blend);
+    if (enabled) {
+        gu.enable(.Blend);
+        gu.enable(.AlphaTest);
+    } else {
+        gu.disable(.Blend);
+        gu.disable(.AlphaTest);
+    }
 }
 
 fn set_clear_color(ctx: *anyopaque, r: f32, g: f32, b: f32, _: f32) void {
