@@ -16,6 +16,7 @@ fn deinit(ctx: *anyopaque) void {
 }
 
 fn set_clear_color(_: *anyopaque, _: f32, _: f32, _: f32, _: f32) void {}
+fn set_alpha_blend(_: *anyopaque, _: bool) void {}
 fn set_proj_matrix(_: *anyopaque, _: *const Mat4) void {}
 fn set_view_matrix(_: *anyopaque, _: *const Mat4) void {}
 
@@ -54,6 +55,7 @@ pub fn gfx_api(self: *Self) GFXAPI {
         .init = init,
         .deinit = deinit,
         .set_clear_color = set_clear_color,
+        .set_alpha_blend = set_alpha_blend,
         .set_proj_matrix = set_proj_matrix,
         .set_view_matrix = set_view_matrix,
         .start_frame = start_frame,

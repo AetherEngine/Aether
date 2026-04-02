@@ -83,6 +83,10 @@ fn set_clear_color(ctx: *anyopaque, r: f32, g: f32, b: f32, a: f32) void {
     gl.ClearColor(r, g, b, a);
 }
 
+fn set_alpha_blend(_: *anyopaque, enabled: bool) void {
+    if (enabled) gl.Enable(gl.BLEND) else gl.Disable(gl.BLEND);
+}
+
 fn start_frame(ctx: *anyopaque) bool {
     _ = ctx;
 
@@ -268,6 +272,7 @@ pub fn gfx_api(self: *Self) GFXAPI {
             .init = init,
             .deinit = deinit,
             .set_clear_color = set_clear_color,
+            .set_alpha_blend = set_alpha_blend,
             .start_frame = start_frame,
             .end_frame = end_frame,
             .set_proj_matrix = set_proj_matrix,
