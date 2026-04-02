@@ -165,6 +165,11 @@ fn set_view_matrix(_: *anyopaque, mat: *const Mat4) void {
 fn start_frame(ctx: *anyopaque) bool {
     const self = Util.ctx_to_self(Self, ctx);
 
+    gu.sync(.Finish, .wait);
+    display.set_frame_buf(swapchain.buffers_abs[swapchain.draw_idx], SCR_BUF_WIDTH, display_pixel_format, .immediate) catch {};
+    swapchain.swap();
+    gu.draw_buffer(display_pixel_format, swapchain.buffers_rel[swapchain.draw_idx], SCR_BUF_WIDTH);
+
     gu.start(.Direct, &swapchain.display_list);
     gu.clear_color(self.clear_color);
     gu.clear_depth(1);
@@ -176,13 +181,13 @@ fn start_frame(ctx: *anyopaque) bool {
 
 fn end_frame(_: *anyopaque) void {
     gu.finish();
-    gu.sync(.Finish, .wait);
+    // gu.sync(.Finish, .wait);
 
-    display.wait_vblank_start() catch {};
-    display.set_frame_buf(swapchain.buffers_abs[swapchain.draw_idx], SCR_BUF_WIDTH, display_pixel_format, .immediate) catch {};
+    // display.wait_vblank_start() catch {};
+    // display.set_frame_buf(swapchain.buffers_abs[swapchain.draw_idx], SCR_BUF_WIDTH, display_pixel_format, .immediate) catch {};
 
-    swapchain.swap();
-    gu.draw_buffer(display_pixel_format, swapchain.buffers_rel[swapchain.draw_idx], SCR_BUF_WIDTH);
+    // swapchain.swap();
+    // gu.draw_buffer(display_pixel_format, swapchain.buffers_rel[swapchain.draw_idx], SCR_BUF_WIDTH);
 }
 
 fn create_pipeline(_: *anyopaque, layout: Pipeline.VertexLayout, _: ?[:0]align(4) const u8, _: ?[:0]align(4) const u8) !Pipeline.Handle {
