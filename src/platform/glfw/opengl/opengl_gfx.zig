@@ -19,6 +19,7 @@ var last_width: u32 = 0;
 var last_height: u32 = 0;
 var pipelines = Util.CircularBuffer(PipelineData, 16).init();
 var meshes = Util.CircularBuffer(MeshInternal, 2048).init();
+var alpha_blend_enabled: bool = true;
 
 const PipelineData = struct {
     layout: Pipeline.VertexLayout,
@@ -84,6 +85,8 @@ fn set_clear_color(ctx: *anyopaque, r: f32, g: f32, b: f32, a: f32) void {
 }
 
 fn set_alpha_blend(_: *anyopaque, enabled: bool) void {
+    if (enabled == alpha_blend_enabled) return;
+    alpha_blend_enabled = enabled;
     if (enabled) gl.Enable(gl.BLEND) else gl.Disable(gl.BLEND);
 }
 

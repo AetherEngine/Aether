@@ -46,6 +46,7 @@ const PipelineData = struct {
 
 var pipelines = Util.CircularBuffer(PipelineData, 16).init();
 var bound_pipeline: Pipeline.Handle = 0;
+var alpha_blend_enabled: bool = true;
 
 const Self = @This();
 
@@ -139,6 +140,8 @@ fn deinit(_: *anyopaque) void {
 }
 
 fn set_alpha_blend(_: *anyopaque, enabled: bool) void {
+    if (enabled == alpha_blend_enabled) return;
+    alpha_blend_enabled = enabled;
     if (enabled) {
         gu.enable(.Blend);
         gu.enable(.AlphaTest);

@@ -83,6 +83,7 @@ var pipelines = Util.CircularBuffer(PipelineData, 16).init();
 var meshes = Util.CircularBuffer(MeshData, 2048).init();
 
 var swap_state: Swapchain.PresentState = .optimal;
+var alpha_blend_enabled: bool = true;
 
 const depth_format: vk.Format = .d32_sfloat;
 var depth_image: vk.Image = .null_handle;
@@ -430,6 +431,8 @@ fn set_clear_color(ctx: *anyopaque, r: f32, g: f32, b: f32, a: f32) void {
 }
 
 fn set_alpha_blend(_: *anyopaque, enabled: bool) void {
+    if (enabled == alpha_blend_enabled) return;
+    alpha_blend_enabled = enabled;
     const enable: vk.Bool32 = if (enabled) .true else .false;
     command_buffer.setColorBlendEnableEXT(0, @ptrCast(&[1]vk.Bool32{enable}));
 }
