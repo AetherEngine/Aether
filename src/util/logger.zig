@@ -24,18 +24,10 @@ pub fn aether_log_fn(
     comptime format: []const u8,
     args: anytype,
 ) void {
-    const scope_prefix = "(" ++ switch (scope) {
-        .engine, .game, std.log.default_log_scope => @tagName(scope),
-        else => if (@intFromEnum(level) <= @intFromEnum(std.log.Level.err))
-            @tagName(scope)
-        else
-            return,
-    } ++ ") ";
+    const scope_prefix = "(" ++ @tagName(scope) ++ ") ";
 
     const prefix = scope_prefix ++ "[" ++ comptime level.asText() ++ "]: ";
 
     writer.print(prefix ++ format ++ "\n", args) catch {};
-    if (builtin.mode == .Debug or builtin.mode == .ReleaseSafe) {
-        std.debug.print(prefix ++ format ++ "\n", args);
-    }
+    std.debug.print(prefix ++ format ++ "\n", args);
 }
