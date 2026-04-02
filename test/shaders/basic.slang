@@ -8,11 +8,18 @@ struct VertexOutput {
     float4 position : SV_Position;
     float2 uv       : TEXCOORD;
     float4 color    : COLOR;
+    float viewDepth : VIEWDEPTH;
 };
 
 struct CameraState {
     float4x4 view;
     float4x4 proj;
+    uint fogEnabled;
+    float fogStart;
+    float fogEnd;
+    uint _pad;
+    float3 fogColor;
+    uint _pad2;
 };
 
 #ifdef VULKAN
@@ -58,7 +65,9 @@ float4x4 getModel() { return perObject.model; }
 [shader("vertex")]
 VertexOutput vertexMain(VertexInput input) {
     VertexOutput output;
-    output.position = mul(camera.proj, mul(camera.view, mul(getModel(), float4(input.position, 1.0))));
+    float4 viewPos = mul(camera.view, mul(getModel(), float4(input.position, 1.0)));
+    output.position = mul(camera.proj, viewPos);
+    output.viewDepth = -viewPos.z;
     output.uv = input.uv;
     output.color = input.color;
     return output;
@@ -67,12 +76,19 @@ VertexOutput vertexMain(VertexInput input) {
 [shader("fragment")]
 float4 fragmentMain(VertexOutput input) : SV_Target {
 #ifdef VULKAN
+    float4 color;
     if (pc.textureIndex == 0) {
-        return input.color;
+        color = input.color;
+    } else {
+        uint idx = NonUniformResourceIndex(pc.textureIndex);
+        color = g_textures[idx].Sample(g_sampler, input.uv) * input.color;
     }
-    uint idx = NonUniformResourceIndex(pc.textureIndex);
-    return g_textures[idx].Sample(g_sampler, input.uv) * input.color;
 #else
-    return u_combinedTexture.Sample(input.uv) * input.color;
+    float4 color = u_combinedTexture.Sample(input.uv) * input.color;
 #endif
+    if (camera.fogEnabled != 0) {
+        float factor = clamp((camera.fogEnd - input.viewDepth) / (camera.fogEnd - camera.fogStart), 0.0, 1.0);
+        color.rgb = lerp(camera.fogColor, color.rgb, factor);
+    }
+    return color;
 }

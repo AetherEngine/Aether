@@ -32,6 +32,12 @@ const MeshData = struct {
 pub const ShaderState = struct {
     view: Mat4,
     proj: Mat4,
+    fog_enabled: u32 = 0,
+    fog_start: f32 = 0.0,
+    fog_end: f32 = 0.0,
+    _pad: u32 = 0,
+    fog_color: [3]f32 = .{ 0.0, 0.0, 0.0 },
+    _pad2: u32 = 0,
 };
 
 pub var state: ShaderState = .{
@@ -435,6 +441,14 @@ fn set_alpha_blend(_: *anyopaque, enabled: bool) void {
     alpha_blend_enabled = enabled;
     const enable: vk.Bool32 = if (enabled) .true else .false;
     command_buffer.setColorBlendEnableEXT(0, @ptrCast(&[1]vk.Bool32{enable}));
+}
+
+fn set_fog(_: *anyopaque, enabled: bool, start: f32, end: f32, r: f32, g: f32, b: f32) void {
+    const ptr = ubos[swapchain.image_index].mapped_ptr;
+    ptr.fog_enabled = @intFromBool(enabled);
+    ptr.fog_start = start;
+    ptr.fog_end = end;
+    ptr.fog_color = .{ r, g, b };
 }
 
 fn start_frame(ctx: *anyopaque) bool {
@@ -1326,6 +1340,7 @@ pub fn gfx_api(self: *Self) GFXAPI {
             .deinit = deinit,
             .set_clear_color = set_clear_color,
             .set_alpha_blend = set_alpha_blend,
+            .set_fog = set_fog,
             .start_frame = start_frame,
             .end_frame = end_frame,
             .set_proj_matrix = set_proj_matrix,

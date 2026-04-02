@@ -151,6 +151,27 @@ fn set_alpha_blend(_: *anyopaque, enabled: bool) void {
     }
 }
 
+var fog_enabled: bool = false;
+
+fn set_fog(_: *anyopaque, enabled: bool, start: f32, end: f32, r: f32, g: f32, b: f32) void {
+    if (enabled) {
+        const ri: u32 = @intFromFloat(@max(0.0, @min(1.0, r)) * 255.0);
+        const gi: u32 = @intFromFloat(@max(0.0, @min(1.0, g)) * 255.0);
+        const bi: u32 = @intFromFloat(@max(0.0, @min(1.0, b)) * 255.0);
+        const color: c_uint = @intCast(bi << 16 | gi << 8 | ri);
+        gu.fog(start, end, color);
+        if (!fog_enabled) {
+            gu.enable(.Fog);
+            fog_enabled = true;
+        }
+    } else {
+        if (fog_enabled) {
+            gu.disable(.Fog);
+            fog_enabled = false;
+        }
+    }
+}
+
 fn set_clear_color(ctx: *anyopaque, r: f32, g: f32, b: f32, _: f32) void {
     const self = Util.ctx_to_self(Self, ctx);
     const ri: u8 = @intFromFloat(@max(0.0, @min(1.0, r)) * 255.0);
@@ -447,6 +468,7 @@ pub fn gfx_api(self: *Self) GFXAPI {
             .deinit = deinit,
             .set_clear_color = set_clear_color,
             .set_alpha_blend = set_alpha_blend,
+            .set_fog = set_fog,
             .start_frame = start_frame,
             .end_frame = end_frame,
             .set_proj_matrix = set_proj_matrix,
