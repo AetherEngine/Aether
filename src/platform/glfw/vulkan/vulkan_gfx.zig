@@ -429,6 +429,11 @@ fn set_clear_color(ctx: *anyopaque, r: f32, g: f32, b: f32, a: f32) void {
     clear_color[3] = a;
 }
 
+fn set_alpha_blend(_: *anyopaque, enabled: bool) void {
+    const enable: vk.Bool32 = if (enabled) .true else .false;
+    command_buffer.setColorBlendEnableEXT(0, @ptrCast(&[1]vk.Bool32{enable}));
+}
+
 fn start_frame(ctx: *anyopaque) bool {
     _ = ctx;
 
@@ -742,6 +747,7 @@ fn create_pipeline(ctx: *anyopaque, layout: Pipeline.VertexLayout, vs: ?[:0]alig
     const dynstate = [_]vk.DynamicState{
         .viewport,
         .scissor,
+        .color_blend_enable_ext,
     };
 
     const pipeline_dynamic_state_create_info = vk.PipelineDynamicStateCreateInfo{
@@ -1316,6 +1322,7 @@ pub fn gfx_api(self: *Self) GFXAPI {
             .init = init,
             .deinit = deinit,
             .set_clear_color = set_clear_color,
+            .set_alpha_blend = set_alpha_blend,
             .start_frame = start_frame,
             .end_frame = end_frame,
             .set_proj_matrix = set_proj_matrix,

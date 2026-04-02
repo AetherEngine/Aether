@@ -17,6 +17,7 @@ pub const VTable = struct {
 
     // --- API State ---
     set_clear_color: *const fn (ctx: *anyopaque, r: f32, g: f32, b: f32, a: f32) void,
+    set_alpha_blend: *const fn (ctx: *anyopaque, enabled: bool) void,
     set_proj_matrix: *const fn (ctx: *anyopaque, mat: *const Mat4) void,
     set_view_matrix: *const fn (ctx: *anyopaque, mat: *const Mat4) void,
 
@@ -62,6 +63,11 @@ pub inline fn deinit(self: *const Self) void {
 /// These are automatically used when `start_frame` is called.
 pub inline fn set_clear_color(self: *const Self, r: f32, g: f32, b: f32, a: f32) void {
     self.tab.set_clear_color(self.ptr, r, g, b, a);
+}
+
+/// Enables or disables alpha blending.
+pub inline fn set_alpha_blend(self: *const Self, enabled: bool) void {
+    self.tab.set_alpha_blend(self.ptr, enabled);
 }
 
 /// Begins a new frame. This should be called once per frame before any drawing commands.

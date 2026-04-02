@@ -138,6 +138,10 @@ fn deinit(_: *anyopaque) void {
     gu.term();
 }
 
+fn set_alpha_blend(_: *anyopaque, enabled: bool) void {
+    if (enabled) gu.enable(.Blend) else gu.disable(.Blend);
+}
+
 fn set_clear_color(ctx: *anyopaque, r: f32, g: f32, b: f32, _: f32) void {
     const self = Util.ctx_to_self(Self, ctx);
     const ri: u8 = @intFromFloat(@max(0.0, @min(1.0, r)) * 255.0);
@@ -433,6 +437,7 @@ pub fn gfx_api(self: *Self) GFXAPI {
             .init = init,
             .deinit = deinit,
             .set_clear_color = set_clear_color,
+            .set_alpha_blend = set_alpha_blend,
             .start_frame = start_frame,
             .end_frame = end_frame,
             .set_proj_matrix = set_proj_matrix,
