@@ -175,6 +175,8 @@ fn init(ctx: *anyopaque) !void {
     gu.front_face(.CounterClockwise);
     gu.enable(.CullFace);
     gu.disable(.ClipPlanes);
+    gu.enable(.AlphaTest);
+    gu.alpha_func(.Greater, 127, 0xFF);
     gu.enable(.Blend);
     gu.blend_func(.Add, .SrcAlpha, .OneMinusSrcAlpha, 0, 0);
     gu.enable(.Texture2D);
