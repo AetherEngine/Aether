@@ -18,7 +18,7 @@ var procs: gl.ProcTable = undefined;
 var last_width: u32 = 0;
 var last_height: u32 = 0;
 var pipelines = Util.CircularBuffer(PipelineData, 16).init();
-var meshes = Util.CircularBuffer(MeshInternal, 2048).init();
+var meshes = Util.CircularBuffer(MeshInternal, 8192).init();
 var alpha_blend_enabled: bool = true;
 
 const PipelineData = struct {

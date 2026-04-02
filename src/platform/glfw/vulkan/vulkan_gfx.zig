@@ -80,7 +80,7 @@ const TextureRec = struct { image: vk.Image, memory: vk.DeviceMemory, view: vk.I
 var textures = Util.CircularBuffer(TextureRec, TEXTURE_CAP).init();
 
 var pipelines = Util.CircularBuffer(PipelineData, 16).init();
-var meshes = Util.CircularBuffer(MeshData, 2048).init();
+var meshes = Util.CircularBuffer(MeshData, 8192).init();
 
 var swap_state: Swapchain.PresentState = .optimal;
 var alpha_blend_enabled: bool = true;
