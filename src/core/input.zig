@@ -8,6 +8,7 @@ pub const Key = enum(u16) {
     D = 'D',
     Space = ' ',
     Escape = 256,
+    LeftShift = 340,
 };
 pub const MouseButton = enum(u16) {
     Left = 0,

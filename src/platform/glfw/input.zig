@@ -37,9 +37,11 @@ pub fn get_mouse_delta(sensitivity: f32) [2]f32 {
     if (relative_mode) {
         glfw.setCursorPos(@as(*Surface, @ptrCast(@alignCast(gfx.surface.ptr))).window, w / 2.0, h / 2.0);
 
+        // Normalize by window height so the same physical mouse movement
+        // produces identical rotation regardless of resolution.
         return [_]f32{
-            @as(f32, @floatCast(Surface.cursor_x - w / 2.0)) * sensitivity * 0.1,
-            @as(f32, @floatCast(Surface.cursor_y - h / 2.0)) * sensitivity * 0.1,
+            @as(f32, @floatCast((Surface.cursor_x - w / 2.0) / h)) * sensitivity,
+            @as(f32, @floatCast((Surface.cursor_y - h / 2.0) / h)) * sensitivity,
         };
     } else {
         return [_]f32{ @floatCast(Surface.cursor_x / w), @floatCast((h - Surface.cursor_y) / h) };
