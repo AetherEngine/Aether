@@ -19,6 +19,7 @@ pub const VTable = struct {
     set_clear_color: *const fn (ctx: *anyopaque, r: f32, g: f32, b: f32, a: f32) void,
     set_alpha_blend: *const fn (ctx: *anyopaque, enabled: bool) void,
     set_fog: *const fn (ctx: *anyopaque, enabled: bool, start: f32, end: f32, r: f32, g: f32, b: f32) void,
+    set_clip_planes: *const fn (ctx: *anyopaque, enabled: bool) void,
     set_proj_matrix: *const fn (ctx: *anyopaque, mat: *const Mat4) void,
     set_view_matrix: *const fn (ctx: *anyopaque, mat: *const Mat4) void,
 
@@ -74,6 +75,11 @@ pub inline fn set_alpha_blend(self: *const Self, enabled: bool) void {
 /// Sets linear fog parameters.
 pub inline fn set_fog(self: *const Self, enabled: bool, start: f32, end: f32, r: f32, g: f32, b: f32) void {
     self.tab.set_fog(self.ptr, enabled, start, end, r, g, b);
+}
+
+/// Enables or disables hardware clip planes (PSP only, no-op on desktop).
+pub inline fn set_clip_planes(self: *const Self, enabled: bool) void {
+    self.tab.set_clip_planes(self.ptr, enabled);
 }
 
 /// Begins a new frame. This should be called once per frame before any drawing commands.

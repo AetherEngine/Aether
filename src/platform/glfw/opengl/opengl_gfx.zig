@@ -90,6 +90,8 @@ fn set_alpha_blend(_: *anyopaque, enabled: bool) void {
     if (enabled) gl.Enable(gl.BLEND) else gl.Disable(gl.BLEND);
 }
 
+fn set_clip_planes(_: *anyopaque, _: bool) void {}
+
 fn set_fog(_: *anyopaque, enabled: bool, start: f32, end: f32, r: f32, g: f32, b: f32) void {
     const fog_en: u32 = @intFromBool(enabled);
     if (shader.state.fog_enabled == fog_en and
@@ -293,6 +295,7 @@ pub fn gfx_api(self: *Self) GFXAPI {
             .set_clear_color = set_clear_color,
             .set_alpha_blend = set_alpha_blend,
             .set_fog = set_fog,
+            .set_clip_planes = set_clip_planes,
             .start_frame = start_frame,
             .end_frame = end_frame,
             .set_proj_matrix = set_proj_matrix,

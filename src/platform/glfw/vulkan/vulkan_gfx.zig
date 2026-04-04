@@ -442,6 +442,8 @@ fn set_alpha_blend(_: *anyopaque, enabled: bool) void {
     command_buffer.setColorBlendEnableEXT(0, @ptrCast(&[1]vk.Bool32{enable}));
 }
 
+fn set_clip_planes(_: *anyopaque, _: bool) void {}
+
 fn set_fog(_: *anyopaque, enabled: bool, start: f32, end: f32, r: f32, g: f32, b: f32) void {
     draw_state.fog_enabled = @intFromBool(enabled);
     draw_state.fog_start = start;
@@ -1345,6 +1347,7 @@ pub fn gfx_api(self: *Self) GFXAPI {
             .set_clear_color = set_clear_color,
             .set_alpha_blend = set_alpha_blend,
             .set_fog = set_fog,
+            .set_clip_planes = set_clip_planes,
             .start_frame = start_frame,
             .end_frame = end_frame,
             .set_proj_matrix = set_proj_matrix,
