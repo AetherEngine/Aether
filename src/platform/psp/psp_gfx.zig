@@ -306,7 +306,7 @@ fn update_mesh(_: *anyopaque, handle: Mesh.Handle, data: []const u8) void {
     meshes.update_element(handle, mesh);
 }
 
-fn draw_mesh(_: *anyopaque, handle: Mesh.Handle, model: *const Mat4, count: usize) void {
+fn draw_mesh(_: *anyopaque, handle: Mesh.Handle, model: *const Mat4, count: usize, primitive: Mesh.Primitive) void {
     const mesh = meshes.get_element(handle) orelse return;
     const pl = pipelines.get_element(mesh.pipeline) orelse return;
     const data = mesh.data orelse return;
@@ -315,7 +315,10 @@ fn draw_mesh(_: *anyopaque, handle: Mesh.Handle, model: *const Mat4, count: usiz
     gum.load_matrix(to_psp_matrix(model));
 
     gum.draw_array(
-        .Triangles,
+        switch (primitive) {
+            .triangles => .Triangles,
+            .lines => .Lines,
+        },
         pl.vertex_type,
         @intCast(count),
         null,
