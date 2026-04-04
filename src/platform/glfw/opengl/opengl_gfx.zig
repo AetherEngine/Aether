@@ -232,7 +232,7 @@ fn update_mesh(ctx: *anyopaque, handle: Mesh.Handle, data: []const u8) void {
     gl.NamedBufferSubData(mesh.vbo, 0, @intCast(data.len), data.ptr);
 }
 
-fn draw_mesh(ctx: *anyopaque, handle: Mesh.Handle, model: *const Mat4, count: usize) void {
+fn draw_mesh(ctx: *anyopaque, handle: Mesh.Handle, model: *const Mat4, count: usize, primitive: Mesh.Primitive) void {
     _ = ctx;
 
     const mesh = meshes.get_element(handle) orelse return;
@@ -240,7 +240,10 @@ fn draw_mesh(ctx: *anyopaque, handle: Mesh.Handle, model: *const Mat4, count: us
 
     shader.update_per_object(model);
     gl.VertexArrayVertexBuffer(pl.vao, 0, mesh.vbo, 0, @intCast(pl.layout.stride));
-    gl.DrawArrays(gl.TRIANGLES, 0, @intCast(count));
+    gl.DrawArrays(switch (primitive) {
+        .triangles => gl.TRIANGLES,
+        .lines => gl.LINES,
+    }, 0, @intCast(count));
 }
 
 fn create_texture(ctx: *anyopaque, width: u32, height: u32, data: []align(16) u8) anyerror!u32 {

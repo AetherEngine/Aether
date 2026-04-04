@@ -7,7 +7,7 @@ const vk = @import("vulkan");
 const gfx = @import("../../gfx.zig");
 const Rendering = @import("../../../rendering/rendering.zig");
 const Pipeline = Rendering.Pipeline;
-const Mesh = Rendering.Mesh;
+const Mesh = Rendering.mesh;
 const GFXAPI = @import("../../gfx_api.zig");
 const Self = @This();
 
@@ -763,6 +763,7 @@ fn create_pipeline(ctx: *anyopaque, layout: Pipeline.VertexLayout, vs: ?[:0]alig
         .viewport,
         .scissor,
         .color_blend_enable_ext,
+        .primitive_topology,
     };
 
     const pipeline_dynamic_state_create_info = vk.PipelineDynamicStateCreateInfo{
@@ -975,13 +976,18 @@ fn update_mesh(ctx: *anyopaque, handle: u32, data: []const u8) void {
     });
 }
 
-fn draw_mesh(ctx: *anyopaque, handle: u32, model: *const Mat4, count: usize) void {
+fn draw_mesh(ctx: *anyopaque, handle: u32, model: *const Mat4, count: usize, primitive: Mesh.Primitive) void {
     _ = ctx;
 
     draw_state.mat = model.*;
 
     const m_data = meshes.get_element(handle) orelse return;
     const p_data = pipelines.get_element(m_data.pipeline) orelse return;
+
+    command_buffer.setPrimitiveTopology(switch (primitive) {
+        .triangles => .triangle_list,
+        .lines => .line_list,
+    });
 
     const offset = [_]vk.DeviceSize{0};
     command_buffer.bindVertexBuffers(0, @ptrCast(&m_data.buffer), &offset);
