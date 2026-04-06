@@ -51,6 +51,7 @@ fn init(ctx: *anyopaque) !void {
     gl.CullFace(gl.BACK);
     gl.Enable(gl.BLEND);
     gl.BlendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.LineWidth(2.0);
 
     try shader.init();
     shader.state.proj = Mat4.identity();
