@@ -357,7 +357,13 @@ fn draw_mesh(_: *anyopaque, handle: Mesh.Handle, model: *const Mat4, count: usiz
 const TextureData = struct {
     width: u32,
     height: u32,
+    // Pointer actually bound to the GE. Equals cpu_data until the texture is
+    // made VRAM-resident, after which it points at the VRAM copy.
     data: [*]const u8,
+    // The caller's RAM buffer (Rendering.Texture.data.ptr). Always valid and
+    // always in the correct (swizzled or linear) layout, since set_pixel
+    // routes writes through pixel_offset.
+    cpu_data: [*]align(16) u8,
     in_vram: bool,
     swizzled: bool,
 };
@@ -433,6 +439,7 @@ fn create_texture(_: *anyopaque, width: u32, height: u32, data: []align(16) u8) 
         .width = width,
         .height = height,
         .data = data.ptr,
+        .cpu_data = data.ptr,
         .in_vram = false,
         .swizzled = should_swizzle,
     }) orelse return error.OutOfTextures;
@@ -440,14 +447,22 @@ fn create_texture(_: *anyopaque, width: u32, height: u32, data: []align(16) u8) 
     return @intCast(handle);
 }
 
+// The incoming `data` slice is the caller's RAM buffer and is already in the
+// correct (swizzled or linear) layout thanks to Rendering.Texture.set_pixel
+// routing writes through pixel_offset. We must NOT swizzle again here.
 fn update_texture(_: *anyopaque, handle: Texture.Handle, data: []align(16) u8) void {
     const tex = textures.get_element(handle) orelse return;
 
-    if (tex.swizzled) {
-        swizzle_in_place(data, tex.width, tex.height);
+    if (tex.in_vram) {
+        // The GE is sampling from VRAM; mirror the RAM buffer over it.
+        const size = tex.width * tex.height * tex_bpp;
+        const dst: [*]u8 = @constCast(tex.data);
+        @memcpy(dst[0..size], data[0..size]);
+        sdk.kernel.dcache_writeback_range(dst, @intCast(size));
+    } else {
+        // The RAM buffer is the GE-visible buffer; just flush dcache.
+        sdk.kernel.dcache_writeback_range(data.ptr, @intCast(data.len));
     }
-
-    sdk.kernel.dcache_writeback_range(data.ptr, @intCast(data.len));
 }
 
 fn bind_texture(_: *anyopaque, handle: Texture.Handle) void {
@@ -487,6 +502,8 @@ fn force_texture_resident(_: *anyopaque, handle: Texture.Handle) void {
     const dst: [*]u8 = @ptrCast(vram_ptr);
     @memcpy(dst[0..size], tex.data[0..size]);
 
+    // Only the GE-facing pointer moves to VRAM; cpu_data keeps pointing at
+    // the caller's RAM buffer so update_texture can continue to mirror edits.
     tex.data = dst;
     tex.in_vram = true;
     textures.update_element(handle, tex);
