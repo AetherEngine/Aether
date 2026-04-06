@@ -85,6 +85,11 @@ fn set_clear_color(ctx: *anyopaque, r: f32, g: f32, b: f32, a: f32) void {
 }
 
 fn set_alpha_blend(_: *anyopaque, enabled: bool) void {
+    const flag: u32 = @intFromBool(enabled);
+    if (shader.state.alpha_blend_enabled != flag) {
+        shader.state.alpha_blend_enabled = flag;
+        shader.update_ubo();
+    }
     if (enabled == alpha_blend_enabled) return;
     alpha_blend_enabled = enabled;
     if (enabled) gl.Enable(gl.BLEND) else gl.Disable(gl.BLEND);

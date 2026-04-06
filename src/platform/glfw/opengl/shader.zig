@@ -12,7 +12,7 @@ pub const ShaderState = struct {
     fog_end: f32 = 0.0,
     _pad: u32 = 0,
     fog_color: [3]f32 = .{ 0.0, 0.0, 0.0 },
-    _pad2: u32 = 0,
+    alpha_blend_enabled: u32 = 1,
 };
 
 const PerObject = struct {
