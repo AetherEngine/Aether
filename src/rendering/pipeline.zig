@@ -13,6 +13,7 @@ pub const AttributeUsage = enum {
 pub const AttributeFormat = enum(u8) {
     f32x2,
     f32x3,
+    unorm8x2,
     unorm8x4,
     unorm16x2,
     unorm16x3,
@@ -23,6 +24,7 @@ pub const AttributeFormat = enum(u8) {
         return switch (T) {
             [2]f32 => .f32x2,
             [3]f32 => .f32x3,
+            [2]u8 => .unorm8x2,
             [4]u8, u32 => .unorm8x4,
             [2]u16 => .unorm16x2,
             [3]u16 => .unorm16x3,
@@ -34,7 +36,7 @@ pub const AttributeFormat = enum(u8) {
 
     pub fn count(self: AttributeFormat) usize {
         return switch (self) {
-            .f32x2, .unorm16x2, .snorm16x2 => 2,
+            .f32x2, .unorm8x2, .unorm16x2, .snorm16x2 => 2,
             .f32x3, .unorm16x3, .snorm16x3 => 3,
             .unorm8x4 => 4,
         };

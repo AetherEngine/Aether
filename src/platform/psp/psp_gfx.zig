@@ -42,6 +42,10 @@ const VertexType = sdk.VertexType;
 const PipelineData = struct {
     vertex_type: VertexType,
     stride: usize,
+    // When UVs are unorm8x2, raw u8 bytes are reinterpreted by the GE as
+    // signed 8-bit texcoords. To remap [0,255] back to [0,1] we apply
+    // sceGuTexOffset(1.0, 1.0) and sceGuTexScale(0.5, 0.5) before drawing.
+    uv_unorm8: bool,
 };
 
 var pipelines = Util.CircularBuffer(PipelineData, 16).init();
@@ -242,6 +246,7 @@ fn create_pipeline(_: *anyopaque, layout: Pipeline.VertexLayout, _: ?[:0]align(4
         .vertex = .Vertex32Bitf, // default, overridden by position attribute
         .transform = .Transform3D,
     };
+    var uv_unorm8 = false;
 
     for (layout.attributes) |attr| {
         switch (attr.usage) {
@@ -256,8 +261,10 @@ fn create_pipeline(_: *anyopaque, layout: Pipeline.VertexLayout, _: ?[:0]align(4
                 vtype.uv = switch (attr.format) {
                     .f32x2 => .Texture32Bitf,
                     .unorm16x2, .snorm16x2 => .Texture16Bit,
+                    .unorm8x2 => .Texture8Bit,
                     else => .Texture32Bitf,
                 };
+                uv_unorm8 = attr.format == .unorm8x2;
             },
             .color => {
                 vtype.color = .Color8888;
@@ -275,6 +282,7 @@ fn create_pipeline(_: *anyopaque, layout: Pipeline.VertexLayout, _: ?[:0]align(4
     const handle = pipelines.add_element(.{
         .vertex_type = vtype,
         .stride = layout.stride,
+        .uv_unorm8 = uv_unorm8,
     }) orelse return error.OutOfPipelines;
 
     return @intCast(handle);
@@ -326,6 +334,14 @@ fn draw_mesh(_: *anyopaque, handle: Mesh.Handle, model: *const Mat4, count: usiz
 
     gum.matrix_mode(.Model);
     gum.load_matrix(to_psp_matrix(model));
+
+    if (pl.uv_unorm8) {
+        gu.tex_offset(1.0, 1.0);
+        gu.tex_scale(0.5, 0.5);
+    } else {
+        gu.tex_offset(0.0, 0.0);
+        gu.tex_scale(1.0, 1.0);
+    }
 
     gum.draw_array(
         switch (primitive) {
