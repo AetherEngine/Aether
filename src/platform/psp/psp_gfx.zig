@@ -221,6 +221,11 @@ fn start_frame(ctx: *anyopaque) bool {
     return true;
 }
 
+fn clear_depth(_: *anyopaque) void {
+    gu.clear_depth(1);
+    gu.clear(@intFromEnum(sdk.ClearBitFlags.DepthBuffer));
+}
+
 fn end_frame(_: *anyopaque) void {
     gu.finish();
     // gu.sync(.Finish, .wait);
@@ -483,6 +488,7 @@ pub fn gfx_api(self: *Self) GFXAPI {
             .set_clip_planes = set_clip_planes,
             .start_frame = start_frame,
             .end_frame = end_frame,
+            .clear_depth = clear_depth,
             .set_proj_matrix = set_proj_matrix,
             .set_view_matrix = set_view_matrix,
             .create_mesh = create_mesh,

@@ -132,6 +132,11 @@ fn end_frame(ctx: *anyopaque) void {
     gfx.surface.draw();
 }
 
+fn clear_depth(ctx: *anyopaque) void {
+    _ = ctx;
+    gl.Clear(gl.DEPTH_BUFFER_BIT);
+}
+
 fn set_proj_matrix(ctx: *anyopaque, mat: *const Mat4) void {
     _ = ctx;
     shader.state.proj = mat.*;
@@ -298,6 +303,7 @@ pub fn gfx_api(self: *Self) GFXAPI {
             .set_clip_planes = set_clip_planes,
             .start_frame = start_frame,
             .end_frame = end_frame,
+            .clear_depth = clear_depth,
             .set_proj_matrix = set_proj_matrix,
             .set_view_matrix = set_view_matrix,
             .create_mesh = create_mesh,
