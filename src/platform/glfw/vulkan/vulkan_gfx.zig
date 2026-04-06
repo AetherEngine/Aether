@@ -34,16 +34,18 @@ pub const ShaderState = struct {
     proj: Mat4,
 };
 
-pub var state: ShaderState = .{
-    .view = Mat4.identity(),
-    .proj = Mat4.identity(),
-};
-
-pub const UBO = struct {
+/// Per-swap-image ring of camera-state slots. Each draw within a frame can
+/// reference a different slot via a dynamic UBO offset, so changing the
+/// projection or view matrix mid-frame actually takes effect for subsequent
+/// draws (rather than the LAST write winning for the whole frame).
+pub const CameraRing = struct {
     memory: vk.DeviceMemory,
     buffer: vk.Buffer,
-    mapped_ptr: *ShaderState,
+    mapped_base: [*]u8,
+    slot_stride: u32,
 };
+
+const CAMERA_SLOTS: u32 = 16;
 
 pub const DrawState = struct {
     mat: Mat4,
@@ -60,7 +62,15 @@ pub var draw_state = DrawState{
     .tex_id = 0,
 };
 
-pub var ubos: []UBO = undefined;
+pub var camera_rings: []CameraRing = undefined;
+
+var pending_state: ShaderState = .{
+    .view = Mat4.identity(),
+    .proj = Mat4.identity(),
+};
+var camera_dirty: bool = true;
+var current_camera_slot: u32 = 0;
+var next_camera_slot: u32 = 0;
 
 pub var context: Context = undefined;
 pub var swapchain: Swapchain = undefined;
@@ -118,32 +128,41 @@ fn destroy_command_pool() void {
 }
 
 fn create_uniform_buffers() !void {
-    ubos = try Util.allocator(.render).alloc(UBO, swapchain.swap_images.len);
+    const props = context.instance.getPhysicalDeviceProperties(context.physical_device);
+    const min_align: u32 = @intCast(props.limits.min_uniform_buffer_offset_alignment);
+    const slot_stride: u32 = std.mem.alignForward(u32, @sizeOf(ShaderState), min_align);
 
-    for (ubos) |*ubo| {
-        ubo.buffer = context.logical_device.createBuffer(&.{
-            .size = @sizeOf(ShaderState),
+    camera_rings = try Util.allocator(.render).alloc(CameraRing, swapchain.swap_images.len);
+
+    for (camera_rings) |*ring| {
+        ring.slot_stride = slot_stride;
+
+        ring.buffer = context.logical_device.createBuffer(&.{
+            .size = slot_stride * CAMERA_SLOTS,
             .usage = .{ .uniform_buffer_bit = true },
             .sharing_mode = .exclusive,
         }, null) catch unreachable;
 
-        const mem_reqs = context.logical_device.getBufferMemoryRequirements(ubo.buffer);
-        ubo.memory = context.allocate_gpu_buffer(mem_reqs, .{ .host_visible_bit = true, .host_coherent_bit = true }) catch unreachable;
-        context.logical_device.bindBufferMemory(ubo.buffer, ubo.memory, 0) catch unreachable;
+        const mem_reqs = context.logical_device.getBufferMemoryRequirements(ring.buffer);
+        ring.memory = context.allocate_gpu_buffer(mem_reqs, .{ .host_visible_bit = true, .host_coherent_bit = true }) catch unreachable;
+        context.logical_device.bindBufferMemory(ring.buffer, ring.memory, 0) catch unreachable;
 
-        const mapped_data = context.logical_device.mapMemory(ubo.memory, 0, vk.WHOLE_SIZE, .{}) catch unreachable;
-        ubo.mapped_ptr = @ptrCast(@alignCast(mapped_data));
-        ubo.mapped_ptr.* = state;
+        const mapped_data = context.logical_device.mapMemory(ring.memory, 0, vk.WHOLE_SIZE, .{}) catch unreachable;
+        ring.mapped_base = @ptrCast(mapped_data);
+
+        // Seed slot 0 with identity so the very first draw of the very first
+        // frame has a valid binding even before set_*_matrix is called.
+        @memcpy(ring.mapped_base[0..@sizeOf(ShaderState)], std.mem.asBytes(&pending_state));
     }
 }
 
 fn destroy_uniform_buffers() void {
-    for (ubos) |ubo| {
-        context.logical_device.unmapMemory(ubo.memory);
-        context.logical_device.destroyBuffer(ubo.buffer, null);
-        context.logical_device.freeMemory(ubo.memory, null);
+    for (camera_rings) |ring| {
+        context.logical_device.unmapMemory(ring.memory);
+        context.logical_device.destroyBuffer(ring.buffer, null);
+        context.logical_device.freeMemory(ring.memory, null);
     }
-    Util.allocator(.render).free(ubos);
+    Util.allocator(.render).free(camera_rings);
 }
 
 fn create_texture_set_layout() !void {
@@ -248,7 +267,7 @@ fn create_descriptor_set_layout() !void {
     const ubo_layout_binding = vk.DescriptorSetLayoutBinding{
         .binding = 0,
         .descriptor_count = 1,
-        .descriptor_type = .uniform_buffer,
+        .descriptor_type = .uniform_buffer_dynamic,
         .stage_flags = .{ .vertex_bit = true, .fragment_bit = true },
     };
 
@@ -264,7 +283,7 @@ fn destroy_descriptor_set_layout() void {
 
 fn create_descriptor_pool() !void {
     const pool_size = vk.DescriptorPoolSize{
-        .type = .uniform_buffer,
+        .type = .uniform_buffer_dynamic,
         .descriptor_count = @intCast(swapchain.swap_images.len),
     };
 
@@ -297,8 +316,10 @@ fn create_descriptor_sets() !void {
     }, descriptor_sets.ptr);
 
     for (descriptor_sets, 0..) |set, i| {
+        // For dynamic UBOs, `range` is the window addressed from any dynamic
+        // offset (a single ShaderState), not the whole buffer.
         const buffer_info = vk.DescriptorBufferInfo{
-            .buffer = ubos[i].buffer,
+            .buffer = camera_rings[i].buffer,
             .offset = 0,
             .range = @sizeOf(ShaderState),
         };
@@ -308,7 +329,7 @@ fn create_descriptor_sets() !void {
             .dst_binding = 0,
             .dst_array_element = 0,
             .descriptor_count = 1,
-            .descriptor_type = .uniform_buffer,
+            .descriptor_type = .uniform_buffer_dynamic,
             .p_buffer_info = @ptrCast(&buffer_info),
             .p_image_info = undefined,
             .p_texel_buffer_view = undefined,
@@ -481,6 +502,12 @@ fn start_frame(ctx: *anyopaque) bool {
 
     command_buffer.beginCommandBuffer(&.{}) catch unreachable;
 
+    // Reset the camera ring for this frame. Mark dirty so the first draw
+    // re-publishes whatever the user has set into slot 0.
+    next_camera_slot = 0;
+    current_camera_slot = 0;
+    camera_dirty = true;
+
     const extent = vk.Extent2D{
         .width = @intCast(gfx.surface.get_width()),
         .height = @intCast(gfx.surface.get_height()),
@@ -644,12 +671,35 @@ fn end_frame(ctx: *anyopaque) void {
 
 fn set_proj_matrix(ctx: *anyopaque, mat: *const Mat4) void {
     _ = ctx;
-    ubos[swapchain.image_index].mapped_ptr.proj = mat.*;
+    pending_state.proj = mat.*;
+    camera_dirty = true;
 }
 
 fn set_view_matrix(ctx: *anyopaque, mat: *const Mat4) void {
     _ = ctx;
-    ubos[swapchain.image_index].mapped_ptr.view = mat.*;
+    pending_state.view = mat.*;
+    camera_dirty = true;
+}
+
+/// If the camera state has changed since the last draw, write it into the
+/// next slot of the per-frame ring and remember which slot to bind from.
+/// Back-to-back set_proj+set_view calls before any draw collapse into a
+/// single slot. Called from draw_mesh.
+fn flush_camera_if_dirty() void {
+    if (!camera_dirty) return;
+
+    if (next_camera_slot >= CAMERA_SLOTS) {
+        Util.engine_logger.warn("Vulkan camera ring exhausted ({d} slots/frame); reusing last slot", .{CAMERA_SLOTS});
+        next_camera_slot = CAMERA_SLOTS - 1;
+    }
+
+    const ring = &camera_rings[swapchain.image_index];
+    const dst = ring.mapped_base + next_camera_slot * ring.slot_stride;
+    @memcpy(dst[0..@sizeOf(ShaderState)], std.mem.asBytes(&pending_state));
+
+    current_camera_slot = next_camera_slot;
+    next_camera_slot += 1;
+    camera_dirty = false;
 }
 
 fn create_pipeline(ctx: *anyopaque, layout: Pipeline.VertexLayout, vs: ?[:0]align(4) const u8, fs: ?[:0]align(4) const u8) anyerror!Pipeline.Handle {
@@ -881,12 +931,9 @@ fn bind_pipeline(ctx: *anyopaque, handle: Pipeline.Handle) void {
     const pd = pipelines.get_element(handle) orelse return;
 
     command_buffer.bindPipeline(.graphics, pd.pipeline);
-
-    const sets = [_]vk.DescriptorSet{
-        descriptor_sets[swapchain.image_index],
-        tex_set,
-    };
-    command_buffer.bindDescriptorSets(.graphics, pd.layout, 0, &sets, null);
+    // Descriptor sets are (re)bound per draw in draw_mesh because the
+    // dynamic UBO offset can change as the user swaps projection/view
+    // matrices mid-frame.
 }
 
 fn create_mesh(ctx: *anyopaque, pipeline: Pipeline.Handle) anyerror!u32 {
@@ -1010,6 +1057,15 @@ fn draw_mesh(ctx: *anyopaque, handle: u32, model: *const Mat4, count: usize, pri
 
     const m_data = meshes.get_element(handle) orelse return;
     const p_data = pipelines.get_element(m_data.pipeline) orelse return;
+
+    flush_camera_if_dirty();
+
+    const sets = [_]vk.DescriptorSet{
+        descriptor_sets[swapchain.image_index],
+        tex_set,
+    };
+    const dyn_offsets = [_]u32{current_camera_slot * camera_rings[swapchain.image_index].slot_stride};
+    command_buffer.bindDescriptorSets(.graphics, p_data.layout, 0, &sets, &dyn_offsets);
 
     command_buffer.setPrimitiveTopology(switch (primitive) {
         .triangles => .triangle_list,
