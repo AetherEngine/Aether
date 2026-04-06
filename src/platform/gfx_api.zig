@@ -26,6 +26,7 @@ pub const VTable = struct {
     // --- Frame Management ---
     start_frame: *const fn (ctx: *anyopaque) bool,
     end_frame: *const fn (ctx: *anyopaque) void,
+    clear_depth: *const fn (ctx: *anyopaque) void,
 
     // --- Pipeline API ---
     create_pipeline: *const fn (ctx: *anyopaque, layout: Pipeline.VertexLayout, v_shader: ?[:0]align(4) const u8, f_shader: ?[:0]align(4) const u8) anyerror!Pipeline.Handle,
@@ -93,6 +94,14 @@ pub inline fn start_frame(self: *const Self) bool {
 /// This should be called once per frame after all drawing commands.
 pub inline fn end_frame(self: *const Self) void {
     self.tab.end_frame(self.ptr);
+}
+
+/// Clears the depth buffer to its default value (1.0) within the current frame.
+/// Useful for layered rendering where geometry in a later layer should not be
+/// occluded by earlier layers (e.g. drawing a viewmodel on top of the world).
+/// Must be called between `start_frame` and `end_frame`.
+pub inline fn clear_depth(self: *const Self) void {
+    self.tab.clear_depth(self.ptr);
 }
 
 /// Sets the projection matrix used for rendering.

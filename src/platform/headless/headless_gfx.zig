@@ -27,6 +27,7 @@ fn start_frame(_: *anyopaque) bool {
 }
 
 fn end_frame(_: *anyopaque) void {}
+fn clear_depth(_: *anyopaque) void {}
 
 fn create_pipeline(_: *anyopaque, _: Pipeline.VertexLayout, _: ?[:0]align(4) const u8, _: ?[:0]align(4) const u8) !Pipeline.Handle {
     return 0;
@@ -64,6 +65,7 @@ pub fn gfx_api(self: *Self) GFXAPI {
         .set_view_matrix = set_view_matrix,
         .start_frame = start_frame,
         .end_frame = end_frame,
+        .clear_depth = clear_depth,
         .create_pipeline = create_pipeline,
         .destroy_pipeline = destroy_pipeline,
         .bind_pipeline = bind_pipeline,

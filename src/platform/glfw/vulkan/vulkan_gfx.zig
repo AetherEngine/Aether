@@ -580,6 +580,30 @@ fn start_frame(ctx: *anyopaque) bool {
     return true;
 }
 
+fn clear_depth(ctx: *anyopaque) void {
+    _ = ctx;
+
+    const attachment = vk.ClearAttachment{
+        .aspect_mask = .{ .depth_bit = true },
+        .color_attachment = 0,
+        .clear_value = .{ .depth_stencil = .{ .depth = 1.0, .stencil = 0 } },
+    };
+
+    const rect = vk.ClearRect{
+        .rect = .{
+            .offset = .{ .x = 0, .y = 0 },
+            .extent = .{
+                .width = @intCast(gfx.surface.get_width()),
+                .height = @intCast(gfx.surface.get_height()),
+            },
+        },
+        .base_array_layer = 0,
+        .layer_count = 1,
+    };
+
+    command_buffer.clearAttachments(@ptrCast(&attachment), @ptrCast(&rect));
+}
+
 fn end_frame(ctx: *anyopaque) void {
     _ = ctx;
 
@@ -1350,6 +1374,7 @@ pub fn gfx_api(self: *Self) GFXAPI {
             .set_clip_planes = set_clip_planes,
             .start_frame = start_frame,
             .end_frame = end_frame,
+            .clear_depth = clear_depth,
             .set_proj_matrix = set_proj_matrix,
             .set_view_matrix = set_view_matrix,
             .create_mesh = create_mesh,
