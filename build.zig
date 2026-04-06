@@ -249,7 +249,8 @@ fn slangcPath(owner: *std.Build) ?std.Build.LazyPath {
         else => @compileError("No slangc binary for this OS"),
     };
     const dep = owner.lazyDependency(dep_name, .{}) orelse return null;
-    return dep.path("bin/slangc");
+    const exe_name = if (builtin.os.tag == .windows) "bin/slangc.exe" else "bin/slangc";
+    return dep.path(exe_name);
 }
 
 fn addSlangStep(b: *std.Build, slangc: ?std.Build.LazyPath, args: []const []const u8, comptime output_name: []const u8, input: std.Build.LazyPath) ?std.Build.LazyPath {
