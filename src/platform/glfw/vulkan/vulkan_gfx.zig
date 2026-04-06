@@ -52,7 +52,7 @@ pub const DrawState = struct {
     fog_start: f32 = 0.0,
     fog_end: f32 = 0.0,
     fog_color: [3]f32 = .{ 0.0, 0.0, 0.0 },
-    _pad: u32 = 0,
+    alpha_blend_enabled: u32 = 1,
 };
 
 pub var draw_state = DrawState{
@@ -436,6 +436,7 @@ fn set_clear_color(ctx: *anyopaque, r: f32, g: f32, b: f32, a: f32) void {
 }
 
 fn set_alpha_blend(_: *anyopaque, enabled: bool) void {
+    draw_state.alpha_blend_enabled = @intFromBool(enabled);
     if (enabled == alpha_blend_enabled) return;
     alpha_blend_enabled = enabled;
     const enable: vk.Bool32 = if (enabled) .true else .false;

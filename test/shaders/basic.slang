@@ -20,7 +20,7 @@ struct CameraState {
     float fogEnd;
     uint _pad;
     float3 fogColor;
-    uint _pad2;
+    uint alphaBlendEnabled;
 #endif
 };
 
@@ -36,6 +36,7 @@ struct PushConstants {
     float fogStart;
     float fogEnd;
     float3 fogColor;
+    uint alphaBlendEnabled;
 };
 
 [[vk::push_constant]]
@@ -97,10 +98,16 @@ float4 fragmentMain(VertexOutput input) : SV_Target {
         float factor = clamp((pc.fogEnd - input.viewDepth) / (pc.fogEnd - pc.fogStart), 0.0, 1.0);
         color.rgb = lerp(pc.fogColor, color.rgb, factor);
     }
+    if (pc.alphaBlendEnabled == 0) {
+        color.a = 1.0;
+    }
 #else
     if (camera.fogEnabled != 0) {
         float factor = clamp((camera.fogEnd - input.viewDepth) / (camera.fogEnd - camera.fogStart), 0.0, 1.0);
         color.rgb = lerp(camera.fogColor, color.rgb, factor);
+    }
+    if (camera.alphaBlendEnabled == 0) {
+        color.a = 1.0;
     }
 #endif
     return color;
