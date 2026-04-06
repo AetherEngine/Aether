@@ -802,7 +802,7 @@ fn create_pipeline(ctx: *anyopaque, layout: Pipeline.VertexLayout, vs: ?[:0]alig
         .depth_bias_clamp = 0,
         .depth_bias_slope_factor = 0,
         .depth_bias_constant_factor = 0,
-        .line_width = if (context.wide_lines_supported) 2.0 else 1.0,
+        .line_width = if (context.wide_lines_supported) 5.0 else 1.0,
     };
 
     const pipeline_multisample_state_create_info = vk.PipelineMultisampleStateCreateInfo{
