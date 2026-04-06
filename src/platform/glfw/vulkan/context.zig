@@ -24,6 +24,7 @@ instance: Instance,
 surface: vk.SurfaceKHR,
 physical_device: vk.PhysicalDevice,
 physical_properties: vk.PhysicalDeviceProperties,
+wide_lines_supported: bool,
 logical_device: Device,
 graphics_queue: Queue,
 present_queue: Queue,
@@ -229,6 +230,9 @@ fn create_logical_device(self: *Self, candidate: *const DeviceCandidate) !void {
     // Base features2
     var features = vk.PhysicalDeviceFeatures2{ .features = .{} };
     self.instance.getPhysicalDeviceFeatures2(self.physical_device, &features);
+    // wideLines lets pipelines rasterize lines thicker than 1px.
+    // Not supported on MoltenVK; fall back to 1.0 line_width there.
+    self.wide_lines_supported = features.features.wide_lines == .true;
 
     // Vulkan 1.2 features (descriptor indexing & friends)
     var vulkan12_features = vk.PhysicalDeviceVulkan12Features{};
