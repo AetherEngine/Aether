@@ -128,9 +128,19 @@ pub fn make_api(comptime api: GraphicsAPI) !Self {
     switch (api) {
         .default => {
             if (builtin.os.tag == .psp) {
-                const PspGfx = @import("psp/psp_gfx.zig");
-                var psp = try Util.allocator(.render).create(PspGfx);
-                return psp.gfx_api();
+                const psp_backend = @import("options").config.psp_backend;
+                switch (psp_backend) {
+                    .ge_list => {
+                        const PspGfxGe = @import("psp/psp_gfx_ge.zig");
+                        var psp = try Util.allocator(.render).create(PspGfxGe);
+                        return psp.gfx_api();
+                    },
+                    .gu => {
+                        const PspGfx = @import("psp/psp_gfx.zig");
+                        var psp = try Util.allocator(.render).create(PspGfx);
+                        return psp.gfx_api();
+                    },
+                }
             } else {
                 @compileError("No default graphics backend for this platform");
             }
