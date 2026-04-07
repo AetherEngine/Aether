@@ -219,15 +219,14 @@ fn start_frame(ctx: *anyopaque) bool {
     gu.start(.Direct, &swapchain.display_list);
     gu.clear_color(self.clear_color);
     gu.clear_depth(1);
-    gu.clear(@intFromEnum(sdk.ClearBitFlags.ColorBuffer) |
-        @intFromEnum(sdk.ClearBitFlags.DepthBuffer) | @intFromEnum(sdk.ClearBitFlags.StencilBuffer));
+    gu.clear(.{ .color = true, .depth = true, .stencil = true });
 
     return true;
 }
 
 fn clear_depth(_: *anyopaque) void {
     gu.clear_depth(1);
-    gu.clear(@intFromEnum(sdk.ClearBitFlags.DepthBuffer));
+    gu.clear(.{ .depth = true });
 }
 
 fn end_frame(_: *anyopaque) void {
