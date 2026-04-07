@@ -22,11 +22,20 @@ data: []align(16) u8,
 /// The data is copied into the render pool.
 pub fn load_from_data(width: u32, height: u32, pixels: []const u8) !Texture {
     const size = @as(usize, width) * height * tex_bpp;
-    if (pixels.len < size) return error.InsufficientData;
+    const source_size = @as(usize, width) * height * 4;
+    if (pixels.len < source_size) return error.InsufficientData;
 
     const data = try Util.allocator(.render).alignedAlloc(u8, .fromByteUnits(16), size);
     errdefer Util.allocator(.render).free(data);
-    @memcpy(data, pixels[0..size]);
+    if (builtin.os.tag == .psp and options.config.psp_display_mode == .rgb565) {
+        for (0..@as(usize, width) * height) |i| {
+            const pixel = rgba_to_4444(pixels[i * 4 ..][0..4].*);
+            data[i * 2] = @truncate(pixel);
+            data[i * 2 + 1] = @truncate(pixel >> 8);
+        }
+    } else {
+        @memcpy(data, pixels[0..size]);
+    }
 
     return Texture{
         .width = width,
@@ -139,11 +148,7 @@ pub fn get_pixel(self: *const Texture, x: u32, y: u32) [4]u8 {
 pub fn set_pixel(self: *Texture, x: u32, y: u32, rgba: [4]u8) void {
     const offset = pixel_offset(self, x, y);
     if (builtin.os.tag == .psp and options.config.psp_display_mode == .rgb565) {
-        const r: u16 = rgba[0] >> 4;
-        const g: u16 = rgba[1] >> 4;
-        const b: u16 = rgba[2] >> 4;
-        const a: u16 = rgba[3] >> 4;
-        const pixel: u16 = (a << 12) | (b << 8) | (g << 4) | r;
+        const pixel = rgba_to_4444(rgba);
         self.data[offset] = @truncate(pixel);
         self.data[offset + 1] = @truncate(pixel >> 8);
         return;
@@ -152,6 +157,14 @@ pub fn set_pixel(self: *Texture, x: u32, y: u32, rgba: [4]u8) void {
 }
 
 const tex_bpp: u32 = if (builtin.os.tag == .psp and options.config.psp_display_mode == .rgb565) 2 else 4;
+
+fn rgba_to_4444(rgba: [4]u8) u16 {
+    const r: u16 = rgba[0] >> 4;
+    const g: u16 = rgba[1] >> 4;
+    const b: u16 = rgba[2] >> 4;
+    const a: u16 = rgba[3] >> 4;
+    return (a << 12) | (b << 8) | (g << 4) | r;
+}
 
 fn pixel_offset(self: *const Texture, x: u32, y: u32) usize {
     if (builtin.os.tag == .psp) {
