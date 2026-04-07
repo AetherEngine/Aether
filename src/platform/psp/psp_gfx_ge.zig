@@ -93,14 +93,15 @@ const Swapchain = struct {
 
     /// Backing storage for the GE display list. Always accessed through
     /// `list_uncached` so the GE sees writes immediately and we never need
-    /// to dcache-flush the list itself.
-    display_lists: [BUFFER_COUNT][DISPLAY_LIST_WORDS]u32 align(16) =
-        [_][DISPLAY_LIST_WORDS]u32{[_]u32{0} ** DISPLAY_LIST_WORDS} ** BUFFER_COUNT,
-    list_uncached: [BUFFER_COUNT][]u32 = .{ &.{}, &.{}, &.{} },
+    /// to dcache-flush the list itself. This is shared across color buffers;
+    /// `acquire_draw_buffer` waits for the previous GE submission to finish
+    /// before allowing the list to be reused.
+    display_list: [DISPLAY_LIST_WORDS]u32 align(16) = [_]u32{0} ** DISPLAY_LIST_WORDS,
+    list_uncached: []u32 = &.{},
 
     buffers_rel: [BUFFER_COUNT]?*anyopaque = .{ null, null, null },
     buffers_abs: [BUFFER_COUNT]?*anyopaque = .{ null, null, null },
-    depth_buffers_rel: [BUFFER_COUNT]?*anyopaque = .{ null, null, null },
+    depth_buffer_rel: ?*anyopaque = null,
     draw_idx: BufferIndex = 1,
     front_idx: BufferIndex = 0,
     pending_idx: ?BufferIndex = null,
@@ -113,10 +114,8 @@ const Swapchain = struct {
         const vram_base = @intFromPtr(ge.edram_get_addr());
         const uncached: usize = 0x40000000;
 
-        for (0..BUFFER_COUNT) |i| {
-            const uncached_ptr: [*]u32 = @ptrFromInt(@intFromPtr(&self.display_lists[i]) | uncached);
-            self.list_uncached[i] = uncached_ptr[0..DISPLAY_LIST_WORDS];
-        }
+        const uncached_ptr: [*]u32 = @ptrFromInt(@intFromPtr(&self.display_list) | uncached);
+        self.list_uncached = uncached_ptr[0..DISPLAY_LIST_WORDS];
 
         self.front_idx = 0;
         self.draw_idx = 1;
@@ -131,19 +130,7 @@ const Swapchain = struct {
             self.clear_buffer(@intCast(i));
         }
 
-        switch (options.config.psp_display_mode) {
-            .rgb565 => {
-                for (0..BUFFER_COUNT) |i| {
-                    self.depth_buffers_rel[i] = sdk.extra.vram.allocVramRelative(SCR_BUF_WIDTH, SCREEN_HEIGHT, .Psm4444);
-                }
-            },
-            .rgba8888 => {
-                const zbp = sdk.extra.vram.allocVramRelative(SCR_BUF_WIDTH, SCREEN_HEIGHT, .Psm4444);
-                for (0..BUFFER_COUNT) |i| {
-                    self.depth_buffers_rel[i] = zbp;
-                }
-            },
-        }
+        self.depth_buffer_rel = sdk.extra.vram.allocVramRelative(SCR_BUF_WIDTH, SCREEN_HEIGHT, .Psm4444);
     }
 
     fn clear_buffer(self: *Swapchain, idx: BufferIndex) void {
@@ -192,7 +179,11 @@ const Swapchain = struct {
         const flags = sdk.kernel.cpu_suspend_intr();
         defer sdk.kernel.cpu_resume_intr(flags);
 
-        if (options.config.psp_display_mode == .rgba8888 and self.submitted_count > 0) return false;
+        // The display list and depth buffer are shared, so only color
+        // buffers are allowed to overlap display/pending ownership. Do not
+        // start recording another frame until the GE has finished the last
+        // submitted one.
+        if (self.submitted_count > 0) return false;
 
         const start = (@as(usize, self.draw_idx) + 1) % BUFFER_COUNT;
         var offset: usize = 0;
@@ -264,9 +255,8 @@ fn ge_finish_callback(_: c_int, arg: ?*anyopaque) callconv(.c) void {
 /// start of every frame inside `begin_list`.
 var cmd: ge_list.CommandBuffer = undefined;
 
-/// GE callback id. We register a no-op callback so the kernel has a valid
-/// id to associate with our enqueued lists, matching how the gu wrapper
-/// sets things up. If registration fails we fall back to 0 (no callback).
+/// GE callback id. The finish callback releases the shared display list and
+/// depth buffer for the next frame, so registration is required.
 var ge_callback_id: i32 = 0;
 
 fn nop_ge_callback(_: c_int, _: ?*anyopaque) callconv(.c) void {}
@@ -280,11 +270,11 @@ fn advance_stall() void {
     ge_list.list_update_stall_addr(current_qid, cmd.current()) catch {};
 }
 
-/// Reset the command buffer to the start of the draw buffer's GE list
-/// and re-enqueue it with stall=start, mirroring `sceGuStart(.Direct, ...)`.
+/// Reset the command buffer to the start of the shared GE list and
+/// re-enqueue it with stall=start, mirroring `sceGuStart(.Direct, ...)`.
 /// The GE will not execute anything until `advance_stall` is called.
 fn begin_list() void {
-    const list = swapchain.list_uncached[@intCast(swapchain.draw_idx)];
+    const list = swapchain.list_uncached;
     cmd = ge_list.CommandBuffer.init(list);
     current_qid = ge_list.list_enqueue(
         list.ptr,
@@ -464,7 +454,7 @@ fn init(ctx: *anyopaque) !void {
         .finish_func = ge_finish_callback,
         .finish_arg = &swapchain,
     };
-    ge_callback_id = ge.set_callback(cb_data) catch 0;
+    ge_callback_id = try ge.set_callback(cb_data);
 
     begin_list();
 
@@ -475,7 +465,7 @@ fn init(ctx: *anyopaque) !void {
 
     must(cmd.pixel_format(ge_pixel_format));
     must(cmd.frame_buffer(swapchain.buffers_rel[swapchain.draw_idx], SCR_BUF_WIDTH));
-    must(cmd.depth_buffer(swapchain.depth_buffers_rel[swapchain.draw_idx], SCR_BUF_WIDTH));
+    must(cmd.depth_buffer(swapchain.depth_buffer_rel, SCR_BUF_WIDTH));
 
     // Equivalent to gu.disp_buffer's side effect of enabling LCD mode the
     // first time it is called.
@@ -603,7 +593,7 @@ fn start_frame(ctx: *anyopaque) bool {
 
     must(cmd.pixel_format(ge_pixel_format));
     must(cmd.frame_buffer(swapchain.buffers_rel[swapchain.draw_idx], SCR_BUF_WIDTH));
-    must(cmd.depth_buffer(swapchain.depth_buffers_rel[swapchain.draw_idx], SCR_BUF_WIDTH));
+    must(cmd.depth_buffer(swapchain.depth_buffer_rel, SCR_BUF_WIDTH));
     emit_clear(self, .{ .color = true, .stencil = true, .depth = true });
 
     return true;
