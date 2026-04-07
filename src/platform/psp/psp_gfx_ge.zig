@@ -85,9 +85,13 @@ const Self = @This();
 
 const PSP_VBLANK_INT = 30;
 const PSP_DISPLAY_SUBINT = 0;
+const SWAPCHAIN_BUFFER_COUNT: usize = switch (options.config.psp_display_mode) {
+    .rgba8888 => 2,
+    .rgb565 => 3,
+};
 
 const Swapchain = struct {
-    const BUFFER_COUNT = 3;
+    const BUFFER_COUNT = SWAPCHAIN_BUFFER_COUNT;
     const DISPLAY_LIST_WORDS = 0x10000;
     const BufferIndex = u2;
 
@@ -99,8 +103,8 @@ const Swapchain = struct {
     display_list: [DISPLAY_LIST_WORDS]u32 align(16) = [_]u32{0} ** DISPLAY_LIST_WORDS,
     list_uncached: []u32 = &.{},
 
-    buffers_rel: [BUFFER_COUNT]?*anyopaque = .{ null, null, null },
-    buffers_abs: [BUFFER_COUNT]?*anyopaque = .{ null, null, null },
+    buffers_rel: [BUFFER_COUNT]?*anyopaque = [_]?*anyopaque{null} ** BUFFER_COUNT,
+    buffers_abs: [BUFFER_COUNT]?*anyopaque = [_]?*anyopaque{null} ** BUFFER_COUNT,
     depth_buffer_rel: ?*anyopaque = null,
     draw_idx: BufferIndex = 1,
     front_idx: BufferIndex = 0,
@@ -123,6 +127,8 @@ const Swapchain = struct {
         self.submitted_head = 0;
         self.submitted_count = 0;
         self.vblank_registered = false;
+        self.buffers_rel = [_]?*anyopaque{null} ** BUFFER_COUNT;
+        self.buffers_abs = [_]?*anyopaque{null} ** BUFFER_COUNT;
 
         for (0..BUFFER_COUNT) |i| {
             self.buffers_rel[i] = sdk.extra.vram.allocVramRelative(SCR_BUF_WIDTH, SCREEN_HEIGHT, vram_color_format);
@@ -208,6 +214,26 @@ const Swapchain = struct {
             if (self.submitted_queue[queue_idx] == idx) return true;
         }
         return false;
+    }
+
+    fn is_waiting_for_display_flip(self: *const Swapchain) bool {
+        const flags = sdk.kernel.cpu_suspend_intr();
+        defer sdk.kernel.cpu_resume_intr(flags);
+
+        if (self.submitted_count > 0) return false;
+
+        const start = (@as(usize, self.draw_idx) + 1) % BUFFER_COUNT;
+        var offset: usize = 0;
+        while (offset < BUFFER_COUNT) : (offset += 1) {
+            const idx: BufferIndex = @intCast((start + offset) % BUFFER_COUNT);
+            if (idx == self.front_idx) continue;
+            if (self.pending_idx) |pending| {
+                if (idx == pending) continue;
+            }
+            return false;
+        }
+
+        return true;
     }
 
     fn publish_finished_ge_buffer(self: *Swapchain) void {
@@ -587,7 +613,9 @@ fn set_view_matrix(_: *anyopaque, mat: *const Mat4) void {
 fn start_frame(ctx: *anyopaque) bool {
     const self = Util.ctx_to_self(Self, ctx);
 
-    while (!swapchain.acquire_draw_buffer()) {}
+    while (!swapchain.acquire_draw_buffer()) {
+        if (swapchain.is_waiting_for_display_flip()) return false;
+    }
 
     begin_list();
 

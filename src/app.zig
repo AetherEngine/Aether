@@ -117,7 +117,8 @@ pub fn main_loop() !void {
 
         // ---- render ASAP (uncapped when vsync == false) ----
         const frame_dt_s: f32 = @as(f32, @floatFromInt(frame_dt_us)) / @as(f32, US_PER_S);
-        if (Platform.gfx.api.start_frame()) {
+        const drew_frame = Platform.gfx.api.start_frame();
+        if (drew_frame) {
             const draw_start_ns: i64 = @truncate(clock.now(io).toNanoseconds());
             // Time until next update step is due
             const slack_us: i64 = @as(i64, @intCast(UPDATE_US)) - @max(0, update_accum);
@@ -140,11 +141,13 @@ pub fn main_loop() !void {
             Platform.gfx.api.end_frame();
         } else {
             @branchHint(.unlikely);
-            try std.Io.sleep(io, .fromMilliseconds(50), clock);
+            if (options.config.platform != .psp) {
+                try std.Io.sleep(io, .fromMilliseconds(50), clock);
+            }
         }
 
         // ---- FPS counting ----
-        fps_count += 1;
+        if (drew_frame) fps_count += 1;
         const end_us: i64 = @truncate(@divTrunc(clock.now(io).toNanoseconds(), 1000));
         if (end_us >= fps_window_end) {
             Util.engine_logger.info("FPS: {}", .{fps_count});
