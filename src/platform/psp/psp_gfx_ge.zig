@@ -204,10 +204,22 @@ const Swapchain = struct {
             return true;
         }
 
-        // RGBA8888 cannot afford a third color buffer. Prefer tearing over
-        // stalling the app until VBlank releases a non-front buffer.
-        if (BUFFER_COUNT == 2 and self.pending_idx != null) {
-            self.draw_idx = self.front_idx;
+        // RGBA8888 cannot afford a third color buffer. If VBlank has not
+        // consumed the pending frame yet, force that swap now and draw into
+        // the old front buffer. This can tear, but avoids corrupting the
+        // pending flip and stalling the app.
+        if (BUFFER_COUNT == 2) {
+            const pending = self.pending_idx orelse return false;
+            const old_front = self.front_idx;
+            display.set_frame_buf(
+                self.buffers_abs[@intCast(pending)],
+                SCR_BUF_WIDTH,
+                display_pixel_format,
+                .immediate,
+            ) catch {};
+            self.front_idx = pending;
+            self.pending_idx = null;
+            self.draw_idx = old_front;
             return true;
         }
 
