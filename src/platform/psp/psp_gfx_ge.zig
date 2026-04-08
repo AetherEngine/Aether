@@ -204,6 +204,13 @@ const Swapchain = struct {
             return true;
         }
 
+        // RGBA8888 cannot afford a third color buffer. Prefer tearing over
+        // stalling the app until VBlank releases a non-front buffer.
+        if (BUFFER_COUNT == 2 and self.pending_idx != null) {
+            self.draw_idx = self.front_idx;
+            return true;
+        }
+
         return false;
     }
 
