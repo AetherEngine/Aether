@@ -354,6 +354,17 @@ fn draw_mesh(_: *anyopaque, handle: Mesh.Handle, model: *const Mat4, count: usiz
         data,
     );
 }
+/// Number of mip levels generated below the base level when a texture is
+/// forced VRAM-resident. The base counts as level 0; mip 1 is half-size and
+/// mip 2 is quarter-size.
+const MAX_MIP_LEVELS: u8 = 2;
+
+const MipLevel = struct {
+    width: u32,
+    height: u32,
+    data: [*]const u8,
+};
+
 const TextureData = struct {
     width: u32,
     height: u32,
@@ -367,6 +378,8 @@ const TextureData = struct {
     vram_data: ?[]align(16) u8,
     in_vram: bool,
     swizzled: bool,
+    mip_count: u8,
+    mips: [MAX_MIP_LEVELS]MipLevel,
 };
 
 fn swizzle_in_place(data: []align(16) u8, width: u32, height: u32) void {
@@ -444,6 +457,8 @@ fn create_texture(_: *anyopaque, width: u32, height: u32, data: []align(16) u8) 
         .vram_data = null,
         .in_vram = false,
         .swizzled = should_swizzle,
+        .mip_count = 0,
+        .mips = undefined,
     }) orelse return error.OutOfTextures;
 
     return @intCast(handle);
@@ -471,7 +486,7 @@ fn bind_texture(_: *anyopaque, handle: Texture.Handle) void {
     bound_texture = handle;
     const tex = textures.get_element(handle) orelse return;
 
-    gu.tex_mode(tex_pixel_format, 0, .Single, if (tex.swizzled) .Swizzled else .Linear);
+    gu.tex_mode(tex_pixel_format, @intCast(tex.mip_count), .Single, if (tex.swizzled) .Swizzled else .Linear);
     gu.tex_image(
         0,
         @intCast(tex.width),
@@ -479,8 +494,23 @@ fn bind_texture(_: *anyopaque, handle: Texture.Handle) void {
         @intCast(tex.width),
         @ptrCast(@alignCast(tex.data)),
     );
+    var i: u8 = 0;
+    while (i < tex.mip_count) : (i += 1) {
+        const mip = tex.mips[i];
+        gu.tex_image(
+            @intCast(i + 1),
+            @intCast(mip.width),
+            @intCast(mip.height),
+            @intCast(mip.width),
+            @ptrCast(@alignCast(mip.data)),
+        );
+    }
     gu.tex_func(.Modulate, .Rgba);
-    gu.tex_filter(.Nearest, .Nearest);
+    if (tex.mip_count > 0) {
+        gu.tex_filter(.NearestMipmapNearest, .Nearest);
+    } else {
+        gu.tex_filter(.Nearest, .Nearest);
+    }
     gu.tex_scale(1.0, 1.0);
     gu.tex_offset(0.0, 0.0);
 }
@@ -488,6 +518,186 @@ fn bind_texture(_: *anyopaque, handle: Texture.Handle) void {
 fn destroy_texture(_: *anyopaque, handle: Texture.Handle) void {
     // VRAM allocations are static and cannot be freed individually.
     _ = textures.remove_element(handle);
+}
+
+/// Whether a mip level of `(w, h)` can be stored in the swizzled layout.
+/// The swizzler operates on 16-byte-wide, 8-row-tall blocks, so the level
+/// dimensions must divide evenly into a whole number of blocks.
+fn swizzle_dims_supported(w: u32, h: u32) bool {
+    return (w * tex_bpp) % 16 == 0 and h % 8 == 0;
+}
+
+/// Walk the planned mip chain and return the number of levels that can
+/// actually be generated. Stops as soon as the next level would shrink to
+/// zero or violate the swizzle constraint (when the base is swizzled).
+fn count_supported_mips(base_w: u32, base_h: u32, base_swizzled: bool) u8 {
+    var count: u8 = 0;
+    var w = base_w;
+    var h = base_h;
+    while (count < MAX_MIP_LEVELS) {
+        const new_w = w / 2;
+        const new_h = h / 2;
+        if (new_w == 0 or new_h == 0) break;
+        if (base_swizzled and !swizzle_dims_supported(new_w, new_h)) break;
+        count += 1;
+        w = new_w;
+        h = new_h;
+    }
+    return count;
+}
+
+/// Linearize a swizzled CPU buffer into `dst` so we can read pixels with
+/// straightforward (y * w + x) addressing during mip generation.
+fn deswizzle_to_linear(src: [*]const u8, dst: []u8, width: u32, height: u32) void {
+    var y: u32 = 0;
+    while (y < height) : (y += 1) {
+        var x: u32 = 0;
+        while (x < width) : (x += 1) {
+            const src_off = swizzled_offset(x, y, width);
+            const dst_off = (@as(usize, y) * width + x) * tex_bpp;
+            inline for (0..tex_bpp) |c| {
+                dst[dst_off + c] = src[src_off + c];
+            }
+        }
+    }
+}
+
+/// Swizzle a linear `src` buffer into `dst`, mirroring `swizzle_in_place`
+/// but without its 8 KB short-circuit so it works on small mip levels too.
+/// Caller must ensure `swizzle_dims_supported(width, height)`.
+fn swizzle_linear_to(src: []align(16) const u8, dst: []align(16) u8, width: u32, height: u32) void {
+    const width_bytes = width * tex_bpp;
+    const width_blocks = width_bytes / 16;
+    const height_blocks = height / 8;
+    const src_pitch = (width_bytes - 16) / 4;
+    const src_row = width_bytes * 8;
+
+    var dst_ptr: [*]u32 = @ptrCast(@alignCast(dst.ptr));
+    var ysrc: [*]const u8 = src.ptr;
+
+    for (0..height_blocks) |_| {
+        var xsrc = ysrc;
+        for (0..width_blocks) |_| {
+            var src_ptr: [*]const u32 = @ptrCast(@alignCast(xsrc));
+            for (0..8) |_| {
+                dst_ptr[0] = src_ptr[0];
+                dst_ptr[1] = src_ptr[1];
+                dst_ptr[2] = src_ptr[2];
+                dst_ptr[3] = src_ptr[3];
+                dst_ptr += 4;
+                src_ptr += 4 + src_pitch;
+            }
+            xsrc += 16;
+        }
+        ysrc += src_row;
+    }
+}
+
+/// 2x2 box filter from a linear `src` (`src_w` wide) into a linear `dst`
+/// (`dst_w` x `dst_h`). Branches at comptime on the active pixel format.
+fn box_filter_mip(src: []const u8, src_w: u32, dst: []u8, dst_w: u32, dst_h: u32) void {
+    const src_stride: usize = @as(usize, src_w) * tex_bpp;
+    var dy: u32 = 0;
+    while (dy < dst_h) : (dy += 1) {
+        var dx: u32 = 0;
+        while (dx < dst_w) : (dx += 1) {
+            const sx0: usize = @as(usize, dx) * 2;
+            const sy0: usize = @as(usize, dy) * 2;
+            const row0 = sy0 * src_stride;
+            const row1 = (sy0 + 1) * src_stride;
+            const p0 = row0 + sx0 * tex_bpp;
+            const p1 = row0 + (sx0 + 1) * tex_bpp;
+            const p2 = row1 + sx0 * tex_bpp;
+            const p3 = row1 + (sx0 + 1) * tex_bpp;
+            const dst_off = (@as(usize, dy) * dst_w + dx) * tex_bpp;
+
+            switch (options.config.psp_display_mode) {
+                .rgba8888 => {
+                    inline for (0..4) |c| {
+                        const sum: u32 = @as(u32, src[p0 + c]) + src[p1 + c] + src[p2 + c] + src[p3 + c];
+                        dst[dst_off + c] = @intCast(sum >> 2);
+                    }
+                },
+                .rgb565 => {
+                    const px0: u16 = @as(u16, src[p0]) | (@as(u16, src[p0 + 1]) << 8);
+                    const px1: u16 = @as(u16, src[p1]) | (@as(u16, src[p1 + 1]) << 8);
+                    const px2: u16 = @as(u16, src[p2]) | (@as(u16, src[p2 + 1]) << 8);
+                    const px3: u16 = @as(u16, src[p3]) | (@as(u16, src[p3 + 1]) << 8);
+
+                    const r = (((px0 >> 0) & 0xF) + ((px1 >> 0) & 0xF) + ((px2 >> 0) & 0xF) + ((px3 >> 0) & 0xF)) >> 2;
+                    const g = (((px0 >> 4) & 0xF) + ((px1 >> 4) & 0xF) + ((px2 >> 4) & 0xF) + ((px3 >> 4) & 0xF)) >> 2;
+                    const b = (((px0 >> 8) & 0xF) + ((px1 >> 8) & 0xF) + ((px2 >> 8) & 0xF) + ((px3 >> 8) & 0xF)) >> 2;
+                    const a = (((px0 >> 12) & 0xF) + ((px1 >> 12) & 0xF) + ((px2 >> 12) & 0xF) + ((px3 >> 12) & 0xF)) >> 2;
+
+                    const out: u16 = @as(u16, @intCast(r)) | (@as(u16, @intCast(g)) << 4) | (@as(u16, @intCast(b)) << 8) | (@as(u16, @intCast(a)) << 12);
+                    dst[dst_off] = @truncate(out);
+                    dst[dst_off + 1] = @truncate(out >> 8);
+                },
+            }
+        }
+    }
+}
+
+/// Build mip levels for a freshly VRAM-resident texture and stash their
+/// VRAM pointers in `tex`. We always carry a linear scratch of the previous
+/// level around so the box filter sees plain (y * w + x) addressing, then
+/// optionally re-swizzle when copying into VRAM so all mip levels share the
+/// same data layout as the base.
+fn generate_resident_mips(tex: *TextureData) void {
+    const desired = count_supported_mips(tex.width, tex.height, tex.swizzled);
+    if (desired == 0) return;
+
+    const alloc = Util.allocator(.render);
+
+    var src_w = tex.width;
+    var src_h = tex.height;
+    var src_linear: ?[]align(16) u8 = null;
+    defer if (src_linear) |s| alloc.free(s);
+
+    if (tex.swizzled) {
+        const base_size: usize = @as(usize, src_w) * src_h * tex_bpp;
+        const buf = alloc.alignedAlloc(u8, .fromByteUnits(16), base_size) catch return;
+        deswizzle_to_linear(tex.cpu_data, buf, src_w, src_h);
+        src_linear = buf;
+    }
+
+    var generated: u8 = 0;
+    while (generated < desired) : (generated += 1) {
+        const dst_w = src_w / 2;
+        const dst_h = src_h / 2;
+        const dst_size: usize = @as(usize, dst_w) * dst_h * tex_bpp;
+
+        const dst_linear = alloc.alignedAlloc(u8, .fromByteUnits(16), dst_size) catch break;
+
+        const src_buf: []const u8 = if (src_linear) |s|
+            s[0 .. @as(usize, src_w) * src_h * tex_bpp]
+        else
+            tex.cpu_data[0 .. @as(usize, src_w) * src_h * tex_bpp];
+
+        box_filter_mip(src_buf, src_w, dst_linear, dst_w, dst_h);
+
+        const vram_buf = vram.alloc_absolute_slice(dst_w, dst_h, tex_pixel_format);
+
+        if (tex.swizzled) {
+            swizzle_linear_to(dst_linear, vram_buf, dst_w, dst_h);
+        } else {
+            @memcpy(vram_buf[0..dst_size], dst_linear);
+        }
+        sdk.kernel.dcache_writeback_range(vram_buf.ptr, @intCast(dst_size));
+
+        tex.mips[generated] = .{
+            .width = dst_w,
+            .height = dst_h,
+            .data = vram_buf.ptr,
+        };
+
+        if (src_linear) |s| alloc.free(s);
+        src_linear = dst_linear;
+        src_w = dst_w;
+        src_h = dst_h;
+    }
+
+    tex.mip_count = generated;
 }
 
 fn force_texture_resident(_: *anyopaque, handle: Texture.Handle) void {
@@ -508,6 +718,9 @@ fn force_texture_resident(_: *anyopaque, handle: Texture.Handle) void {
     tex.data = vram_data.ptr;
     tex.vram_data = vram_data;
     tex.in_vram = true;
+
+    generate_resident_mips(&tex);
+
     textures.update_element(handle, tex);
 }
 
