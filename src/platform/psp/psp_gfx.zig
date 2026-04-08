@@ -36,6 +36,7 @@ const tex_bpp: u32 = switch (options.config.psp_display_mode) {
 
 const display = sdk.display;
 const ge = sdk.ge;
+const vram = @import("vram.zig");
 
 const VertexType = sdk.VertexType;
 
@@ -71,7 +72,7 @@ const Swapchain = struct {
         self.draw_idx = 1;
 
         for (0..BUFFER_COUNT) |i| {
-            self.buffers_rel[i] = sdk.extra.vram.allocVramRelative(SCR_BUF_WIDTH, SCREEN_HEIGHT, gu_pixel_format);
+            self.buffers_rel[i] = vram.alloc_relative(SCR_BUF_WIDTH, SCREEN_HEIGHT, gu_pixel_format);
             self.buffers_abs[i] = @ptrFromInt(@intFromPtr(self.buffers_rel[i]) + vram_base | uncached);
         }
     }
@@ -91,7 +92,7 @@ fn init(ctx: *anyopaque) !void {
     self.clear_color = 0x000000;
 
     swapchain.init();
-    const zbp = sdk.extra.vram.allocVramRelative(SCR_BUF_WIDTH, SCREEN_HEIGHT, .Psm4444);
+    const zbp = vram.alloc_relative(SCR_BUF_WIDTH, SCREEN_HEIGHT, .Psm4444);
 
     gu.init();
     gu.start(.Direct, &swapchain.display_list);
@@ -363,6 +364,7 @@ const TextureData = struct {
     // always in the correct (swizzled or linear) layout, since set_pixel
     // routes writes through pixel_offset.
     cpu_data: [*]align(16) u8,
+    vram_data: ?[]align(16) u8,
     in_vram: bool,
     swizzled: bool,
 };
@@ -439,6 +441,7 @@ fn create_texture(_: *anyopaque, width: u32, height: u32, data: []align(16) u8) 
         .height = height,
         .data = data.ptr,
         .cpu_data = data.ptr,
+        .vram_data = null,
         .in_vram = false,
         .swizzled = should_swizzle,
     }) orelse return error.OutOfTextures;
@@ -455,9 +458,9 @@ fn update_texture(_: *anyopaque, handle: Texture.Handle, data: []align(16) u8) v
     if (tex.in_vram) {
         // The GE is sampling from VRAM; mirror the RAM buffer over it.
         const size = tex.width * tex.height * tex_bpp;
-        const dst: [*]u8 = @constCast(tex.data);
+        const dst = tex.vram_data orelse @panic("psp_gfx: VRAM texture missing backing slice");
         @memcpy(dst[0..size], data[0..size]);
-        sdk.kernel.dcache_writeback_range(dst, @intCast(size));
+        sdk.kernel.dcache_writeback_range(dst.ptr, @intCast(size));
     } else {
         // The RAM buffer is the GE-visible buffer; just flush dcache.
         sdk.kernel.dcache_writeback_range(data.ptr, @intCast(data.len));
@@ -492,18 +495,18 @@ fn force_texture_resident(_: *anyopaque, handle: Texture.Handle) void {
     if (tex.in_vram) return;
 
     const size = tex.width * tex.height * tex_bpp;
-    const vram_ptr = sdk.extra.vram.allocVramAbsolute(
+    const vram_data = vram.alloc_absolute_slice(
         tex.width,
         tex.height,
         tex_pixel_format,
-    ) orelse @panic("force_texture_resident: VRAM allocation failed");
+    );
 
-    const dst: [*]u8 = @ptrCast(vram_ptr);
-    @memcpy(dst[0..size], tex.data[0..size]);
+    @memcpy(vram_data[0..size], tex.data[0..size]);
 
     // Only the GE-facing pointer moves to VRAM; cpu_data keeps pointing at
     // the caller's RAM buffer so update_texture can continue to mirror edits.
-    tex.data = dst;
+    tex.data = vram_data.ptr;
+    tex.vram_data = vram_data;
     tex.in_vram = true;
     textures.update_element(handle, tex);
 }

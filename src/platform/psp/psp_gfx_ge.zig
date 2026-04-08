@@ -18,6 +18,7 @@ const sdk = @import("pspsdk");
 const ge = sdk.ge;
 const ge_list = sdk.ge_list;
 const display = sdk.display;
+const vram = @import("vram.zig");
 // VRAM allocator still uses GU pixel-format enums; we only import gu for
 // these constants. All other state goes through the new ge_list API.
 const gu_types = sdk.gu.types;
@@ -104,7 +105,7 @@ const Swapchain = struct {
     list_uncached: []u32 = &.{},
 
     buffers_rel: [BUFFER_COUNT]?*anyopaque = [_]?*anyopaque{null} ** BUFFER_COUNT,
-    buffers_abs: [BUFFER_COUNT]?*anyopaque = [_]?*anyopaque{null} ** BUFFER_COUNT,
+    buffers_abs: [BUFFER_COUNT]?[]align(16) u8 = [_]?[]align(16) u8{null} ** BUFFER_COUNT,
     depth_buffer_rel: ?*anyopaque = null,
     draw_idx: BufferIndex = 1,
     front_idx: BufferIndex = 0,
@@ -128,20 +129,23 @@ const Swapchain = struct {
         self.submitted_count = 0;
         self.vblank_registered = false;
         self.buffers_rel = [_]?*anyopaque{null} ** BUFFER_COUNT;
-        self.buffers_abs = [_]?*anyopaque{null} ** BUFFER_COUNT;
+        self.buffers_abs = [_]?[]align(16) u8{null} ** BUFFER_COUNT;
 
         for (0..BUFFER_COUNT) |i| {
-            self.buffers_rel[i] = sdk.extra.vram.allocVramRelative(SCR_BUF_WIDTH, SCREEN_HEIGHT, vram_color_format);
-            self.buffers_abs[i] = @ptrFromInt((@intFromPtr(self.buffers_rel[i]) + vram_base) | uncached);
+            const buffer = vram.alloc_relative_buffer(SCR_BUF_WIDTH, SCREEN_HEIGHT, vram_color_format);
+            self.buffers_rel[i] = buffer.ptr;
+            const relative_addr: usize = if (buffer.ptr) |ptr| @intFromPtr(ptr) else 0;
+            const ptr: [*]align(16) u8 = @ptrFromInt((relative_addr + vram_base) | uncached);
+            self.buffers_abs[i] = ptr[0..buffer.len];
             self.clear_buffer(@intCast(i));
         }
 
-        self.depth_buffer_rel = sdk.extra.vram.allocVramRelative(SCR_BUF_WIDTH, SCREEN_HEIGHT, .Psm4444);
+        self.depth_buffer_rel = vram.alloc_relative(SCR_BUF_WIDTH, SCREEN_HEIGHT, .Psm4444);
     }
 
     fn clear_buffer(self: *Swapchain, idx: BufferIndex) void {
-        const ptr: [*]u8 = @ptrCast(self.buffers_abs[@intCast(idx)].?);
-        @memset(ptr[0 .. SCR_BUF_WIDTH * SCREEN_HEIGHT * frame_bpp], 0);
+        const buffer = self.buffers_abs[@intCast(idx)].?;
+        @memset(buffer[0 .. SCR_BUF_WIDTH * SCREEN_HEIGHT * frame_bpp], 0);
     }
 
     fn deinit(self: *Swapchain) void {
@@ -165,7 +169,7 @@ const Swapchain = struct {
 
     fn prime_display(self: *Swapchain) !void {
         try display.set_frame_buf(
-            self.buffers_abs[@intCast(self.front_idx)],
+            @ptrCast(self.buffers_abs[@intCast(self.front_idx)].?.ptr),
             SCR_BUF_WIDTH,
             display_pixel_format,
             .next_vblank,
@@ -212,7 +216,7 @@ const Swapchain = struct {
             const pending = self.pending_idx orelse return false;
             const old_front = self.front_idx;
             display.set_frame_buf(
-                self.buffers_abs[@intCast(pending)],
+                @ptrCast(self.buffers_abs[@intCast(pending)].?.ptr),
                 SCR_BUF_WIDTH,
                 display_pixel_format,
                 .immediate,
@@ -270,7 +274,7 @@ const Swapchain = struct {
         const flags = sdk.kernel.cpu_suspend_intr();
         if (self.pending_idx) |idx| {
             display.set_frame_buf(
-                self.buffers_abs[@intCast(idx)],
+                @ptrCast(self.buffers_abs[@intCast(idx)].?.ptr),
                 SCR_BUF_WIDTH,
                 display_pixel_format,
                 .immediate,
@@ -782,6 +786,7 @@ const TextureData = struct {
     // always in the correct (swizzled or linear) layout, since set_pixel
     // routes writes through pixel_offset.
     cpu_data: [*]align(16) u8,
+    vram_data: ?[]align(16) u8,
     in_vram: bool,
     swizzled: bool,
 };
@@ -858,6 +863,7 @@ fn create_texture(_: *anyopaque, width: u32, height: u32, data: []align(16) u8) 
         .height = height,
         .data = data.ptr,
         .cpu_data = data.ptr,
+        .vram_data = null,
         .in_vram = false,
         .swizzled = should_swizzle,
     }) orelse return error.OutOfTextures;
@@ -874,9 +880,9 @@ fn update_texture(_: *anyopaque, handle: Texture.Handle, data: []align(16) u8) v
     if (tex.in_vram) {
         // The GE is sampling from VRAM; mirror the RAM buffer over it.
         const size = tex.width * tex.height * tex_bpp;
-        const dst: [*]u8 = @constCast(tex.data);
+        const dst = tex.vram_data orelse @panic("psp_gfx_ge: VRAM texture missing backing slice");
         @memcpy(dst[0..size], data[0..size]);
-        sdk.kernel.dcache_writeback_range(dst, @intCast(size));
+        sdk.kernel.dcache_writeback_range(dst.ptr, @intCast(size));
     } else {
         // The RAM buffer is the GE-visible buffer; just flush dcache.
         sdk.kernel.dcache_writeback_range(data.ptr, @intCast(data.len));
@@ -910,21 +916,21 @@ fn force_texture_resident(_: *anyopaque, handle: Texture.Handle) void {
     if (tex.in_vram) return;
 
     const size = tex.width * tex.height * tex_bpp;
-    const vram_ptr = sdk.extra.vram.allocVramAbsolute(
+    const vram_data = vram.alloc_absolute_slice(
         tex.width,
         tex.height,
         switch (options.config.psp_display_mode) {
             .rgba8888 => .Psm8888,
             .rgb565 => .Psm4444,
         },
-    ) orelse @panic("force_texture_resident: VRAM allocation failed");
+    );
 
-    const dst: [*]u8 = @ptrCast(vram_ptr);
-    @memcpy(dst[0..size], tex.data[0..size]);
+    @memcpy(vram_data[0..size], tex.data[0..size]);
 
     // Only the GE-facing pointer moves to VRAM; cpu_data keeps pointing at
     // the caller's RAM buffer so update_texture can continue to mirror edits.
-    tex.data = dst;
+    tex.data = vram_data.ptr;
+    tex.vram_data = vram_data;
     tex.in_vram = true;
     textures.update_element(handle, tex);
 }
