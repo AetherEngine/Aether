@@ -777,9 +777,9 @@ fn draw_mesh(_: *anyopaque, handle: Mesh.Handle, model: *const Mat4, count: usiz
 // ---- textures -------------------------------------------------------------
 
 /// Number of mip levels generated below the base level when a texture is
-/// forced VRAM-resident. The base counts as level 0; mip 1 is half-size and
-/// mip 2 is quarter-size.
-const MAX_MIP_LEVELS: u8 = 2;
+/// forced VRAM-resident. The base counts as level 0; mip 1 is half-size,
+/// mip 2 is quarter-size, and mip 3 is eighth-size.
+const MAX_MIP_LEVELS: u8 = 3;
 
 const MipLevel = struct {
     width: u32,
