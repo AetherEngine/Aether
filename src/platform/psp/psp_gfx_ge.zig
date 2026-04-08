@@ -1067,6 +1067,7 @@ fn box_filter_mip(src: []const u8, src_w: u32, dst: []u8, dst_w: u32, dst_h: u32
 /// optionally re-swizzle when copying into VRAM so all mip levels share the
 /// same data layout as the base.
 fn generate_resident_mips(tex: *TextureData) void {
+    if (!options.config.psp_mipmaps) return;
     const desired = count_supported_mips(tex.width, tex.height, tex.swizzled);
     if (desired == 0) return;
 
