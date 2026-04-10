@@ -28,21 +28,12 @@ pub const PspDisplayMode = enum {
     rgb565,
 };
 
-pub const PspBackend = enum {
-    /// New default: drives the GE directly through the pspsdk ge_list
-    /// CommandBuffer API for explicit display-list ownership.
-    ge_list,
-    /// Legacy backend that goes through pspsdk's gu wrapper.
-    gu,
-};
-
 pub const Config = struct {
     platform: Platform,
     gfx: Gfx,
     audio: Audio = Audio.default,
     input: Input = Input.default,
     psp_display_mode: PspDisplayMode = .rgba8888,
-    psp_backend: PspBackend = .ge_list,
     /// When enabled, `force_texture_resident` also generates and binds mip
     /// levels for the texture. Off by default since the extra VRAM cost
     /// only pays off for textures sampled at a wide range of distances.
@@ -70,7 +61,6 @@ pub const Config = struct {
             .platform = plat,
             .gfx = overrides.gfx orelse default_gfx,
             .psp_display_mode = overrides.psp_display_mode orelse .rgba8888,
-            .psp_backend = overrides.psp_backend orelse .ge_list,
             .psp_mipmaps = overrides.psp_mipmaps orelse false,
         };
     }
@@ -78,7 +68,6 @@ pub const Config = struct {
     pub const Overrides = struct {
         gfx: ?Gfx = null,
         psp_display_mode: ?PspDisplayMode = null,
-        psp_backend: ?PspBackend = null,
         psp_mipmaps: ?bool = null,
     };
 };
@@ -425,7 +414,6 @@ pub fn build(b: *std.Build) void {
     const overrides: Config.Overrides = .{
         .gfx = b.option(Gfx, "gfx", "Graphics backend override (default: auto-detect from target)"),
         .psp_display_mode = b.option(PspDisplayMode, "psp-display", "PSP display mode: rgba8888 (32-bit, default) or rgb565 (16-bit)"),
-        .psp_backend = b.option(PspBackend, "psp-backend", "PSP graphics backend: ge_list (default) or gu (legacy)"),
         .psp_mipmaps = b.option(bool, "psp-mipmaps", "PSP: generate mip levels for VRAM-resident textures (default: false)"),
     };
 
