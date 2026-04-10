@@ -578,6 +578,64 @@ fn deinit(_: *anyopaque) void {
     }
 }
 
+// ---- dialog suspend / resume ----------------------------------------------
+//
+// PSP system utility dialogs (OSK, netconf) need exclusive GE ownership.
+// These functions bracket the dialog's sceGu-based render loop, stopping
+// our interrupt handlers and display-list management so the firmware
+// dialog renderer can take over safely.
+
+pub const DialogBufferInfo = struct {
+    front_buffer_rel: ?*anyopaque,
+    back_buffer_rel: ?*anyopaque,
+    depth_buffer_rel: ?*anyopaque,
+};
+
+pub fn get_dialog_buffer_info() DialogBufferInfo {
+    const front: usize = @intCast(swapchain.front_idx);
+    const back: usize = (front +% 1) % Swapchain.BUFFER_COUNT;
+    return .{
+        .front_buffer_rel = swapchain.buffers_rel[front],
+        .back_buffer_rel = swapchain.buffers_rel[back],
+        .depth_buffer_rel = swapchain.depth_buffer_rel,
+    };
+}
+
+pub fn suspend_for_dialog() void {
+    // Drain any in-flight GE work.
+    finish_list();
+    _ = ge_list.draw_sync(.wait);
+
+    // Stop our interrupt handlers so they don't fire during the dialog.
+    swapchain.deinit();
+
+    // Unregister our GE finish callback; sceGuInit will register its own.
+    if (ge_callback_id > 0) {
+        ge.unset_callback(ge_callback_id) catch {};
+        ge_callback_id = 0;
+    }
+}
+
+pub fn resume_from_dialog() void {
+    // Re-register our GE finish callback.
+    const cb_data = ge.CallbackData{
+        .signal_func = nop_ge_callback,
+        .signal_arg = null,
+        .finish_func = ge_finish_callback,
+        .finish_arg = &swapchain,
+    };
+    ge_callback_id = ge.set_callback(cb_data) catch 0;
+
+    // Reset swapchain queue state to a clean slate.
+    swapchain.pending_idx = null;
+    swapchain.submitted_head = 0;
+    swapchain.submitted_count = 0;
+
+    // Re-install VBlank handler and prime the display.
+    swapchain.install_vblank_handler() catch {};
+    swapchain.prime_display() catch {};
+}
+
 fn set_alpha_blend(_: *anyopaque, enabled: bool) void {
     if (enabled == alpha_blend_enabled) return;
     alpha_blend_enabled = enabled;
