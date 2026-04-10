@@ -5,7 +5,7 @@ const Util = @import("../util/util.zig");
 const Platform = @import("../platform/platform.zig");
 const gfx = Platform.gfx;
 const options = @import("options");
-const psp_gfx = if (builtin.os.tag == .psp) @import("../platform/psp/psp_gfx.zig") else struct {};
+const psp_gfx = if (builtin.os.tag == .psp) @import("../platform/psp/psp_gfx_ge.zig") else struct {};
 
 pub const Handle = u32;
 
