@@ -588,6 +588,8 @@ fn deinit(_: *anyopaque) void {
 pub const DialogBufferInfo = struct {
     front_buffer_rel: ?*anyopaque,
     back_buffer_rel: ?*anyopaque,
+    front_buffer_abs: ?*anyopaque,
+    back_buffer_abs: ?*anyopaque,
     depth_buffer_rel: ?*anyopaque,
 };
 
@@ -597,8 +599,62 @@ pub fn get_dialog_buffer_info() DialogBufferInfo {
     return .{
         .front_buffer_rel = swapchain.buffers_rel[front],
         .back_buffer_rel = swapchain.buffers_rel[back],
+        .front_buffer_abs = if (swapchain.buffers_abs[front]) |b| @ptrCast(b.ptr) else null,
+        .back_buffer_abs = if (swapchain.buffers_abs[back]) |b| @ptrCast(b.ptr) else null,
         .depth_buffer_rel = swapchain.depth_buffer_rel,
     };
+}
+
+/// Wait for any in-flight GE work to complete.
+pub fn dialog_drain() void {
+    _ = ge_list.draw_sync(.wait);
+}
+
+/// Begin a GE display list for dialog rendering. Uses the same list
+/// buffer and callback as normal frames. Drains any prior list first
+/// so the enqueue doesn't conflict. Resets region/scissor to full screen
+/// so the clear covers everything.
+pub fn dialog_begin() void {
+    _ = ge_list.draw_sync(.wait);
+    begin_list();
+    must(cmd.frame_buffer(swapchain.buffers_rel[swapchain.draw_idx], SCR_BUF_WIDTH));
+    must(cmd.pixel_format(ge_pixel_format));
+    must(cmd.region(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT));
+    must(cmd.scissor(0, 0, SCREEN_WIDTH - 1, SCREEN_HEIGHT - 1));
+}
+
+/// Emit a color-buffer clear into the active dialog list.
+pub fn dialog_clear() void {
+    const buffer_idx = swapchain.draw_idx;
+    const filter: u32 = 0x000000; // black
+    ensure_clear_vertices(buffer_idx, filter);
+
+    must(cmd.emit_clear(true, .{ .color = true, .depth = true }));
+    must(cmd.vertex_type(@bitCast(clear_vertex_type)));
+    must(cmd.vertex_address(@intFromPtr(&clear_vertices[@intCast(buffer_idx)])));
+    must(cmd.primitive(.sprites, @intCast(CLEAR_COUNT)));
+    must(cmd.emit_clear(false, .{}));
+    advance_stall();
+}
+
+/// Finish the dialog list and wait for the GE to drain it.
+pub fn dialog_finish() void {
+    finish_list();
+    _ = ge_list.draw_sync(.wait);
+}
+
+/// Swap the dialog display buffer. Alternates draw_idx / front_idx and
+/// points the display controller at the new front.
+pub fn dialog_swap() void {
+    const old_front = swapchain.front_idx;
+    swapchain.front_idx = swapchain.draw_idx;
+    swapchain.draw_idx = old_front;
+    // display.set_frame_buf(
+    //     @ptrCast(swapchain.buffers_abs[@intCast(swapchain.front_idx)].?.ptr),
+    //     SCR_BUF_WIDTH,
+    //     display_pixel_format,
+    //     .next_vblank,
+    // ) catch {};
 }
 
 pub fn suspend_for_dialog() void {
