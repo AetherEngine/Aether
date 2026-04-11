@@ -47,44 +47,47 @@ const MyState = struct {
     transform: Rendering.Transform,
     texture: Rendering.Texture,
 
-    fn init(ctx: *anyopaque) anyerror!void {
-        var self = Util.ctx_to_self(MyState, ctx);
+    fn init(ctx: *anyopaque, engine: *ae.Engine) anyerror!void {
+        var self = ae.ctx_to_self(MyState, ctx);
         const vert align(@alignOf(u32)) = @embedFile("basic_vert").*;
         const frag align(@alignOf(u32)) = @embedFile("basic_frag").*;
         pipeline = try Rendering.Pipeline.new(Vertex.Layout, &vert, &frag);
 
-        self.mesh = try MyMesh.new(pipeline);
+        const render = engine.allocator(.render);
+
+        self.mesh = try MyMesh.new(render, pipeline);
         self.transform = Rendering.Transform.new();
 
-        self.texture = try Rendering.Texture.load("test.png");
-        try self.mesh.append(&.{
+        self.texture = try Rendering.Texture.load(engine.io, render, "test.png");
+        try self.mesh.append(render, &.{
             Vertex{ .pos = .{ -16383, -16383, 0 }, .color = 0xFF0000FF, .uv = .{ 0, 32767 } },
             Vertex{ .pos = .{ 16383, -16383, 0 }, .color = 0xFF00FF00, .uv = .{ 32767, 32767 } },
             Vertex{ .pos = .{ 0, 16383, 0 }, .color = 0xFFFF0000, .uv = .{ 16383, 0 } },
         });
         self.mesh.update();
 
-        Util.report();
+        engine.report();
     }
 
-    fn deinit(ctx: *anyopaque) void {
-        var self = Util.ctx_to_self(MyState, ctx);
-        self.texture.deinit();
-        self.mesh.deinit();
+    fn deinit(ctx: *anyopaque, engine: *ae.Engine) void {
+        var self = ae.ctx_to_self(MyState, ctx);
+        const render = engine.allocator(.render);
+        self.texture.deinit(render);
+        self.mesh.deinit(render);
         Rendering.Pipeline.deinit(pipeline);
     }
 
-    fn tick(ctx: *anyopaque) anyerror!void {
+    fn tick(ctx: *anyopaque, _: *ae.Engine) anyerror!void {
         _ = ctx;
     }
 
-    fn update(ctx: *anyopaque, dt: f32, _: *const Util.BudgetContext) anyerror!void {
-        var self = Util.ctx_to_self(MyState, ctx);
+    fn update(ctx: *anyopaque, _: *ae.Engine, dt: f32, _: *const Util.BudgetContext) anyerror!void {
+        var self = ae.ctx_to_self(MyState, ctx);
         self.transform.rot.z += 60.0 * dt;
     }
 
-    fn draw(ctx: *anyopaque, _: f32, _: *const Util.BudgetContext) anyerror!void {
-        var self = Util.ctx_to_self(MyState, ctx);
+    fn draw(ctx: *anyopaque, _: *ae.Engine, _: f32, _: *const Util.BudgetContext) anyerror!void {
+        var self = ae.ctx_to_self(MyState, ctx);
 
         Rendering.gfx.api.set_proj_matrix(&Math.Mat4.orthographicRh(
             2 * @as(f32, @floatFromInt(Rendering.gfx.surface.get_width())) / @as(f32, @floatFromInt(Rendering.gfx.surface.get_height())),
@@ -115,7 +118,8 @@ pub fn main(init: std.process.Init) !void {
     const memory = try init.arena.allocator().alloc(u8, 32 * 1024 * 1024);
 
     var state: MyState = undefined;
-    try ae.App.init(init.io, memory, .{
+    var engine: ae.Engine = undefined;
+    try engine.init(init.io, memory, .{
         .memory = .{
             .render = 12 * 1024 * 1024,
             .audio = 2 * 1024 * 1024,
@@ -124,6 +128,6 @@ pub fn main(init: std.process.Init) !void {
         },
         .resizable = true,
     }, &state.state());
-    defer ae.App.deinit();
-    try ae.App.main_loop();
+    defer engine.deinit();
+    try engine.run();
 }

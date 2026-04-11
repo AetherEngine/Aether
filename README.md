@@ -102,11 +102,11 @@ const std = @import("std");
 const ae = @import("aether");
 
 const MyState = struct {
-    fn init(ctx: *anyopaque) anyerror!void { _ = ctx; }
-    fn deinit(ctx: *anyopaque) void { _ = ctx; }
-    fn tick(ctx: *anyopaque) anyerror!void { _ = ctx; }
-    fn update(ctx: *anyopaque, dt: f32) anyerror!void { _ = ctx; _ = dt; }
-    fn draw(ctx: *anyopaque, dt: f32) anyerror!void { _ = ctx; _ = dt; }
+    fn init(ctx: *anyopaque, engine: *ae.Engine) anyerror!void { _ = ctx; _ = engine; }
+    fn deinit(ctx: *anyopaque, engine: *ae.Engine) void { _ = ctx; _ = engine; }
+    fn tick(ctx: *anyopaque, engine: *ae.Engine) anyerror!void { _ = ctx; _ = engine; }
+    fn update(ctx: *anyopaque, engine: *ae.Engine, dt: f32, _: *const ae.Util.BudgetContext) anyerror!void { _ = ctx; _ = engine; _ = dt; }
+    fn draw(ctx: *anyopaque, engine: *ae.Engine, dt: f32, _: *const ae.Util.BudgetContext) anyerror!void { _ = ctx; _ = engine; _ = dt; }
 
     pub fn state(self: *MyState) ae.Core.State {
         return .{ .ptr = self, .tab = &.{
@@ -118,17 +118,20 @@ const MyState = struct {
 
 pub fn main(init: std.process.Init) !void {
     const memory = try init.arena.allocator().alloc(u8, 32 * 1024 * 1024);
-    const config = ae.Util.MemoryConfig{
-        .render = 8 * 1024 * 1024,
-        .audio = 2 * 1024 * 1024,
-        .game = 2 * 1024 * 1024,
-        .user = 16 * 1024 * 1024,
-        .scratch = 4 * 1024 * 1024,
-    };
+
     var my_state: MyState = undefined;
-    try ae.App.init(init.io, memory, config, 1280, 720, "My Game", false, true, &my_state.state());
-    defer ae.App.deinit();
-    try ae.App.main_loop();
+    var engine: ae.Engine = undefined;
+    try engine.init(init.io, memory, .{
+        .memory = .{
+            .render = 8 * 1024 * 1024,
+            .audio = 2 * 1024 * 1024,
+            .game = 2 * 1024 * 1024,
+            .user = 16 * 1024 * 1024,
+        },
+        .title = "My Game",
+    }, &my_state.state());
+    defer engine.deinit();
+    try engine.run();
 }
 ```
 

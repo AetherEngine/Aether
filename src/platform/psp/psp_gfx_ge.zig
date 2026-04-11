@@ -14,6 +14,14 @@ const Mesh = Rendering.mesh;
 const Texture = Rendering.Texture;
 const GFXAPI = @import("../gfx_api.zig");
 
+var render_alloc: std.mem.Allocator = undefined;
+var render_io: std.Io = undefined;
+
+pub fn setup(alloc: std.mem.Allocator, io: std.Io) void {
+    render_alloc = alloc;
+    render_io = io;
+}
+
 const sdk = @import("pspsdk");
 const ge = sdk.ge;
 const ge_list = sdk.ge_list;
@@ -922,7 +930,7 @@ fn swizzle_in_place(data: []align(16) u8, width: u32, height: u32) void {
     const width_bytes = width * tex_bpp;
     if (width_bytes * height < 8 * 1024) return;
 
-    const alloc = Util.allocator(.render);
+    const alloc = render_alloc;
     const tmp = alloc.alignedAlloc(u8, .fromByteUnits(16), data.len) catch return;
     defer alloc.free(tmp);
 
@@ -1185,7 +1193,7 @@ fn generate_resident_mips(tex: *TextureData) void {
     const desired = count_supported_mips(tex.width, tex.height, tex.swizzled);
     if (desired == 0) return;
 
-    const alloc = Util.allocator(.render);
+    const alloc = render_alloc;
 
     var src_w = tex.width;
     var src_h = tex.height;

@@ -1,5 +1,5 @@
+const std = @import("std");
 const builtin = @import("builtin");
-const Util = @import("../util/util.zig");
 const Self = @This();
 
 ptr: *anyopaque,
@@ -50,19 +50,22 @@ pub inline fn get_height(self: *Self) u32 {
 
 /// Creates a new surface instance appropriate for the current platform.
 /// Returns an error if the platform is unsupported or initialization fails.
-pub fn make_surface() !Self {
+pub fn make_surface(alloc: std.mem.Allocator) !Self {
     const options = @import("options");
     if (options.config.gfx == .headless) {
         const HeadlessSurface = @import("headless/surface.zig");
-        var headless_surface = try Util.allocator(.render).create(HeadlessSurface);
+        const headless_surface = try alloc.create(HeadlessSurface);
+        headless_surface.alloc = alloc;
         return headless_surface.surface();
     } else if (builtin.os.tag == .windows or builtin.os.tag == .linux or builtin.os.tag == .macos) {
         const GLFWSurface = @import("glfw/surface.zig");
-        var glfw_surface = try Util.allocator(.render).create(GLFWSurface);
+        const glfw_surface = try alloc.create(GLFWSurface);
+        glfw_surface.alloc = alloc;
         return glfw_surface.surface();
     } else if (builtin.os.tag == .psp) {
         const PspSurface = @import("psp/surface.zig");
-        var psp_surface = try Util.allocator(.render).create(PspSurface);
+        const psp_surface = try alloc.create(PspSurface);
+        psp_surface.alloc = alloc;
         return psp_surface.surface();
     } else {
         @compileError("No surface implementation for this platform");

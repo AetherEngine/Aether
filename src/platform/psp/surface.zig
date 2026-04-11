@@ -5,7 +5,8 @@ const sdk = @import("pspsdk");
 const ctrl = sdk.ctrl;
 const Self = @This();
 
-sync: bool,
+alloc: std.mem.Allocator,
+sync: bool = false,
 
 fn init(ctx: *anyopaque, _: u32, _: u32, _: [:0]const u8, _: bool, sync: bool, _: bool) !void {
     const self = Util.ctx_to_self(Self, ctx);
@@ -17,7 +18,7 @@ fn init(ctx: *anyopaque, _: u32, _: u32, _: [:0]const u8, _: bool, sync: bool, _
 
 fn deinit(ctx: *anyopaque) void {
     const self = Util.ctx_to_self(Self, ctx);
-    Util.allocator(.render).destroy(self);
+    self.alloc.destroy(self);
 }
 
 pub var pad: ctrl.Data = std.mem.zeroes(ctrl.Data);

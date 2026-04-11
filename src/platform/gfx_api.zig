@@ -1,5 +1,5 @@
+const std = @import("std");
 const Mat4 = @import("../math/math.zig").Mat4;
-const Util = @import("../util/util.zig");
 const Rendering = @import("../rendering/rendering.zig");
 const Mesh = Rendering.mesh;
 const Pipeline = Rendering.Pipeline;
@@ -123,13 +123,14 @@ const GraphicsAPI = @import("platform.zig").GraphicsAPI;
 
 /// Factory function to create a GraphicsAPI instance based on the specified API type.
 /// This is a comptime function that selects the appropriate implementation, runtime polymorphism is avoided for performance.
-pub fn make_api(comptime api: GraphicsAPI) !Self {
+pub fn make_api(alloc: std.mem.Allocator, io: std.Io, comptime api: GraphicsAPI) !Self {
     const builtin = @import("builtin");
     switch (api) {
         .default => {
             if (builtin.os.tag == .psp) {
                 const PspGfxGe = @import("psp/psp_gfx_ge.zig");
-                var psp = try Util.allocator(.render).create(PspGfxGe);
+                PspGfxGe.setup(alloc, io);
+                const psp = try alloc.create(PspGfxGe);
                 return psp.gfx_api();
             } else {
                 @compileError("No default graphics backend for this platform");
@@ -139,17 +140,20 @@ pub fn make_api(comptime api: GraphicsAPI) !Self {
             if (builtin.os.tag == .macos) @compileError("OpenGL is not supported on macOS, use Vulkan instead.");
 
             const OpenGLAPI = @import("glfw/opengl/opengl_gfx.zig");
-            var opengl = try Util.allocator(.render).create(OpenGLAPI);
+            OpenGLAPI.setup(alloc, io);
+            const opengl = try alloc.create(OpenGLAPI);
             return opengl.gfx_api();
         },
         .vulkan => {
             const VulkanAPI = @import("glfw/vulkan/vulkan_gfx.zig");
-            var vulkan = try Util.allocator(.render).create(VulkanAPI);
+            VulkanAPI.setup(alloc, io);
+            const vulkan = try alloc.create(VulkanAPI);
             return vulkan.gfx_api();
         },
         .headless => {
             const HeadlessGfx = @import("headless/headless_gfx.zig");
-            var headless = try Util.allocator(.render).create(HeadlessGfx);
+            HeadlessGfx.setup(alloc, io);
+            const headless = try alloc.create(HeadlessGfx);
             return headless.gfx_api();
         },
     }

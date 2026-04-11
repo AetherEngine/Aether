@@ -1,3 +1,4 @@
+const std = @import("std");
 const Util = @import("../../util/util.zig");
 const Mat4 = @import("../../math/math.zig").Mat4;
 const Rendering = @import("../../rendering/rendering.zig");
@@ -8,11 +9,19 @@ const GFXAPI = @import("../gfx_api.zig");
 
 const Self = @This();
 
+var render_alloc: std.mem.Allocator = undefined;
+var render_io: std.Io = undefined;
+
+pub fn setup(alloc: std.mem.Allocator, io: std.Io) void {
+    render_alloc = alloc;
+    render_io = io;
+}
+
 fn init(_: *anyopaque) !void {}
 
 fn deinit(ctx: *anyopaque) void {
     const self = Util.ctx_to_self(Self, ctx);
-    Util.allocator(.render).destroy(self);
+    render_alloc.destroy(self);
 }
 
 fn set_clear_color(_: *anyopaque, _: f32, _: f32, _: f32, _: f32) void {}

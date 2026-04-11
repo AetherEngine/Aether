@@ -1,12 +1,15 @@
+const std = @import("std");
 const Util = @import("../../util/util.zig");
 const Surface = @import("../surface.zig");
 const Self = @This();
+
+alloc: std.mem.Allocator,
 
 fn init(_: *anyopaque, _: u32, _: u32, _: [:0]const u8, _: bool, _: bool, _: bool) !void {}
 
 fn deinit(ctx: *anyopaque) void {
     const self = Util.ctx_to_self(Self, ctx);
-    Util.allocator(.render).destroy(self);
+    self.alloc.destroy(self);
 }
 
 fn update(_: *anyopaque) bool {
