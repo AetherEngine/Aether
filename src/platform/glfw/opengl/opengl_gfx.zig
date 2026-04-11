@@ -10,9 +10,8 @@ const gfx = @import("../../gfx.zig");
 const Rendering = @import("../../../rendering/rendering.zig");
 const Mesh = Rendering.mesh;
 const Pipeline = Rendering.Pipeline;
-const GFXAPI = @import("../../gfx_api.zig");
+const Texture = Rendering.Texture;
 const GLFWSurface = @import("../surface.zig");
-const Self = @This();
 
 var render_alloc: std.mem.Allocator = undefined;
 var render_io: std.Io = undefined;
@@ -40,9 +39,7 @@ const MeshInternal = struct {
     vbo: gl.uint,
 };
 
-fn init(ctx: *anyopaque) !void {
-    _ = ctx;
-
+pub fn init() anyerror!void {
     if (!procs.init(glfw.getProcAddress)) @panic("Failed to initialize OpenGL");
     gl.makeProcTableCurrent(&procs);
 
@@ -70,30 +67,25 @@ fn init(ctx: *anyopaque) !void {
 }
 
 fn resize_render() void {
-    var dummy: u8 = 0;
-    if (start_frame(@ptrCast(&dummy))) {
-        end_frame(@ptrCast(&dummy));
+    if (start_frame()) {
+        end_frame();
     }
 }
 
-fn deinit(ctx: *anyopaque) void {
-    const self = Util.ctx_to_self(Self, ctx);
+pub fn deinit() void {
     GLFWSurface.on_resize = null;
 
     shader.deinit();
 
     gl.makeProcTableCurrent(null);
     procs = undefined;
-
-    render_alloc.destroy(self);
 }
 
-fn set_clear_color(ctx: *anyopaque, r: f32, g: f32, b: f32, a: f32) void {
-    _ = ctx;
+pub fn set_clear_color(r: f32, g: f32, b: f32, a: f32) void {
     gl.ClearColor(r, g, b, a);
 }
 
-fn set_alpha_blend(_: *anyopaque, enabled: bool) void {
+pub fn set_alpha_blend(enabled: bool) void {
     const flag: u32 = @intFromBool(enabled);
     if (shader.state.alpha_blend_enabled != flag) {
         shader.state.alpha_blend_enabled = flag;
@@ -104,9 +96,9 @@ fn set_alpha_blend(_: *anyopaque, enabled: bool) void {
     if (enabled) gl.Enable(gl.BLEND) else gl.Disable(gl.BLEND);
 }
 
-fn set_clip_planes(_: *anyopaque, _: bool) void {}
+pub fn set_clip_planes(_: bool) void {}
 
-fn set_fog(_: *anyopaque, enabled: bool, start: f32, end: f32, r: f32, g: f32, b: f32) void {
+pub fn set_fog(enabled: bool, start: f32, end: f32, r: f32, g: f32, b: f32) void {
     const fog_en: u32 = @intFromBool(enabled);
     if (shader.state.fog_enabled == fog_en and
         shader.state.fog_start == start and
@@ -119,9 +111,7 @@ fn set_fog(_: *anyopaque, enabled: bool, start: f32, end: f32, r: f32, g: f32, b
     shader.update_ubo();
 }
 
-fn start_frame(ctx: *anyopaque) bool {
-    _ = ctx;
-
+pub fn start_frame() bool {
     const new_width = gfx.surface.get_width();
     const new_height = gfx.surface.get_height();
     if (new_width != last_width or new_height != last_height) {
@@ -141,31 +131,25 @@ fn start_frame(ctx: *anyopaque) bool {
     return true;
 }
 
-fn end_frame(ctx: *anyopaque) void {
-    _ = ctx;
+pub fn end_frame() void {
     gfx.surface.draw();
 }
 
-fn clear_depth(ctx: *anyopaque) void {
-    _ = ctx;
+pub fn clear_depth() void {
     gl.Clear(gl.DEPTH_BUFFER_BIT);
 }
 
-fn set_proj_matrix(ctx: *anyopaque, mat: *const Mat4) void {
-    _ = ctx;
+pub fn set_proj_matrix(mat: *const Mat4) void {
     shader.state.proj = mat.*;
     shader.update_ubo();
 }
 
-fn set_view_matrix(ctx: *anyopaque, mat: *const Mat4) void {
-    _ = ctx;
+pub fn set_view_matrix(mat: *const Mat4) void {
     shader.state.view = mat.*;
     shader.update_ubo();
 }
 
-fn create_pipeline(ctx: *anyopaque, layout: Pipeline.VertexLayout, v_shader: ?[:0]const u8, f_shader: ?[:0]const u8) anyerror!Pipeline.Handle {
-    _ = ctx;
-
+pub fn create_pipeline(layout: Pipeline.VertexLayout, v_shader: ?[:0]align(4) const u8, f_shader: ?[:0]align(4) const u8) anyerror!Pipeline.Handle {
     if (v_shader == null or f_shader == null) {
         return error.InvalidShader;
     }
@@ -198,17 +182,13 @@ fn create_pipeline(ctx: *anyopaque, layout: Pipeline.VertexLayout, v_shader: ?[:
     return @intCast(pipeline);
 }
 
-fn bind_pipeline(ctx: *anyopaque, pipeline: Pipeline.Handle) void {
-    _ = ctx;
-
+pub fn bind_pipeline(pipeline: Pipeline.Handle) void {
     const pl = pipelines.get_element(pipeline) orelse return;
     gl.BindVertexArray(pl.vao);
     gl.UseProgram(pl.program.shader_program);
 }
 
-fn destroy_pipeline(ctx: *anyopaque, pipeline: Pipeline.Handle) void {
-    _ = ctx;
-
+pub fn destroy_pipeline(pipeline: Pipeline.Handle) void {
     var pl = pipelines.get_element(pipeline) orelse return;
     gl.DeleteVertexArrays(1, @ptrCast(&pl.vao));
     pl.vao = 0;
@@ -217,9 +197,7 @@ fn destroy_pipeline(ctx: *anyopaque, pipeline: Pipeline.Handle) void {
     _ = pipelines.remove_element(pipeline);
 }
 
-fn create_mesh(ctx: *anyopaque, pipeline: Pipeline.Handle) anyerror!Mesh.Handle {
-    _ = ctx;
-
+pub fn create_mesh(pipeline: Pipeline.Handle) anyerror!Mesh.Handle {
     const pl = pipelines.get_element(pipeline).?;
     var vbo: gl.uint = 0;
     gl.CreateBuffers(1, @ptrCast(&vbo));
@@ -234,9 +212,7 @@ fn create_mesh(ctx: *anyopaque, pipeline: Pipeline.Handle) anyerror!Mesh.Handle 
     return @intCast(mesh_idx);
 }
 
-fn destroy_mesh(ctx: *anyopaque, handle: Mesh.Handle) void {
-    _ = ctx;
-
+pub fn destroy_mesh(handle: Mesh.Handle) void {
     var mesh = meshes.get_element(handle) orelse return;
     gl.DeleteBuffers(1, @ptrCast(&mesh.vbo));
     mesh.vbo = 0;
@@ -244,18 +220,14 @@ fn destroy_mesh(ctx: *anyopaque, handle: Mesh.Handle) void {
     _ = meshes.remove_element(handle);
 }
 
-fn update_mesh(ctx: *anyopaque, handle: Mesh.Handle, data: []const u8) void {
-    _ = ctx;
-
+pub fn update_mesh(handle: Mesh.Handle, data: []const u8) void {
     const mesh = meshes.get_element(handle) orelse return;
 
     gl.NamedBufferData(mesh.vbo, @intCast(data.len), null, gl.STATIC_DRAW);
     gl.NamedBufferSubData(mesh.vbo, 0, @intCast(data.len), data.ptr);
 }
 
-fn draw_mesh(ctx: *anyopaque, handle: Mesh.Handle, model: *const Mat4, count: usize, primitive: Mesh.Primitive) void {
-    _ = ctx;
-
+pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize, primitive: Mesh.Primitive) void {
     const mesh = meshes.get_element(handle) orelse return;
     const pl = pipelines.get_element(mesh.pipeline) orelse return;
 
@@ -267,9 +239,7 @@ fn draw_mesh(ctx: *anyopaque, handle: Mesh.Handle, model: *const Mat4, count: us
     }, 0, @intCast(count));
 }
 
-fn create_texture(ctx: *anyopaque, width: u32, height: u32, data: []align(16) u8) anyerror!u32 {
-    _ = ctx;
-
+pub fn create_texture(width: u32, height: u32, data: []align(16) u8) anyerror!Texture.Handle {
     var tex: gl.uint = 0;
     gl.CreateTextures(gl.TEXTURE_2D, 1, @ptrCast(&tex));
     gl.TextureStorage2D(tex, 1, gl.RGBA8, @intCast(width), @intCast(height));
@@ -283,9 +253,7 @@ fn create_texture(ctx: *anyopaque, width: u32, height: u32, data: []align(16) u8
     return tex;
 }
 
-fn update_texture(ctx: *anyopaque, handle: u32, data: []align(16) u8) void {
-    _ = ctx;
-    // Query current texture dimensions from OpenGL.
+pub fn update_texture(handle: Texture.Handle, data: []align(16) u8) void {
     var w: gl.int = 0;
     var h: gl.int = 0;
     gl.GetTextureLevelParameteriv(handle, 0, gl.TEXTURE_WIDTH, @ptrCast(&w));
@@ -293,45 +261,12 @@ fn update_texture(ctx: *anyopaque, handle: u32, data: []align(16) u8) void {
     gl.TextureSubImage2D(handle, 0, 0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, data.ptr);
 }
 
-fn bind_texture(ctx: *anyopaque, handle: u32) void {
-    _ = ctx;
+pub fn bind_texture(handle: Texture.Handle) void {
     gl.BindTextureUnit(2, handle);
 }
 
-fn destroy_texture(ctx: *anyopaque, handle: u32) void {
-    _ = ctx;
+pub fn destroy_texture(handle: Texture.Handle) void {
     gl.DeleteTextures(1, @ptrCast(&handle));
 }
 
-fn force_texture_resident(_: *anyopaque, _: u32) void {}
-
-pub fn gfx_api(self: *Self) GFXAPI {
-    return GFXAPI{
-        .ptr = self,
-        .tab = &.{
-            .init = init,
-            .deinit = deinit,
-            .set_clear_color = set_clear_color,
-            .set_alpha_blend = set_alpha_blend,
-            .set_fog = set_fog,
-            .set_clip_planes = set_clip_planes,
-            .start_frame = start_frame,
-            .end_frame = end_frame,
-            .clear_depth = clear_depth,
-            .set_proj_matrix = set_proj_matrix,
-            .set_view_matrix = set_view_matrix,
-            .create_mesh = create_mesh,
-            .destroy_mesh = destroy_mesh,
-            .update_mesh = update_mesh,
-            .draw_mesh = draw_mesh,
-            .create_texture = create_texture,
-            .update_texture = update_texture,
-            .bind_texture = bind_texture,
-            .destroy_texture = destroy_texture,
-            .force_texture_resident = force_texture_resident,
-            .create_pipeline = create_pipeline,
-            .destroy_pipeline = destroy_pipeline,
-            .bind_pipeline = bind_pipeline,
-        },
-    };
-}
+pub fn force_texture_resident(_: Texture.Handle) void {}

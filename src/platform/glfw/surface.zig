@@ -3,7 +3,6 @@ const Util = @import("../../util/util.zig");
 const glfw = @import("glfw");
 const builtin = @import("builtin");
 
-const Surface = @import("../surface.zig");
 const Self = @This();
 const api = @import("options").config.gfx;
 
@@ -20,9 +19,7 @@ pub var cursor_y: f64 = 0;
 
 pub var on_resize: ?*const fn () void = null;
 
-fn init(ctx: *anyopaque, width: u32, height: u32, title: [:0]const u8, fullscreen: bool, sync: bool, resizable: bool) !void {
-    const self = Util.ctx_to_self(Self, ctx);
-
+pub fn init(self: *Self, width: u32, height: u32, title: [:0]const u8, fullscreen: bool, sync: bool, resizable: bool) anyerror!void {
     self.active_joystick = 0;
 
     if (builtin.os.tag == .linux) {
@@ -84,9 +81,8 @@ fn init(ctx: *anyopaque, width: u32, height: u32, title: [:0]const u8, fullscree
 
 export fn framebuffer_size_callback(_: *c_long, width: c_int, height: c_int) void {
     const gfx = @import("../gfx.zig");
-    const self: *Self = @ptrCast(@alignCast(gfx.surface.ptr));
-    self.width = width;
-    self.height = height;
+    gfx.surface.width = width;
+    gfx.surface.height = height;
     if (on_resize) |cb| cb();
 }
 
@@ -94,16 +90,11 @@ export fn scroll_callback(_: *c_long, _: f64, yoffset: f64) void {
     curr_scroll += @floatCast(yoffset);
 }
 
-fn deinit(ctx: *anyopaque) void {
-    const self = Util.ctx_to_self(Self, ctx);
-
+pub fn deinit(self: *Self) void {
     glfw.destroyWindow(self.window);
-
-    self.alloc.destroy(self);
 }
 
-fn update(ctx: *anyopaque) bool {
-    const self = Util.ctx_to_self(Self, ctx);
+pub fn update(self: *Self) bool {
     glfw.pollEvents();
     glfw.getFramebufferSize(self.window, &self.width, &self.height);
 
@@ -119,29 +110,14 @@ fn update(ctx: *anyopaque) bool {
     return !glfw.windowShouldClose(self.window);
 }
 
-fn draw(ctx: *anyopaque) void {
-    const self = Util.ctx_to_self(Self, ctx);
-
+pub fn draw(self: *Self) void {
     glfw.swapBuffers(self.window);
 }
 
-fn get_width(ctx: *anyopaque) u32 {
-    const self = Util.ctx_to_self(Self, ctx);
+pub fn get_width(self: *Self) u32 {
     return @intCast(self.width);
 }
 
-fn get_height(ctx: *anyopaque) u32 {
-    const self = Util.ctx_to_self(Self, ctx);
+pub fn get_height(self: *Self) u32 {
     return @intCast(self.height);
-}
-
-pub fn surface(self: *Self) Surface {
-    return Surface{ .ptr = self, .tab = &.{
-        .init = init,
-        .deinit = deinit,
-        .update = update,
-        .draw = draw,
-        .get_width = get_width,
-        .get_height = get_height,
-    } };
 }

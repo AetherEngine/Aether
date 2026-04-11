@@ -89,13 +89,13 @@ pub fn layout_from_struct(comptime V: type, comptime attrs: []const Attribute) V
 handle: Handle,
 
 pub fn new(layout: VertexLayout, vs: ?[:0]align(4) const u8, fs: ?[:0]align(4) const u8) !Handle {
-    return gfx.api.tab.create_pipeline(gfx.api.ptr, layout, vs, fs);
+    return gfx.api.create_pipeline(layout, vs, fs);
 }
 
 pub fn deinit(handle: Handle) void {
-    gfx.api.tab.destroy_pipeline(gfx.api.ptr, handle);
+    gfx.api.destroy_pipeline(handle);
 }
 
 pub fn bind(handle: Handle) void {
-    gfx.api.tab.bind_pipeline(gfx.api.ptr, handle);
+    gfx.api.bind_pipeline(handle);
 }

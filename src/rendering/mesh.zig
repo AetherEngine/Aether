@@ -30,13 +30,13 @@ pub fn Mesh(comptime V: type) type {
 
         pub fn new(alloc: std.mem.Allocator, pipeline: Pipeline.Handle) !Self {
             return .{
-                .handle   = try gfx.api.tab.create_mesh(gfx.api.ptr, pipeline),
+                .handle   = try gfx.api.create_mesh(pipeline),
                 .vertices = try std.ArrayList(V).initCapacity(alloc, 32),
             };
         }
 
         pub fn deinit(self: *Self, alloc: std.mem.Allocator) void {
-            gfx.api.tab.destroy_mesh(gfx.api.ptr, self.handle);
+            gfx.api.destroy_mesh(self.handle);
             self.vertices.deinit(alloc);
             self.handle = 0;
         }
@@ -49,15 +49,15 @@ pub fn Mesh(comptime V: type) type {
         /// Push the current vertex data to the GPU. Call after any `append` or
         /// direct modification of `vertices.items`.
         pub fn update(self: *Self) void {
-            gfx.api.tab.update_mesh(
-                gfx.api.ptr, self.handle,
+            gfx.api.update_mesh(
+                self.handle,
                 std.mem.sliceAsBytes(self.vertices.items),
             );
         }
 
         pub fn draw(self: *Self, mat: *const Mat4) void {
-            gfx.api.tab.draw_mesh(
-                gfx.api.ptr, self.handle, mat, self.vertices.items.len, self.primitive,
+            gfx.api.draw_mesh(
+                self.handle, mat, self.vertices.items.len, self.primitive,
             );
         }
     };

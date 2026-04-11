@@ -12,7 +12,6 @@ const Rendering = @import("../../rendering/rendering.zig");
 const Pipeline = Rendering.Pipeline;
 const Mesh = Rendering.mesh;
 const Texture = Rendering.Texture;
-const GFXAPI = @import("../gfx_api.zig");
 
 var render_alloc: std.mem.Allocator = undefined;
 var render_io: std.Io = undefined;
@@ -87,8 +86,7 @@ var bound_pipeline: Pipeline.Handle = 0;
 var alpha_blend_enabled: bool = true;
 var clip_planes_enabled: bool = false;
 var fog_enabled: bool = false;
-
-const Self = @This();
+var clear_color: u24 = 0x000000;
 
 // ---- swapchain -------------------------------------------------------------
 
@@ -464,9 +462,9 @@ fn ensure_clear_vertices(buffer_idx: Swapchain.BufferIndex, filter: u32) void {
     }
 }
 
-fn emit_clear(self: *Self, targets: ge_list.ClearFlags) void {
+fn emit_clear(targets: ge_list.ClearFlags) void {
     const buffer_idx = swapchain.draw_idx;
-    const filter = pack_clear_filter(self.clear_color);
+    const filter = pack_clear_filter(clear_color);
     ensure_clear_vertices(buffer_idx, filter);
 
     must(cmd.emit_clear(true, targets));
@@ -495,11 +493,8 @@ fn emit_depth_range(near_value: u16, far_value: u16) void {
 
 // ---- engine state ----------------------------------------------------------
 
-clear_color: u24 = 0x000000,
-
-fn init(ctx: *anyopaque) !void {
-    const self = Util.ctx_to_self(Self, ctx);
-    self.clear_color = 0x000000;
+pub fn init() anyerror!void {
+    clear_color = 0x000000;
 
     swapchain.init();
 
@@ -578,7 +573,7 @@ fn init(ctx: *anyopaque) !void {
     try display.wait_vblank_start();
 }
 
-fn deinit(_: *anyopaque) void {
+pub fn deinit() void {
     swapchain.deinit();
     if (ge_callback_id > 0) {
         ge.unset_callback(ge_callback_id) catch {};
@@ -700,7 +695,7 @@ pub fn resume_from_dialog() void {
     swapchain.prime_display() catch {};
 }
 
-fn set_alpha_blend(_: *anyopaque, enabled: bool) void {
+pub fn set_alpha_blend(enabled: bool) void {
     if (enabled == alpha_blend_enabled) return;
     alpha_blend_enabled = enabled;
     must(cmd.enable(.alpha_blend, enabled));
@@ -708,14 +703,14 @@ fn set_alpha_blend(_: *anyopaque, enabled: bool) void {
     advance_stall();
 }
 
-fn set_clip_planes(_: *anyopaque, enabled: bool) void {
+pub fn set_clip_planes(enabled: bool) void {
     if (enabled == clip_planes_enabled) return;
     clip_planes_enabled = enabled;
     must(cmd.enable(.clip_planes, enabled));
     advance_stall();
 }
 
-fn set_fog(_: *anyopaque, enabled: bool, start: f32, end: f32, r: f32, g: f32, b: f32) void {
+pub fn set_fog(enabled: bool, start: f32, end: f32, r: f32, g: f32, b: f32) void {
     if (enabled) {
         const ri: u32 = @intFromFloat(@max(0.0, @min(1.0, r)) * 255.0);
         const gi: u32 = @intFromFloat(@max(0.0, @min(1.0, g)) * 255.0);
@@ -733,31 +728,28 @@ fn set_fog(_: *anyopaque, enabled: bool, start: f32, end: f32, r: f32, g: f32, b
     advance_stall();
 }
 
-fn set_clear_color(ctx: *anyopaque, r: f32, g: f32, b: f32, _: f32) void {
-    const self = Util.ctx_to_self(Self, ctx);
+pub fn set_clear_color(r: f32, g: f32, b: f32, _: f32) void {
     const ri: u8 = @intFromFloat(@max(0.0, @min(1.0, r)) * 255.0);
     const gi: u8 = @intFromFloat(@max(0.0, @min(1.0, g)) * 255.0);
     const bi: u8 = @intFromFloat(@max(0.0, @min(1.0, b)) * 255.0);
-    self.clear_color = (@as(u24, bi) << 16) | (@as(u24, gi) << 8) | ri;
+    clear_color = (@as(u24, bi) << 16) | (@as(u24, gi) << 8) | ri;
 }
 
 fn mat4_as_floats(mat: *const Mat4) *const [16]f32 {
     return @ptrCast(&mat.data);
 }
 
-fn set_proj_matrix(_: *anyopaque, mat: *const Mat4) void {
+pub fn set_proj_matrix(mat: *const Mat4) void {
     must(cmd.projection_matrix(mat4_as_floats(mat)));
     advance_stall();
 }
 
-fn set_view_matrix(_: *anyopaque, mat: *const Mat4) void {
+pub fn set_view_matrix(mat: *const Mat4) void {
     must(cmd.view_matrix(mat4_as_floats(mat)));
     advance_stall();
 }
 
-fn start_frame(ctx: *anyopaque) bool {
-    const self = Util.ctx_to_self(Self, ctx);
-
+pub fn start_frame() bool {
     while (!swapchain.acquire_draw_buffer()) {
         if (swapchain.is_waiting_for_display_flip()) return false;
     }
@@ -767,23 +759,22 @@ fn start_frame(ctx: *anyopaque) bool {
     must(cmd.pixel_format(ge_pixel_format));
     must(cmd.frame_buffer(swapchain.buffers_rel[swapchain.draw_idx], SCR_BUF_WIDTH));
     must(cmd.depth_buffer(swapchain.depth_buffer_rel, SCR_BUF_WIDTH));
-    emit_clear(self, .{ .color = true, .stencil = true, .depth = true });
+    emit_clear(.{ .color = true, .stencil = true, .depth = true });
 
     return true;
 }
 
-fn clear_depth(ctx: *anyopaque) void {
-    const self = Util.ctx_to_self(Self, ctx);
-    emit_clear(self, .{ .depth = true });
+pub fn clear_depth() void {
+    emit_clear(.{ .depth = true });
 }
 
-fn end_frame(_: *anyopaque) void {
+pub fn end_frame() void {
     finish_frame_list();
 }
 
 // ---- pipelines -------------------------------------------------------------
 
-fn create_pipeline(_: *anyopaque, layout: Pipeline.VertexLayout, _: ?[:0]align(4) const u8, _: ?[:0]align(4) const u8) !Pipeline.Handle {
+pub fn create_pipeline(layout: Pipeline.VertexLayout, _: ?[:0]align(4) const u8, _: ?[:0]align(4) const u8) anyerror!Pipeline.Handle {
     var vtype = VertexType{
         .vertex = .Vertex32Bitf, // default, overridden by position attribute
         .transform = .Transform3D,
@@ -830,11 +821,11 @@ fn create_pipeline(_: *anyopaque, layout: Pipeline.VertexLayout, _: ?[:0]align(4
     return @intCast(handle);
 }
 
-fn destroy_pipeline(_: *anyopaque, handle: Pipeline.Handle) void {
+pub fn destroy_pipeline(handle: Pipeline.Handle) void {
     _ = pipelines.remove_element(handle);
 }
 
-fn bind_pipeline(_: *anyopaque, handle: Pipeline.Handle) void {
+pub fn bind_pipeline(handle: Pipeline.Handle) void {
     bound_pipeline = handle;
 }
 
@@ -848,7 +839,7 @@ const MeshData = struct {
 
 var meshes = Util.CircularBuffer(MeshData, 2048).init();
 
-fn create_mesh(_: *anyopaque, pipeline: Pipeline.Handle) !Mesh.Handle {
+pub fn create_mesh(pipeline: Pipeline.Handle) anyerror!Mesh.Handle {
     const handle = meshes.add_element(.{
         .pipeline = pipeline,
         .data = null,
@@ -858,11 +849,11 @@ fn create_mesh(_: *anyopaque, pipeline: Pipeline.Handle) !Mesh.Handle {
     return @intCast(handle);
 }
 
-fn destroy_mesh(_: *anyopaque, handle: Mesh.Handle) void {
+pub fn destroy_mesh(handle: Mesh.Handle) void {
     _ = meshes.remove_element(handle);
 }
 
-fn update_mesh(_: *anyopaque, handle: Mesh.Handle, data: []const u8) void {
+pub fn update_mesh(handle: Mesh.Handle, data: []const u8) void {
     var mesh = meshes.get_element(handle) orelse return;
 
     mesh.data = data.ptr;
@@ -872,7 +863,7 @@ fn update_mesh(_: *anyopaque, handle: Mesh.Handle, data: []const u8) void {
     meshes.update_element(handle, mesh);
 }
 
-fn draw_mesh(_: *anyopaque, handle: Mesh.Handle, model: *const Mat4, count: usize, primitive: Mesh.Primitive) void {
+pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize, primitive: Mesh.Primitive) void {
     const mesh = meshes.get_element(handle) orelse return;
     const pl = pipelines.get_element(mesh.pipeline) orelse return;
     const data = mesh.data orelse return;
@@ -983,7 +974,7 @@ pub fn swizzled_offset(x: u32, y: u32, width: u32) usize {
 var textures = Util.CircularBuffer(TextureData, 4096).init();
 var bound_texture: Texture.Handle = 0;
 
-fn create_texture(_: *anyopaque, width: u32, height: u32, data: []align(16) u8) !Texture.Handle {
+pub fn create_texture(width: u32, height: u32, data: []align(16) u8) anyerror!Texture.Handle {
     const width_bytes = width * tex_bpp;
     const should_swizzle = width_bytes * height >= 8 * 1024;
 
@@ -1011,7 +1002,7 @@ fn create_texture(_: *anyopaque, width: u32, height: u32, data: []align(16) u8) 
 // The incoming `data` slice is the caller's RAM buffer and is already in the
 // correct (swizzled or linear) layout thanks to Rendering.Texture.set_pixel
 // routing writes through pixel_offset. We must NOT swizzle again here.
-fn update_texture(_: *anyopaque, handle: Texture.Handle, data: []align(16) u8) void {
+pub fn update_texture(handle: Texture.Handle, data: []align(16) u8) void {
     const tex = textures.get_element(handle) orelse return;
 
     if (tex.in_vram) {
@@ -1026,7 +1017,7 @@ fn update_texture(_: *anyopaque, handle: Texture.Handle, data: []align(16) u8) v
     }
 }
 
-fn bind_texture(_: *anyopaque, handle: Texture.Handle) void {
+pub fn bind_texture(handle: Texture.Handle) void {
     bound_texture = handle;
     const tex = textures.get_element(handle) orelse return;
 
@@ -1053,7 +1044,7 @@ fn bind_texture(_: *anyopaque, handle: Texture.Handle) void {
     advance_stall();
 }
 
-fn destroy_texture(_: *anyopaque, handle: Texture.Handle) void {
+pub fn destroy_texture(handle: Texture.Handle) void {
     // VRAM allocations are static and cannot be freed individually.
     _ = textures.remove_element(handle);
 }
@@ -1246,7 +1237,7 @@ fn generate_resident_mips(tex: *TextureData) void {
     tex.mip_count = generated;
 }
 
-fn force_texture_resident(_: *anyopaque, handle: Texture.Handle) void {
+pub fn force_texture_resident(handle: Texture.Handle) void {
     var tex = textures.get_element(handle) orelse return;
     if (tex.in_vram) return;
 
@@ -1264,35 +1255,4 @@ fn force_texture_resident(_: *anyopaque, handle: Texture.Handle) void {
     generate_resident_mips(&tex);
 
     textures.update_element(handle, tex);
-}
-
-pub fn gfx_api(self: *Self) GFXAPI {
-    return GFXAPI{
-        .ptr = self,
-        .tab = &.{
-            .init = init,
-            .deinit = deinit,
-            .set_clear_color = set_clear_color,
-            .set_alpha_blend = set_alpha_blend,
-            .set_fog = set_fog,
-            .set_clip_planes = set_clip_planes,
-            .start_frame = start_frame,
-            .end_frame = end_frame,
-            .clear_depth = clear_depth,
-            .set_proj_matrix = set_proj_matrix,
-            .set_view_matrix = set_view_matrix,
-            .create_mesh = create_mesh,
-            .destroy_mesh = destroy_mesh,
-            .update_mesh = update_mesh,
-            .draw_mesh = draw_mesh,
-            .create_texture = create_texture,
-            .update_texture = update_texture,
-            .bind_texture = bind_texture,
-            .destroy_texture = destroy_texture,
-            .force_texture_resident = force_texture_resident,
-            .create_pipeline = create_pipeline,
-            .destroy_pipeline = destroy_pipeline,
-            .bind_pipeline = bind_pipeline,
-        },
-    };
 }
