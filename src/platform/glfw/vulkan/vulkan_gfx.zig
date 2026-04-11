@@ -8,8 +8,7 @@ const gfx = @import("../../gfx.zig");
 const Rendering = @import("../../../rendering/rendering.zig");
 const Pipeline = Rendering.Pipeline;
 const Mesh = Rendering.mesh;
-const GFXAPI = @import("../../gfx_api.zig");
-const Self = @This();
+const Texture = Rendering.Texture;
 
 const Context = @import("context.zig");
 const Swapchain = @import("swapchain.zig");
@@ -407,9 +406,7 @@ fn destroy_depth_image() void {
     depth_image_memory = .null_handle;
 }
 
-fn init(ctx: *anyopaque) !void {
-    _ = ctx;
-
+pub fn init() anyerror!void {
     context = try Context.init(render_alloc, "AetherEngine");
     swapchain = try Swapchain.init(&context, gfx.sync);
     gc = GarbageCollector.init(render_alloc);
@@ -430,14 +427,12 @@ fn init(ctx: *anyopaque) !void {
 
 fn resize_render() void {
     swap_state = .suboptimal;
-    var dummy: u8 = 0;
-    if (start_frame(@ptrCast(&dummy))) {
-        end_frame(@ptrCast(&dummy));
+    if (start_frame()) {
+        end_frame();
     }
 }
 
-fn deinit(ctx: *anyopaque) void {
-    _ = ctx;
+pub fn deinit() void {
     GLFWSurface.on_resize = null;
     context.logical_device.deviceWaitIdle() catch {};
 
@@ -456,15 +451,14 @@ fn deinit(ctx: *anyopaque) void {
 }
 
 var clear_color: [4]f32 = @splat(0);
-fn set_clear_color(ctx: *anyopaque, r: f32, g: f32, b: f32, a: f32) void {
-    _ = ctx;
+pub fn set_clear_color(r: f32, g: f32, b: f32, a: f32) void {
     clear_color[0] = r;
     clear_color[1] = g;
     clear_color[2] = b;
     clear_color[3] = a;
 }
 
-fn set_alpha_blend(_: *anyopaque, enabled: bool) void {
+pub fn set_alpha_blend(enabled: bool) void {
     draw_state.alpha_blend_enabled = @intFromBool(enabled);
     if (enabled == alpha_blend_enabled) return;
     alpha_blend_enabled = enabled;
@@ -472,18 +466,16 @@ fn set_alpha_blend(_: *anyopaque, enabled: bool) void {
     command_buffer.setColorBlendEnableEXT(0, @ptrCast(&[1]vk.Bool32{enable}));
 }
 
-fn set_clip_planes(_: *anyopaque, _: bool) void {}
+pub fn set_clip_planes(_: bool) void {}
 
-fn set_fog(_: *anyopaque, enabled: bool, start: f32, end: f32, r: f32, g: f32, b: f32) void {
+pub fn set_fog(enabled: bool, start: f32, end: f32, r: f32, g: f32, b: f32) void {
     draw_state.fog_enabled = @intFromBool(enabled);
     draw_state.fog_start = start;
     draw_state.fog_end = end;
     draw_state.fog_color = .{ r, g, b };
 }
 
-fn start_frame(ctx: *anyopaque) bool {
-    _ = ctx;
-
+pub fn start_frame() bool {
     if (gfx.surface.get_width() == 0 or gfx.surface.get_height() == 0) {
         @branchHint(.unlikely);
         return false;
@@ -616,9 +608,7 @@ fn start_frame(ctx: *anyopaque) bool {
     return true;
 }
 
-fn clear_depth(ctx: *anyopaque) void {
-    _ = ctx;
-
+pub fn clear_depth() void {
     const attachment = vk.ClearAttachment{
         .aspect_mask = .{ .depth_bit = true },
         .color_attachment = 0,
@@ -640,9 +630,7 @@ fn clear_depth(ctx: *anyopaque) void {
     command_buffer.clearAttachments(@ptrCast(&attachment), @ptrCast(&rect));
 }
 
-fn end_frame(ctx: *anyopaque) void {
-    _ = ctx;
-
+pub fn end_frame() void {
     command_buffer.endRendering();
     const post = vk.ImageMemoryBarrier2{
         .src_stage_mask = .{ .color_attachment_output_bit = true },
@@ -677,14 +665,12 @@ fn end_frame(ctx: *anyopaque) void {
     };
 }
 
-fn set_proj_matrix(ctx: *anyopaque, mat: *const Mat4) void {
-    _ = ctx;
+pub fn set_proj_matrix(mat: *const Mat4) void {
     pending_state.proj = mat.*;
     camera_dirty = true;
 }
 
-fn set_view_matrix(ctx: *anyopaque, mat: *const Mat4) void {
-    _ = ctx;
+pub fn set_view_matrix(mat: *const Mat4) void {
     pending_state.view = mat.*;
     camera_dirty = true;
 }
@@ -710,9 +696,7 @@ fn flush_camera_if_dirty() void {
     camera_dirty = false;
 }
 
-fn create_pipeline(ctx: *anyopaque, layout: Pipeline.VertexLayout, vs: ?[:0]align(4) const u8, fs: ?[:0]align(4) const u8) anyerror!Pipeline.Handle {
-    _ = ctx;
-
+pub fn create_pipeline(layout: Pipeline.VertexLayout, vs: ?[:0]align(4) const u8, fs: ?[:0]align(4) const u8) anyerror!Pipeline.Handle {
     if (vs == null or fs == null) return error.InvalidShader;
 
     const set_layouts = [_]vk.DescriptorSetLayout{ descriptor_set_layout, tex_set_layout };
@@ -925,9 +909,7 @@ fn create_pipeline(ctx: *anyopaque, layout: Pipeline.VertexLayout, vs: ?[:0]alig
     return @intCast(p_handle);
 }
 
-fn destroy_pipeline(ctx: *anyopaque, handle: Pipeline.Handle) void {
-    _ = ctx;
-
+pub fn destroy_pipeline(handle: Pipeline.Handle) void {
     context.logical_device.deviceWaitIdle() catch {};
     const pd = pipelines.get_element(handle) orelse return;
 
@@ -935,8 +917,7 @@ fn destroy_pipeline(ctx: *anyopaque, handle: Pipeline.Handle) void {
     context.logical_device.destroyPipelineLayout(pd.layout, null);
 }
 
-fn bind_pipeline(ctx: *anyopaque, handle: Pipeline.Handle) void {
-    _ = ctx;
+pub fn bind_pipeline(handle: Pipeline.Handle) void {
     const pd = pipelines.get_element(handle) orelse return;
 
     command_buffer.bindPipeline(.graphics, pd.pipeline);
@@ -945,17 +926,14 @@ fn bind_pipeline(ctx: *anyopaque, handle: Pipeline.Handle) void {
     // matrices mid-frame.
 }
 
-fn create_mesh(ctx: *anyopaque, pipeline: Pipeline.Handle) anyerror!u32 {
-    _ = ctx;
-
+pub fn create_mesh(pipeline: Pipeline.Handle) anyerror!Mesh.Handle {
     const m_handle = meshes.add_element(.{
         .pipeline = pipeline,
     }) orelse return error.OutOfMeshes;
     return @intCast(m_handle);
 }
 
-fn destroy_mesh(ctx: *anyopaque, handle: u32) void {
-    _ = ctx;
+pub fn destroy_mesh(handle: Mesh.Handle) void {
     const m_data = meshes.get_element(handle) orelse return;
 
     if (m_data.built) {
@@ -965,9 +943,7 @@ fn destroy_mesh(ctx: *anyopaque, handle: u32) void {
     _ = meshes.remove_element(handle);
 }
 
-fn update_mesh(ctx: *anyopaque, handle: u32, data: []const u8) void {
-    _ = ctx;
-
+pub fn update_mesh(handle: Mesh.Handle, data: []const u8) void {
     const m_data = meshes.get_element(handle) orelse return;
 
     var mesh: MeshData = undefined;
@@ -1059,9 +1035,7 @@ fn update_mesh(ctx: *anyopaque, handle: u32, data: []const u8) void {
     });
 }
 
-fn draw_mesh(ctx: *anyopaque, handle: u32, model: *const Mat4, count: usize, primitive: Mesh.Primitive) void {
-    _ = ctx;
-
+pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize, primitive: Mesh.Primitive) void {
     draw_state.mat = model.*;
 
     const m_data = meshes.get_element(handle) orelse return;
@@ -1087,9 +1061,7 @@ fn draw_mesh(ctx: *anyopaque, handle: u32, model: *const Mat4, count: usize, pri
     command_buffer.draw(@intCast(count), 1, 0, 0);
 }
 
-fn create_texture(ctx: *anyopaque, width: u32, height: u32, data: []align(16) u8) anyerror!u32 {
-    _ = ctx;
-
+pub fn create_texture(width: u32, height: u32, data: []align(16) u8) anyerror!Texture.Handle {
     if (width == 0 or height == 0) return error.InvalidTextureSize;
     // Expect RGBA8 pixels
     if (data.len < @as(usize, width) * @as(usize, height) * 4) return error.TextureDataTooSmall;
@@ -1278,9 +1250,7 @@ fn create_texture(ctx: *anyopaque, width: u32, height: u32, data: []align(16) u8
     return idx;
 }
 
-fn update_texture(ctx: *anyopaque, handle: u32, data: []align(16) u8) void {
-    _ = ctx;
-
+pub fn update_texture(handle: Texture.Handle, data: []align(16) u8) void {
     const rec = textures.get_element(handle) orelse return;
 
     const byte_count = data.len;
@@ -1388,14 +1358,11 @@ fn update_texture(ctx: *anyopaque, handle: u32, data: []align(16) u8) void {
     context.logical_device.freeMemory(staging_mem, null);
 }
 
-fn bind_texture(ctx: *anyopaque, handle: u32) void {
-    _ = ctx;
+pub fn bind_texture(handle: Texture.Handle) void {
     draw_state.tex_id = handle;
 }
 
-fn destroy_texture(ctx: *anyopaque, handle: u32) void {
-    _ = ctx;
-
+pub fn destroy_texture(handle: Texture.Handle) void {
     const rec = textures.get_element(handle) orelse return;
 
     // Null out the image slot in the bindless array (binding 1).
@@ -1426,35 +1393,4 @@ fn destroy_texture(ctx: *anyopaque, handle: u32) void {
     _ = textures.remove_element(handle);
 }
 
-fn force_texture_resident(_: *anyopaque, _: u32) void {}
-
-pub fn gfx_api(self: *Self) GFXAPI {
-    return GFXAPI{
-        .ptr = self,
-        .tab = &.{
-            .init = init,
-            .deinit = deinit,
-            .set_clear_color = set_clear_color,
-            .set_alpha_blend = set_alpha_blend,
-            .set_fog = set_fog,
-            .set_clip_planes = set_clip_planes,
-            .start_frame = start_frame,
-            .end_frame = end_frame,
-            .clear_depth = clear_depth,
-            .set_proj_matrix = set_proj_matrix,
-            .set_view_matrix = set_view_matrix,
-            .create_mesh = create_mesh,
-            .destroy_mesh = destroy_mesh,
-            .update_mesh = update_mesh,
-            .draw_mesh = draw_mesh,
-            .create_texture = create_texture,
-            .update_texture = update_texture,
-            .bind_texture = bind_texture,
-            .destroy_texture = destroy_texture,
-            .force_texture_resident = force_texture_resident,
-            .create_pipeline = create_pipeline,
-            .destroy_pipeline = destroy_pipeline,
-            .bind_pipeline = bind_pipeline,
-        },
-    };
-}
+pub fn force_texture_resident(_: Texture.Handle) void {}

@@ -41,8 +41,7 @@ pub fn load_from_data(alloc: std.mem.Allocator, width: u32, height: u32, pixels:
         .width = width,
         .height = height,
         .data = data,
-        .handle = try gfx.api.tab.create_texture(
-            gfx.api.ptr,
+        .handle = try gfx.api.create_texture(
             width,
             height,
             data,
@@ -94,8 +93,7 @@ pub fn load_from_reader(alloc: std.mem.Allocator, reader: *std.Io.Reader) !Textu
         .width = img.width,
         .height = img.height,
         .data = img.data,
-        .handle = try gfx.api.tab.create_texture(
-            gfx.api.ptr,
+        .handle = try gfx.api.create_texture(
             img.width,
             img.height,
             img.data,
@@ -105,20 +103,20 @@ pub fn load_from_reader(alloc: std.mem.Allocator, reader: *std.Io.Reader) !Textu
 
 /// Frees GPU resources and the pixel buffer.
 pub fn deinit(self: *Texture, alloc: std.mem.Allocator) void {
-    gfx.api.tab.destroy_texture(gfx.api.ptr, self.handle);
+    gfx.api.destroy_texture(self.handle);
     alloc.free(self.data);
 }
 
 /// Pushes the current contents of `data` to the GPU.
 /// Modify `data` directly, then call `update()` to apply the changes.
 pub fn update(self: *const Texture) void {
-    gfx.api.tab.update_texture(gfx.api.ptr, self.handle, self.data);
+    gfx.api.update_texture(self.handle, self.data);
 }
 
 /// Forces the texture into fast GPU-resident memory (e.g. VRAM on PSP).
 /// No-op on platforms where textures are already GPU-resident (OpenGL, Vulkan).
 pub fn force_resident(self: *const Texture) void {
-    gfx.api.tab.force_texture_resident(gfx.api.ptr, self.handle);
+    gfx.api.force_texture_resident(self.handle);
 }
 
 /// Returns the RGBA pixel at (x, y), accounting for swizzled layout and
@@ -175,5 +173,5 @@ fn pixel_offset(self: *const Texture, x: u32, y: u32) usize {
 
 /// Binds the texture for the next draw call.
 pub fn bind(self: *const Texture) void {
-    gfx.api.tab.bind_texture(gfx.api.ptr, self.handle);
+    gfx.api.bind_texture(self.handle);
 }

@@ -80,11 +80,10 @@ fn create_instance(self: *Self, name: [:0]const u8) !void {
     self.instance = Instance.init(instance, vki);
 }
 
-const Surface = @import("../surface.zig");
 const gfx = @import("../../gfx.zig");
 fn create_surface(self: *Self) !void {
     // Create a window surface
-    if (glfwCreateWindowSurface(self.instance.handle, @as(*Surface, @ptrCast(@alignCast(gfx.surface.ptr))).window, null, &self.surface) != .success) {
+    if (glfwCreateWindowSurface(self.instance.handle, gfx.surface.window, null, &self.surface) != .success) {
         return error.SurfaceInitFailed;
     }
 }
