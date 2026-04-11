@@ -3,48 +3,49 @@ const assert = std.debug.assert;
 
 const State = @import("State.zig");
 const Util = @import("../util/util.zig");
+const Engine = @import("../engine.zig").Engine;
 
 var initialized: bool = false;
 var curr_state: *const State = undefined;
 
-pub fn init(state: *const State) anyerror!void {
+pub fn init(engine: *Engine, state: *const State) anyerror!void {
     assert(!initialized);
 
     curr_state = state;
-    try curr_state.init();
+    try curr_state.init(engine);
 
     initialized = true;
     assert(initialized);
 }
 
-pub fn deinit() void {
+pub fn deinit(engine: *Engine) void {
     assert(initialized);
 
-    curr_state.deinit();
+    curr_state.deinit(engine);
 
     initialized = false;
     assert(!initialized);
 }
 
-pub fn transition(state: *const State) anyerror!void {
+pub fn transition(engine: *Engine, state: *const State) anyerror!void {
     assert(initialized);
 
-    curr_state.deinit();
+    curr_state.deinit(engine);
     curr_state = state;
-    try curr_state.init();
+    try curr_state.init(engine);
 }
 
-pub fn tick() anyerror!void {
+pub fn tick(engine: *Engine) anyerror!void {
     assert(initialized);
-    try curr_state.tick();
+    try curr_state.tick(engine);
 }
 
-pub fn update(dt: f32, budget: *const Util.BudgetContext) anyerror!void {
+pub fn update(engine: *Engine, dt: f32, budget: *const Util.BudgetContext) anyerror!void {
     assert(initialized);
-    try curr_state.update(dt, budget);
+    try curr_state.update(engine, dt, budget);
 }
 
-pub fn draw(dt: f32, budget: *const Util.BudgetContext) anyerror!void {
+pub fn draw(engine: *Engine, dt: f32, budget: *const Util.BudgetContext) anyerror!void {
     assert(initialized);
-    try curr_state.draw(dt, budget);
+    try curr_state.draw(engine, dt, budget);
 }

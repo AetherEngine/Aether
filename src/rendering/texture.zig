@@ -19,14 +19,14 @@ handle: Handle,
 data: []align(16) u8,
 
 /// Creates a texture from raw RGBA pixel data.
-/// The data is copied into the render pool.
-pub fn load_from_data(width: u32, height: u32, pixels: []const u8) !Texture {
+/// The data is copied into the provided allocator.
+pub fn load_from_data(alloc: std.mem.Allocator, width: u32, height: u32, pixels: []const u8) !Texture {
     const size = @as(usize, width) * height * tex_bpp;
     const source_size = @as(usize, width) * height * 4;
     if (pixels.len < source_size) return error.InsufficientData;
 
-    const data = try Util.allocator(.render).alignedAlloc(u8, .fromByteUnits(16), size);
-    errdefer Util.allocator(.render).free(data);
+    const data = try alloc.alignedAlloc(u8, .fromByteUnits(16), size);
+    errdefer alloc.free(data);
     if (builtin.os.tag == .psp and options.config.psp_display_mode == .rgb565) {
         for (0..@as(usize, width) * height) |i| {
             const pixel = rgba_to_4444(pixels[i * 4 ..][0..4].*);
@@ -50,48 +50,45 @@ pub fn load_from_data(width: u32, height: u32, pixels: []const u8) !Texture {
     };
 }
 
-/// 4x4 solid white default texture, initialized by `init()`.
+/// 4x4 solid white default texture, initialized by `init_defaults`.
 pub var Default: Texture = undefined;
 
-pub fn init_defaults() !void {
+pub fn init_defaults(alloc: std.mem.Allocator) !void {
     const pixels = comptime blk: {
         var data: [4 * 4 * 4]u8 = undefined;
         @memset(&data, 0xFF);
         break :blk data;
     };
-    Default = try load_from_data(4, 4, &pixels);
+    Default = try load_from_data(alloc, 4, 4, &pixels);
 }
 
 /// Loads a PNG from `path` into GPU memory.
-/// The decoded pixel buffer lives in the render pool.
-pub fn load(path: []const u8) !Texture {
-    const io = Util.io();
-
+/// The decoded pixel buffer lives in the provided allocator.
+pub fn load(io: std.Io, alloc: std.mem.Allocator, path: []const u8) !Texture {
     var file = try std.Io.Dir.cwd().openFile(io, path, .{});
     defer file.close(io);
 
     var temp: [4096]u8 = undefined;
     var reader = file.reader(io, &temp);
 
-    return load_from_reader(&reader.interface);
+    return load_from_reader(alloc, &reader.interface);
 }
 
 /// Loads a PNG from any reader into GPU memory.
-/// Intermediate decode buffers use the scratch pool; the final pixel data
-/// uses the render pool.
-pub fn load_from_reader(reader: *std.Io.Reader) !Texture {
+/// The final pixel data uses the provided allocator.
+pub fn load_from_reader(alloc: std.mem.Allocator, reader: *std.Io.Reader) !Texture {
     const color_mode: Image.ColorMode = if (builtin.os.tag == .psp and options.config.psp_display_mode == .rgb565)
         .rgba4444
     else
         .rgba8;
 
     const img = try Image.load_png_ex(
-        Util.allocator(.render),
-        Util.allocator(.render),
+        alloc,
+        alloc,
         reader,
         color_mode,
     );
-    errdefer Util.allocator(.render).free(img.data);
+    errdefer alloc.free(img.data);
 
     return Texture{
         .width = img.width,
@@ -106,10 +103,10 @@ pub fn load_from_reader(reader: *std.Io.Reader) !Texture {
     };
 }
 
-/// Frees GPU resources and the render-pool pixel buffer.
-pub fn deinit(self: *Texture) void {
+/// Frees GPU resources and the pixel buffer.
+pub fn deinit(self: *Texture, alloc: std.mem.Allocator) void {
     gfx.api.tab.destroy_texture(gfx.api.ptr, self.handle);
-    Util.allocator(.render).free(self.data);
+    alloc.free(self.data);
 }
 
 /// Pushes the current contents of `data` to the GPU.

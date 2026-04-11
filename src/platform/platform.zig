@@ -9,20 +9,20 @@ else if (builtin.os.tag == .psp)
 else
     @import("glfw/input.zig");
 
-const App = @import("../app.zig");
+const Engine = @import("../engine.zig").Engine;
 
 pub const GraphicsAPI = @import("options").@"build.Gfx";
 
 /// Initializes the platform subsystems: graphics and audio.
-pub fn init(width: u32, height: u32, title: [:0]const u8, fullscreen: bool, sync: bool, resizable: bool) !void {
-    try gfx.init(width, height, title, fullscreen, sync, resizable);
+pub fn init(engine: *Engine, width: u32, height: u32, title: [:0]const u8, fullscreen: bool, sync: bool, resizable: bool) !void {
+    try gfx.init(engine.allocator(.render), engine.io, width, height, title, fullscreen, sync, resizable);
 }
 
-/// Updates the platform subsystems. This should be called once per frame.
-pub fn update() void {
+/// Updates the platform subsystems. Must be called once per frame.
+pub fn update(engine: *Engine) void {
     if (!gfx.surface.update()) {
         // Window should close
-        App.running = false;
+        engine.running = false;
     }
 }
 

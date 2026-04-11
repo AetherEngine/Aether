@@ -14,6 +14,14 @@ const GFXAPI = @import("../../gfx_api.zig");
 const GLFWSurface = @import("../surface.zig");
 const Self = @This();
 
+var render_alloc: std.mem.Allocator = undefined;
+var render_io: std.Io = undefined;
+
+pub fn setup(alloc: std.mem.Allocator, io: std.Io) void {
+    render_alloc = alloc;
+    render_io = io;
+}
+
 var procs: gl.ProcTable = undefined;
 var last_width: u32 = 0;
 var last_height: u32 = 0;
@@ -77,7 +85,7 @@ fn deinit(ctx: *anyopaque) void {
     gl.makeProcTableCurrent(null);
     procs = undefined;
 
-    Util.allocator(.render).destroy(self);
+    render_alloc.destroy(self);
 }
 
 fn set_clear_color(ctx: *anyopaque, r: f32, g: f32, b: f32, a: f32) void {

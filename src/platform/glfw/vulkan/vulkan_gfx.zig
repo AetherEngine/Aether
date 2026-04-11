@@ -16,6 +16,14 @@ const Swapchain = @import("swapchain.zig");
 const GarbageCollector = @import("garbage_collector.zig");
 const GLFWSurface = @import("../surface.zig");
 
+var render_alloc: std.mem.Allocator = undefined;
+var render_io: std.Io = undefined;
+
+pub fn setup(alloc: std.mem.Allocator, io: std.Io) void {
+    render_alloc = alloc;
+    render_io = io;
+}
+
 const PipelineData = struct {
     layout: vk.PipelineLayout,
     vert_layout: Pipeline.VertexLayout,
@@ -132,7 +140,7 @@ fn create_uniform_buffers() !void {
     const min_align: u32 = @intCast(props.limits.min_uniform_buffer_offset_alignment);
     const slot_stride: u32 = std.mem.alignForward(u32, @sizeOf(ShaderState), min_align);
 
-    camera_rings = try Util.allocator(.render).alloc(CameraRing, swapchain.swap_images.len);
+    camera_rings = try render_alloc.alloc(CameraRing, swapchain.swap_images.len);
 
     for (camera_rings) |*ring| {
         ring.slot_stride = slot_stride;
@@ -162,7 +170,7 @@ fn destroy_uniform_buffers() void {
         context.logical_device.destroyBuffer(ring.buffer, null);
         context.logical_device.freeMemory(ring.memory, null);
     }
-    Util.allocator(.render).free(camera_rings);
+    render_alloc.free(camera_rings);
 }
 
 fn create_texture_set_layout() !void {
@@ -300,14 +308,14 @@ fn destroy_descriptor_pool() void {
 }
 
 fn create_descriptor_sets() !void {
-    const layouts = try Util.allocator(.render).alloc(vk.DescriptorSetLayout, swapchain.swap_images.len);
-    defer Util.allocator(.render).free(layouts);
+    const layouts = try render_alloc.alloc(vk.DescriptorSetLayout, swapchain.swap_images.len);
+    defer render_alloc.free(layouts);
 
     for (layouts) |*layout| {
         layout.* = descriptor_set_layout;
     }
 
-    descriptor_sets = try Util.allocator(.render).alloc(vk.DescriptorSet, swapchain.swap_images.len);
+    descriptor_sets = try render_alloc.alloc(vk.DescriptorSet, swapchain.swap_images.len);
 
     try context.logical_device.allocateDescriptorSets(&vk.DescriptorSetAllocateInfo{
         .descriptor_pool = descriptor_pool,
@@ -341,7 +349,7 @@ fn create_descriptor_sets() !void {
 
 fn destroy_descriptor_sets() void {
     context.logical_device.freeDescriptorSets(descriptor_pool, descriptor_sets) catch unreachable;
-    Util.allocator(.render).free(descriptor_sets);
+    render_alloc.free(descriptor_sets);
 }
 
 fn create_depth_image() !void {
@@ -402,9 +410,9 @@ fn destroy_depth_image() void {
 fn init(ctx: *anyopaque) !void {
     _ = ctx;
 
-    context = try Context.init(Util.allocator(.render), "AetherEngine");
+    context = try Context.init(render_alloc, "AetherEngine");
     swapchain = try Swapchain.init(&context, gfx.sync);
-    gc = GarbageCollector.init(Util.allocator(.render));
+    gc = GarbageCollector.init(render_alloc);
 
     try create_command_pool();
     try create_depth_image();
@@ -757,8 +765,8 @@ fn create_pipeline(ctx: *anyopaque, layout: Pipeline.VertexLayout, vs: ?[:0]alig
         .primitive_restart_enable = .false,
     };
 
-    const vertex_attribute_descriptions = try Util.allocator(.render).alloc(vk.VertexInputAttributeDescription, layout.attributes.len);
-    defer Util.allocator(.render).free(vertex_attribute_descriptions);
+    const vertex_attribute_descriptions = try render_alloc.alloc(vk.VertexInputAttributeDescription, layout.attributes.len);
+    defer render_alloc.free(vertex_attribute_descriptions);
     for (vertex_attribute_descriptions, 0..) |*desc, i| {
         const attr = layout.attributes[i];
 

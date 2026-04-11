@@ -29,14 +29,14 @@ pub const Estimator = struct {
         };
     }
 
-    pub fn begin(self: *Estimator) void {
+    pub fn begin(self: *Estimator, io: std.Io) void {
         var clock = std.Io.Clock.real;
-        self.start_ns = @truncate(clock.now(Util.io()).toNanoseconds());
+        self.start_ns = @truncate(clock.now(io).toNanoseconds());
     }
 
-    pub fn end(self: *Estimator) void {
+    pub fn end(self: *Estimator, io: std.Io) void {
         var clock = std.Io.Clock.real;
-        const now_ns: i64 = @truncate(clock.now(Util.io()).toNanoseconds());
+        const now_ns: i64 = @truncate(clock.now(io).toNanoseconds());
         const elapsed = now_ns - self.start_ns;
         self.start_ns = 0;
         self.record(elapsed);

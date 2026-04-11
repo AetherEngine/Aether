@@ -1,3 +1,4 @@
+const std = @import("std");
 const Util = @import("../../util/util.zig");
 const glfw = @import("glfw");
 const builtin = @import("builtin");
@@ -6,10 +7,11 @@ const Surface = @import("../surface.zig");
 const Self = @This();
 const api = @import("options").config.gfx;
 
-window: *glfw.Window,
-width: c_int,
-height: c_int,
-active_joystick: c_int,
+alloc: std.mem.Allocator,
+window: *glfw.Window = undefined,
+width: c_int = 0,
+height: c_int = 0,
+active_joystick: c_int = 0,
 
 pub var curr_scroll: f32 = 0;
 pub var mouse_delta: [2]f32 = @splat(0);
@@ -97,7 +99,7 @@ fn deinit(ctx: *anyopaque) void {
 
     glfw.destroyWindow(self.window);
 
-    Util.allocator(.render).destroy(self);
+    self.alloc.destroy(self);
 }
 
 fn update(ctx: *anyopaque) bool {
