@@ -149,9 +149,16 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
             .registry = owner.dependency("vulkan_headers", .{}).path("registry/vk.xml"),
         }).module("vulkan-zig");
 
+        const zaudio_dep = owner.dependency("zaudio", .{
+            .target = opts.target,
+            .optimize = opts.optimize,
+        });
+
         mod.addImport("glfw", zglfw.module("glfw"));
         mod.addImport("gl", gl_bindings);
         mod.addImport("vulkan", vulkan);
+        mod.addImport("zaudio", zaudio_dep.module("root"));
+        mod.linkLibrary(zaudio_dep.artifact("miniaudio"));
 
         if (opts.target.result.os.tag == .macos) {
             mod.linkSystemLibrary("vulkan", .{});

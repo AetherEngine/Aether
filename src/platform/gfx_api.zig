@@ -45,7 +45,7 @@ pub const Interface = struct {
 /// Verify at comptime that `Backend` exposes every decl in `Interface`
 /// with the exact expected signature. Fires a clean compile error at the
 /// call site if a backend's method set drifts.
-pub fn assertImpl(comptime Backend: type) void {
+pub fn assert_impl(comptime Backend: type) void {
     inline for (std.meta.fields(Interface)) |f| {
         if (!@hasDecl(Backend, f.name)) {
             @compileError("gfx backend " ++ @typeName(Backend) ++ " is missing decl: " ++ f.name);

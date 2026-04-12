@@ -4,6 +4,7 @@ const options = @import("options");
 pub const Core = @import("core/core.zig");
 pub const Util = @import("util/util.zig");
 pub const Rendering = @import("rendering/rendering.zig");
+pub const Audio = @import("audio/audio.zig");
 pub const Math = @import("math/math.zig");
 pub const Engine = @import("engine.zig").Engine;
 pub const ctx_to_self = Util.ctx_to_self;

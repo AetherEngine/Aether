@@ -17,7 +17,7 @@ pub fn Interface(comptime Backend: type) type {
 
 /// Verify at comptime that `Backend` exposes every decl in `Interface`
 /// with the exact expected signature.
-pub fn assertImpl(comptime Backend: type) void {
+pub fn assert_impl(comptime Backend: type) void {
     const I = Interface(Backend);
     inline for (std.meta.fields(I)) |f| {
         if (!@hasDecl(Backend, f.name)) {
