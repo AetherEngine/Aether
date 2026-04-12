@@ -4,6 +4,7 @@ const Math = ae.Math;
 const Core = ae.Core;
 const Util = ae.Util;
 const Rendering = ae.Rendering;
+const Audio = ae.Audio;
 const State = Core.State;
 
 // TODO: Make these options stuff nice
@@ -42,10 +43,36 @@ const Vertex = extern struct {
 
 const MyMesh = Rendering.Mesh(Vertex);
 
+const MAX_GRASS_VOICES = 4;
+const Vec3 = Math.Vec3;
+
 const MyState = struct {
     mesh: MyMesh,
     transform: Rendering.Transform,
     texture: Rendering.Texture,
+    music_data: []u8,
+    music_reader: std.Io.Reader,
+    grass_data: []u8,
+    grass_readers: [MAX_GRASS_VOICES]std.Io.Reader,
+    grass_tick: u32,
+    grass_spawn: u32,
+
+    fn load_wav(engine: *ae.Engine, path: []const u8) ![]u8 {
+        var file = try std.Io.Dir.cwd().openFile(engine.io, path, .{});
+        defer file.close(engine.io);
+
+        var tmp: [4096]u8 = undefined;
+        var rdr = file.reader(engine.io, &tmp);
+
+        var riff_hdr: [8]u8 = undefined;
+        try rdr.interface.readSliceAll(&riff_hdr);
+        const file_size: usize = @as(usize, std.mem.readInt(u32, riff_hdr[4..8], .little)) + 8;
+
+        const buf = try engine.allocator(.audio).alloc(u8, file_size);
+        @memcpy(buf[0..8], &riff_hdr);
+        try rdr.interface.readSliceAll(buf[8..]);
+        return buf;
+    }
 
     fn init(ctx: *anyopaque, engine: *ae.Engine) anyerror!void {
         var self = ae.ctx_to_self(MyState, ctx);
@@ -66,6 +93,21 @@ const MyState = struct {
         });
         self.mesh.update();
 
+        // -- background music --
+        self.music_data = try load_wav(engine, "calm1.wav");
+        self.music_reader = .fixed(self.music_data);
+        const music_stream = try Audio.wav.open(&self.music_reader);
+        _ = try Audio.play(music_stream, .{ .priority = .critical });
+
+        // -- spatial SFX data --
+        self.grass_data = try load_wav(engine, "grass1.wav");
+        self.grass_readers = @splat(.fixed(&.{}));
+        self.grass_tick = 0;
+        self.grass_spawn = 0;
+
+        // Listener at origin, facing -Z
+        Audio.set_listener(Vec3.zero(), Vec3.new(0, 0, -1), Vec3.new(0, 1, 0));
+
         engine.report();
     }
 
@@ -78,7 +120,31 @@ const MyState = struct {
     }
 
     fn tick(ctx: *anyopaque, _: *ae.Engine) anyerror!void {
-        _ = ctx;
+        var self = ae.ctx_to_self(MyState, ctx);
+        self.grass_tick += 1;
+
+        // Every 30 ticks (~1.5 s at 20 Hz), spawn a grass sound.
+        if (self.grass_tick >= 30) {
+            self.grass_tick = 0;
+
+            const i = self.grass_spawn % MAX_GRASS_VOICES;
+            const n = self.grass_spawn;
+            self.grass_spawn +%= 1;
+
+            // Rotate around the listener at varying distances.
+            const angle = @as(f32, @floatFromInt(n)) * std.math.pi / 3.0;
+            const dist = 1.0 + @as(f32, @floatFromInt(n % 5)) * 4.0;
+            const pos = Vec3.new(@cos(angle) * dist, 0, @sin(angle) * dist);
+
+            self.grass_readers[i] = .fixed(self.grass_data);
+            const stream = Audio.wav.open(&self.grass_readers[i]) catch return;
+            _ = Audio.play_at(stream, pos, .{
+                .ref_distance = 1.0,
+                .max_distance = 25.0,
+            }) catch return;
+
+            Util.game_logger.info("grass at ({d:.1}, 0, {d:.1})  dist={d:.1}", .{ pos.x, pos.z, dist });
+        }
     }
 
     fn update(ctx: *anyopaque, _: *ae.Engine, dt: f32, _: *const Util.BudgetContext) anyerror!void {
@@ -122,9 +188,9 @@ pub fn main(init: std.process.Init) !void {
     try engine.init(init.io, memory, .{
         .memory = .{
             .render = 12 * 1024 * 1024,
-            .audio = 2 * 1024 * 1024,
+            .audio = 10 * 1024 * 1024,
             .game = 2 * 1024 * 1024,
-            .user = 16 * 1024 * 1024,
+            .user = 8 * 1024 * 1024,
         },
         .resizable = true,
     }, &state.state());

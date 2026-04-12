@@ -26,8 +26,8 @@ else
     @import("glfw/surface.zig");
 
 comptime {
-    gfx_api.assertImpl(Api);
-    surface_iface.assertImpl(Surface);
+    gfx_api.assert_impl(Api);
+    surface_iface.assert_impl(Surface);
 }
 
 pub const api = Api;

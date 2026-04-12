@@ -1,37 +1,43 @@
-const Vec3 = @import("../math/math.zig").Vec3;
-const Clip = @import("../audio/clip.zig");
-const Util = @import("../util/util.zig");
-const Self = @This();
+const std = @import("std");
+const Stream = @import("../audio/stream.zig").Stream;
 
-ptr: *anyopaque,
-tab: *const VTable,
+/// The contract every audio backend must satisfy. Backends are thin
+/// slot-based PCM outputs — all scheduling, priority, and spatial math
+/// lives in the platform-independent mixer (`audio/mixer.zig`).
+///
+/// The backend's audio thread pulls PCM from the Stream's reader, applies
+/// the gain/pan set by the mixer, and writes to the output device.
+pub const Interface = struct {
+    setup: fn (std.mem.Allocator, std.Io) void,
+    init: fn () anyerror!void,
+    deinit: fn () void,
+    /// Per-frame bookkeeping, called from the game thread.
+    update: fn () void,
 
-pub const VTable = struct {
-    // --- API Setup / Lifecycle ---
-    init: *const fn (ctx: *anyopaque) anyerror!void,
-    deinit: *const fn (ctx: *anyopaque) void,
-    set_listener_position: *const fn (ctx: *anyopaque, pos: Vec3) void,
-    set_listener_direction: *const fn (ctx: *anyopaque, dir: Vec3) void,
-
-    // --- Audio Clip (raw) ---
-    load_clip: *const fn (ctx: *anyopaque, path: [:0]const u8) anyerror!Clip.Handle,
-    unload_clip: *const fn (ctx: *anyopaque, handle: Clip.Handle) void,
-    play_clip: *const fn (ctx: *anyopaque, handle: Clip.Handle) void,
-    stop_clip: *const fn (ctx: *anyopaque, handle: Clip.Handle) void,
-    set_clip_position: *const fn (ctx: *anyopaque, handle: Clip.Handle, pos: Vec3) void,
+    /// Number of simultaneous voices the backend can output.
+    max_voices: fn () u32,
+    /// Begin reading PCM from `stream` on `slot`. Implicitly stops any
+    /// previous stream on that slot.
+    play_slot: fn (u8, Stream) anyerror!void,
+    /// Stop reading on `slot`.
+    stop_slot: fn (u8) void,
+    /// Set output gain [0,1] and stereo pan [-1,1] for `slot`.
+    set_slot_gain_pan: fn (u8, f32, f32) void,
+    /// True while the slot's stream has not been exhausted or stopped.
+    is_slot_active: fn (u8) bool,
 };
 
-/// Initializes the Audio API. Must be called before any other audio functions.
-pub fn init(self: *const Self) anyerror!void {
-    try self.tab.init(self.ptr);
-}
-
-/// Shuts down the Audio API and frees all associated resources.
-pub fn deinit(self: *const Self) void {
-    self.tab.deinit(self.ptr);
-}
-
-/// Factory function to create an AudioAPI instance appropriate for the current platform.
-pub fn make_api() !Self {
-    @panic("Audio Not Yet Implemented!");
+/// Verify at comptime that `Backend` exposes every decl in `Interface`
+/// with the exact expected signature.
+pub fn assert_impl(comptime Backend: type) void {
+    inline for (std.meta.fields(Interface)) |f| {
+        if (!@hasDecl(Backend, f.name)) {
+            @compileError("audio backend " ++ @typeName(Backend) ++ " is missing decl: " ++ f.name);
+        }
+        const Actual = @TypeOf(@field(Backend, f.name));
+        if (Actual != f.type) {
+            @compileError("audio backend " ++ @typeName(Backend) ++ "." ++ f.name ++
+                " has type " ++ @typeName(Actual) ++ ", expected " ++ @typeName(f.type));
+        }
+    }
 }

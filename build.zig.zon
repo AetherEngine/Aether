@@ -76,6 +76,10 @@
             .url = "git+https://github.com/Snektron/vulkan-zig#b3086a867a47bb10e66a987a38115a43056b60f7",
             .hash = "vulkan-0.0.0-r7Ytx99oAwDmJu0XtvukW_bSYnAv1PpbPO9ZFwsjcPPO",
         },
+        .zaudio = .{
+            .url = "git+https://github.com/IridescentRose/zaudio?ref=update_zig_16#19134a845b3a717cac065f26bd07f9e715849356",
+            .hash = "zaudio-0.11.0-dev-_M-91kUyQQDTpuw7vYCkUrmAOalZy7XtNH76m5j9W7j3",
+        },
     },
     .paths = .{
         "build.zig",
