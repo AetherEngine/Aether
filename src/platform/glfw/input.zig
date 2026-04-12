@@ -69,5 +69,7 @@ pub fn set_mouse_relative_mode(enabled: bool) void {
     } else {
         glfw.setInputMode(gfx.surface.window, glfw.RawMouseMotion, 0);
         glfw.setInputMode(gfx.surface.window, glfw.Cursor, glfw.CursorNormal);
+        // Seed previous position so the first frame delta is zero.
+        glfw.getCursorPos(gfx.surface.window, &Surface.prev_cursor_x, &Surface.prev_cursor_y);
     }
 }
