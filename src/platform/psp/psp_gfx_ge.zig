@@ -542,7 +542,7 @@ pub fn init() anyerror!void {
     must(cmd.enable(.clip_planes, false));
     clip_planes_enabled = false;
     must(cmd.enable(.alpha_test, true));
-    must(cmd.alpha_test(.greater, 16, 0xFF));
+    must(cmd.alpha_test(.greater, 26, 0xFF));
     must(cmd.enable(.alpha_blend, true));
     must(cmd.blend_func(.add, .source_alpha, .one_minus_source_alpha, 0, 0));
     alpha_blend_enabled = true;
