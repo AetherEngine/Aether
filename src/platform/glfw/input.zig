@@ -30,25 +30,22 @@ pub fn get_gamepad_axis(axis: input.Axis) f32 {
 }
 
 var relative_mode: bool = false;
+
 pub fn get_mouse_delta(sensitivity: f32) [2]f32 {
-    // Cursor positions are in screen coordinates, not framebuffer pixels.
-    // Use window size (screen coords) to match getCursorPos / setCursorPos.
-    var win_w: c_int = 0;
-    var win_h: c_int = 0;
-    glfw.getWindowSize(gfx.surface.window, &win_w, &win_h);
-    const w: f64 = @floatFromInt(win_w);
-    const h: f64 = @floatFromInt(win_h);
-
     if (relative_mode) {
-        glfw.setCursorPos(gfx.surface.window, w / 2.0, h / 2.0);
-
-        // Raw screen-coordinate delta — same physical mouse movement gives
-        // the same value regardless of window size or DPI.
+        // Delta is computed once per frame in surface.update() —
+        // safe to call multiple times per frame (e.g. once per axis).
         return [_]f32{
-            @as(f32, @floatCast(Surface.cursor_x - w / 2.0)) * sensitivity,
-            @as(f32, @floatCast(Surface.cursor_y - h / 2.0)) * sensitivity,
+            @as(f32, @floatCast(Surface.cursor_dx)) * sensitivity,
+            @as(f32, @floatCast(Surface.cursor_dy)) * sensitivity,
         };
     } else {
+        // Absolute mode: return normalized 0..1 position within the window.
+        var win_w: c_int = 0;
+        var win_h: c_int = 0;
+        glfw.getWindowSize(gfx.surface.window, &win_w, &win_h);
+        const w: f64 = @floatFromInt(win_w);
+        const h: f64 = @floatFromInt(win_h);
         return [_]f32{ @floatCast(Surface.cursor_x / w), @floatCast((h - Surface.cursor_y) / h) };
     }
 }
@@ -63,8 +60,14 @@ pub fn get_mouse_scroll() f32 {
 pub fn set_mouse_relative_mode(enabled: bool) void {
     relative_mode = enabled;
     if (enabled) {
-        glfw.setInputMode(gfx.surface.window, glfw.Cursor, glfw.CursorHidden);
+        glfw.setInputMode(gfx.surface.window, glfw.Cursor, glfw.CursorDisabled);
+        if (glfw.rawMouseMotionSupported()) {
+            glfw.setInputMode(gfx.surface.window, glfw.RawMouseMotion, 1);
+        }
+        // Seed previous position so the first frame delta is zero.
+        glfw.getCursorPos(gfx.surface.window, &Surface.prev_cursor_x, &Surface.prev_cursor_y);
     } else {
+        glfw.setInputMode(gfx.surface.window, glfw.RawMouseMotion, 0);
         glfw.setInputMode(gfx.surface.window, glfw.Cursor, glfw.CursorNormal);
     }
 }
