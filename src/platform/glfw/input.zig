@@ -31,17 +31,22 @@ pub fn get_gamepad_axis(axis: input.Axis) f32 {
 
 var relative_mode: bool = false;
 pub fn get_mouse_delta(sensitivity: f32) [2]f32 {
-    const w: f64 = @floatFromInt(gfx.surface.get_width());
-    const h: f64 = @floatFromInt(gfx.surface.get_height());
+    // Cursor positions are in screen coordinates, not framebuffer pixels.
+    // Use window size (screen coords) to match getCursorPos / setCursorPos.
+    var win_w: c_int = 0;
+    var win_h: c_int = 0;
+    glfw.getWindowSize(gfx.surface.window, &win_w, &win_h);
+    const w: f64 = @floatFromInt(win_w);
+    const h: f64 = @floatFromInt(win_h);
 
     if (relative_mode) {
         glfw.setCursorPos(gfx.surface.window, w / 2.0, h / 2.0);
 
-        // Normalize by window height so the same physical mouse movement
-        // produces identical rotation regardless of resolution.
+        // Raw screen-coordinate delta — same physical mouse movement gives
+        // the same value regardless of window size or DPI.
         return [_]f32{
-            @as(f32, @floatCast((Surface.cursor_x - w / 2.0) / h)) * sensitivity,
-            @as(f32, @floatCast((Surface.cursor_y - h / 2.0) / h)) * sensitivity,
+            @as(f32, @floatCast(Surface.cursor_x - w / 2.0)) * sensitivity,
+            @as(f32, @floatCast(Surface.cursor_y - h / 2.0)) * sensitivity,
         };
     } else {
         return [_]f32{ @floatCast(Surface.cursor_x / w), @floatCast((h - Surface.cursor_y) / h) };
