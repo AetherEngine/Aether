@@ -1,7 +1,6 @@
 const std = @import("std");
 const Util = @import("../../util/util.zig");
 const glfw = @import("glfw");
-const builtin = @import("builtin");
 
 const Self = @This();
 const api = @import("options").config.gfx;
@@ -22,9 +21,6 @@ pub var on_resize: ?*const fn () void = null;
 pub fn init(self: *Self, width: u32, height: u32, title: [:0]const u8, fullscreen: bool, sync: bool, resizable: bool) anyerror!void {
     self.active_joystick = 0;
 
-    if (builtin.os.tag == .linux) {
-        glfw.initHint(glfw.Platform, glfw.PlatformX11);
-    }
     glfw.initHint(glfw.JoystickHatButtons, 1);
 
     try glfw.init();
