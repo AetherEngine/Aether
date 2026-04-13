@@ -426,14 +426,11 @@ pub fn init() anyerror!void {
     try create_texture_descriptor_pool_and_set(4096);
     try create_texture_sampler();
 
-    GLFWSurface.on_resize = resize_render;
+    GLFWSurface.on_resize = resize_flag;
 }
 
-fn resize_render() void {
+fn resize_flag() void {
     swap_state = .suboptimal;
-    if (start_frame()) {
-        end_frame();
-    }
 }
 
 pub fn deinit() void {
