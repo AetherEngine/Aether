@@ -29,9 +29,13 @@ const PipelineData = struct {
     pipeline: vk.Pipeline,
 };
 
+const MAX_FRAMES = 3;
+
 const MeshData = struct {
-    memory: vk.DeviceMemory = .null_handle,
-    buffer: vk.Buffer = .null_handle,
+    buffers: [MAX_FRAMES]vk.Buffer = .{.null_handle} ** MAX_FRAMES,
+    memories: [MAX_FRAMES]vk.DeviceMemory = .{.null_handle} ** MAX_FRAMES,
+    mapped: [MAX_FRAMES]?[*]u8 = .{null} ** MAX_FRAMES,
+    capacity: usize = 0,
     pipeline: Pipeline.Handle = 0,
     built: bool = false,
 };
@@ -937,102 +941,67 @@ pub fn destroy_mesh(handle: Mesh.Handle) void {
     const m_data = meshes.get_element(handle) orelse return;
 
     if (m_data.built) {
-        gc.defer_destroy_buffer(m_data.buffer, m_data.memory) catch unreachable;
+        for (0..MAX_FRAMES) |i| {
+            if (m_data.buffers[i] != .null_handle) {
+                gc.defer_destroy_buffer(m_data.buffers[i], m_data.memories[i]) catch unreachable;
+            }
+        }
     }
 
     _ = meshes.remove_element(handle);
 }
 
 pub fn update_mesh(handle: Mesh.Handle, data: []const u8) void {
-    const m_data = meshes.get_element(handle) orelse return;
+    var m_data = meshes.get_element(handle) orelse return;
 
-    var mesh: MeshData = undefined;
-    mesh.buffer = context.logical_device.createBuffer(&.{
-        .size = data.len,
-        .usage = .{ .transfer_dst_bit = true, .vertex_buffer_bit = true },
-        .sharing_mode = .exclusive,
-    }, null) catch unreachable;
+    // Grow buffers if the current allocation is too small.
+    if (data.len > m_data.capacity) {
+        // Defer-destroy old buffers.
+        for (0..MAX_FRAMES) |i| {
+            if (m_data.buffers[i] != .null_handle) {
+                gc.defer_destroy_buffer(m_data.buffers[i], m_data.memories[i]) catch unreachable;
+            }
+        }
 
-    const mem_reqs = context.logical_device.getBufferMemoryRequirements(mesh.buffer);
-    mesh.memory = context.allocate_gpu_buffer(mem_reqs, .{ .device_local_bit = true }) catch unreachable;
-    context.logical_device.bindBufferMemory(mesh.buffer, mesh.memory, 0) catch unreachable;
+        // Round up to next power of two (minimum 256 bytes).
+        var new_cap: usize = 256;
+        while (new_cap < data.len) new_cap *= 2;
 
-    const staging_buffer = context.logical_device.createBuffer(&.{
-        .size = data.len,
-        .usage = .{ .transfer_src_bit = true },
-        .sharing_mode = .exclusive,
-    }, null) catch unreachable;
-    defer context.logical_device.destroyBuffer(staging_buffer, null);
+        for (0..MAX_FRAMES) |i| {
+            m_data.buffers[i] = context.logical_device.createBuffer(&.{
+                .size = new_cap,
+                .usage = .{ .vertex_buffer_bit = true },
+                .sharing_mode = .exclusive,
+            }, null) catch unreachable;
 
-    const staging_mem_reqs = context.logical_device.getBufferMemoryRequirements(staging_buffer);
-    const staging_memory = context.allocate_gpu_buffer(staging_mem_reqs, .{ .host_visible_bit = true, .host_coherent_bit = true }) catch unreachable;
-    defer context.logical_device.freeMemory(staging_memory, null);
-    context.logical_device.bindBufferMemory(staging_buffer, staging_memory, 0) catch unreachable;
+            const mem_reqs = context.logical_device.getBufferMemoryRequirements(m_data.buffers[i]);
 
-    {
-        const mapped_data = context.logical_device.mapMemory(staging_memory, 0, vk.WHOLE_SIZE, .{}) catch unreachable;
-        defer context.logical_device.unmapMemory(staging_memory);
+            // Prefer device-local + host-visible (resizable BAR), fall back to host-visible only.
+            m_data.memories[i] = context.allocate_gpu_buffer(mem_reqs, .{
+                .host_visible_bit = true,
+                .host_coherent_bit = true,
+                .device_local_bit = true,
+            }) catch context.allocate_gpu_buffer(mem_reqs, .{
+                .host_visible_bit = true,
+                .host_coherent_bit = true,
+            }) catch unreachable;
 
-        const gpu_vertices: [*]u8 = @ptrCast(@alignCast(mapped_data));
-        @memcpy(gpu_vertices, data);
+            context.logical_device.bindBufferMemory(m_data.buffers[i], m_data.memories[i], 0) catch unreachable;
+
+            const mapped_data = context.logical_device.mapMemory(m_data.memories[i], 0, vk.WHOLE_SIZE, .{}) catch unreachable;
+            m_data.mapped[i] = @ptrCast(@alignCast(mapped_data));
+        }
+
+        m_data.capacity = new_cap;
     }
 
-    var cmdbuf_handle: vk.CommandBuffer = undefined;
-    context.logical_device.allocateCommandBuffers(&.{
-        .command_pool = command_pool,
-        .level = .primary,
-        .command_buffer_count = 1,
-    }, @ptrCast(&cmdbuf_handle)) catch unreachable;
+    // Copy vertex data into all frame slots so every frame has current data.
+    for (0..MAX_FRAMES) |i| {
+        @memcpy(m_data.mapped[i].?[0..data.len], data);
+    }
 
-    const cmdbuf = vk.CommandBufferProxy.init(cmdbuf_handle, context.logical_device.wrapper);
-
-    cmdbuf.beginCommandBuffer(&.{
-        .flags = .{ .one_time_submit_bit = true },
-    }) catch unreachable;
-
-    const region = vk.BufferCopy{
-        .src_offset = 0,
-        .dst_offset = 0,
-        .size = data.len,
-    };
-    cmdbuf.copyBuffer(staging_buffer, mesh.buffer, @ptrCast(&region));
-
-    const barrier = vk.BufferMemoryBarrier2{
-        .src_stage_mask = .{ .copy_bit = true },
-        .src_access_mask = .{ .transfer_write_bit = true },
-        .dst_stage_mask = .{ .vertex_input_bit = true },
-        .dst_access_mask = .{ .vertex_attribute_read_bit = true },
-        .src_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
-        .dst_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
-        .buffer = mesh.buffer,
-        .offset = 0,
-        .size = vk.WHOLE_SIZE,
-    };
-
-    const dep = vk.DependencyInfo{
-        .buffer_memory_barrier_count = 1,
-        .p_buffer_memory_barriers = @ptrCast(&barrier),
-    };
-
-    cmdbuf.pipelineBarrier2(&dep);
-    cmdbuf.endCommandBuffer() catch unreachable;
-
-    const submit_info = vk.SubmitInfo{
-        .command_buffer_count = 1,
-        .p_command_buffers = @ptrCast(&cmdbuf_handle),
-    };
-
-    context.logical_device.queueSubmit(context.graphics_queue.handle, @ptrCast(&submit_info), .null_handle) catch unreachable;
-    context.logical_device.queueWaitIdle(context.graphics_queue.handle) catch unreachable;
-
-    context.logical_device.freeCommandBuffers(command_pool, @ptrCast(&cmdbuf_handle));
-
-    meshes.update_element(handle, MeshData{
-        .buffer = mesh.buffer,
-        .memory = mesh.memory,
-        .pipeline = m_data.pipeline,
-        .built = true,
-    });
+    m_data.built = true;
+    meshes.update_element(handle, m_data);
 }
 
 pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize, primitive: Mesh.Primitive) void {
@@ -1056,7 +1025,8 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize, primitiv
     });
 
     const offset = [_]vk.DeviceSize{0};
-    command_buffer.bindVertexBuffers(0, @ptrCast(&m_data.buffer), &offset);
+    const frame_buf = m_data.buffers[swapchain.image_index];
+    command_buffer.bindVertexBuffers(0, @ptrCast(&frame_buf), &offset);
     command_buffer.pushConstants(p_data.layout, .{ .vertex_bit = true, .fragment_bit = true }, 0, @sizeOf(DrawState), &draw_state);
     command_buffer.draw(@intCast(count), 1, 0, 0);
 }
