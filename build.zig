@@ -163,6 +163,12 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
         if (opts.target.result.os.tag == .macos) {
             mod.linkSystemLibrary("vulkan", .{});
             mod.linkSystemLibrary("glfw3", .{});
+
+            if (owner.lazyDependency("system_sdk", .{})) |system_sdk| {
+                mod.addFrameworkPath(system_sdk.path("macos12/System/Library/Frameworks"));
+                mod.addSystemIncludePath(system_sdk.path("macos12/usr/include"));
+                mod.addLibraryPath(system_sdk.path("macos12/usr/lib"));
+            }
         } else {
             mod.linkLibrary(glfw.artifact("glfw"));
         }
