@@ -63,17 +63,9 @@ pub fn init() anyerror!void {
     shader.state.view = Mat4.identity();
     shader.update_ubo();
 
-    GLFWSurface.on_resize = resize_render;
-}
-
-fn resize_render() void {
-    if (start_frame()) {
-        end_frame();
-    }
 }
 
 pub fn deinit() void {
-    GLFWSurface.on_resize = null;
 
     shader.deinit();
 
