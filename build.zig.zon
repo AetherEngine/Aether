@@ -77,8 +77,13 @@
             .hash = "vulkan-0.0.0-r7Ytx99oAwDmJu0XtvukW_bSYnAv1PpbPO9ZFwsjcPPO",
         },
         .zaudio = .{
-            .url = "git+https://github.com/IridescentRose/zaudio?ref=update_zig_16#19134a845b3a717cac065f26bd07f9e715849356",
-            .hash = "zaudio-0.11.0-dev-_M-91kUyQQDTpuw7vYCkUrmAOalZy7XtNH76m5j9W7j3",
+            .url = "git+https://github.com/IridescentRose/zaudio?ref=update_zig_16#54e45e002005448623bff0ba06baa919bd036e03",
+            .hash = "zaudio-0.11.0-dev-_M-91l8yQQDTAb3Hk8V-lyP88DGgLzS9QNUkmpbCN_PK",
+        },
+        .system_sdk = .{
+            .url = "https://github.com/zig-gamedev/system_sdk/archive/c0dbf11cdc17da5904ea8a17eadc54dee26567ec.tar.gz",
+            .hash = "system_sdk-0.3.0-dev-alwUNnYaaAJAtIdE2fg4NQfDqEKs7QCXy_qYukAOBfmF",
+            .lazy = true,
         },
     },
     .paths = .{
