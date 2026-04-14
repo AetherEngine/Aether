@@ -99,7 +99,7 @@ const SWAPCHAIN_BUFFER_COUNT: usize = switch (options.config.psp_display_mode) {
 
 const Swapchain = struct {
     const BUFFER_COUNT = SWAPCHAIN_BUFFER_COUNT;
-    const DISPLAY_LIST_WORDS = 0x10000;
+    const DISPLAY_LIST_WORDS = 0x4000;
     const BufferIndex = u2;
 
     /// Backing storage for the GE display list. Always accessed through
@@ -837,7 +837,7 @@ const MeshData = struct {
     len: usize,
 };
 
-var meshes = Util.CircularBuffer(MeshData, 2048).init();
+var meshes = Util.CircularBuffer(MeshData, 512).init();
 
 pub fn create_mesh(pipeline: Pipeline.Handle) anyerror!Mesh.Handle {
     const handle = meshes.add_element(.{
@@ -971,7 +971,7 @@ pub fn swizzled_offset(x: u32, y: u32, width: u32) usize {
     return block_start + local_y * 16 + local_x;
 }
 
-var textures = Util.CircularBuffer(TextureData, 4096).init();
+var textures = Util.CircularBuffer(TextureData, 64).init();
 var bound_texture: Texture.Handle = 0;
 
 pub fn create_texture(width: u32, height: u32, data: []align(16) u8) anyerror!Texture.Handle {
