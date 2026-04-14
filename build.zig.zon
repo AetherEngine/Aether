@@ -25,7 +25,7 @@
     .fingerprint = 0x200ca2f6f2b63172, // Changing this has security and trust implications.
     // Tracks the earliest Zig version that the package considers to be a
     // supported use case.
-    .minimum_zig_version = "0.16.0-dev.3039+b490412cd",
+    .minimum_zig_version = "0.16.0",
     // This field is optional.
     // Each dependency must either provide a `url` and `hash`, or a `path`.
     // `zig build --fetch` can be used to fetch all dependencies of a package, recursively.
@@ -45,8 +45,8 @@
             .hash = "N-V-__8AACUYwwHkOfRNOmzhES0A0wAstELzgG-GdNu-uUE5",
         },
         .pspsdk = .{
-            .url = "git+https://github.com/zPSP-Dev/Zig-PSP#2c6d72a2355c44eedd4550e98af3a30c54dd2bc3",
-            .hash = "pspsdk-0.7.0-BZphynyCEgBvgCpi-PItB7d5K3KGsuhKbK_1fpAU3pts",
+            .url = "git+https://github.com/zPSP-Dev/Zig-PSP#723f055b29c317abc015df454e238a9e396764ad",
+            .hash = "pspsdk-0.7.0-BZphyi2CEgBLdNp2UyS20yCamo-CXNmJPW5pjHMBqqrv",
         },
         .glfw_zig = .{
             .url = "git+https://github.com/tiawl/glfw.zig?ref=zig-nightly#6d7465afb4db06f23cee0b8dec2200640f6d45e0",
