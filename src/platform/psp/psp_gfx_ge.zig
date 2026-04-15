@@ -837,7 +837,7 @@ const MeshData = struct {
     len: usize,
 };
 
-var meshes = Util.CircularBuffer(MeshData, 512).init();
+var meshes = Util.CircularBuffer(MeshData, 1024).init();
 
 pub fn create_mesh(pipeline: Pipeline.Handle) anyerror!Mesh.Handle {
     const handle = meshes.add_element(.{
