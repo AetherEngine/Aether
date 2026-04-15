@@ -88,6 +88,7 @@ pub const Engine = struct {
     running: bool,
     vsync: bool,
     state: *const Core.State,
+    dirs: Core.paths.Dirs,
 
     pub const Config = struct {
         memory: MemoryConfig,
@@ -97,13 +98,30 @@ pub const Engine = struct {
         fullscreen: bool = false,
         vsync: bool = true,
         resizable: bool = false,
+        /// Leaf directory name under the per-user data root (e.g.
+        /// `~/Library/Application Support/<app_name>/`). Defaults to
+        /// `title` so single-word titles just work; override when the
+        /// title contains characters you don't want in a filesystem path.
+        app_name: ?[]const u8 = null,
     };
 
     /// Initializes the engine in place. `self` must live at a stable address
     /// for the lifetime of the program — the allocators produced by
     /// `allocator(p)` each carry a pointer into `self.trackers`, so moving or
     /// copying an initialized `Engine` will leave those pointers dangling.
-    pub fn init(self: *Engine, sys_io: std.Io, mem: []u8, config: Config, state: *const Core.State) !void {
+    ///
+    /// `environ_map` comes from `std.process.Init.environ_map` and is used
+    /// only during init to resolve platform-specific data directories
+    /// (HOME/APPDATA/XDG_DATA_HOME). The engine does not retain a
+    /// reference.
+    pub fn init(
+        self: *Engine,
+        sys_io: std.Io,
+        environ_map: *const std.process.Environ.Map,
+        mem: []u8,
+        config: Config,
+        state: *const Core.State,
+    ) !void {
         assert(config.memory.total() <= mem.len);
 
         self.io = sys_io;
@@ -123,7 +141,12 @@ pub const Engine = struct {
             };
         }
 
-        try logger.init(sys_io);
+        // Dirs must resolve BEFORE logger (which opens a log file in the
+        // data dir) and BEFORE Platform.init (which may read resources).
+        const app_name = config.app_name orelse config.title;
+        self.dirs = try Core.paths.resolve(sys_io, environ_map, app_name);
+
+        try logger.init(sys_io, self.dirs.data);
 
         try Platform.init(self, config.width, config.height, config.title, config.fullscreen, config.vsync, config.resizable);
         try Rendering.Texture.init_defaults(self.allocator(.render));
@@ -137,6 +160,7 @@ pub const Engine = struct {
         Rendering.Texture.Default.deinit(self.allocator(.render));
         Platform.deinit();
         logger.deinit(self.io);
+        self.dirs.close(self.io);
     }
 
     pub fn allocator(self: *Engine, p: Pool) std.mem.Allocator {
