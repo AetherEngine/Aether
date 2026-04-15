@@ -1,5 +1,14 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const Util = @import("../../../util/util.zig");
+
+// MoltenVK cannot back VK_DYNAMIC_STATE_COLOR_BLEND_ENABLE_EXT on top of
+// Metal, so on macOS we leave blend permanently enabled in the pipeline and
+// make set_alpha_blend a no-op. The pipeline's src_alpha/one_minus_src_alpha
+// factors reduce to a passthrough when fragments write alpha=1 (opaque
+// passes, sky plane), so behavior matches the non-macOS path for current
+// shaders. See context.zig for the device-feature side.
+const is_macos = builtin.target.os.tag == .macos;
 const glfw = @import("glfw");
 const Mat4 = @import("../../../math/math.zig").Mat4;
 
@@ -463,6 +472,12 @@ pub fn set_alpha_blend(enabled: bool) void {
     draw_state.alpha_blend_enabled = @intFromBool(enabled);
     if (enabled == alpha_blend_enabled) return;
     alpha_blend_enabled = enabled;
+    // macOS/MoltenVK: color_blend_enable is not a supported dynamic state.
+    // The pipeline is built with blend_enable=true and src_alpha /
+    // one_minus_src_alpha factors, so fragments that write alpha=1 (opaque
+    // passes, sky plane) produce identical output to blend-off. Shaders that
+    // need "no blend" semantics must keep writing alpha=1.
+    if (is_macos) return;
     const enable: vk.Bool32 = if (enabled) .true else .false;
     command_buffer.setColorBlendEnableEXT(0, @ptrCast(&[1]vk.Bool32{enable}));
 }
@@ -830,16 +845,15 @@ pub fn create_pipeline(layout: Pipeline.VertexLayout, vs: ?[:0]align(4) const u8
         .blend_constants = @splat(0),
     };
 
-    const dynstate = [_]vk.DynamicState{
-        .viewport,
-        .scissor,
-        .color_blend_enable_ext,
-        .primitive_topology,
-    };
+    // On macOS drop color_blend_enable_ext — MoltenVK cannot back it. The
+    // pipeline bakes blend_enable=true and set_alpha_blend is a no-op there.
+    const dynstate_mac = [_]vk.DynamicState{ .viewport, .scissor, .primitive_topology };
+    const dynstate_full = [_]vk.DynamicState{ .viewport, .scissor, .color_blend_enable_ext, .primitive_topology };
+    const dynstate: []const vk.DynamicState = if (is_macos) &dynstate_mac else &dynstate_full;
 
     const pipeline_dynamic_state_create_info = vk.PipelineDynamicStateCreateInfo{
         .dynamic_state_count = @intCast(dynstate.len),
-        .p_dynamic_states = @ptrCast(&dynstate),
+        .p_dynamic_states = dynstate.ptr,
     };
 
     const pipeline_rendering_create_info = vk.PipelineRenderingCreateInfo{
