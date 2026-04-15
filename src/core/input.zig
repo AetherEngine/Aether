@@ -227,6 +227,17 @@ pub fn deinit() void {
     actions.deinit();
 }
 
+/// Removes all registered actions, their bindings, and callbacks.
+/// Leaves the input system initialized and ready to accept new registrations.
+pub fn clear() void {
+    for (actions.values()) |*action| {
+        action.bindings.deinit(allocator);
+    }
+    actions.clearRetainingCapacity();
+    lost_focus_context = null;
+    lost_focus_callback = null;
+}
+
 /// Registers a new action with the given name and type.
 /// Returns an error if an action with the same name already exists.
 pub fn register_action(name: []const u8, action_type: ActionType) !void {
