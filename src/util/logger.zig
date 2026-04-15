@@ -6,9 +6,17 @@ var file_log: std.Io.File = undefined;
 var file_writer: std.Io.File.Writer = undefined;
 var writer: *std.Io.Writer = undefined;
 
-pub fn init(io: std.Io) !void {
-    const log_path = if (builtin.os.tag == .psp) "ms0:/aether.log" else "aether.log";
-    file_log = try std.Io.Dir.cwd().createFile(io, log_path, .{ .truncate = true });
+/// PSP has no per-user data dir concept; the log sits at CWD (which is
+/// where the EBOOT lives) regardless of what `data_dir` points at. Every
+/// other platform routes through the engine-resolved data dir so
+/// Finder-launched `.app` bundles don't try to write into read-only
+/// bundle internals.
+pub fn init(io: std.Io, data_dir: std.Io.Dir) !void {
+    if (builtin.os.tag == .psp) {
+        file_log = try std.Io.Dir.cwd().createFile(io, "ms0:/aether.log", .{ .truncate = true });
+    } else {
+        file_log = try data_dir.createFile(io, "aether.log", .{ .truncate = true });
+    }
     file_writer = file_log.writer(io, &log_buffer);
     writer = &file_writer.interface;
 }

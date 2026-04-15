@@ -1,9 +1,24 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const Util = @import("../../util/util.zig");
 const glfw = @import("glfw");
 
 const Self = @This();
 const api = @import("options").config.gfx;
+
+// macOS: we link MoltenVK directly as the Vulkan ICD and skip the Vulkan
+// loader entirely. Feed MoltenVK's vkGetInstanceProcAddr to GLFW before
+// glfwInit so glfwVulkanSupported doesn't dlopen("libvulkan.1.dylib") —
+// that name lookup hits DYLD_FALLBACK_LIBRARY_PATH (which doesn't include
+// /opt/homebrew/...) and either fails outright or picks up a stale
+// LunarG SDK loader from /usr/local/lib. Both are common and produce a
+// misleading `VulkanNotSupported` error.
+//
+// These externs resolve at link time because MoltenVK and glfw3 are both
+// linked into the exe (see Aether/build.zig macOS branch).
+const VulkanProc = *const fn () callconv(.c) void;
+extern fn vkGetInstanceProcAddr(instance: ?*anyopaque, name: [*:0]const u8) callconv(.c) ?VulkanProc;
+extern fn glfwInitVulkanLoader(loader: *const fn (?*anyopaque, [*:0]const u8) callconv(.c) ?VulkanProc) void;
 
 alloc: std.mem.Allocator,
 window: *glfw.Window = undefined,
@@ -23,6 +38,12 @@ pub var on_resize: ?*const fn () void = null;
 
 pub fn init(self: *Self, width: u32, height: u32, title: [:0]const u8, fullscreen: bool, sync: bool, resizable: bool) anyerror!void {
     self.active_joystick = 0;
+
+    // See extern decls above — bypass GLFW's libvulkan.1.dylib dlopen on macOS.
+    // Must run BEFORE glfw.init() per GLFW 3.4 API contract.
+    if (builtin.target.os.tag == .macos and api == .vulkan) {
+        glfwInitVulkanLoader(&vkGetInstanceProcAddr);
+    }
 
     glfw.initHint(glfw.JoystickHatButtons, 1);
 

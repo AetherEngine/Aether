@@ -85,7 +85,7 @@ const MyState = struct {
         self.mesh = try MyMesh.new(render, pipeline);
         self.transform = Rendering.Transform.new();
 
-        self.texture = try Rendering.Texture.load(engine.io, render, "test.png");
+        self.texture = try Rendering.Texture.load(engine.io, engine.dirs.resources, render, "test.png");
         try self.mesh.append(render, &.{
             Vertex{ .pos = .{ -16383, -16383, 0 }, .color = 0xFF0000FF, .uv = .{ 0, 32767 } },
             Vertex{ .pos = .{ 16383, -16383, 0 }, .color = 0xFF00FF00, .uv = .{ 32767, 32767 } },
@@ -185,7 +185,7 @@ pub fn main(init: std.process.Init) !void {
 
     var state: MyState = undefined;
     var engine: ae.Engine = undefined;
-    try engine.init(init.io, memory, .{
+    try engine.init(init.io, init.environ_map, memory, .{
         .memory = .{
             .render = 12 * 1024 * 1024,
             .audio = 10 * 1024 * 1024,

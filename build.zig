@@ -38,6 +38,19 @@ pub const Config = struct {
     /// levels for the texture. Off by default since the extra VRAM cost
     /// only pays off for textures sampled at a wide range of distances.
     psp_mipmaps: bool = false,
+    /// When true, `Core.paths.resolve` returns CWD for both resources
+    /// and data, bypassing the platform-specific layout (.app Resources
+    /// on mac, APPDATA on Windows, XDG on Linux).
+    ///
+    /// Useful for:
+    ///   - `zig build run-game` iterations where assets sit alongside
+    ///     zig-out/bin/ and you don't want state cluttering your home
+    ///     dir.
+    ///   - CI jobs that compare runtime output against a known working
+    ///     directory.
+    ///   - Debug builds of unpackaged binaries on macOS, where resources
+    ///     aren't inside a .app yet.
+    use_cwd: bool = false,
 
     pub fn resolve(target: std.Build.ResolvedTarget, overrides: Overrides) Config {
         const plat: Platform = switch (target.result.os.tag) {
@@ -62,6 +75,7 @@ pub const Config = struct {
             .gfx = overrides.gfx orelse default_gfx,
             .psp_display_mode = overrides.psp_display_mode orelse .rgba8888,
             .psp_mipmaps = overrides.psp_mipmaps orelse false,
+            .use_cwd = overrides.use_cwd orelse false,
         };
     }
 
@@ -69,6 +83,7 @@ pub const Config = struct {
         gfx: ?Gfx = null,
         psp_display_mode: ?PspDisplayMode = null,
         psp_mipmaps: ?bool = null,
+        use_cwd: ?bool = null,
     };
 };
 
@@ -90,6 +105,31 @@ pub const HeadlessOptions = struct {
 pub const ShaderPaths = struct {
     slang: std.Build.LazyPath,
 };
+
+// Cached per-build user options. b.option panics on second declaration, so
+// these getters declare once and memoize. Accessed from both addGame (for
+// linking) and exportArtifact (for bundle packaging). Module-level mutable
+// state is safe here: build.zig is single-threaded per invocation and
+// build.zig instances don't live across invocations.
+var molten_vk_path_cached: ?[]const u8 = null;
+fn macosMoltenVkPath(b: *std.Build) []const u8 {
+    if (molten_vk_path_cached) |p| return p;
+    const p = b.option([]const u8, "molten-vk-path",
+        "macOS: directory containing libMoltenVK.dylib (default: $(brew --prefix molten-vk)/lib)") orelse
+        "/opt/homebrew/opt/molten-vk/lib";
+    molten_vk_path_cached = p;
+    return p;
+}
+
+var glfw_path_cached: ?[]const u8 = null;
+fn macosGlfwPath(b: *std.Build) []const u8 {
+    if (glfw_path_cached) |p| return p;
+    const p = b.option([]const u8, "glfw-path",
+        "macOS: directory containing libglfw.3.dylib (default: $(brew --prefix glfw)/lib)") orelse
+        "/opt/homebrew/opt/glfw/lib";
+    glfw_path_cached = p;
+    return p;
+}
 
 /// Creates an executable with the Aether engine module and all platform
 /// dependencies wired up. Returns the compile step so the caller can
@@ -161,8 +201,19 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
         mod.linkLibrary(zaudio_dep.artifact("miniaudio"));
 
         if (opts.target.result.os.tag == .macos) {
-            mod.linkSystemLibrary("vulkan", .{});
+            // Link MoltenVK directly as the Vulkan ICD — no loader. Feeds
+            // its vkGetInstanceProcAddr into GLFW via glfwInitVulkanLoader
+            // in platform/glfw/surface.zig so GLFW doesn't dlopen libvulkan
+            // (which is brittle across brew/SDK installs).
+            mod.addLibraryPath(.{ .cwd_relative = macosMoltenVkPath(b) });
+            mod.addLibraryPath(.{ .cwd_relative = macosGlfwPath(b) });
+            mod.linkSystemLibrary("MoltenVK", .{});
             mod.linkSystemLibrary("glfw3", .{});
+
+            // rpath for the .app bundle layout: exe in Contents/MacOS/, dylibs
+            // in Contents/Frameworks/. Harmless when running bare out of
+            // zig-out/bin (only consulted after absolute paths fail).
+            mod.addRPathSpecial("@executable_path/../Frameworks");
 
             if (owner.lazyDependency("system_sdk", .{})) |system_sdk| {
                 mod.addFrameworkPath(system_sdk.path("macos12/System/Library/Frameworks"));
@@ -284,7 +335,8 @@ fn addSlangStep(b: *std.Build, slangc: ?std.Build.LazyPath, args: []const []cons
 }
 
 pub const ExportOptions = struct {
-    /// PSP: title shown on the XMB. Ignored on other platforms.
+    /// PSP/macOS: human-readable name shown to the OS (XMB title on PSP,
+    /// CFBundleName on macOS). Ignored elsewhere.
     title: []const u8 = "",
     /// PSP: subdirectory under zig-out/bin/ for EBOOT artifacts.
     /// Defaults to the executable name. Ignored on other platforms.
@@ -295,21 +347,192 @@ pub const ExportOptions = struct {
     pic0: ?std.Build.LazyPath = null,
     pic1: ?std.Build.LazyPath = null,
     snd0: ?std.Build.LazyPath = null,
+    /// macOS: reverse-DNS bundle identifier for Info.plist (CFBundleIdentifier).
+    /// Defaults to "com.aether.<exe-name>".
+    bundle_id: ?[]const u8 = null,
+    /// macOS: PNG icon to use for the bundle. Compiled to AppIcon.icns at
+    /// build time via `sips` + `iconutil` (mac-only tools, which is fine —
+    /// the .app branch only runs on mac builds). 1024×1024 PNG is ideal
+    /// since every other size downscales cleanly from that; smaller
+    /// sources are upscaled via bilinear, which is fine for placeholders.
+    icon_png: ?std.Build.LazyPath = null,
+    /// Files to install into the app bundle. On macOS they land under
+    /// `Contents/Resources/<name>`. On desktop non-macOS they are copied
+    /// alongside the exe in `zig-out/bin/`. Ignored on PSP.
+    resources: []const Resource = &.{},
+
+    pub const Resource = struct {
+        /// Source file to copy.
+        path: std.Build.LazyPath,
+        /// Destination name inside Resources/ (or alongside exe on non-mac).
+        name: []const u8,
+    };
 };
 
 /// Installs the game executable with platform-appropriate packaging.
-/// On desktop this calls `b.installArtifact`. On PSP this runs the
-/// ELF -> PRX -> SFO -> EBOOT.PBP pipeline via pspsdk.
+/// - PSP: ELF -> PRX -> SFO -> EBOOT.PBP pipeline.
+/// - macOS: produces a `<name>.app` bundle under `zig-out/bin/` with
+///   MoltenVK + glfw3 dylibs in `Contents/Frameworks/`, load-command
+///   paths rewritten to `@rpath`, and ad-hoc codesign applied.
+/// - Other desktop: plain `b.installArtifact`, plus any `opts.resources`
+///   copied alongside the exe.
 pub fn exportArtifact(owner: *std.Build, b: *std.Build, exe: *std.Build.Step.Compile, config: Config, opts: ExportOptions) void {
     if (config.platform == .psp) {
-        // Resolve pspsdk artifacts from `owner` (which has pspsdk in
-        // its dep tree), but run the pipeline on `b` so install steps
+        // Resolve pspsdk artifacts from `owner` (which has pspsdk in its
+        // dep tree), but run the pipeline on `b` so install steps
         // register on the downstream project's builder.
         const psp_dep = owner.dependency("pspsdk", .{});
         _ = pspEbootPipeline(b, exe, psp_dep, opts);
+    } else if (config.platform == .macos) {
+        macosAppBundle(b, exe, opts);
     } else {
         b.installArtifact(exe);
+        for (opts.resources) |res| {
+            const install_res = b.addInstallBinFile(res.path, res.name);
+            b.getInstallStep().dependOn(&install_res.step);
+        }
     }
+}
+
+/// Builds a `<exe.name>.app` directory under zig-out/bin/ with:
+///   Contents/MacOS/<exe>                   — patched load commands
+///   Contents/Frameworks/libMoltenVK.dylib  — id rewritten to @rpath
+///   Contents/Frameworks/libglfw.3.dylib    — id rewritten to @rpath
+///   Contents/Info.plist                    — minimum viable plist
+///   Contents/Resources/<name>              — opts.resources
+///
+/// After install, a post-install Run step invokes `codesign --force
+/// --sign -` on each leaf dylib, then the exe, then the bundle dir.
+/// --deep is intentionally avoided (deprecated, unreliable).
+fn macosAppBundle(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOptions) void {
+    const molten_vk_dir = macosMoltenVkPath(b);
+    const glfw_dir = macosGlfwPath(b);
+
+    const app_name = b.fmt("{s}.app", .{exe.name});
+
+    // --- patch bundled dylibs: copy into cache, rewrite LC_ID_DYLIB -----
+    // Each Run step takes the brew dylib as an input and writes a patched
+    // copy to its own cache-managed output path, keeping zig's caching honest.
+    const patched_moltenvk = patchDylibId(
+        b,
+        .{ .cwd_relative = b.pathJoin(&.{ molten_vk_dir, "libMoltenVK.dylib" }) },
+        "libMoltenVK.dylib",
+    );
+    const patched_glfw = patchDylibId(
+        b,
+        .{ .cwd_relative = b.pathJoin(&.{ glfw_dir, "libglfw.3.dylib" }) },
+        "libglfw.3.dylib",
+    );
+
+    // --- patch exe load commands ---------------------------------------
+    const patched_exe = b.addSystemCommand(&.{ "sh", "-c",
+        "cp \"$1\" \"$2\" && " ++
+        "chmod +w \"$2\" && " ++
+        "install_name_tool " ++
+        "-change /opt/homebrew/opt/molten-vk/lib/libMoltenVK.dylib @rpath/libMoltenVK.dylib " ++
+        "-change /opt/homebrew/opt/glfw/lib/libglfw.3.dylib @rpath/libglfw.3.dylib " ++
+        "\"$2\"",
+        "sh",
+    });
+    patched_exe.addArtifactArg(exe);
+    const exe_out = patched_exe.addOutputFileArg(exe.name);
+
+    // --- icon: PNG -> .icns via sips + iconutil ------------------------
+    const icns_out: ?std.Build.LazyPath = if (opts.icon_png) |png| blk: {
+        const gen = b.addSystemCommand(&.{ "sh", "-c",
+            // mktemp a scratch .iconset dir, sips-resize the source PNG into
+            // the canonical slot names, then iconutil-pack. Cleanup is
+            // best-effort — on failure the tmpdir leaks, but it's under /tmp.
+            \\set -euo pipefail
+            \\IN="$1"; OUT="$2"
+            \\T=$(mktemp -d -t aether_icns.XXXXXX)
+            \\trap 'rm -rf "$T"' EXIT
+            \\ISET="$T/AppIcon.iconset"; mkdir -p "$ISET"
+            \\for spec in \
+            \\  "16 icon_16x16.png" "32 icon_16x16@2x.png" \
+            \\  "32 icon_32x32.png" "64 icon_32x32@2x.png" \
+            \\  "128 icon_128x128.png" "256 icon_128x128@2x.png" \
+            \\  "256 icon_256x256.png" "512 icon_256x256@2x.png" \
+            \\  "512 icon_512x512.png" "1024 icon_512x512@2x.png"; do
+            \\  set -- $spec; sz=$1; name=$2
+            \\  sips -z "$sz" "$sz" "$IN" --out "$ISET/$name" >/dev/null
+            \\done
+            \\iconutil -c icns "$ISET" -o "$OUT"
+            ,
+            "sh",
+        });
+        gen.addFileArg(png);
+        break :blk gen.addOutputFileArg("AppIcon.icns");
+    } else null;
+
+    // --- Info.plist ----------------------------------------------------
+    const bundle_id = opts.bundle_id orelse b.fmt("com.aether.{s}", .{exe.name});
+    const bundle_name = if (opts.title.len > 0) opts.title else exe.name;
+    const icon_key = if (icns_out != null)
+        "<key>CFBundleIconFile</key><string>AppIcon</string>"
+    else
+        "";
+    const info_plist = b.fmt(
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        \\<plist version="1.0"><dict>
+        \\  <key>CFBundleExecutable</key><string>{s}</string>
+        \\  <key>CFBundleIdentifier</key><string>{s}</string>
+        \\  <key>CFBundleName</key><string>{s}</string>
+        \\  <key>CFBundlePackageType</key><string>APPL</string>
+        \\  <key>CFBundleShortVersionString</key><string>0.0.0</string>
+        \\  <key>CFBundleVersion</key><string>0</string>
+        \\  <key>LSMinimumSystemVersion</key><string>11.0</string>
+        \\  <key>NSHighResolutionCapable</key><true/>
+        \\  {s}
+        \\</dict></plist>
+        \\
+    , .{ exe.name, bundle_id, bundle_name, icon_key });
+
+    // --- assemble the .app tree in a WriteFiles output -----------------
+    const app_tree = b.addWriteFiles();
+    _ = app_tree.addCopyFile(exe_out, b.fmt("Contents/MacOS/{s}", .{exe.name}));
+    _ = app_tree.addCopyFile(patched_moltenvk, "Contents/Frameworks/libMoltenVK.dylib");
+    _ = app_tree.addCopyFile(patched_glfw, "Contents/Frameworks/libglfw.3.dylib");
+    _ = app_tree.add("Contents/Info.plist", info_plist);
+    if (icns_out) |icns| _ = app_tree.addCopyFile(icns, "Contents/Resources/AppIcon.icns");
+    for (opts.resources) |res| {
+        _ = app_tree.addCopyFile(res.path, b.fmt("Contents/Resources/{s}", .{res.name}));
+    }
+
+    // --- install the tree under zig-out/bin/<exe>.app ------------------
+    const install = b.addInstallDirectory(.{
+        .source_dir = app_tree.getDirectory(),
+        .install_dir = .bin,
+        .install_subdir = app_name,
+    });
+    b.getInstallStep().dependOn(&install.step);
+
+    // --- ad-hoc codesign (post-install, operates on zig-out paths) -----
+    // Must run AFTER install_name_tool is long done. Sign leaves first,
+    // then the exe, then the bundle dir — avoids --deep which is
+    // deprecated and unreliable.
+    const bundle_path = b.getInstallPath(.bin, app_name);
+    const sign = b.addSystemCommand(&.{ "sh", "-c", b.fmt(
+        "codesign --force --sign - \"{s}/Contents/Frameworks/libMoltenVK.dylib\" && " ++
+        "codesign --force --sign - \"{s}/Contents/Frameworks/libglfw.3.dylib\" && " ++
+        "codesign --force --sign - \"{s}/Contents/MacOS/{s}\" && " ++
+        "codesign --force --sign - \"{s}\"",
+        .{ bundle_path, bundle_path, bundle_path, exe.name, bundle_path },
+    ) });
+    sign.step.dependOn(&install.step);
+    b.getInstallStep().dependOn(&sign.step);
+}
+
+/// Copies a dylib into the build cache and rewrites its LC_ID_DYLIB to
+/// `@rpath/<basename>` so it can be loaded from `Contents/Frameworks/`.
+fn patchDylibId(b: *std.Build, src: std.Build.LazyPath, basename: []const u8) std.Build.LazyPath {
+    const patch = b.addSystemCommand(&.{ "sh", "-c", b.fmt(
+        "cp \"$1\" \"$2\" && chmod +w \"$2\" && install_name_tool -id @rpath/{s} \"$2\"",
+        .{basename},
+    ), "sh" });
+    patch.addFileArg(src);
+    return patch.addOutputFileArg(basename);
 }
 
 /// Runs the ELF -> PRX -> SFO -> EBOOT.PBP pipeline. Resolves tool
@@ -428,6 +651,7 @@ pub fn build(b: *std.Build) void {
         .gfx = b.option(Gfx, "gfx", "Graphics backend override (default: auto-detect from target)"),
         .psp_display_mode = b.option(PspDisplayMode, "psp-display", "PSP display mode: rgba8888 (32-bit, default) or rgb565 (16-bit)"),
         .psp_mipmaps = b.option(bool, "psp-mipmaps", "PSP: generate mip levels for VRAM-resident textures (default: false)"),
+        .use_cwd = b.option(bool, "use-cwd", "Force resources+data dirs to CWD (debug/CI convenience; default: false)"),
     };
 
     const config = Config.resolve(target, overrides);
