@@ -49,8 +49,8 @@
             .hash = "pspsdk-0.7.0-BZphyi2CEgBLdNp2UyS20yCamo-CXNmJPW5pjHMBqqrv",
         },
         .glfw_zig = .{
-            .url = "git+https://github.com/tiawl/glfw.zig?ref=zig-nightly#6d7465afb4db06f23cee0b8dec2200640f6d45e0",
-            .hash = "glfw_zig-1.0.1-NrvYo_vSGQC5wr82ns8Loyd6wE4MBJTkG_MkpfbZlBSp",
+            .url = "git+https://github.com/tiawl/glfw.zig/#885b260a97eae7d299fc74490afae533e6e53886",
+            .hash = "glfw_zig-1.0.0-NrvYoy_SGQD5J2e5okpIf_dir8BZpWdKaUmWNDenm_ki",
         },
         .slangc_linux_x86_64 = .{
             .url = "https://github.com/shader-slang/slang/releases/download/v2026.5.1/slang-2026.5.1-linux-x86_64.tar.gz",
@@ -73,8 +73,8 @@
             .lazy = true,
         },
         .vulkan = .{
-            .url = "git+https://github.com/Snektron/vulkan-zig#b3086a867a47bb10e66a987a38115a43056b60f7",
-            .hash = "vulkan-0.0.0-r7Ytx99oAwDmJu0XtvukW_bSYnAv1PpbPO9ZFwsjcPPO",
+            .url = "git+https://github.com/Snektron/vulkan-zig#3adbeefbc833c12656791d304b37a6315b357745",
+            .hash = "vulkan-0.0.0-r7YtxyBsAwD35FvkFhT2xruTNdCByD3TtGw44XWtfun8",
         },
         .zaudio = .{
             .url = "git+https://github.com/IridescentRose/zaudio?ref=update_zig_16#54e45e002005448623bff0ba06baa919bd036e03",

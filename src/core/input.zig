@@ -205,7 +205,7 @@ pub const Action = struct {
 };
 
 var allocator: std.mem.Allocator = undefined;
-var actions: std.StringArrayHashMap(Action) = undefined;
+var actions: std.StringArrayHashMapUnmanaged(Action) = .empty;
 var lost_focus_context: ?*anyopaque = null;
 var lost_focus_callback: ?LostFocusCallback = null;
 
@@ -214,7 +214,7 @@ pub var mouse_sensitivity: f32 = 1.0;
 /// Initializes the input system with the given allocator.
 pub fn init(alloc: std.mem.Allocator) !void {
     allocator = alloc;
-    actions = std.StringArrayHashMap(Action).init(allocator);
+    actions = .empty;
 
     set_mouse_relative_mode(false);
 }
@@ -224,7 +224,7 @@ pub fn deinit() void {
     for (actions.values()) |*action| {
         action.bindings.deinit(allocator);
     }
-    actions.deinit();
+    actions.deinit(allocator);
 }
 
 /// Removes all registered actions, their bindings, and callbacks.
@@ -260,7 +260,7 @@ pub fn register_action(name: []const u8, action_type: ActionType) !void {
         },
     };
 
-    try actions.put(name, action);
+    try actions.put(allocator, name, action);
 }
 
 /// Binds a new input source to the specified action.
