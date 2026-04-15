@@ -916,6 +916,8 @@ pub fn destroy_pipeline(handle: Pipeline.Handle) void {
 
     context.logical_device.destroyPipeline(pd.pipeline, null);
     context.logical_device.destroyPipelineLayout(pd.layout, null);
+
+    _ = pipelines.remove_element(handle);
 }
 
 pub fn bind_pipeline(handle: Pipeline.Handle) void {
