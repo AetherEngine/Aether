@@ -20,8 +20,11 @@ const Device = vk.DeviceProxy;
 // pipeline. See set_alpha_blend in vulkan_gfx.zig for the callsite behavior.
 const is_macos = builtin.target.os.tag == .macos;
 
+// Portability-subset is mandatory on MoltenVK per the Vulkan Portability
+// spec: if the device advertises VK_KHR_portability_subset (MoltenVK does)
+// the app must enable it at vkCreateDevice.
 const required_device_extensions = if (is_macos)
-    [_][*:0]const u8{ vk.extensions.khr_swapchain.name, vk.extensions.khr_synchronization_2.name, vk.extensions.khr_create_renderpass_2.name }
+    [_][*:0]const u8{ vk.extensions.khr_swapchain.name, vk.extensions.khr_synchronization_2.name, vk.extensions.khr_create_renderpass_2.name, vk.extensions.khr_portability_subset.name }
 else
     [_][*:0]const u8{ vk.extensions.khr_swapchain.name, vk.extensions.khr_synchronization_2.name, vk.extensions.khr_create_renderpass_2.name, vk.extensions.ext_extended_dynamic_state_3.name };
 
@@ -55,7 +58,15 @@ fn create_instance(self: *Self, name: [:0]const u8) !void {
         try extension_names.append(self.allocator, vk.extensions.ext_debug_utils.name);
     }
 
-    try extension_names.append(self.allocator, vk.extensions.khr_portability_enumeration.name);
+    // khr_portability_enumeration and the matching enumerate_portability
+    // instance flag are LOADER-implemented. On macOS we link MoltenVK
+    // directly (no loader) so requesting either fails with
+    // VK_ERROR_EXTENSION_NOT_PRESENT. Skip on mac — we don't need to tell
+    // the loader "include portability ICDs" when MoltenVK is the only
+    // thing we talk to.
+    if (!is_macos) {
+        try extension_names.append(self.allocator, vk.extensions.khr_portability_enumeration.name);
+    }
     try extension_names.append(self.allocator, vk.extensions.khr_get_physical_device_properties_2.name);
 
     // Get required GLFW extensions
@@ -74,7 +85,7 @@ fn create_instance(self: *Self, name: [:0]const u8) !void {
         },
         .enabled_extension_count = @intCast(extension_names.items.len),
         .pp_enabled_extension_names = extension_names.items.ptr,
-        .flags = .{ .enumerate_portability_bit_khr = true },
+        .flags = if (is_macos) .{} else .{ .enumerate_portability_bit_khr = true },
     };
 
     // With validation layers?
