@@ -193,6 +193,7 @@ pub const ActionValue = union(ActionType) {
 pub const ButtonCallback = *const fn (ctx: *anyopaque, event: ButtonEvent) void;
 pub const AxisCallback = *const fn (ctx: *anyopaque, value: f32) void;
 pub const Vector2Callback = *const fn (ctx: *anyopaque, value: [2]f32) void;
+pub const LostFocusCallback = *const fn (ctx: *anyopaque) void;
 
 pub const Action = struct {
     type: ActionType,
@@ -205,6 +206,8 @@ pub const Action = struct {
 
 var allocator: std.mem.Allocator = undefined;
 var actions: std.StringArrayHashMap(Action) = undefined;
+var lost_focus_context: ?*anyopaque = null;
+var lost_focus_callback: ?LostFocusCallback = null;
 
 pub var mouse_sensitivity: f32 = 1.0;
 
@@ -284,6 +287,19 @@ pub fn add_vector2_callback(name: []const u8, context: *anyopaque, callback: Vec
         return error.InvalidActionType;
     }
     action.callback = @ptrCast(callback);
+}
+
+/// Sets the callback fired when the window loses focus.
+/// No-op on platforms without windowed focus (e.g. PSP) — the event never fires.
+pub fn set_lost_focus_callback(context: *anyopaque, callback: LostFocusCallback) void {
+    lost_focus_context = context;
+    lost_focus_callback = callback;
+}
+
+/// Dispatches the lost-focus event to the registered callback, if any.
+/// Called by the platform layer when the window loses focus.
+pub fn fire_lost_focus() void {
+    if (lost_focus_callback) |cb| cb(lost_focus_context.?);
 }
 
 /// Enables or disables mouse relative mode (captured and hidden).

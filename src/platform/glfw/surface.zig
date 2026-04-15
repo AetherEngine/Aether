@@ -73,6 +73,9 @@ pub fn init(self: *Self, width: u32, height: u32, title: [:0]const u8, fullscree
     // Resize callback
     _ = glfw.setFramebufferSizeCallback(self.window, framebuffer_size_callback);
 
+    // Focus callback
+    _ = glfw.setWindowFocusCallback(self.window, window_focus_callback);
+
     // Input
     _ = glfw.updateGamepadMappings(@embedFile("gamecontrollerdb.txt"));
     _ = glfw.setScrollCallback(self.window, scroll_callback);
@@ -87,6 +90,13 @@ export fn framebuffer_size_callback(_: *c_long, width: c_int, height: c_int) voi
 
 export fn scroll_callback(_: *c_long, _: f64, yoffset: f64) void {
     curr_scroll += @floatCast(yoffset);
+}
+
+export fn window_focus_callback(_: *c_long, focused: c_int) void {
+    if (focused == 0) {
+        const input = @import("../../core/input.zig");
+        input.fire_lost_focus();
+    }
 }
 
 pub fn deinit(self: *Self) void {
