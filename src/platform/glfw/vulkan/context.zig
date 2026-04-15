@@ -14,7 +14,16 @@ const DeviceWrapper = vk.DeviceWrapper;
 const Instance = vk.InstanceProxy;
 const Device = vk.DeviceProxy;
 
-const required_device_extensions = [_][*:0]const u8{ vk.extensions.khr_swapchain.name, vk.extensions.khr_synchronization_2.name, vk.extensions.khr_create_renderpass_2.name, vk.extensions.ext_extended_dynamic_state_3.name };
+// MoltenVK does not expose extendedDynamicState3ColorBlendEnable (Metal has no
+// dynamic per-attachment blend-enable state), so on macOS we drop the EDS3
+// extension / feature request and leave blend permanently enabled in the
+// pipeline. See set_alpha_blend in vulkan_gfx.zig for the callsite behavior.
+const is_macos = builtin.target.os.tag == .macos;
+
+const required_device_extensions = if (is_macos)
+    [_][*:0]const u8{ vk.extensions.khr_swapchain.name, vk.extensions.khr_synchronization_2.name, vk.extensions.khr_create_renderpass_2.name }
+else
+    [_][*:0]const u8{ vk.extensions.khr_swapchain.name, vk.extensions.khr_synchronization_2.name, vk.extensions.khr_create_renderpass_2.name, vk.extensions.ext_extended_dynamic_state_3.name };
 
 const Self = @This();
 
@@ -254,10 +263,11 @@ fn create_logical_device(self: *Self, candidate: *const DeviceCandidate) !void {
     extended_dynamic_state_features.extended_dynamic_state = .true;
 
     var extended_dynamic_state_3_features = vk.PhysicalDeviceExtendedDynamicState3FeaturesEXT{};
-    extended_dynamic_state_3_features.extended_dynamic_state_3_color_blend_enable = .true;
+    if (!is_macos) extended_dynamic_state_3_features.extended_dynamic_state_3_color_blend_enable = .true;
 
-    // pNext chain: features -> v1.2 -> v1.3 -> ext dyn state -> ext dyn state 3
-    extended_dynamic_state_features.p_next = @ptrCast(&extended_dynamic_state_3_features);
+    // pNext chain: features -> v1.2 -> v1.3 -> ext dyn state (-> ext dyn state 3)
+    // EDS3 is omitted on macOS (see required_device_extensions above).
+    if (!is_macos) extended_dynamic_state_features.p_next = @ptrCast(&extended_dynamic_state_3_features);
     vulkan13_features.p_next = &extended_dynamic_state_features;
     vulkan12_features.p_next = &vulkan13_features;
     features.p_next = &vulkan12_features;
