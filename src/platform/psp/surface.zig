@@ -11,6 +11,10 @@ pub fn init(self: *Self, _: u32, _: u32, _: [:0]const u8, _: bool, sync: bool, _
 
     _ = ctrl.set_sampling_cycle(0);
     _ = ctrl.set_sampling_mode(.analog);
+
+    // Register the home-button exit callback so pressing Home exits
+    // cleanly instead of hanging the game loop.
+    sdk.extra.utils.enableHBCB();
 }
 
 pub fn deinit(_: *Self) void {}
@@ -21,7 +25,7 @@ pub fn update(_: *Self) bool {
     var pad_data: [1]ctrl.Data = undefined;
     _ = ctrl.peek_buffer_positive(&pad_data) catch {};
     pad = pad_data[0];
-    return true;
+    return !sdk.extra.utils.isExitRequested();
 }
 
 pub fn draw(self: *Self) void {
