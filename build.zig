@@ -426,12 +426,15 @@ fn macosAppBundle(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOptio
     // Xcode 16+ install_name_tool exits non-zero when it invalidates an
     // existing code signature; strip it first so the rewrite is clean
     // (|| true because an unsigned exe is the normal case and we don't
-    // want to fail there). The post-install codesign step signs fresh.
+    // want to fail there). Xcode 16.4+ codesign --remove-signature
+    // leaves __LINKEDIT with a gap; lipo -create rebuilds a clean
+    // Mach-O. The post-install codesign step signs fresh.
     const patched_exe = b.addSystemCommand(&.{
         "sh", "-c",
         "cp \"$1\" \"$2\" && " ++
             "chmod +w \"$2\" && " ++
             "codesign --remove-signature \"$2\" 2>/dev/null || true && " ++
+            "lipo -create \"$2\" -output \"$2.tmp\" && mv \"$2.tmp\" \"$2\" && " ++
             "install_name_tool " ++
             "-change /opt/homebrew/opt/molten-vk/lib/libMoltenVK.dylib @rpath/libMoltenVK.dylib " ++
             "-change /opt/homebrew/opt/glfw/lib/libglfw.3.dylib @rpath/libglfw.3.dylib " ++
@@ -535,9 +538,13 @@ fn patchDylibId(b: *std.Build, src: std.Build.LazyPath, basename: []const u8) st
     // Homebrew dylibs are ad-hoc signed. Xcode 16+ install_name_tool
     // exits non-zero when it invalidates that signature, so strip the
     // signature first and let the post-install codesign step re-sign.
+    // Xcode 16.4+ codesign --remove-signature leaves __LINKEDIT with a
+    // gap; lipo -create rebuilds a clean Mach-O that install_name_tool
+    // can process.
     const patch = b.addSystemCommand(&.{ "sh", "-c", b.fmt(
         "cp \"$1\" \"$2\" && chmod +w \"$2\" && " ++
             "codesign --remove-signature \"$2\" 2>/dev/null || true && " ++
+            "lipo -create \"$2\" -output \"$2.tmp\" && mv \"$2.tmp\" \"$2\" && " ++
             "install_name_tool -id @rpath/{s} \"$2\"",
         .{basename},
     ), "sh" });
