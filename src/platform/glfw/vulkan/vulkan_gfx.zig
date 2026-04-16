@@ -482,6 +482,10 @@ pub fn set_alpha_blend(enabled: bool) void {
     command_buffer.setColorBlendEnableEXT(0, @ptrCast(&[1]vk.Bool32{enable}));
 }
 
+pub fn set_depth_write(enabled: bool) void {
+    command_buffer.setDepthWriteEnable(if (enabled) .true else .false);
+}
+
 pub fn set_clip_planes(_: bool) void {}
 
 pub fn set_fog(enabled: bool, start: f32, end: f32, r: f32, g: f32, b: f32) void {
@@ -847,8 +851,8 @@ pub fn create_pipeline(layout: Pipeline.VertexLayout, vs: ?[:0]align(4) const u8
 
     // On macOS drop color_blend_enable_ext — MoltenVK cannot back it. The
     // pipeline bakes blend_enable=true and set_alpha_blend is a no-op there.
-    const dynstate_mac = [_]vk.DynamicState{ .viewport, .scissor, .primitive_topology };
-    const dynstate_full = [_]vk.DynamicState{ .viewport, .scissor, .color_blend_enable_ext, .primitive_topology };
+    const dynstate_mac = [_]vk.DynamicState{ .viewport, .scissor, .primitive_topology, .depth_write_enable };
+    const dynstate_full = [_]vk.DynamicState{ .viewport, .scissor, .color_blend_enable_ext, .primitive_topology, .depth_write_enable };
     const dynstate: []const vk.DynamicState = if (is_macos) &dynstate_mac else &dynstate_full;
 
     const pipeline_dynamic_state_create_info = vk.PipelineDynamicStateCreateInfo{

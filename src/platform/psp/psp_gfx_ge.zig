@@ -703,6 +703,11 @@ pub fn set_alpha_blend(enabled: bool) void {
     advance_stall();
 }
 
+pub fn set_depth_write(enabled: bool) void {
+    must(cmd.depth_mask(enabled));
+    advance_stall();
+}
+
 pub fn set_clip_planes(enabled: bool) void {
     if (enabled == clip_planes_enabled) return;
     clip_planes_enabled = enabled;

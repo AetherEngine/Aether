@@ -17,6 +17,7 @@ pub const Interface = struct {
 
     set_clear_color: fn (f32, f32, f32, f32) void,
     set_alpha_blend: fn (bool) void,
+    set_depth_write: fn (bool) void,
     set_fog: fn (bool, f32, f32, f32, f32, f32) void,
     set_clip_planes: fn (bool) void,
     set_proj_matrix: fn (*const Mat4) void,

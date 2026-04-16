@@ -88,6 +88,10 @@ pub fn set_alpha_blend(enabled: bool) void {
     if (enabled) gl.Enable(gl.BLEND) else gl.Disable(gl.BLEND);
 }
 
+pub fn set_depth_write(enabled: bool) void {
+    gl.DepthMask(@intFromBool(enabled));
+}
+
 pub fn set_clip_planes(_: bool) void {}
 
 pub fn set_fog(enabled: bool, start: f32, end: f32, r: f32, g: f32, b: f32) void {
