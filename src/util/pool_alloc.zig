@@ -1,122 +1,58 @@
-//! Fixed-buffer pool allocator backed by an intrusive treap of free blocks.
+//! Fixed-buffer pool allocator backed by a two-level bitmap of free blocks.
 //!
 //! Buffer layout:
-//!   [BlockHeader | payload] [BlockHeader | payload] ... [Sentinel]
+//!   [L0 bitmap (u32[])] [L1 summary (u32[])] [padding] [data blocks...]
 //!
-//! Every block boundary and user-data start is BLOCK_ALIGN-aligned.
-//! Free blocks embed a `FreeTree.Node` at the start of their payload (intrusive).
-//! The treap is keyed by (size, address): best_fit() is one O(log n) descent.
+//! Every data block is BLOCK_SIZE-aligned (and therefore BLOCK_ALIGN-aligned).
+//! L0 has one bit per block (1 = free, 0 = allocated).
+//! L1 has one bit per L0 word (1 = at least one free block in that group).
 //!
-//! Over-aligned requests (alignment > BLOCK_ALIGN) are handled by over-allocating
-//! and storing a back-offset immediately before the user pointer, the same
-//! strategy used by the page allocator.
+//! Over-aligned requests (alignment > BLOCK_SIZE) are handled by constraining
+//! the starting block index to a multiple of (alignment / BLOCK_SIZE).
 //!
-//! alloc — O(log n): best_fit descent + optional split + one insertion
-//! free  — O(log n): up to two coalesce removals + one insertion
+//! alloc — O(1) single-block via L1→L0 descent; O(n/32) multi-block scan
+//! free  — O(1): set bits + update summary
+//! resize — O(1): test/set adjacent bits
 
 const std = @import("std");
 const assert = std.debug.assert;
 
-/// All block boundaries and user-data pointers are aligned to this.
+/// All returned user-data pointers satisfy at least this alignment.
 pub const BLOCK_ALIGN: usize = 16;
 
-/// Prepended to every block, free or allocated.
-const BlockHeader = extern struct {
-    /// Total block bytes including this header, always a multiple of BLOCK_ALIGN.
-    /// Bit 0: 1 = allocated, 0 = free.
-    size_flags: usize,
-    /// Size of the immediately preceding physical block; 0 for the first block.
-    prev_size: usize,
-    /// Pad to BLOCK_ALIGN so block boundaries stay aligned on 32-bit targets.
-    _pad: [BLOCK_ALIGN - 2 * @sizeOf(usize)]u8 = .{0} ** (BLOCK_ALIGN - 2 * @sizeOf(usize)),
-};
+/// Allocation granularity. Every allocation is rounded up to a multiple of this.
+pub const BLOCK_SIZE: usize = 64;
+
+const WORD_BITS: u32 = 32;
+const WORD_MASK: u32 = WORD_BITS - 1;
 
 comptime {
-    assert(@sizeOf(BlockHeader) == BLOCK_ALIGN);
+    assert(BLOCK_SIZE >= BLOCK_ALIGN);
+    assert(std.math.isPowerOfTwo(BLOCK_SIZE));
+    assert(std.math.isPowerOfTwo(BLOCK_ALIGN));
 }
 
-/// Treap key: sort primarily by block size (best-fit search), break ties by
-/// address so every key is unique.
-const Key = struct { size: usize, addr: usize };
+// -- helpers ------------------------------------------------------------------
 
-fn cmp_key(a: Key, b: Key) std.math.Order {
-    if (a.size != b.size) return std.math.order(a.size, b.size);
-    return std.math.order(a.addr, b.addr);
+inline fn div_ceil(a: usize, b: usize) usize {
+    return (a + b - 1) / b;
 }
 
-const FreeTree = std.Treap(Key, cmp_key);
-
-/// Minimum free-block size: header + intrusive treap node.
-pub const MIN_BLOCK: usize = @sizeOf(BlockHeader) + @sizeOf(FreeTree.Node);
-
-// -- block helpers -------------------------------------------------------------
-
-inline fn blk_sz(h: *const BlockHeader) usize {
-    return h.size_flags & ~@as(usize, 1);
-}
-inline fn blk_used(h: *const BlockHeader) bool {
-    return (h.size_flags & 1) != 0;
-}
-inline fn blk_next(h: *BlockHeader) *BlockHeader {
-    return @ptrFromInt(@intFromPtr(h) + blk_sz(h));
-}
-inline fn blk_node(h: *BlockHeader) *FreeTree.Node {
-    return @ptrFromInt(@intFromPtr(h) + @sizeOf(BlockHeader));
-}
-inline fn node_blk(n: *FreeTree.Node) *BlockHeader {
-    return @ptrFromInt(@intFromPtr(n) - @sizeOf(BlockHeader));
-}
-inline fn blk_key(h: *BlockHeader) Key {
-    return .{ .size = blk_sz(h), .addr = @intFromPtr(h) };
+inline fn roundup(n: usize, a: usize) usize {
+    return (n + a - 1) & ~(a - 1);
 }
 
-/// Recover the block header from a user pointer, accounting for over-alignment.
-/// For standard alignment (<= BLOCK_ALIGN), the header sits directly before the
-/// user data. For over-aligned allocations, a back-offset stored immediately
-/// before the user pointer indicates the distance to the block header.
-inline fn user_to_blk(ptr: [*]u8, alignment: std.mem.Alignment) *BlockHeader {
-    const user_addr = @intFromPtr(ptr);
-    if (alignment.toByteUnits() > BLOCK_ALIGN) {
-        const back: *const usize = @ptrFromInt(user_addr - @sizeOf(usize));
-        return @ptrFromInt(user_addr - back.*);
-    }
-    return @ptrFromInt(user_addr - @sizeOf(BlockHeader));
-}
-
-// -- treap wrappers ------------------------------------------------------------
-
-fn tree_insert(tree: *FreeTree, h: *BlockHeader) void {
-    var entry = tree.getEntryFor(blk_key(h));
-    entry.set(blk_node(h));
-}
-
-fn tree_remove(tree: *FreeTree, h: *BlockHeader) void {
-    var entry = tree.getEntryForExisting(blk_node(h));
-    entry.set(null);
-}
-
-/// Walk the treap to find the smallest free block with size >= min_size.
-/// O(log n) — the primary key is size, so we descend left when the current
-/// node already qualifies and right when it's too small.
-fn best_fit(tree: *FreeTree, min_size: usize) ?*BlockHeader {
-    var best: ?*FreeTree.Node = null;
-    var cur = tree.root;
-    while (cur) |n| {
-        if (n.key.size >= min_size) {
-            best = n;
-            cur = n.children[0]; // try smaller
-        } else {
-            cur = n.children[1]; // need larger
-        }
-    }
-    return if (best) |n| node_blk(n) else null;
-}
-
-// -- public allocator ----------------------------------------------------------
+// -- public allocator ---------------------------------------------------------
 
 pub const PoolAlloc = struct {
     buf: []u8,
-    tree: FreeTree,
+    l0: [*]u32,
+    l1: [*]u32,
+    data: [*]u8,
+    total_blocks: u32,
+    l0_words: u32,
+    l1_words: u32,
+    hint: u32,
     used: usize,
     budget: usize,
     name: []const u8,
@@ -129,30 +65,87 @@ pub const PoolAlloc = struct {
     };
 
     pub fn init(buf: []u8, name: []const u8) PoolAlloc {
-        // Advance the start to the next BLOCK_ALIGN boundary.
-        const start = std.mem.alignForward(usize, @intFromPtr(buf.ptr), BLOCK_ALIGN);
-        const end = @intFromPtr(buf.ptr) + buf.len;
-        const total = ((end - start) / BLOCK_ALIGN) * BLOCK_ALIGN;
-        assert(total >= MIN_BLOCK + @sizeOf(BlockHeader));
+        const buf_start = @intFromPtr(buf.ptr);
+        const buf_end = buf_start + buf.len;
+
+        // We need to figure out how many data blocks fit after carving out
+        // bitmap metadata from the front.  Iterate once: guess total_blocks
+        // from the full buffer, compute metadata size, recompute.
+        const aligned_start = std.mem.alignForward(usize, buf_start, BLOCK_ALIGN);
+        const usable = buf_end - aligned_start;
+
+        // Upper bound on blocks (ignoring metadata).
+        var total_blocks: u32 = @intCast(usable / BLOCK_SIZE);
+        // Shrink until metadata + data fits.
+        while (total_blocks > 0) {
+            const l0w = div_ceil(total_blocks, WORD_BITS);
+            const l1w = div_ceil(l0w, WORD_BITS);
+            const meta_bytes = (l0w + l1w) * @sizeOf(u32);
+            const data_start = std.mem.alignForward(usize, aligned_start + meta_bytes, BLOCK_SIZE);
+            const data_bytes = if (buf_end >= data_start) buf_end - data_start else 0;
+            const fits: u32 = @intCast(data_bytes / BLOCK_SIZE);
+            if (fits >= total_blocks) break;
+            total_blocks = fits;
+        }
+        assert(total_blocks > 0);
+
+        const l0_words: u32 = @intCast(div_ceil(total_blocks, WORD_BITS));
+        const l1_words: u32 = @intCast(div_ceil(l0_words, WORD_BITS));
+        const meta_bytes = (l0_words + l1_words) * @sizeOf(u32);
+        const data_start = std.mem.alignForward(usize, aligned_start + meta_bytes, BLOCK_SIZE);
 
         var self = PoolAlloc{
             .buf = buf,
-            .tree = .{},
+            .l0 = @ptrFromInt(aligned_start),
+            .l1 = @ptrFromInt(aligned_start + l0_words * @sizeOf(u32)),
+            .data = @ptrFromInt(data_start),
+            .total_blocks = total_blocks,
+            .l0_words = l0_words,
+            .l1_words = l1_words,
+            .hint = 0,
             .used = 0,
             .budget = buf.len,
             .name = name,
         };
 
-        // One free block spanning the usable region, then an end sentinel.
-        // Sentinel: size=0, used-bit set — stops forward coalescing at the edge.
-        const free_sz = total - @sizeOf(BlockHeader);
-        const main: *BlockHeader = @ptrFromInt(start);
-        main.* = .{ .size_flags = free_sz, .prev_size = 0 };
-        const sent: *BlockHeader = @ptrFromInt(start + free_sz);
-        sent.* = .{ .size_flags = 0 | 1, .prev_size = free_sz };
-
-        tree_insert(&self.tree, main);
+        self.reset_bitmaps();
         return self;
+    }
+
+    fn reset_bitmaps(self: *PoolAlloc) void {
+        // Set all L0 bits to 1 (free).
+        const full_words = self.total_blocks / WORD_BITS;
+        const tail_bits: u5 = @intCast(self.total_blocks & WORD_MASK);
+
+        var i: u32 = 0;
+        while (i < full_words) : (i += 1) {
+            self.l0[i] = 0xFFFF_FFFF;
+        }
+        // Last partial word: only set bits for existing blocks.
+        if (tail_bits > 0) {
+            self.l0[full_words] = (@as(u32, 1) << tail_bits) - 1;
+            i = full_words + 1;
+        }
+        // Zero any remaining L0 words (shouldn't exist, but be safe).
+        while (i < self.l0_words) : (i += 1) {
+            self.l0[i] = 0;
+        }
+
+        // Build L1 from L0.
+        var li: u32 = 0;
+        while (li < self.l1_words) : (li += 1) {
+            var summary: u32 = 0;
+            var bit: u5 = 0;
+            while (true) : (bit += 1) {
+                const l0_idx = li * WORD_BITS + bit;
+                if (l0_idx >= self.l0_words) break;
+                if (self.l0[l0_idx] != 0) {
+                    summary |= @as(u32, 1) << bit;
+                }
+                if (bit == 31) break;
+            }
+            self.l1[li] = summary;
+        }
     }
 
     pub fn allocator(self: *PoolAlloc) std.mem.Allocator {
@@ -160,145 +153,349 @@ pub const PoolAlloc = struct {
     }
 
     pub fn reset(self: *PoolAlloc) void {
-        self.* = init(self.buf, self.name);
+        self.used = 0;
+        self.hint = 0;
+        self.reset_bitmaps();
+    }
+
+    // -- internal: bit manipulation -------------------------------------------
+
+    /// Clear bit `bit` in L0 word `word_idx` and update L1.
+    inline fn clear_bit(self: *PoolAlloc, word_idx: u32, bit: u5) void {
+        self.l0[word_idx] &= ~(@as(u32, 1) << bit);
+        if (self.l0[word_idx] == 0) {
+            const l1_idx = word_idx / WORD_BITS;
+            const l1_bit: u5 = @intCast(word_idx & WORD_MASK);
+            self.l1[l1_idx] &= ~(@as(u32, 1) << l1_bit);
+        }
+    }
+
+    /// Set bit `bit` in L0 word `word_idx` and update L1.
+    inline fn set_bit(self: *PoolAlloc, word_idx: u32, bit: u5) void {
+        self.l0[word_idx] |= @as(u32, 1) << bit;
+        const l1_idx = word_idx / WORD_BITS;
+        const l1_bit: u5 = @intCast(word_idx & WORD_MASK);
+        self.l1[l1_idx] |= @as(u32, 1) << l1_bit;
+    }
+
+    /// Clear a contiguous range of blocks [start, start+count) in L0/L1.
+    fn clear_range(self: *PoolAlloc, start: u32, count: u32) void {
+        var blk = start;
+        var remaining = count;
+        while (remaining > 0) {
+            const wi = blk / WORD_BITS;
+            const bit: u5 = @intCast(blk & WORD_MASK);
+            const bits_in_word = @min(remaining, @as(u32, WORD_BITS) - bit);
+
+            const mask: u32 = if (bits_in_word == WORD_BITS)
+                0xFFFF_FFFF
+            else
+                ((@as(u32, 1) << @as(u5, @intCast(bits_in_word))) - 1) << bit;
+
+            self.l0[wi] &= ~mask;
+            if (self.l0[wi] == 0) {
+                const l1i = wi / WORD_BITS;
+                const l1b: u5 = @intCast(wi & WORD_MASK);
+                self.l1[l1i] &= ~(@as(u32, 1) << l1b);
+            }
+
+            blk += bits_in_word;
+            remaining -= bits_in_word;
+        }
+    }
+
+    /// Set a contiguous range of blocks [start, start+count) in L0/L1.
+    fn set_range(self: *PoolAlloc, start: u32, count: u32) void {
+        var blk = start;
+        var remaining = count;
+        while (remaining > 0) {
+            const wi = blk / WORD_BITS;
+            const bit: u5 = @intCast(blk & WORD_MASK);
+            const bits_in_word = @min(remaining, @as(u32, WORD_BITS) - bit);
+
+            const mask: u32 = if (bits_in_word == WORD_BITS)
+                0xFFFF_FFFF
+            else
+                ((@as(u32, 1) << @as(u5, @intCast(bits_in_word))) - 1) << bit;
+
+            self.l0[wi] |= mask;
+            // Update L1: this word now has free blocks.
+            const l1i = wi / WORD_BITS;
+            const l1b: u5 = @intCast(wi & WORD_MASK);
+            self.l1[l1i] |= @as(u32, 1) << l1b;
+
+            blk += bits_in_word;
+            remaining -= bits_in_word;
+        }
+    }
+
+    /// Test whether `count` blocks starting at `start` are all free.
+    fn test_range_free(self: *const PoolAlloc, start: u32, count: u32) bool {
+        var blk = start;
+        var remaining = count;
+        while (remaining > 0) {
+            const wi = blk / WORD_BITS;
+            const bit: u5 = @intCast(blk & WORD_MASK);
+            const bits_in_word = @min(remaining, @as(u32, WORD_BITS) - bit);
+
+            const mask: u32 = if (bits_in_word == WORD_BITS)
+                0xFFFF_FFFF
+            else
+                ((@as(u32, 1) << @as(u5, @intCast(bits_in_word))) - 1) << bit;
+
+            if (self.l0[wi] & mask != mask) return false;
+
+            blk += bits_in_word;
+            remaining -= bits_in_word;
+        }
+        return true;
+    }
+
+    // -- internal: block finding -----------------------------------------------
+
+    /// Find a single free block. Returns block index or null.
+    fn find_single(self: *PoolAlloc) ?u32 {
+        const start_l1 = self.hint / WORD_BITS;
+
+        // Scan L1 from hint, wrapping around.
+        var passes: u32 = 0;
+        var l1i = start_l1;
+        while (passes < 2) {
+            if (l1i >= self.l1_words) {
+                l1i = 0;
+                passes += 1;
+                if (passes >= 2) break;
+                if (l1i > start_l1) break;
+            }
+            const l1w = self.l1[l1i];
+            if (l1w == 0) {
+                l1i += 1;
+                continue;
+            }
+
+            // Find which L0 word has free blocks.
+            const l1_bit: u5 = @truncate(@ctz(l1w));
+            const l0i = l1i * WORD_BITS + l1_bit;
+            if (l0i >= self.l0_words) {
+                l1i += 1;
+                continue;
+            }
+            const l0w = self.l0[l0i];
+            if (l0w == 0) {
+                // Stale L1 bit — shouldn't happen, but handle gracefully.
+                l1i += 1;
+                continue;
+            }
+
+            const blk_bit: u5 = @truncate(@ctz(l0w));
+            const block_idx = l0i * WORD_BITS + blk_bit;
+            if (block_idx >= self.total_blocks) {
+                l1i += 1;
+                continue;
+            }
+
+            self.hint = l0i;
+            return block_idx;
+        }
+        return null;
+    }
+
+    /// Find `blocks_needed` contiguous free blocks with alignment constraint.
+    /// `align_blocks` must be a power of 2 (1 for no constraint).
+    fn find_run(self: *PoolAlloc, blocks_needed: u32, align_blocks: u32) ?u32 {
+        if (blocks_needed == 1 and align_blocks <= 1) {
+            return self.find_single();
+        }
+
+        const align_mask = align_blocks - 1;
+
+        // Scan L0 from hint, then wrap around if needed.
+        var start_wi = self.hint;
+        var pass: u32 = 0;
+        while (pass < 2) {
+            var run_start: u32 = 0;
+            var run_len: u32 = 0;
+            var wi = start_wi;
+
+            while (wi < self.l0_words) : (wi += 1) {
+                const w = self.l0[wi];
+
+                if (w == 0) {
+                    // Fully allocated word — reset run.
+                    run_len = 0;
+                    continue;
+                }
+
+                if (w == 0xFFFF_FFFF) {
+                    // Fully free word — extend or start run.
+                    const word_base = wi * WORD_BITS;
+                    if (run_len == 0) {
+                        // Start a new run, aligned.
+                        run_start = (word_base + align_mask) & ~align_mask;
+                        if (run_start >= word_base + WORD_BITS) {
+                            // Alignment pushed past this word.
+                            continue;
+                        }
+                        run_len = word_base + WORD_BITS - run_start;
+                    } else {
+                        run_len += WORD_BITS;
+                    }
+                    // Clamp to total_blocks.
+                    if (run_start + run_len > self.total_blocks) {
+                        run_len = self.total_blocks - run_start;
+                    }
+                    if (run_len >= blocks_needed) {
+                        self.hint = wi;
+                        return run_start;
+                    }
+                    continue;
+                }
+
+                // Partial word — process bit by bit via sub-runs.
+                const word_base = wi * WORD_BITS;
+
+                // If we have a run from a previous word, try to extend it
+                // with leading 1-bits of this word.
+                if (run_len > 0) {
+                    const leading_ones: u32 = @ctz(~w);
+                    run_len += leading_ones;
+                    if (run_start + run_len > self.total_blocks) {
+                        run_len = self.total_blocks - run_start;
+                    }
+                    if (run_len >= blocks_needed) {
+                        self.hint = wi;
+                        return run_start;
+                    }
+                    if (leading_ones == WORD_BITS) continue; // handled above, but safety
+                }
+
+                // Scan for internal runs of 1-bits within this word.
+                var remaining = w;
+                var bit_off: u32 = 0;
+                while (remaining != 0) {
+                    // Skip zeros (allocated blocks).
+                    const zeros: u32 = @ctz(remaining);
+                    bit_off += zeros;
+                    if (bit_off >= WORD_BITS) break;
+                    remaining >>= @intCast(@min(zeros, 31));
+                    if (zeros > 0 and zeros < 32) {
+                        // We shifted past allocated blocks.
+                    } else if (zeros >= 32) {
+                        break;
+                    }
+
+                    // Count ones (free blocks).
+                    const ones: u32 = @ctz(~remaining);
+                    const candidate = word_base + bit_off;
+                    const aligned_start = (candidate + align_mask) & ~align_mask;
+
+                    if (aligned_start < candidate + ones) {
+                        const effective = candidate + ones - aligned_start;
+                        if (aligned_start + effective <= self.total_blocks and effective >= blocks_needed) {
+                            self.hint = wi;
+                            return aligned_start;
+                        }
+                        // Carry this run into the next word if it ends at bit 31.
+                        run_start = aligned_start;
+                        run_len = effective;
+                    } else {
+                        run_len = 0;
+                    }
+
+                    bit_off += ones;
+                    if (ones >= 32 or bit_off >= WORD_BITS) break;
+                    remaining >>= @as(u5, @intCast(ones));
+                }
+
+                // Check if the run extends to the end of this word.
+                if (run_len > 0 and run_start + run_len != word_base + WORD_BITS) {
+                    run_len = 0;
+                }
+            }
+
+            // Wrap around for second pass.
+            pass += 1;
+            if (start_wi == 0) break; // Already scanned everything.
+            // On wrap, scan from 0 up to where we started.
+            start_wi = 0;
+        }
+
+        return null; // OOM
     }
 
     // -- vtable callbacks ------------------------------------------------------
 
     fn alloc_fn(ctx: *anyopaque, n: usize, alignment: std.mem.Alignment, _: usize) ?[*]u8 {
         const self: *PoolAlloc = @ptrCast(@alignCast(ctx));
+        if (n == 0) return null;
+
+        const blocks_needed: u32 = @intCast(div_ceil(n, BLOCK_SIZE));
         const align_bytes = alignment.toByteUnits();
-        const over_aligned = align_bytes > BLOCK_ALIGN;
+        const align_blocks: u32 = @intCast(@max(1, align_bytes / BLOCK_SIZE));
 
-        // For over-aligned requests, reserve extra space for alignment padding
-        // and a back-offset (usize) stored immediately before the user pointer.
-        const overhead: usize = if (over_aligned)
-            @sizeOf(BlockHeader) + @sizeOf(usize) + align_bytes - 1
-        else
-            @sizeOf(BlockHeader);
+        const block_idx = self.find_run(blocks_needed, align_blocks) orelse return null;
 
-        // Round the request up to a full block size (header + payload, aligned).
-        // Must be at least MIN_BLOCK so the block can hold an intrusive treap node
-        // if it is ever freed without adjacent free neighbours to coalesce with.
-        const need = @max(roundup(overhead + n, BLOCK_ALIGN), MIN_BLOCK);
+        self.clear_range(block_idx, blocks_needed);
+        self.used += @as(usize, blocks_needed) * BLOCK_SIZE;
 
-        const h = best_fit(&self.tree, need) orelse return null;
-        tree_remove(&self.tree, h);
-
-        const found = blk_sz(h);
-        if (found >= need + MIN_BLOCK) {
-            // Split: keep `need` bytes here, return the remainder to the tree.
-            const split: *BlockHeader = @ptrFromInt(@intFromPtr(h) + need);
-            split.* = .{ .size_flags = found - need, .prev_size = need };
-            blk_next(split).prev_size = found - need;
-            tree_insert(&self.tree, split);
-            h.size_flags = need | 1;
-        } else {
-            h.size_flags = found | 1;
-        }
-
-        blk_next(h).prev_size = blk_sz(h);
-        self.used += blk_sz(h);
-
-        if (over_aligned) {
-            const header_addr = @intFromPtr(h);
-            const min_user = header_addr + @sizeOf(BlockHeader) + @sizeOf(usize);
-            const user_addr = std.mem.alignForward(usize, min_user, align_bytes);
-            const back: *usize = @ptrFromInt(user_addr - @sizeOf(usize));
-            back.* = user_addr - header_addr;
-            return @ptrFromInt(user_addr);
-        }
-        return @ptrFromInt(@intFromPtr(h) + @sizeOf(BlockHeader));
+        return self.data + @as(usize, block_idx) * BLOCK_SIZE;
     }
 
-    fn resize_fn(ctx: *anyopaque, buf: []u8, alignment: std.mem.Alignment, new_len: usize, _: usize) bool {
+    fn free_fn(ctx: *anyopaque, buf: []u8, _: std.mem.Alignment, _: usize) void {
         const self: *PoolAlloc = @ptrCast(@alignCast(ctx));
-        const h = user_to_blk(buf.ptr, alignment);
-        const cur_sz = blk_sz(h);
-        const user_offset = @intFromPtr(buf.ptr) - @intFromPtr(h);
+        const offset = @intFromPtr(buf.ptr) - @intFromPtr(self.data);
+        const block_idx: u32 = @intCast(offset / BLOCK_SIZE);
+        const block_count: u32 = @intCast(div_ceil(buf.len, BLOCK_SIZE));
 
-        // Shrink or already fits within block slack
-        if (new_len <= cur_sz - user_offset) return true;
+        self.set_range(block_idx, block_count);
+        self.used -= @as(usize, block_count) * BLOCK_SIZE;
 
-        // Growth: check if next physical block is free and large enough
-        const nx = blk_next(h);
-        if (blk_used(nx)) return false;
+        // Pull hint back if we freed blocks before it.
+        const wi = block_idx / WORD_BITS;
+        if (wi < self.hint) {
+            self.hint = wi;
+        }
+    }
 
-        const combined = cur_sz + blk_sz(nx);
-        if (new_len > combined - user_offset) return false;
+    fn resize_fn(ctx: *anyopaque, buf: []u8, _: std.mem.Alignment, new_len: usize, _: usize) bool {
+        const self: *PoolAlloc = @ptrCast(@alignCast(ctx));
+        const offset = @intFromPtr(buf.ptr) - @intFromPtr(self.data);
+        const block_idx: u32 = @intCast(offset / BLOCK_SIZE);
+        const cur_blocks: u32 = @intCast(div_ceil(buf.len, BLOCK_SIZE));
+        const new_blocks: u32 = @intCast(div_ceil(new_len, BLOCK_SIZE));
 
-        // Absorb the next free block
-        tree_remove(&self.tree, nx);
-
-        const needed = @max(roundup(user_offset + new_len, BLOCK_ALIGN), MIN_BLOCK);
-        if (combined >= needed + MIN_BLOCK) {
-            // Split: use needed, return remainder to tree
-            h.size_flags = needed | 1;
-            const sp: *BlockHeader = @ptrFromInt(@intFromPtr(h) + needed);
-            sp.* = .{ .size_flags = combined - needed, .prev_size = needed };
-            blk_next(sp).prev_size = combined - needed;
-            tree_insert(&self.tree, sp);
-        } else {
-            // Absorb entire block
-            h.size_flags = combined | 1;
-            blk_next(h).prev_size = combined;
+        if (new_blocks <= cur_blocks) {
+            // Shrink: free trailing blocks.
+            if (new_blocks < cur_blocks) {
+                const freed = cur_blocks - new_blocks;
+                self.set_range(block_idx + new_blocks, freed);
+                self.used -= @as(usize, freed) * BLOCK_SIZE;
+            }
+            return true;
         }
 
-        self.used += blk_sz(h) - cur_sz;
+        // Grow: check if blocks immediately after are free.
+        const grow = new_blocks - cur_blocks;
+        const grow_start = block_idx + cur_blocks;
+        if (grow_start + grow > self.total_blocks) return false;
+        if (!self.test_range_free(grow_start, grow)) return false;
+
+        self.clear_range(grow_start, grow);
+        self.used += @as(usize, grow) * BLOCK_SIZE;
         return true;
     }
 
     fn remap_fn(_: *anyopaque, _: []u8, _: std.mem.Alignment, _: usize, _: usize) ?[*]u8 {
-        // Signal to the caller that it must do the alloc + copy + free itself.
         return null;
-    }
-
-    fn free_fn(ctx: *anyopaque, buf: []u8, alignment: std.mem.Alignment, _: usize) void {
-        const self: *PoolAlloc = @ptrCast(@alignCast(ctx));
-
-        var h = user_to_blk(buf.ptr, alignment);
-        assert(blk_used(h));
-
-        const sz = blk_sz(h);
-        self.used -= sz;
-        h.size_flags = sz; // clear used bit
-
-        // Coalesce forward with the next physical block if it is free.
-        // The sentinel is always "used" (bit 0 set) so it stops coalescing.
-        const nx = blk_next(h);
-        if (!blk_used(nx)) {
-            tree_remove(&self.tree, nx);
-            const merged = sz + blk_sz(nx);
-            h.size_flags = merged;
-            blk_next(h).prev_size = merged;
-        }
-
-        // Coalesce backward with the previous physical block if it is free.
-        if (h.prev_size != 0) {
-            const pv: *BlockHeader = @ptrFromInt(@intFromPtr(h) - h.prev_size);
-            if (!blk_used(pv)) {
-                tree_remove(&self.tree, pv);
-                const merged = blk_sz(pv) + blk_sz(h);
-                pv.size_flags = merged;
-                blk_next(pv).prev_size = merged;
-                h = pv;
-            }
-        }
-
-        tree_insert(&self.tree, h);
     }
 };
 
-inline fn roundup(n: usize, a: usize) usize {
-    return (n + a - 1) & ~(a - 1);
-}
-
-// -- tests ---------------------------------------------------------------------
+// -- tests --------------------------------------------------------------------
 
 const testing = std.testing;
 
 test "pool_alloc: basic alloc and free" {
-    var buf: [4096]u8 align(BLOCK_ALIGN) = undefined;
+    var buf: [4096]u8 align(BLOCK_SIZE) = undefined;
     var pa = PoolAlloc.init(buf[0..], "test");
     const ally = pa.allocator();
 
@@ -309,7 +506,7 @@ test "pool_alloc: basic alloc and free" {
 }
 
 test "pool_alloc: used tracks multiple allocations" {
-    var buf: [4096]u8 align(BLOCK_ALIGN) = undefined;
+    var buf: [4096]u8 align(BLOCK_SIZE) = undefined;
     var pa = PoolAlloc.init(buf[0..], "test");
     const ally = pa.allocator();
 
@@ -324,7 +521,7 @@ test "pool_alloc: used tracks multiple allocations" {
 }
 
 test "pool_alloc: coalesce forward" {
-    var buf: [4096]u8 align(BLOCK_ALIGN) = undefined;
+    var buf: [4096]u8 align(BLOCK_SIZE) = undefined;
     var pa = PoolAlloc.init(buf[0..], "test");
     const ally = pa.allocator();
 
@@ -340,7 +537,7 @@ test "pool_alloc: coalesce forward" {
 }
 
 test "pool_alloc: coalesce backward" {
-    var buf: [4096]u8 align(BLOCK_ALIGN) = undefined;
+    var buf: [4096]u8 align(BLOCK_SIZE) = undefined;
     var pa = PoolAlloc.init(buf[0..], "test");
     const ally = pa.allocator();
 
@@ -356,7 +553,7 @@ test "pool_alloc: coalesce backward" {
 }
 
 test "pool_alloc: coalesce both directions" {
-    var buf: [4096]u8 align(BLOCK_ALIGN) = undefined;
+    var buf: [4096]u8 align(BLOCK_SIZE) = undefined;
     var pa = PoolAlloc.init(buf[0..], "test");
     const ally = pa.allocator();
 
@@ -371,7 +568,7 @@ test "pool_alloc: coalesce both directions" {
 }
 
 test "pool_alloc: returned pointers are BLOCK_ALIGN-aligned" {
-    var buf: [4096]u8 align(BLOCK_ALIGN) = undefined;
+    var buf: [4096]u8 align(BLOCK_SIZE) = undefined;
     var pa = PoolAlloc.init(buf[0..], "test");
     const ally = pa.allocator();
 
@@ -392,7 +589,7 @@ test "pool_alloc: returned pointers are BLOCK_ALIGN-aligned" {
 }
 
 test "pool_alloc: reset restores full capacity" {
-    var buf: [4096]u8 align(BLOCK_ALIGN) = undefined;
+    var buf: [4096]u8 align(BLOCK_SIZE) = undefined;
     var pa = PoolAlloc.init(buf[0..], "test");
     const ally = pa.allocator();
 
@@ -408,14 +605,14 @@ test "pool_alloc: reset restores full capacity" {
 }
 
 test "pool_alloc: resize shrink and grow" {
-    var buf: [4096]u8 align(BLOCK_ALIGN) = undefined;
+    var buf: [8192]u8 align(BLOCK_SIZE) = undefined;
     var pa = PoolAlloc.init(buf[0..], "test");
     const ally = pa.allocator();
 
     const a = try ally.alloc(u8, 64);
     const b = try ally.alloc(u8, 64);
 
-    // Shrink: always succeeds (wastes the tail)
+    // Shrink: always succeeds (wastes the tail within the block)
     try testing.expect(ally.resize(a, 32));
 
     // Grow with occupied next block: must fail
@@ -430,7 +627,7 @@ test "pool_alloc: resize shrink and grow" {
 }
 
 test "pool_alloc: block contents are writable" {
-    var buf: [4096]u8 align(BLOCK_ALIGN) = undefined;
+    var buf: [4096]u8 align(BLOCK_SIZE) = undefined;
     var pa = PoolAlloc.init(buf[0..], "test");
     const ally = pa.allocator();
 
@@ -442,7 +639,7 @@ test "pool_alloc: block contents are writable" {
 }
 
 test "pool_alloc: interleaved alloc and free" {
-    var buf: [4096]u8 align(BLOCK_ALIGN) = undefined;
+    var buf: [4096]u8 align(BLOCK_SIZE) = undefined;
     var pa = PoolAlloc.init(buf[0..], "test");
     const ally = pa.allocator();
 
@@ -458,17 +655,17 @@ test "pool_alloc: interleaved alloc and free" {
 }
 
 test "pool_alloc: over-alignment" {
-    var buf: [8192]u8 align(BLOCK_ALIGN) = undefined;
+    var buf: [8192]u8 align(BLOCK_SIZE) = undefined;
     var pa = PoolAlloc.init(buf[0..], "test");
     const ally = pa.allocator();
-    const over_align = comptime std.mem.Alignment.fromByteUnits(BLOCK_ALIGN * 2);
+    const over_align = comptime std.mem.Alignment.fromByteUnits(BLOCK_SIZE * 2);
 
-    // Allocate with alignment > BLOCK_ALIGN via raw vtable call.
+    // Allocate with alignment > BLOCK_SIZE via raw vtable call.
     const raw = ally.vtable.alloc(ally.ptr, 64, over_align, 0) orelse
         return error.TestUnexpectedResult;
 
     // Verify alignment
-    try testing.expectEqual(@as(usize, 0), @intFromPtr(raw) % (BLOCK_ALIGN * 2));
+    try testing.expectEqual(@as(usize, 0), @intFromPtr(raw) % (BLOCK_SIZE * 2));
 
     // Writable
     @memset(raw[0..64], 0xAB);
@@ -480,10 +677,56 @@ test "pool_alloc: over-alignment" {
 }
 
 test "pool_alloc: OOM returns error" {
-    var buf: [512]u8 align(BLOCK_ALIGN) = undefined;
+    var buf: [512]u8 align(BLOCK_SIZE) = undefined;
     var pa = PoolAlloc.init(buf[0..], "test");
     const ally = pa.allocator();
 
-    // Request more than available — must get OutOfMemory, not a panic.
     try testing.expectError(error.OutOfMemory, ally.alloc(u8, 4096));
+}
+
+test "pool_alloc: multi-block contiguous allocation" {
+    var buf: [8192]u8 align(BLOCK_SIZE) = undefined;
+    var pa = PoolAlloc.init(buf[0..], "test");
+    const ally = pa.allocator();
+
+    // Allocate a chunk spanning multiple blocks.
+    const big = try ally.alloc(u8, BLOCK_SIZE * 3);
+    try testing.expectEqual(@as(usize, BLOCK_SIZE * 3), pa.used);
+
+    // Verify pointer alignment.
+    try testing.expectEqual(@as(usize, 0), @intFromPtr(big.ptr) % BLOCK_SIZE);
+
+    // Write and read back.
+    @memset(big, 0xCD);
+    try testing.expectEqual(@as(u8, 0xCD), big[0]);
+    try testing.expectEqual(@as(u8, 0xCD), big[BLOCK_SIZE * 3 - 1]);
+
+    ally.free(big);
+    try testing.expectEqual(@as(usize, 0), pa.used);
+}
+
+test "pool_alloc: fragmentation and reuse" {
+    var buf: [8192]u8 align(BLOCK_SIZE) = undefined;
+    var pa = PoolAlloc.init(buf[0..], "test");
+    const ally = pa.allocator();
+
+    // Allocate 4 single blocks.
+    const a = try ally.alloc(u8, 1);
+    const b = try ally.alloc(u8, 1);
+    const c = try ally.alloc(u8, 1);
+    const d = try ally.alloc(u8, 1);
+
+    // Free alternating to create fragmentation.
+    ally.free(b);
+    ally.free(d);
+
+    // Should still be able to allocate single blocks in the gaps.
+    const e = try ally.alloc(u8, 1);
+    const f = try ally.alloc(u8, 1);
+
+    ally.free(a);
+    ally.free(c);
+    ally.free(e);
+    ally.free(f);
+    try testing.expectEqual(@as(usize, 0), pa.used);
 }
