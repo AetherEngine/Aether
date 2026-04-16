@@ -114,8 +114,7 @@ pub const ShaderPaths = struct {
 var molten_vk_path_cached: ?[]const u8 = null;
 fn macosMoltenVkPath(b: *std.Build) []const u8 {
     if (molten_vk_path_cached) |p| return p;
-    const p = b.option([]const u8, "molten-vk-path",
-        "macOS: directory containing libMoltenVK.dylib (default: $(brew --prefix molten-vk)/lib)") orelse
+    const p = b.option([]const u8, "molten-vk-path", "macOS: directory containing libMoltenVK.dylib (default: $(brew --prefix molten-vk)/lib)") orelse
         "/opt/homebrew/opt/molten-vk/lib";
     molten_vk_path_cached = p;
     return p;
@@ -124,8 +123,7 @@ fn macosMoltenVkPath(b: *std.Build) []const u8 {
 var glfw_path_cached: ?[]const u8 = null;
 fn macosGlfwPath(b: *std.Build) []const u8 {
     if (glfw_path_cached) |p| return p;
-    const p = b.option([]const u8, "glfw-path",
-        "macOS: directory containing libglfw.3.dylib (default: $(brew --prefix glfw)/lib)") orelse
+    const p = b.option([]const u8, "glfw-path", "macOS: directory containing libglfw.3.dylib (default: $(brew --prefix glfw)/lib)") orelse
         "/opt/homebrew/opt/glfw/lib";
     glfw_path_cached = p;
     return p;
@@ -425,13 +423,19 @@ fn macosAppBundle(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOptio
     );
 
     // --- patch exe load commands ---------------------------------------
-    const patched_exe = b.addSystemCommand(&.{ "sh", "-c",
+    // Xcode 16+ install_name_tool exits non-zero when it invalidates an
+    // existing code signature; strip it first so the rewrite is clean
+    // (|| true because an unsigned exe is the normal case and we don't
+    // want to fail there). The post-install codesign step signs fresh.
+    const patched_exe = b.addSystemCommand(&.{
+        "sh", "-c",
         "cp \"$1\" \"$2\" && " ++
-        "chmod +w \"$2\" && " ++
-        "install_name_tool " ++
-        "-change /opt/homebrew/opt/molten-vk/lib/libMoltenVK.dylib @rpath/libMoltenVK.dylib " ++
-        "-change /opt/homebrew/opt/glfw/lib/libglfw.3.dylib @rpath/libglfw.3.dylib " ++
-        "\"$2\"",
+            "chmod +w \"$2\" && " ++
+            "codesign --remove-signature \"$2\" 2>/dev/null || true && " ++
+            "install_name_tool " ++
+            "-change /opt/homebrew/opt/molten-vk/lib/libMoltenVK.dylib @rpath/libMoltenVK.dylib " ++
+            "-change /opt/homebrew/opt/glfw/lib/libglfw.3.dylib @rpath/libglfw.3.dylib " ++
+            "\"$2\"",
         "sh",
     });
     patched_exe.addArtifactArg(exe);
@@ -439,7 +443,8 @@ fn macosAppBundle(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOptio
 
     // --- icon: PNG -> .icns via sips + iconutil ------------------------
     const icns_out: ?std.Build.LazyPath = if (opts.icon_png) |png| blk: {
-        const gen = b.addSystemCommand(&.{ "sh", "-c",
+        const gen = b.addSystemCommand(&.{
+            "sh", "-c",
             // mktemp a scratch .iconset dir, sips-resize the source PNG into
             // the canonical slot names, then iconutil-pack. Cleanup is
             // best-effort — on failure the tmpdir leaks, but it's under /tmp.
@@ -515,9 +520,9 @@ fn macosAppBundle(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOptio
     const bundle_path = b.getInstallPath(.bin, app_name);
     const sign = b.addSystemCommand(&.{ "sh", "-c", b.fmt(
         "codesign --force --sign - \"{s}/Contents/Frameworks/libMoltenVK.dylib\" && " ++
-        "codesign --force --sign - \"{s}/Contents/Frameworks/libglfw.3.dylib\" && " ++
-        "codesign --force --sign - \"{s}/Contents/MacOS/{s}\" && " ++
-        "codesign --force --sign - \"{s}\"",
+            "codesign --force --sign - \"{s}/Contents/Frameworks/libglfw.3.dylib\" && " ++
+            "codesign --force --sign - \"{s}/Contents/MacOS/{s}\" && " ++
+            "codesign --force --sign - \"{s}\"",
         .{ bundle_path, bundle_path, bundle_path, exe.name, bundle_path },
     ) });
     sign.step.dependOn(&install.step);
@@ -527,8 +532,13 @@ fn macosAppBundle(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOptio
 /// Copies a dylib into the build cache and rewrites its LC_ID_DYLIB to
 /// `@rpath/<basename>` so it can be loaded from `Contents/Frameworks/`.
 fn patchDylibId(b: *std.Build, src: std.Build.LazyPath, basename: []const u8) std.Build.LazyPath {
+    // Homebrew dylibs are ad-hoc signed. Xcode 16+ install_name_tool
+    // exits non-zero when it invalidates that signature, so strip the
+    // signature first and let the post-install codesign step re-sign.
     const patch = b.addSystemCommand(&.{ "sh", "-c", b.fmt(
-        "cp \"$1\" \"$2\" && chmod +w \"$2\" && install_name_tool -id @rpath/{s} \"$2\"",
+        "cp \"$1\" \"$2\" && chmod +w \"$2\" && " ++
+            "codesign --remove-signature \"$2\" 2>/dev/null || true && " ++
+            "install_name_tool -id @rpath/{s} \"$2\"",
         .{basename},
     ), "sh" });
     patch.addFileArg(src);
