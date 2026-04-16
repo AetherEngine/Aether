@@ -704,7 +704,8 @@ pub fn set_alpha_blend(enabled: bool) void {
 }
 
 pub fn set_depth_write(enabled: bool) void {
-    must(cmd.depth_mask(enabled));
+    // zmsk register uses mask semantics: 1 = block writes, 0 = allow writes.
+    must(cmd.depth_mask(!enabled));
     advance_stall();
 }
 
