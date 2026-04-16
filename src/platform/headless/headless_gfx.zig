@@ -18,6 +18,7 @@ pub fn deinit() void {}
 
 pub fn set_clear_color(_: f32, _: f32, _: f32, _: f32) void {}
 pub fn set_alpha_blend(_: bool) void {}
+pub fn set_depth_write(_: bool) void {}
 pub fn set_fog(_: bool, _: f32, _: f32, _: f32, _: f32, _: f32) void {}
 pub fn set_clip_planes(_: bool) void {}
 pub fn set_proj_matrix(_: *const Mat4) void {}
