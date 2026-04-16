@@ -39,10 +39,15 @@ pub const Dirs = struct {
     data: Io.Dir,
 
     pub fn close(self: *Dirs, io: Io) void {
-        // On CWD-fallback platforms resources and data are the same
-        // handle; closing a cwd handle is a no-op regardless.
-        self.resources.close(io);
-        self.data.close(io);
+        // std.Io.Dir.cwd() docs: "Closing the returned Dir is checked
+        // illegal behavior." On CWD-fallback platforms (use_cwd, PSP,
+        // unsupported OS) either handle may be the cwd sentinel, so skip
+        // close for anything equal to cwd. Also guards against the two
+        // handles aliasing, where close(data) would double-close.
+        const cwd_handle = Io.Dir.cwd().handle;
+        if (self.resources.handle != cwd_handle) self.resources.close(io);
+        if (self.data.handle != cwd_handle and self.data.handle != self.resources.handle)
+            self.data.close(io);
     }
 };
 
