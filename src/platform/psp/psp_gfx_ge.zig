@@ -25,11 +25,53 @@ const sdk = @import("pspsdk");
 const ge = sdk.ge;
 const ge_list = sdk.ge_list;
 const display = sdk.display;
-const vram = @import("vram.zig");
+const pool_alloc = @import("../../util/pool_alloc.zig");
 const gfx = @import("../gfx.zig");
-// VRAM allocator still uses GU pixel-format enums; we only import gu for
-// these constants. All other state goes through the new ge_list API.
+// VRAM sizing uses GU pixel-format enums; we only import gu for these
+// constants. All other state goes through the ge_list API.
 const gu_types = sdk.gu.types;
+
+const VRAM_ALIGNMENT: usize = 16;
+
+// ---- VRAM pool -------------------------------------------------------------
+//
+// EDRAM layout: a fixed carve-out at the base holds the swapchain color
+// buffers and depth buffer (they live for the whole program so they don't
+// need an allocator). Everything after the carve-out is managed by a
+// PoolAlloc used for VRAM-resident textures and their mip levels, so
+// destroy_texture can actually free its VRAM copies instead of leaking.
+
+var vram_pool: pool_alloc.PoolAlloc = undefined;
+var vram_pool_ally: std.mem.Allocator = undefined;
+
+fn pixel_format_size_bits(pixel_format: gu_types.GuPixelFormat) usize {
+    return switch (pixel_format) {
+        .Psm5650 => 16,
+        .Psm5551 => 16,
+        .Psm4444 => 16,
+        .Psm8888 => 32,
+        .PsmT4 => 4,
+        .PsmT8 => 8,
+        .PsmT16 => 16,
+        .PsmT32 => 32,
+        .PsmDxt1, .PsmDxt1Ext => 4,
+        .PsmDxt3, .PsmDxt3Ext => 8,
+        .PsmDxt5, .PsmDxt5Ext => 8,
+    };
+}
+
+fn buffer_size_bytes(stride_elements: u32, height: u32, format: gu_types.GuPixelFormat) usize {
+    return (@as(usize, stride_elements) * height * pixel_format_size_bits(format)) / 8;
+}
+
+fn vram_alloc(stride: u32, height: u32, format: gu_types.GuPixelFormat) ?[]align(16) u8 {
+    const size = buffer_size_bytes(stride, height, format);
+    return vram_pool_ally.alignedAlloc(u8, .fromByteUnits(16), size) catch null;
+}
+
+fn vram_free(slice: []align(16) u8) void {
+    vram_pool_ally.free(slice);
+}
 
 const SCREEN_WIDTH = sdk.extra.constants.SCREEN_WIDTH;
 const SCREEN_HEIGHT = sdk.extra.constants.SCREEN_HEIGHT;
@@ -124,6 +166,7 @@ const Swapchain = struct {
 
     fn init(self: *Swapchain) void {
         const vram_base = @intFromPtr(ge.edram_get_addr());
+        const edram_size: usize = ge.edram_get_size();
         const uncached: usize = 0x40000000;
 
         const uncached_ptr: [*]u32 = @ptrFromInt(@intFromPtr(&self.display_list) | uncached);
@@ -138,16 +181,45 @@ const Swapchain = struct {
         self.buffers_rel = [_]?*anyopaque{null} ** BUFFER_COUNT;
         self.buffers_abs = [_]?[]align(16) u8{null} ** BUFFER_COUNT;
 
+        // Fixed carve-out at EDRAM base: swapchain color buffers followed
+        // by the depth buffer. These are never freed, so they don't need
+        // an allocator — just deterministic offsets.
+        const color_size = std.mem.alignForward(
+            usize,
+            buffer_size_bytes(SCR_BUF_WIDTH, SCREEN_HEIGHT, vram_color_format),
+            VRAM_ALIGNMENT,
+        );
+        const depth_size = std.mem.alignForward(
+            usize,
+            buffer_size_bytes(SCR_BUF_WIDTH, SCREEN_HEIGHT, .Psm4444),
+            VRAM_ALIGNMENT,
+        );
+
+        var offset: usize = 0;
         for (0..BUFFER_COUNT) |i| {
-            const buffer = vram.alloc_relative_buffer(SCR_BUF_WIDTH, SCREEN_HEIGHT, vram_color_format);
-            self.buffers_rel[i] = buffer.ptr;
-            const relative_addr: usize = if (buffer.ptr) |ptr| @intFromPtr(ptr) else 0;
-            const ptr: [*]align(16) u8 = @ptrFromInt((relative_addr + vram_base) | uncached);
-            self.buffers_abs[i] = ptr[0..buffer.len];
+            self.buffers_rel[i] = @ptrFromInt(offset);
+            const abs_ptr: [*]align(16) u8 = @ptrFromInt((offset + vram_base) | uncached);
+            self.buffers_abs[i] = abs_ptr[0..color_size];
             self.clear_buffer(@intCast(i));
+            offset += color_size;
         }
 
-        self.depth_buffer_rel = vram.alloc_relative(SCR_BUF_WIDTH, SCREEN_HEIGHT, .Psm4444);
+        self.depth_buffer_rel = @ptrFromInt(offset);
+        offset += depth_size;
+
+        // Everything past the carve-out is handed to the VRAM pool for
+        // texture / mip level allocations.
+        const carveout_end = std.mem.alignForward(usize, offset, VRAM_ALIGNMENT);
+        if (carveout_end >= edram_size) {
+            std.debug.panic(
+                "psp_gfx_ge: VRAM carve-out exceeds EDRAM (carveout=0x{x} edram=0x{x})",
+                .{ carveout_end, edram_size },
+            );
+        }
+        const pool_bytes = edram_size - carveout_end;
+        const pool_ptr: [*]u8 = @ptrFromInt(vram_base + carveout_end);
+        vram_pool = pool_alloc.PoolAlloc.init(pool_ptr[0..pool_bytes], "psp_vram");
+        vram_pool_ally = vram_pool.allocator();
     }
 
     fn clear_buffer(self: *Swapchain, idx: BufferIndex) void {
@@ -1056,7 +1128,18 @@ pub fn bind_texture(handle: Texture.Handle) void {
 }
 
 pub fn destroy_texture(handle: Texture.Handle) void {
-    // VRAM allocations are static and cannot be freed individually.
+    if (textures.get_element(handle)) |tex| {
+        if (tex.in_vram) {
+            if (tex.vram_data) |data| vram_free(data);
+        }
+        var i: u8 = 0;
+        while (i < tex.mip_count) : (i += 1) {
+            const mip = tex.mips[i];
+            const size: usize = @as(usize, mip.width) * mip.height * tex_bpp;
+            const raw_ptr: [*]align(16) u8 = @constCast(@alignCast(mip.data));
+            vram_free(raw_ptr[0..size]);
+        }
+    }
     _ = textures.remove_element(handle);
 }
 
@@ -1224,7 +1307,10 @@ fn generate_resident_mips(tex: *TextureData) void {
 
         box_filter_mip(src_buf, src_w, dst_linear, dst_w, dst_h);
 
-        const vram_buf = vram.alloc_absolute_slice(dst_w, dst_h, vram_pixel_format());
+        const vram_buf = vram_alloc(dst_w, dst_h, vram_pixel_format()) orelse {
+            alloc.free(dst_linear);
+            break;
+        };
 
         if (tex.swizzled) {
             swizzle_linear_to(dst_linear, vram_buf, dst_w, dst_h);
@@ -1253,7 +1339,7 @@ pub fn force_texture_resident(handle: Texture.Handle) void {
     if (tex.in_vram) return;
 
     const size = tex.width * tex.height * tex_bpp;
-    const vram_data = vram.alloc_absolute_slice(tex.width, tex.height, vram_pixel_format());
+    const vram_data = vram_alloc(tex.width, tex.height, vram_pixel_format()) orelse return;
 
     @memcpy(vram_data[0..size], tex.data[0..size]);
 
