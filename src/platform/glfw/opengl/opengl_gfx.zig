@@ -135,6 +135,10 @@ pub fn clear_depth() void {
     gl.Clear(gl.DEPTH_BUFFER_BIT);
 }
 
+pub fn set_vsync(v: bool) void {
+    glfw.swapInterval(@intFromBool(v));
+}
+
 pub fn set_proj_matrix(mat: *const Mat4) void {
     shader.state.proj = mat.*;
     shader.update_ubo();

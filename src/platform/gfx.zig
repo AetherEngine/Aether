@@ -59,3 +59,8 @@ pub fn deinit() void {
     Api.deinit();
     surface.deinit();
 }
+
+pub fn set_vsync(v: bool) void {
+    sync = v;
+    Api.set_vsync(v);
+}

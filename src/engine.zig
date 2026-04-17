@@ -171,6 +171,11 @@ pub const Engine = struct {
         self.running = false;
     }
 
+    pub fn set_vsync(self: *Engine, v: bool) void {
+        self.vsync = v;
+        Platform.gfx.set_vsync(v);
+    }
+
     pub fn pool_used(self: *const Engine, p: Pool) usize {
         return self.trackers[@intFromEnum(p)].used;
     }
