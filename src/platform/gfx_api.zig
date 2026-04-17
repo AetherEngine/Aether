@@ -27,6 +27,8 @@ pub const Interface = struct {
     end_frame: fn () void,
     clear_depth: fn () void,
 
+    set_vsync: fn (bool) void,
+
     create_pipeline: fn (Pipeline.VertexLayout, ?[:0]align(4) const u8, ?[:0]align(4) const u8) anyerror!Pipeline.Handle,
     destroy_pipeline: fn (Pipeline.Handle) void,
     bind_pipeline: fn (Pipeline.Handle) void,
