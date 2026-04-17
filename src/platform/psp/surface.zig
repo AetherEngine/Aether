@@ -30,7 +30,7 @@ pub fn update(_: *Self) bool {
 
 pub fn draw(self: *Self) void {
     if (self.sync) {
-        sdk.display.wait_vblank_start() catch {};
+        sdk.display.wait_vblank_start_cb() catch {};
     }
 }
 
