@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const Platform = @import("../platform/platform.zig");
 
 pub const Key = enum(u16) {
@@ -171,6 +172,11 @@ pub const ActionComponent = enum(u8) {
     y,
 };
 
+pub const InputMode = enum {
+    keyboard,
+    controller,
+};
+
 pub const Deadzone = 0.4;
 pub const Binding = struct {
     source: BindingSource,
@@ -208,6 +214,7 @@ var allocator: std.mem.Allocator = undefined;
 var actions: std.StringArrayHashMapUnmanaged(Action) = .empty;
 var lost_focus_context: ?*anyopaque = null;
 var lost_focus_callback: ?LostFocusCallback = null;
+var last_input_mode: InputMode = if (builtin.os.tag == .freestanding) .controller else .keyboard;
 
 pub var mouse_sensitivity: f32 = 1.0;
 
@@ -316,6 +323,12 @@ pub fn fire_lost_focus() void {
 /// Enables or disables mouse relative mode (captured and hidden).
 pub fn set_mouse_relative_mode(enabled: bool) void {
     Platform.input.set_mouse_relative_mode(enabled);
+}
+
+/// Returns the input device category that most recently produced a non-zero binding value.
+/// Useful for branching UI prompts between KBM and gamepad glyphs.
+pub fn get_last_input_mode() InputMode {
+    return last_input_mode;
 }
 
 /// Updates the input system, polling the current state and invoking callbacks as necessary.
@@ -435,6 +448,13 @@ fn get_binding_value(binding: *const Binding) f32 {
         .mouse_relative => |mr| {
             raw = if (mr == .X) Platform.input.get_mouse_delta(mouse_sensitivity)[0] else Platform.input.get_mouse_delta(mouse_sensitivity)[1];
         },
+    }
+
+    if (raw != 0.0) {
+        last_input_mode = switch (binding.source) {
+            .key, .mouse_button, .mouse_scroll, .mouse_relative => .keyboard,
+            .gamepad_button, .gamepad_axis => .controller,
+        };
     }
 
     return raw * multiplier;
