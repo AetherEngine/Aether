@@ -424,21 +424,31 @@ fn macosAppBundle(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOptio
 
     // --- patch exe load commands ---------------------------------------
     // Xcode 16+ install_name_tool exits non-zero when it invalidates an
-    // existing code signature; strip it first so the rewrite is clean
-    // (|| true because an unsigned exe is the normal case and we don't
-    // want to fail there). Xcode 16.4+ codesign --remove-signature
-    // leaves __LINKEDIT with a gap; lipo -create rebuilds a clean
-    // Mach-O. The post-install codesign step signs fresh.
+    // existing code signature (zig ad-hoc signs arm64 macOS exes), so
+    // strip it first. Xcode 16.4 `codesign --remove-signature` leaves
+    // __LINKEDIT's filesize pointing past its actual contents, which
+    // trips install_name_tool's stricter linkedit check. Use
+    // `codesign_allocate -r` — it removes LC_CODE_SIGNATURE and
+    // rewrites __LINKEDIT.filesize/vmsize to match the real extent,
+    // which plain `codesign --remove-signature` and `lipo -create` on
+    // thin Mach-Os don't do. Fall back to `codesign --remove-signature`
+    // for the unsigned case. Post-install `codesign --force --sign -`
+    // re-signs.
     const patched_exe = b.addSystemCommand(&.{
         "sh", "-c",
-        "cp \"$1\" \"$2\" && " ++
-            "chmod +w \"$2\" && " ++
-            "codesign --remove-signature \"$2\" 2>/dev/null || true && " ++
-            "lipo -create \"$2\" -output \"$2.tmp\" && mv \"$2.tmp\" \"$2\" && " ++
-            "install_name_tool " ++
-            "-change /opt/homebrew/opt/molten-vk/lib/libMoltenVK.dylib @rpath/libMoltenVK.dylib " ++
-            "-change /opt/homebrew/opt/glfw/lib/libglfw.3.dylib @rpath/libglfw.3.dylib " ++
-            "\"$2\"",
+        \\cp "$1" "$2"
+        \\chmod +w "$2"
+        \\if codesign_allocate -i "$2" -r -o "$2.tmp" 2>/dev/null; then
+        \\  mv "$2.tmp" "$2"
+        \\else
+        \\  rm -f "$2.tmp"
+        \\  codesign --remove-signature "$2" 2>/dev/null || true
+        \\fi
+        \\install_name_tool \
+        \\  -change /opt/homebrew/opt/molten-vk/lib/libMoltenVK.dylib @rpath/libMoltenVK.dylib \
+        \\  -change /opt/homebrew/opt/glfw/lib/libglfw.3.dylib @rpath/libglfw.3.dylib \
+        \\  "$2"
+        ,
         "sh",
     });
     patched_exe.addArtifactArg(exe);
@@ -536,16 +546,24 @@ fn macosAppBundle(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOptio
 /// `@rpath/<basename>` so it can be loaded from `Contents/Frameworks/`.
 fn patchDylibId(b: *std.Build, src: std.Build.LazyPath, basename: []const u8) std.Build.LazyPath {
     // Homebrew dylibs are ad-hoc signed. Xcode 16+ install_name_tool
-    // exits non-zero when it invalidates that signature, so strip the
-    // signature first and let the post-install codesign step re-sign.
-    // Xcode 16.4+ codesign --remove-signature leaves __LINKEDIT with a
-    // gap; lipo -create rebuilds a clean Mach-O that install_name_tool
-    // can process.
+    // exits non-zero when it invalidates that signature, so strip it
+    // first. Xcode 16.4 `codesign --remove-signature` leaves
+    // __LINKEDIT's filesize pointing past its real contents (the gap
+    // that install_name_tool's stricter linkedit check rejects); use
+    // `codesign_allocate -r`, which rewrites __LINKEDIT.filesize/vmsize
+    // and truncates. Fall back to `codesign --remove-signature` for
+    // the unsigned case. Post-install codesign re-signs.
     const patch = b.addSystemCommand(&.{ "sh", "-c", b.fmt(
-        "cp \"$1\" \"$2\" && chmod +w \"$2\" && " ++
-            "codesign --remove-signature \"$2\" 2>/dev/null || true && " ++
-            "lipo -create \"$2\" -output \"$2.tmp\" && mv \"$2.tmp\" \"$2\" && " ++
-            "install_name_tool -id @rpath/{s} \"$2\"",
+        \\cp "$1" "$2"
+        \\chmod +w "$2"
+        \\if codesign_allocate -i "$2" -r -o "$2.tmp" 2>/dev/null; then
+        \\  mv "$2.tmp" "$2"
+        \\else
+        \\  rm -f "$2.tmp"
+        \\  codesign --remove-signature "$2" 2>/dev/null || true
+        \\fi
+        \\install_name_tool -id @rpath/{s} "$2"
+    ,
         .{basename},
     ), "sh" });
     patch.addFileArg(src);
