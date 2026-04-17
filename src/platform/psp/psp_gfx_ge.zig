@@ -849,6 +849,7 @@ pub fn clear_depth() void {
 
 pub fn end_frame() void {
     finish_frame_list();
+    gfx.surface.draw();
 }
 
 pub fn set_vsync(v: bool) void {
