@@ -26,6 +26,7 @@ const ge = sdk.ge;
 const ge_list = sdk.ge_list;
 const display = sdk.display;
 const vram = @import("vram.zig");
+const gfx = @import("../gfx.zig");
 // VRAM allocator still uses GU pixel-format enums; we only import gu for
 // these constants. All other state goes through the new ge_list API.
 const gu_types = sdk.gu.types;
@@ -776,6 +777,10 @@ pub fn clear_depth() void {
 
 pub fn end_frame() void {
     finish_frame_list();
+}
+
+pub fn set_vsync(v: bool) void {
+    gfx.surface.sync = v;
 }
 
 // ---- pipelines -------------------------------------------------------------

@@ -685,6 +685,12 @@ pub fn end_frame() void {
     };
 }
 
+pub fn set_vsync(v: bool) void {
+    if (swapchain.vsync == v) return;
+    swapchain.vsync = v;
+    swap_state = .suboptimal;
+}
+
 pub fn set_proj_matrix(mat: *const Mat4) void {
     pending_state.proj = mat.*;
     camera_dirty = true;
