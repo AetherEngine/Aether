@@ -13,7 +13,7 @@ const PcmFormat = @import("../../audio/stream.zig").PcmFormat;
 const NUM_SLOTS: usize = 8;
 const SAMPLES_PER_BUF: usize = 1024;
 /// Per-slot scratch: room for SAMPLES_PER_BUF of stereo i16.
-const READ_BUF_SIZE: usize = SAMPLES_PER_BUF * 2 * 2;
+const READ_BUF_SIZE: usize = SAMPLES_PER_BUF * 2 * 2 * 8;
 /// Output buffer: SAMPLES_PER_BUF stereo i16 frames.
 const OUTPUT_BUF_BYTES: usize = SAMPLES_PER_BUF * 2 * 2;
 const PSP_VOLUME_MAX: i32 = 0x8000;
