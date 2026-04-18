@@ -119,6 +119,7 @@ var meshes = Util.CircularBuffer(MeshData, 8192).init();
 
 var swap_state: Swapchain.PresentState = .optimal;
 var alpha_blend_enabled: bool = true;
+var depth_write_enabled: bool = true;
 
 const depth_format: vk.Format = .d32_sfloat;
 var depth_image: vk.Image = .null_handle;
@@ -483,6 +484,8 @@ pub fn set_alpha_blend(enabled: bool) void {
 }
 
 pub fn set_depth_write(enabled: bool) void {
+    if (enabled == depth_write_enabled) return;
+    depth_write_enabled = enabled;
     command_buffer.setDepthWriteEnable(if (enabled) .true else .false);
 }
 
@@ -548,6 +551,19 @@ pub fn start_frame() bool {
 
     command_buffer.setViewport(0, @ptrCast(&viewport));
     command_buffer.setScissor(0, @ptrCast(&scissor));
+
+    // Every state listed in a pipeline's VkPipelineDynamicStateCreateInfo must
+    // be set on each fresh command buffer before the first draw — the baked
+    // pipeline value is ignored once the state is marked dynamic. Re-apply the
+    // tracked values here so downstream projects get deterministic defaults
+    // regardless of whether they call the setters. MoltenVK/Metal in particular
+    // leaves these states undefined otherwise, which manifests as broken depth
+    // writes or unexpected blend state on macOS.
+    command_buffer.setDepthWriteEnable(if (depth_write_enabled) .true else .false);
+    if (!is_macos) {
+        const enable: vk.Bool32 = if (alpha_blend_enabled) .true else .false;
+        command_buffer.setColorBlendEnableEXT(0, @ptrCast(&[1]vk.Bool32{enable}));
+    }
 
     const pre = vk.ImageMemoryBarrier2{
         .src_stage_mask = .{ .color_attachment_output_bit = true, .top_of_pipe_bit = true },
