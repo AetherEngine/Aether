@@ -38,6 +38,10 @@ pub fn get_gamepad_axis(axis: input.Axis) f32 {
         .LeftY => normalize_axis(Surface.pad.Ly),
         .RightX => 0,
         .RightY => 0,
+        // PSP has no analog triggers; L/R are digital buttons.
+        // Return -1 to mirror GLFW's "fully released" convention.
+        .LeftTrigger => -1,
+        .RightTrigger => -1,
     };
 }
 
