@@ -140,6 +140,10 @@ pub const Axis = enum(u16) {
     LeftY = 1,
     RightX = 2,
     RightY = 3,
+    // Analog triggers. Desktop gamepads only; PSP backend returns 0.
+    // GLFW reports these on axes 4/5 as -1 released to 1 fully pressed.
+    LeftTrigger = 4,
+    RightTrigger = 5,
 };
 
 pub const MouseScroll = enum(u16) {
