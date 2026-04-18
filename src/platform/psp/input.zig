@@ -23,6 +23,7 @@ pub fn is_gamepad_button_down(button: input.Button) bool {
         .Start => btns.start == 1,
         .Guide => btns.home == 1,
         .LeftThumb => false,
+        .RightThumb => false,
         .DpadUp => btns.up == 1,
         .DpadRight => btns.right == 1,
         .DpadDown => btns.down == 1,
