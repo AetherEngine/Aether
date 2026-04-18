@@ -921,7 +921,7 @@ const MeshData = struct {
     len: usize,
 };
 
-var meshes = Util.CircularBuffer(MeshData, 1024).init();
+var meshes = Util.CircularBuffer(MeshData, 2048).init();
 
 pub fn create_mesh(pipeline: Pipeline.Handle) anyerror!Mesh.Handle {
     const handle = meshes.add_element(.{
@@ -1137,7 +1137,7 @@ pub fn destroy_texture(handle: Texture.Handle) void {
         while (i < tex.mip_count) : (i += 1) {
             const mip = tex.mips[i];
             const size: usize = @as(usize, mip.width) * mip.height * tex_bpp;
-            const raw_ptr: [*]align(16) u8 = @constCast(@alignCast(mip.data));
+            const raw_ptr: [*]align(16) u8 = @alignCast(@constCast(mip.data));
             vram_free(raw_ptr[0..size]);
         }
     }
