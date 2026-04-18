@@ -17,6 +17,7 @@ pub const Gfx = enum {
 
 pub const Audio = enum(u8) {
     default,
+    none,
 };
 
 pub const Input = enum(u8) {
@@ -70,9 +71,18 @@ pub const Config = struct {
             else => .default,
         };
 
+        // macOS default is `.none` because the current miniaudio build is
+        // bugged there. Flip back to `.default` with `-Daudio=default` once
+        // that's fixed.
+        const default_audio: Audio = switch (target.result.os.tag) {
+            .macos => .none,
+            else => .default,
+        };
+
         return .{
             .platform = plat,
             .gfx = overrides.gfx orelse default_gfx,
+            .audio = overrides.audio orelse default_audio,
             .psp_display_mode = overrides.psp_display_mode orelse .rgba8888,
             .psp_mipmaps = overrides.psp_mipmaps orelse false,
             .use_cwd = overrides.use_cwd orelse false,
@@ -81,6 +91,7 @@ pub const Config = struct {
 
     pub const Overrides = struct {
         gfx: ?Gfx = null,
+        audio: ?Audio = null,
         psp_display_mode: ?PspDisplayMode = null,
         psp_mipmaps: ?bool = null,
         use_cwd: ?bool = null,
@@ -187,16 +198,18 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
             .registry = owner.dependency("vulkan_headers", .{}).path("registry/vk.xml"),
         }).module("vulkan-zig");
 
-        const zaudio_dep = owner.dependency("zaudio", .{
-            .target = opts.target,
-            .optimize = opts.optimize,
-        });
-
         mod.addImport("glfw", zglfw.module("glfw"));
         mod.addImport("gl", gl_bindings);
         mod.addImport("vulkan", vulkan);
-        mod.addImport("zaudio", zaudio_dep.module("root"));
-        mod.linkLibrary(zaudio_dep.artifact("miniaudio"));
+
+        if (config.audio != .none) {
+            const zaudio_dep = owner.dependency("zaudio", .{
+                .target = opts.target,
+                .optimize = opts.optimize,
+            });
+            mod.addImport("zaudio", zaudio_dep.module("root"));
+            mod.linkLibrary(zaudio_dep.artifact("miniaudio"));
+        }
 
         if (opts.target.result.os.tag == .macos) {
             // Link MoltenVK directly as the Vulkan ICD — no loader. Feeds
@@ -269,6 +282,7 @@ pub fn addHeadless(owner: *std.Build, b: *std.Build, opts: HeadlessOptions) *std
     const config = Config{
         .platform = Config.resolve(opts.target, .{}).platform,
         .gfx = .headless,
+        .audio = .none,
     };
 
     const options = b.addOptions();
@@ -553,19 +567,23 @@ fn patchDylibId(b: *std.Build, src: std.Build.LazyPath, basename: []const u8) st
     // `codesign_allocate -r`, which rewrites __LINKEDIT.filesize/vmsize
     // and truncates. Fall back to `codesign --remove-signature` for
     // the unsigned case. Post-install codesign re-signs.
-    const patch = b.addSystemCommand(&.{ "sh", "-c", b.fmt(
-        \\cp "$1" "$2"
-        \\chmod +w "$2"
-        \\if codesign_allocate -i "$2" -r -o "$2.tmp" 2>/dev/null; then
-        \\  mv "$2.tmp" "$2"
-        \\else
-        \\  rm -f "$2.tmp"
-        \\  codesign --remove-signature "$2" 2>/dev/null || true
-        \\fi
-        \\install_name_tool -id @rpath/{s} "$2"
-    ,
-        .{basename},
-    ), "sh" });
+    const patch = b.addSystemCommand(&.{
+        "sh", "-c",
+        b.fmt(
+            \\cp "$1" "$2"
+            \\chmod +w "$2"
+            \\if codesign_allocate -i "$2" -r -o "$2.tmp" 2>/dev/null; then
+            \\  mv "$2.tmp" "$2"
+            \\else
+            \\  rm -f "$2.tmp"
+            \\  codesign --remove-signature "$2" 2>/dev/null || true
+            \\fi
+            \\install_name_tool -id @rpath/{s} "$2"
+        ,
+            .{basename},
+        ),
+        "sh",
+    });
     patch.addFileArg(src);
     return patch.addOutputFileArg(basename);
 }
@@ -684,6 +702,7 @@ pub fn build(b: *std.Build) void {
 
     const overrides: Config.Overrides = .{
         .gfx = b.option(Gfx, "gfx", "Graphics backend override (default: auto-detect from target)"),
+        .audio = b.option(Audio, "audio", "Audio backend override (default: .none on macOS, .default elsewhere)"),
         .psp_display_mode = b.option(PspDisplayMode, "psp-display", "PSP display mode: rgba8888 (32-bit, default) or rgb565 (16-bit)"),
         .psp_mipmaps = b.option(bool, "psp-mipmaps", "PSP: generate mip levels for VRAM-resident textures (default: false)"),
         .use_cwd = b.option(bool, "use-cwd", "Force resources+data dirs to CWD (debug/CI convenience; default: false)"),
