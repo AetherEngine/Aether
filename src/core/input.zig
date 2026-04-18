@@ -129,10 +129,11 @@ pub const Button = enum(u16) {
     Start = 7,
     Guide = 8,
     LeftThumb = 9,
-    DpadUp = 10,
-    DpadRight = 11,
-    DpadDown = 12,
-    DpadLeft = 13,
+    RightThumb = 10,
+    DpadUp = 11,
+    DpadRight = 12,
+    DpadDown = 13,
+    DpadLeft = 14,
 };
 
 pub const Axis = enum(u16) {
