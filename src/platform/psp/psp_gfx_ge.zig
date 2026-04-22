@@ -264,7 +264,7 @@ const Swapchain = struct {
         sdk.kernel.cpu_resume_intr(flags);
     }
 
-    fn acquire_draw_buffer(self: *Swapchain) bool {
+    fn acquire_draw_buffer(self: *Swapchain, allow_tear: bool) bool {
         const flags = sdk.kernel.cpu_suspend_intr();
         defer sdk.kernel.cpu_resume_intr(flags);
 
@@ -287,11 +287,7 @@ const Swapchain = struct {
             return true;
         }
 
-        // RGBA8888 cannot afford a third color buffer. If VBlank has not
-        // consumed the pending frame yet, force that swap now and draw into
-        // the old front buffer. This can tear, but avoids corrupting the
-        // pending flip and stalling the app.
-        if (BUFFER_COUNT == 2) {
+        if (BUFFER_COUNT == 2 and allow_tear) {
             const pending = self.pending_idx orelse return false;
             const old_front = self.front_idx;
             display.set_frame_buf(
@@ -316,26 +312,6 @@ const Swapchain = struct {
             if (self.submitted_queue[queue_idx] == idx) return true;
         }
         return false;
-    }
-
-    fn is_waiting_for_display_flip(self: *const Swapchain) bool {
-        const flags = sdk.kernel.cpu_suspend_intr();
-        defer sdk.kernel.cpu_resume_intr(flags);
-
-        if (self.submitted_count > 0) return false;
-
-        const start = (@as(usize, self.draw_idx) + 1) % BUFFER_COUNT;
-        var offset: usize = 0;
-        while (offset < BUFFER_COUNT) : (offset += 1) {
-            const idx: BufferIndex = @intCast((start + offset) % BUFFER_COUNT);
-            if (idx == self.front_idx) continue;
-            if (self.pending_idx) |pending| {
-                if (idx == pending) continue;
-            }
-            return false;
-        }
-
-        return true;
     }
 
     fn publish_finished_ge_buffer(self: *Swapchain) void {
@@ -829,8 +805,16 @@ pub fn set_view_matrix(mat: *const Mat4) void {
 }
 
 pub fn start_frame() bool {
-    while (!swapchain.acquire_draw_buffer()) {
-        if (swapchain.is_waiting_for_display_flip()) return false;
+    const allow_tear = !gfx.surface.sync;
+    var attempts: u32 = 0;
+    while (!swapchain.acquire_draw_buffer(allow_tear)) {
+        if (gfx.surface.sync) {
+            display.wait_vblank_start_cb() catch {};
+        } else {
+            _ = ge_list.draw_sync(.wait);
+        }
+        attempts += 1;
+        if (attempts > 8) return false;
     }
 
     begin_list();

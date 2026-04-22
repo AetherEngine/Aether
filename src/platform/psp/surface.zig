@@ -9,6 +9,8 @@ sync: bool = false,
 pub fn init(self: *Self, _: u32, _: u32, _: [:0]const u8, _: bool, sync: bool, _: bool) anyerror!void {
     self.sync = sync;
 
+    sdk.power.set_clock_frequency(333, 333, 166) catch {};
+
     _ = ctrl.set_sampling_cycle(0);
     _ = ctrl.set_sampling_mode(.analog);
 
@@ -28,11 +30,7 @@ pub fn update(_: *Self) bool {
     return !sdk.extra.utils.isExitRequested();
 }
 
-pub fn draw(self: *Self) void {
-    if (self.sync) {
-        sdk.display.wait_vblank_start_cb() catch {};
-    }
-}
+pub fn draw(_: *Self) void {}
 
 pub fn get_width(_: *Self) u32 {
     return sdk.extra.constants.SCREEN_WIDTH;
