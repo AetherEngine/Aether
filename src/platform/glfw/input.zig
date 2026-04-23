@@ -17,14 +17,19 @@ pub fn is_mouse_button_down(button: input.MouseButton) bool {
 
 pub fn is_gamepad_button_down(button: input.Button) bool {
     var gamepad_state: glfw.GamepadState = undefined;
-    _ = glfw.getGamepadState(gfx.surface.active_joystick, &gamepad_state);
+    if (glfw.getGamepadState(gfx.surface.active_joystick, &gamepad_state) == 0) return false;
 
     return gamepad_state.buttons[@intFromEnum(button)] == glfw.Press;
 }
 
 pub fn get_gamepad_axis(axis: input.Axis) f32 {
     var gamepad_state: glfw.GamepadState = undefined;
-    _ = glfw.getGamepadState(gfx.surface.active_joystick, &gamepad_state);
+    if (glfw.getGamepadState(gfx.surface.active_joystick, &gamepad_state) == 0) {
+        return switch (axis) {
+            .LeftTrigger, .RightTrigger => -1.0,
+            else => 0.0,
+        };
+    }
 
     return gamepad_state.axes[@intFromEnum(axis)];
 }
