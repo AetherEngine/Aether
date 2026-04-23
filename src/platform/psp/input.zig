@@ -54,6 +54,10 @@ pub fn get_mouse_delta(_: f32) [2]f32 {
     return .{ 0, 0 };
 }
 
+pub fn get_mouse_motion() [2]f32 {
+    return .{ 0, 0 };
+}
+
 pub fn get_mouse_scroll() f32 {
     return 0;
 }

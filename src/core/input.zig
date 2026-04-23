@@ -423,22 +423,42 @@ fn get_action_value(action: *const Action) ActionValue {
     }
 }
 
+// Magnitude a processed axis must exceed to count as "the user is actively driving this
+// device." Smaller values (stick drift, trigger jitter) must not flip the last-used-device
+// indicator — otherwise any bound stick/trigger flickers the mode every frame.
+const AxisActivityThreshold: f32 = 0.1;
+// Normalized cursor motion per frame (fraction of monitor height) that must be exceeded
+// to count as real mouse motion. In absolute mode, `get_mouse_delta` returns the cursor
+// position, which is non-zero nearly always; we must judge mouse activity from actual
+// per-frame motion instead.
+const MouseMotionActivityThreshold: f32 = 0.0005;
+
 fn get_binding_value(binding: *const Binding) f32 {
     const multiplier = binding.multiplier;
     var raw: f32 = 0.0;
+    var active: bool = false;
 
     switch (binding.source) {
         .key => |k| {
             raw = if (Platform.input.is_key_down(k)) 1.0 else 0.0;
+            active = raw != 0.0;
         },
         .mouse_button => |mb| {
             raw = if (Platform.input.is_mouse_button_down(mb)) 1.0 else 0.0;
+            active = raw != 0.0;
         },
         .gamepad_button => |gb| {
             raw = if (Platform.input.is_gamepad_button_down(gb)) 1.0 else 0.0;
+            active = raw != 0.0;
         },
         .gamepad_axis => |ga| {
             raw = Platform.input.get_gamepad_axis(ga);
+            // Triggers report -1 at rest and 1 fully pressed; remap to 0..1 so the
+            // resting state is 0, matching sticks. Without this, at-rest triggers
+            // would emit -1 every frame and constantly flip the mode to controller.
+            if (ga == .LeftTrigger or ga == .RightTrigger) {
+                raw = (raw + 1.0) * 0.5;
+            }
             if (raw > binding.deadzone) {
                 raw = (raw - binding.deadzone) / (1.0 - binding.deadzone);
             } else if (raw < -binding.deadzone) {
@@ -446,16 +466,23 @@ fn get_binding_value(binding: *const Binding) f32 {
             } else {
                 raw = 0.0;
             }
+            active = @abs(raw) > AxisActivityThreshold;
         },
         .mouse_scroll => {
             raw = Platform.input.get_mouse_scroll();
+            active = raw != 0.0;
         },
         .mouse_relative => |mr| {
             raw = if (mr == .X) Platform.input.get_mouse_delta(mouse_sensitivity)[0] else Platform.input.get_mouse_delta(mouse_sensitivity)[1];
+            // `raw` here may be either motion delta (relative mode) or cursor position
+            // (absolute mode). Use actual per-frame motion for activity detection so a
+            // still mouse at a non-origin cursor position does not count as input.
+            const motion = Platform.input.get_mouse_motion();
+            active = @abs(motion[0]) > MouseMotionActivityThreshold or @abs(motion[1]) > MouseMotionActivityThreshold;
         },
     }
 
-    if (raw != 0.0) {
+    if (active) {
         last_input_mode = switch (binding.source) {
             .key, .mouse_button, .mouse_scroll, .mouse_relative => .keyboard,
             .gamepad_button, .gamepad_axis => .controller,

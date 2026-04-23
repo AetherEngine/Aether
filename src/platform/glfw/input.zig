@@ -50,6 +50,17 @@ pub fn get_mouse_delta(sensitivity: f32) [2]f32 {
     }
 }
 
+// Actual per-frame cursor motion (normalized by monitor height, as computed in
+// surface.update). Always a delta, regardless of relative/absolute mode — so callers
+// judging "did the user move the mouse this frame?" aren't fooled by the cursor-position
+// semantics of get_mouse_delta in absolute mode.
+pub fn get_mouse_motion() [2]f32 {
+    return [_]f32{
+        @floatCast(Surface.cursor_dx),
+        @floatCast(Surface.cursor_dy),
+    };
+}
+
 var last_scroll: f32 = 0.0;
 pub fn get_mouse_scroll() f32 {
     const delta = Surface.curr_scroll - last_scroll;
