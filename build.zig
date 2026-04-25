@@ -111,6 +111,7 @@ pub const HeadlessOptions = struct {
     root_source_file: std.Build.LazyPath,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode = .Debug,
+    overrides: Config.Overrides = .{},
 };
 
 pub const ShaderPaths = struct {
@@ -279,11 +280,12 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
 ///     const exe = Aether.addHeadless(ae_dep.builder, b, .{ ... });
 ///
 pub fn addHeadless(owner: *std.Build, b: *std.Build, opts: HeadlessOptions) *std.Build.Step.Compile {
-    const config = Config{
-        .platform = Config.resolve(opts.target, .{}).platform,
-        .gfx = .headless,
-        .audio = .none,
-    };
+    // Headless ignores any caller-supplied gfx/audio overrides — those
+    // backends are always stubbed in this mode. Other knobs (use_cwd,
+    // PSP display/mip) flow through unchanged.
+    var config = Config.resolve(opts.target, opts.overrides);
+    config.gfx = .headless;
+    config.audio = .none;
 
     const options = b.addOptions();
     options.addOption(Config, "config", config);
@@ -297,17 +299,37 @@ pub fn addHeadless(owner: *std.Build, b: *std.Build, opts: HeadlessOptions) *std
         },
     });
 
+    const psp_dep = if (config.platform == .psp) owner.dependency("pspsdk", .{
+        .target = opts.target,
+        .optimize = opts.optimize,
+    }) else null;
+
+    if (psp_dep) |pd| {
+        mod.addImport("pspsdk", pd.module("pspsdk"));
+    }
+
     const exe = b.addExecutable(.{
         .name = opts.name,
         .root_module = b.createModule(.{
             .root_source_file = opts.root_source_file,
             .target = opts.target,
             .optimize = opts.optimize,
+            .strip = if (config.platform == .psp) false else null,
             .imports = &.{
                 .{ .name = "aether", .module = mod },
             },
         }),
     });
+
+    if (psp_dep) |pd| {
+        if (exe.root_module.import_table.get("pspsdk") == null) {
+            exe.root_module.addImport("pspsdk", mod.import_table.get("pspsdk").?);
+        }
+        exe.link_eh_frame_hdr = true;
+        exe.link_emit_relocs = true;
+        exe.entry = .{ .symbol_name = "module_start" };
+        exe.setLinkerScript(pd.path("tools/linkfile.ld"));
+    }
 
     return exe;
 }
