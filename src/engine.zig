@@ -237,7 +237,6 @@ pub const Engine = struct {
         const TICK_US: u64 = US_PER_S / TICKS_HZ;
 
         const update_budget_ns: i64 = @as(i64, @intCast(UPDATE_US)) * NS_PER_US;
-        _ = TICK_US;
 
         var clock = std.Io.Clock.real;
 
@@ -245,6 +244,7 @@ pub const Engine = struct {
         var update_accum: i64 = 0;
         var tick_accum: i64 = 0;
 
+        const report_fps = options.config.gfx != .headless;
         var fps_count: u32 = 0;
         var fps_window_end: i64 = last_us + US_PER_S;
 
@@ -261,7 +261,7 @@ pub const Engine = struct {
             // ---- fixed-rate TICK steps (e.g., 20 Hz logic) ----
             var is_tick_frame = false;
             var tick_cost_ns: i64 = 0;
-            const tick_us: i64 = @intCast(US_PER_S / TICKS_HZ);
+            const tick_us: i64 = @intCast(TICK_US);
             while (tick_accum >= tick_us) {
                 @branchHint(.unpredictable);
                 is_tick_frame = true;
@@ -322,18 +322,27 @@ pub const Engine = struct {
                 Platform.gfx.api.end_frame();
             } else {
                 @branchHint(.unlikely);
-                if (options.config.platform != .psp) {
+                if (options.config.gfx == .headless) {
+                    const next_update = @as(i64, @intCast(UPDATE_US)) - update_accum;
+                    const next_tick = @as(i64, @intCast(TICK_US)) - tick_accum;
+                    const sleep_us = @max(0, @min(next_update, next_tick));
+                    if (sleep_us > 0) {
+                        try std.Io.sleep(self.io, .fromMicroseconds(sleep_us), clock);
+                    }
+                } else if (options.config.platform != .psp) {
                     try std.Io.sleep(self.io, .fromMilliseconds(50), clock);
                 }
             }
 
             // ---- FPS counting ----
-            if (drew_frame) fps_count += 1;
-            const end_us: i64 = @truncate(@divTrunc(clock.now(self.io).toNanoseconds(), 1000));
-            if (end_us >= fps_window_end) {
-                Util.engine_logger.info("FPS: {}", .{fps_count});
-                fps_count = 0;
-                fps_window_end = end_us + US_PER_S;
+            if (report_fps) {
+                if (drew_frame) fps_count += 1;
+                const end_us: i64 = @truncate(@divTrunc(clock.now(self.io).toNanoseconds(), 1000));
+                if (end_us >= fps_window_end) {
+                    Util.engine_logger.info("FPS: {}", .{fps_count});
+                    fps_count = 0;
+                    fps_window_end = end_us + US_PER_S;
+                }
             }
         }
     }

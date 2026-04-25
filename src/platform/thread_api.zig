@@ -39,7 +39,6 @@ pub fn Interface(comptime Backend: type) type {
         join: fn (Backend.Handle) void,
         set_priority: fn (Backend.Handle, Priority) anyerror!void,
         current_priority: fn () Priority,
-        sleep: fn (u64) void,
     };
 }
 

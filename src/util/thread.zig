@@ -37,11 +37,6 @@ pub const Thread = struct {
     pub fn current_priority() Priority {
         return platform_thread.Api.current_priority();
     }
-
-    /// Block the calling thread for `us` microseconds.
-    pub fn sleep(us: u64) void {
-        platform_thread.Api.sleep(us);
-    }
 };
 
 // -----------------------------------------------------------------------------
@@ -81,7 +76,3 @@ test "spawned thread sees its requested priority" {
     try std.testing.expectEqual(@as(i8, @intFromEnum(Priority.high)), seen.load(.seq_cst));
 }
 
-test "sleep does not crash on a 1ms request" {
-    if (builtin.os.tag == .psp) return error.SkipZigTest;
-    Thread.sleep(1_000);
-}

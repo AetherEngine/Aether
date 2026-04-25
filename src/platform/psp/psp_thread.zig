@@ -98,11 +98,3 @@ pub fn set_priority(thid: Handle, p: api.Priority) anyerror!void {
 pub fn current_priority() api.Priority {
     return priority_from_psp(sdk.kernel.get_thread_current_priority());
 }
-
-pub fn sleep(us: u64) void {
-    const clamped: u32 = if (us > std.math.maxInt(u32))
-        std.math.maxInt(u32)
-    else
-        @intCast(us);
-    sdk.kernel.delay_thread(clamped) catch {};
-}
