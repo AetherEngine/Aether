@@ -10,6 +10,9 @@ pub const Pool = memory.Pool;
 pub const Estimator = @import("estimator.zig").Estimator;
 pub const Confidence = @import("estimator.zig").Confidence;
 pub const BudgetContext = @import("budget_context.zig").BudgetContext;
+pub const Thread = @import("thread.zig").Thread;
+pub const ThreadConfig = @import("thread.zig").Config;
+pub const ThreadPriority = @import("thread.zig").Priority;
 
 comptime {
     std.testing.refAllDecls(@This());
