@@ -13,11 +13,15 @@ pub const ctx_to_self = Util.ctx_to_self;
 /// Only available when `platform == .psp`; evaluates to `void` otherwise.
 pub const Psp = if (platform == .psp) @import("platform/psp/psp_dialogs.zig") else void;
 
-// Pull in the 3DS entry shim on 3DS builds. Its comptime block
-// `@export`s a C-callable `main` so `-ofmt=c` emits the full engine.
+// Pull in the 3DS / Switch entry shim on those targets. Each shim's
+// comptime block `@export`s a C-callable `main` so `-ofmt=c` emits
+// the full engine call graph rather than constants-only output.
 comptime {
     if (platform == .nintendo_3ds) {
         _ = @import("platform/3ds/services.zig");
+    }
+    if (platform == .nintendo_switch) {
+        _ = @import("platform/switch/services.zig");
     }
 }
 
