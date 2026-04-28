@@ -6,6 +6,10 @@ pub const Platform = enum {
     linux,
     macos,
     psp,
+    /// Nintendo 3DS. Builtin os tag is `.@"3ds"`, but the Zig options
+    /// serializer can't emit `.@"3ds"` as an enum value literal, so the
+    /// internal Aether tag uses a leading-letter form.
+    nintendo_3ds,
 };
 
 pub const Gfx = enum {
@@ -59,6 +63,7 @@ pub const Config = struct {
             .macos => .macos,
             .linux => .linux,
             .psp => .psp,
+            .@"3ds" => .nintendo_3ds,
             else => |t| {
                 std.debug.panic("Unsupported OS! {}\n", .{t});
             },
@@ -141,6 +146,15 @@ fn macosGlfwPath(b: *std.Build) []const u8 {
     return p;
 }
 
+var devkitpro_path_cached: ?[]const u8 = null;
+fn devkitProPath(b: *std.Build) []const u8 {
+    if (devkitpro_path_cached) |p| return p;
+    const opt = b.option([]const u8, "devkitpro-path", "3DS: devkitPro install root (default: $DEVKITPRO or /opt/devkitpro)");
+    const p = opt orelse b.graph.environ_map.get("DEVKITPRO") orelse "/opt/devkitpro";
+    devkitpro_path_cached = p;
+    return p;
+}
+
 /// Creates an executable with the Aether engine module and all platform
 /// dependencies wired up. Returns the compile step so the caller can
 /// further customize it (install, add run steps, etc.).
@@ -157,13 +171,23 @@ fn macosGlfwPath(b: *std.Build) []const u8 {
 pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.Step.Compile {
     const config = Config.resolve(opts.target, opts.overrides);
 
+    // 3DS forces ofmt=c — there's no Zig-native backend for the Horizon
+    // ARM target yet, so we emit C and let an external 3DS toolchain
+    // (devkitARM/libctru) compile the result. Stub backends keep the
+    // engine compiling end-to-end until a real SDK is wired in.
+    const target = if (config.platform == .nintendo_3ds) blk: {
+        var q = opts.target.query;
+        q.ofmt = .c;
+        break :blk b.resolveTargetQuery(q);
+    } else opts.target;
+
     const options = b.addOptions();
     options.addOption(Config, "config", config);
     const options_module = options.createModule();
 
     const mod = b.addModule("Aether", .{
         .root_source_file = owner.path("src/root.zig"),
-        .target = opts.target,
+        .target = target,
         .imports = &.{
             .{ .name = "options", .module = options_module },
         },
@@ -171,20 +195,23 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
 
     // --- platform-specific engine dependencies ---
     const psp_dep = if (config.platform == .psp) owner.dependency("pspsdk", .{
-        .target = opts.target,
+        .target = target,
         .optimize = opts.optimize,
     }) else null;
 
     if (psp_dep) |pd| {
         mod.addImport("pspsdk", pd.module("pspsdk"));
+    } else if (config.platform == .nintendo_3ds) {
+        // No 3DS SDK is wired in yet; stubs satisfy every backend
+        // contract so addImport calls are unnecessary here.
     } else {
         const zglfw = owner.dependency("zglfw", .{
-            .target = opts.target,
+            .target = target,
             .optimize = opts.optimize,
         });
 
         const glfw = owner.dependency("glfw_zig", .{
-            .target = opts.target,
+            .target = target,
             .optimize = opts.optimize,
         });
 
@@ -204,14 +231,14 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
 
         if (config.audio != .none) {
             const zaudio_dep = owner.dependency("zaudio", .{
-                .target = opts.target,
+                .target = target,
                 .optimize = opts.optimize,
             });
             mod.addImport("zaudio", zaudio_dep.module("root"));
             mod.linkLibrary(zaudio_dep.artifact("miniaudio"));
         }
 
-        if (opts.target.result.os.tag == .macos) {
+        if (target.result.os.tag == .macos) {
             // Link MoltenVK directly as the Vulkan ICD -- no loader. Feeds
             // its vkGetInstanceProcAddr into GLFW via glfwInitVulkanLoader
             // in platform/glfw/surface.zig so GLFW doesn't dlopen libvulkan
@@ -241,7 +268,7 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
         .name = opts.name,
         .root_module = b.createModule(.{
             .root_source_file = opts.root_source_file,
-            .target = opts.target,
+            .target = target,
             .optimize = opts.optimize,
             .strip = if (config.platform == .psp) false else null,
             .imports = &.{
@@ -267,6 +294,14 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
         exe.subsystem = .windows;
     }
 
+    if (config.platform == .nintendo_3ds) {
+        // std/start.zig opts `.@"3ds"` out of exporting a default entry
+        // symbol, so without an explicit entry the linker DCEs `main`
+        // and the emitted C is constants-only. Force `main` to keep
+        // the whole call graph alive for the external 3DS toolchain.
+        exe.entry = .{ .symbol_name = "main" };
+    }
+
     return exe;
 }
 
@@ -286,20 +321,27 @@ pub fn addHeadless(owner: *std.Build, b: *std.Build, opts: HeadlessOptions) *std
     config.gfx = .headless;
     config.audio = .none;
 
+    // 3DS forces ofmt=c (see addGame for details).
+    const target = if (config.platform == .nintendo_3ds) blk: {
+        var q = opts.target.query;
+        q.ofmt = .c;
+        break :blk b.resolveTargetQuery(q);
+    } else opts.target;
+
     const options = b.addOptions();
     options.addOption(Config, "config", config);
     const options_module = options.createModule();
 
     const mod = b.addModule("Aether", .{
         .root_source_file = owner.path("src/root.zig"),
-        .target = opts.target,
+        .target = target,
         .imports = &.{
             .{ .name = "options", .module = options_module },
         },
     });
 
     const psp_dep = if (config.platform == .psp) owner.dependency("pspsdk", .{
-        .target = opts.target,
+        .target = target,
         .optimize = opts.optimize,
     }) else null;
 
@@ -311,7 +353,7 @@ pub fn addHeadless(owner: *std.Build, b: *std.Build, opts: HeadlessOptions) *std
         .name = opts.name,
         .root_module = b.createModule(.{
             .root_source_file = opts.root_source_file,
-            .target = opts.target,
+            .target = target,
             .optimize = opts.optimize,
             .strip = if (config.platform == .psp) false else null,
             .imports = &.{
@@ -391,8 +433,18 @@ pub const ExportOptions = struct {
     icon_png: ?std.Build.LazyPath = null,
     /// Files to install into the app bundle. On macOS they land under
     /// `Contents/Resources/<name>`. On desktop non-macOS they are copied
-    /// alongside the exe in `zig-out/bin/`. Ignored on PSP.
+    /// alongside the exe in `zig-out/bin/`. Ignored on PSP and 3DS.
     resources: []const Resource = &.{},
+    /// 3DS: SMDH long description (the second line shown in the HOME
+    /// menu detail panel). Falls back to "Built with Aether" when empty.
+    smdh_long_description: []const u8 = "",
+    /// 3DS: SMDH author string. Empty leaves the field blank.
+    smdh_author: []const u8 = "",
+    /// 3DS: 48x48 PNG icon embedded in the SMDH. When null, libctru's
+    /// `default_icon.png` is used.
+    smdh_icon: ?std.Build.LazyPath = null,
+    /// 3DS: directory (or pre-built `.romfs`) embedded into the 3DSX.
+    romfs: ?std.Build.LazyPath = null,
 
     pub const Resource = struct {
         /// Source file to copy.
@@ -416,6 +468,8 @@ pub fn exportArtifact(owner: *std.Build, b: *std.Build, exe: *std.Build.Step.Com
         // register on the downstream project's builder.
         const psp_dep = owner.dependency("pspsdk", .{});
         _ = pspEbootPipeline(b, exe, psp_dep, opts);
+    } else if (config.platform == .nintendo_3ds) {
+        threedsxPipeline(b, exe, opts);
     } else if (config.platform == .macos) {
         macosAppBundle(b, exe, opts);
     } else {
@@ -660,6 +714,188 @@ fn pspEbootPipeline(b: *std.Build, exe: *std.Build.Step.Compile, psp_dep: *std.B
     return result;
 }
 
+/// Compiles the zig-emitted C with devkitARM, links against libctru, and
+/// packages the ELF (plus an SMDH and optional RomFS) into a `.3dsx`
+/// homebrew bundle. Mirrors `pspEbootPipeline` for the PSP toolchain.
+fn threedsxPipeline(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOptions) void {
+    // Derive a sibling target for compiler_rt: same cpu/abi/endianness
+    // as the game (so the calling conventions and float ABI match
+    // libctru), but os=freestanding (sidesteps the 3DS-specific posix
+    // dependencies in std) and the default object format (so this
+    // module compiles natively to an ELF object the gcc driver can
+    // consume, rather than .c). devkitARM's libgcc.a doesn't ship the
+    // 128-bit-int compiler-rt entry points (`__multi3`/`__divti3`/etc.),
+    // so we provide them ourselves from zig's compiler_rt.
+    const game_target = exe.root_module.resolved_target.?;
+    var crt_query = game_target.query;
+    crt_query.os_tag = .freestanding;
+    crt_query.ofmt = null;
+    // Explicitly pin the cpu model to whatever the game target
+    // resolved to (arm.mpcore for the 3DS). Without this, swapping
+    // os_tag to .freestanding loses the os-derived cpu choice and
+    // zig falls back to a generic baseline that emits ARMv6T2+
+    // instructions (e.g. `mls`) the ARMv6K MPCore doesn't decode —
+    // crashes show up as "undefined instruction" in compiler_rt
+    // helpers like `__udivmodsi4`.
+    crt_query.cpu_model = .{ .explicit = game_target.result.cpu.model };
+    const crt_target = b.resolveTargetQuery(crt_query);
+
+    const compiler_rt_path = b.pathJoin(&.{
+        b.graph.zig_lib_directory.path orelse ".",
+        "compiler_rt.zig",
+    });
+    const crt_obj = b.addObject(.{
+        .name = "aether_3ds_compiler_rt",
+        .root_module = b.createModule(.{
+            .root_source_file = .{ .cwd_relative = compiler_rt_path },
+            .target = crt_target,
+            .optimize = .ReleaseSmall,
+            .strip = true,
+        }),
+    });
+
+    const dkp = devkitProPath(b);
+
+    // Strip the libc-overlap symbols from the compiler_rt object.
+    // zig's compiler_rt re-exports `memset`/`memcpy`/`memmove` and
+    // their `__aeabi_*` shims as WEAK; the `__aeabi_memset` and
+    // `memset` versions form a recursive `bl` cycle that blows the
+    // stack on 32-bit ARM. Newlib has real implementations, but the
+    // linker won't reach for them while compiler_rt's weak version
+    // already resolves the reference. `--strip-symbol` drops the
+    // exports so the references stay unresolved at compiler_rt and
+    // the linker pulls newlib's strong implementations from libc.a.
+    const strip_libc = b.addSystemCommand(&.{
+        b.pathJoin(&.{ dkp, "devkitARM/bin/arm-none-eabi-objcopy" }),
+        "--localize-symbol=memset",
+        "--localize-symbol=memcpy",
+        "--localize-symbol=memmove",
+        "--localize-symbol=memcmp",
+        "--localize-symbol=__memset",
+        "--localize-symbol=__memcpy",
+        "--localize-symbol=__memmove",
+        "--localize-symbol=__memcpy_chk",
+        "--localize-symbol=__aeabi_memset",
+        "--localize-symbol=__aeabi_memset4",
+        "--localize-symbol=__aeabi_memset8",
+        "--localize-symbol=__aeabi_memcpy",
+        "--localize-symbol=__aeabi_memcpy4",
+        "--localize-symbol=__aeabi_memcpy8",
+        "--localize-symbol=__aeabi_memmove",
+        "--localize-symbol=__aeabi_memmove4",
+        "--localize-symbol=__aeabi_memmove8",
+        "--localize-symbol=strlen",
+        "--localize-symbol=bcmp",
+    });
+    strip_libc.addArtifactArg(crt_obj);
+    const crt_clean = strip_libc.addOutputFileArg("aether_3ds_compiler_rt.o");
+    const gcc = b.pathJoin(&.{ dkp, "devkitARM/bin/arm-none-eabi-gcc" });
+    const tool_3dsx = b.pathJoin(&.{ dkp, "tools/bin/3dsxtool" });
+    const tool_smdh = b.pathJoin(&.{ dkp, "tools/bin/smdhtool" });
+    const ctru_inc = b.pathJoin(&.{ dkp, "libctru/include" });
+    const ctru_lib = b.pathJoin(&.{ dkp, "libctru/lib" });
+    const default_icon = b.pathJoin(&.{ dkp, "libctru/default_icon.png" });
+    const zig_h_src = b.pathJoin(&.{ b.graph.zig_lib_directory.path orelse ".", "zig.h" });
+
+    // zig.h hardcodes `zig_align(16)` for its `zig_i128`/`zig_u128`
+    // struct fallback (used when `__int128` isn't supported by the C
+    // compiler — gcc on 32-bit ARM is one such target). But zig's own
+    // layout pass uses 8-byte alignment for i128 on 32-bit ARM, so
+    // the `_Static_assert(_Alignof(...) == 8)` baked into the
+    // generated C fails against gcc's 16-byte view. Patch the four
+    // sites down to `zig_align(8)`. The patched copy lands in a
+    // dedicated include dir we point gcc at first.
+    const patch = b.addSystemCommand(&.{"sed"});
+    patch.addArg("s/zig_align(16)/zig_align(8)/g");
+    patch.addFileArg(.{ .cwd_relative = zig_h_src });
+    const patched_zig_h = patch.captureStdOut(.{ .basename = "zig.h" });
+
+    const include_wf = b.addWriteFiles();
+    _ = include_wf.addCopyFile(patched_zig_h, "zig.h");
+
+    // Standard 3DS arch flags from devkitPro's template Makefile.
+    const arch = [_][]const u8{
+        "-march=armv6k", "-mtune=mpcore", "-mfloat-abi=hard", "-mtp=soft",
+    };
+
+    // Single-shot compile + link via the gcc driver. 3dsx.specs pulls
+    // in `_3dsx_crt0` (which calls our exported `main`) and the 3DSX
+    // linker script.
+    const link = b.addSystemCommand(&.{gcc});
+    link.addArgs(&arch);
+    link.addArgs(&.{
+        "-mword-relocations",                "-ffunction-sections",
+        "-D__3DS__",                         "-DARM11",
+        "-O2",                               "-g",
+        "-specs=3dsx.specs",
+        // Pin the C standard to C11. zig.h picks `[[noreturn]]` under
+        // C23 but emits it in attribute-list position that gcc rejects;
+        // C11's `_Noreturn` is what zig's emitter actually targets.
+                        "-std=gnu11",
+        // zig's -ofmt=c emitter treats `uintptr_t` and `uint32_t` as
+        // interchangeable on 32-bit ARM (they ARE the same width) but
+        // gcc 14+ promotes the resulting pointer-type mismatch from a
+        // warning to an error. Demote it and a couple of related
+        // chatters; we don't author this C and there's nothing
+        // actionable in the warnings.
+        "-Wno-incompatible-pointer-types",   "-Wno-int-conversion",
+        "-Wno-builtin-declaration-mismatch",
+    });
+    link.addArg(b.fmt("-I{s}", .{ctru_inc}));
+    link.addPrefixedDirectoryArg("-I", include_wf.getDirectory());
+    link.addArg("-x");
+    link.addArg("c");
+    link.addArtifactArg(exe);
+    // Reset language so gcc treats subsequent inputs by extension; the
+    // compiler_rt object is ELF arm and `-x c` would mis-parse it.
+    link.addArg("-x");
+    link.addArg("none");
+    link.addFileArg(crt_clean);
+    link.addArg(b.fmt("-L{s}", .{ctru_lib}));
+    link.addArgs(&.{ "-lctru", "-lm" });
+    link.addArg("-o");
+    const elf = link.addOutputFileArg(b.fmt("{s}.elf", .{exe.name}));
+
+    // SMDH metadata (HOME-menu name, description, author, icon).
+    const smdh_run = b.addSystemCommand(&.{ tool_smdh, "--create" });
+    smdh_run.addArg(if (opts.title.len > 0) opts.title else exe.name);
+    smdh_run.addArg(if (opts.smdh_long_description.len > 0)
+        opts.smdh_long_description
+    else
+        "Built with Aether");
+    smdh_run.addArg(opts.smdh_author);
+    if (opts.smdh_icon) |icon|
+        smdh_run.addFileArg(icon)
+    else
+        smdh_run.addArg(default_icon);
+    const smdh = smdh_run.addOutputFileArg(b.fmt("{s}.smdh", .{exe.name}));
+
+    // ELF -> 3DSX. The smdh and (optional) romfs ride in via the
+    // `--smdh=` / `--romfs=` flag-form args.
+    const pack = b.addSystemCommand(&.{tool_3dsx});
+    pack.addFileArg(elf);
+    const threedsx = pack.addOutputFileArg(b.fmt("{s}.3dsx", .{exe.name}));
+    pack.addPrefixedFileArg("--smdh=", smdh);
+    if (opts.romfs) |r| pack.addPrefixedDirectoryArg("--romfs=", r);
+
+    if (opts.output_dir) |dir| {
+        const alloc = b.allocator;
+        b.getInstallStep().dependOn(&b.addInstallBinFile(
+            threedsx,
+            std.mem.concat(alloc, u8, &.{ dir, "/", exe.name, ".3dsx" }) catch @panic("OOM"),
+        ).step);
+        b.getInstallStep().dependOn(&b.addInstallBinFile(
+            elf,
+            std.mem.concat(alloc, u8, &.{ dir, "/", exe.name, ".elf" }) catch @panic("OOM"),
+        ).step);
+    } else {
+        b.getInstallStep().dependOn(&b.addInstallBinFile(
+            threedsx,
+            b.fmt("{s}.3dsx", .{exe.name}),
+        ).step);
+    }
+}
+
 /// Registers a shader pair for the game executable. Slang sources are
 /// compiled to SPIR-V (Vulkan) or GLSL (OpenGL) via slangc. On
 /// shaderless platforms (PSP), empty stubs are provided.
@@ -745,20 +981,51 @@ pub fn build(b: *std.Build) void {
 
     exportArtifact(b, b, exe, config, .{
         .title = "Aether",
-        .output_dir = "Aether-PSP",
+        .output_dir = switch (config.platform) {
+            .psp => "Aether-PSP",
+            .nintendo_3ds => "Aether-3DS",
+            else => null,
+        },
+        .smdh_long_description = "Aether engine test app",
+        .smdh_author = "Aether",
     });
 
     const run_step = b.step("run", "Run the app");
-    const run_cmd = b.addRunArtifact(exe);
-    run_step.dependOn(&run_cmd.step);
+    if (config.platform == .nintendo_3ds) {
+        // 3DS can't run natively on the host. The 3DS-side homebrew
+        // launcher listens for incoming .3dsx pushes on port 17491;
+        // `3dslink` finds it via mDNS or accepts an explicit IP.
+        const dkp = devkitProPath(b);
+        const link_cmd = b.addSystemCommand(&.{b.pathJoin(&.{ dkp, "tools/bin/3dslink" })});
+        if (b.option([]const u8, "3dslink-address", "3DS: target IP for 3dslink push (default: mDNS auto-discover)")) |ip| {
+            link_cmd.addArgs(&.{ "-a", ip });
+        }
+        if (b.option(u32, "3dslink-retries", "3DS: 3dslink retry count (default: 10)")) |n| {
+            link_cmd.addArgs(&.{ "-r", b.fmt("{d}", .{n}) });
+        }
+        if (b.option(bool, "3dslink-server", "3DS: pass -s so 3dslink stays listening after the upload (useful for some Rosalina versions and for stdout relay)") orelse false) {
+            link_cmd.addArg("-s");
+        }
+        link_cmd.addArg(b.getInstallPath(.bin, "Aether-3DS/Aether.3dsx"));
+        link_cmd.step.dependOn(b.getInstallStep());
+        if (b.args) |args| link_cmd.addArgs(args);
 
-    run_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
+        const link_step = b.step("3dslink", "Push the 3dsx to a networked 3DS via 3dslink");
+        link_step.dependOn(&link_cmd.step);
+
+        // `zig build run` aliases to 3dslink for 3DS so the same
+        // command works across host/PSP/3DS workflows.
+        run_step.dependOn(&link_cmd.step);
+    } else {
+        const run_cmd = b.addRunArtifact(exe);
+        run_cmd.step.dependOn(b.getInstallStep());
+        if (b.args) |args| run_cmd.addArgs(args);
+        run_step.dependOn(&run_cmd.step);
     }
 
-    // Engine unit tests (desktop only)
-    if (config.platform != .psp) {
+    // Engine unit tests (desktop only — PSP/3DS pull in symbols that
+    // can't be linked or analyzed under the test runner)
+    if (config.platform != .psp and config.platform != .nintendo_3ds) {
         const mod_tests = b.addTest(.{
             .root_module = exe.root_module.import_table.get("aether").?,
         });

@@ -11,6 +11,8 @@ pub const Api = if (options.config.gfx == .headless)
     @import("headless/input.zig")
 else if (builtin.os.tag == .psp)
     @import("psp/input.zig")
+else if (builtin.os.tag == .@"3ds")
+    @import("3ds/input.zig")
 else
     @import("glfw/input.zig");
 

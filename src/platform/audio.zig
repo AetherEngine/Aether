@@ -12,6 +12,8 @@ pub const Api = if (options.config.audio == .none)
     @import("headless/headless_audio.zig")
 else if (builtin.os.tag == .psp)
     @import("psp/psp_audio.zig")
+else if (builtin.os.tag == .@"3ds")
+    @import("3ds/3ds_audio.zig")
 else
     @import("glfw/audio.zig");
 

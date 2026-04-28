@@ -18,13 +18,36 @@ comptime {
 
 pub const psp_stack_size: u32 = 256 * 1024;
 
-// PSP: override panic/IO handlers that would otherwise pull in posix symbols.
-pub const panic = if (ae.platform == .psp) sdk.extra.debug.panic else std.debug.FullPanic(std.debug.defaultPanic);
-pub const std_options_debug_threaded_io = if (ae.platform == .psp) null else std.Io.Threaded.global_single_threaded;
-pub const std_options_debug_io = if (ae.platform == .psp) sdk.extra.Io.psp_io else std.Io.Threaded.global_single_threaded.io();
-pub const std_options_cwd = if (ae.platform == .psp) psp_cwd else null;
+// PSP and 3DS override panic/IO handlers that would otherwise pull in
+// posix symbols (Io.Threaded references std.posix decls that don't exist
+// for these targets). 3DS doesn't have an SDK wired up yet, so its
+// debug_io is `undefined` for now — invoking it before libctru lands is
+// UB, which matches the placeholder entry in `platform/3ds/services.zig`.
+const is_freestanding_console = ae.platform == .psp or ae.platform == .nintendo_3ds;
+// 3DS uses `no_panic` while libctru integration is stubbed: `std_options_debug_io`
+// is `undefined` on 3DS, so `defaultPanic` would deref garbage when formatting,
+// re-panic, and recurse until the stack blows. `no_panic` keeps the first fault
+// as the only fault — a single ARM exception you can read off the screen rather
+// than an unbounded loop through `memset`.
+pub const panic = if (ae.platform == .psp) sdk.extra.debug.panic
+    else if (ae.platform == .nintendo_3ds) std.debug.no_panic
+    else std.debug.FullPanic(std.debug.defaultPanic);
+pub const std_options_debug_threaded_io = if (is_freestanding_console) null else std.Io.Threaded.global_single_threaded;
+pub const std_options_debug_io: std.Io =
+    if (ae.platform == .psp) sdk.extra.Io.psp_io
+    else if (ae.platform == .nintendo_3ds) undefined
+    else std.Io.Threaded.global_single_threaded.io();
+pub const std_options_cwd =
+    if (ae.platform == .psp) psp_cwd
+    else if (ae.platform == .nintendo_3ds) stub_cwd
+    else null;
 fn psp_cwd() std.Io.Dir {
     return .{ .handle = -1 };
+}
+fn stub_cwd() std.Io.Dir {
+    // Dir.Handle resolves to `void` on 3DS (posix.fd_t falls back to
+    // void in the empty system struct). Init with `{}` to match.
+    return .{ .handle = {} };
 }
 
 const Vertex = extern struct {
