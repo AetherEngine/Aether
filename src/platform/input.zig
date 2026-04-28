@@ -13,6 +13,8 @@ else if (builtin.os.tag == .psp)
     @import("psp/input.zig")
 else if (builtin.os.tag == .@"3ds")
     @import("3ds/input.zig")
+else if (options.config.platform == .nintendo_switch)
+    @import("switch/input.zig")
 else
     @import("glfw/input.zig");
 

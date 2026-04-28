@@ -12,6 +12,8 @@ const surface_iface = @import("surface.zig");
 pub const Api = switch (options.config.gfx) {
     .default => if (builtin.os.tag == .@"3ds")
         @import("3ds/3ds_gfx.zig")
+    else if (options.config.platform == .nintendo_switch)
+        @import("switch/switch_gfx.zig")
     else
         @import("psp/psp_gfx_ge.zig"),
     .opengl => @import("glfw/opengl/opengl_gfx.zig"),
@@ -27,6 +29,8 @@ else if (builtin.os.tag == .psp)
     @import("psp/surface.zig")
 else if (builtin.os.tag == .@"3ds")
     @import("3ds/surface.zig")
+else if (options.config.platform == .nintendo_switch)
+    @import("switch/surface.zig")
 else
     @import("glfw/surface.zig");
 

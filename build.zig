@@ -10,6 +10,12 @@ pub const Platform = enum {
     /// serializer can't emit `.@"3ds"` as an enum value literal, so the
     /// internal Aether tag uses a leading-letter form.
     nintendo_3ds,
+    /// Nintendo Switch. Zig 0.16 has no `switch`/`horizon` OS tag, so the
+    /// canonical target is `aarch64-freestanding-none` and we can't infer
+    /// the platform from `target.os.tag` alone. Opt in with
+    /// `-Dnintendo-switch=true`; `Config.resolve` then promotes a
+    /// freestanding aarch64 target to this variant.
+    nintendo_switch,
 };
 
 pub const Gfx = enum {
@@ -58,15 +64,26 @@ pub const Config = struct {
     use_cwd: bool = false,
 
     pub fn resolve(target: std.Build.ResolvedTarget, overrides: Overrides) Config {
-        const plat: Platform = switch (target.result.os.tag) {
-            .windows => .windows,
-            .macos => .macos,
-            .linux => .linux,
-            .psp => .psp,
-            .@"3ds" => .nintendo_3ds,
-            else => |t| {
-                std.debug.panic("Unsupported OS! {}\n", .{t});
-            },
+        const plat: Platform = blk: {
+            if (overrides.nintendo_switch == true) {
+                if (target.result.cpu.arch != .aarch64 or target.result.os.tag != .freestanding) {
+                    std.debug.panic(
+                        "-Dnintendo-switch=true requires -Dtarget=aarch64-freestanding-none (got {s}-{s})\n",
+                        .{ @tagName(target.result.cpu.arch), @tagName(target.result.os.tag) },
+                    );
+                }
+                break :blk .nintendo_switch;
+            }
+            break :blk switch (target.result.os.tag) {
+                .windows => .windows,
+                .macos => .macos,
+                .linux => .linux,
+                .psp => .psp,
+                .@"3ds" => .nintendo_3ds,
+                else => |t| {
+                    std.debug.panic("Unsupported OS! {}\n", .{t});
+                },
+            };
         };
 
         const default_gfx: Gfx = switch (target.result.os.tag) {
@@ -100,6 +117,9 @@ pub const Config = struct {
         psp_display_mode: ?PspDisplayMode = null,
         psp_mipmaps: ?bool = null,
         use_cwd: ?bool = null,
+        /// Promotes an `aarch64-freestanding-none` target to the
+        /// `nintendo_switch` platform. No effect when null/false.
+        nintendo_switch: ?bool = null,
     };
 };
 
@@ -171,11 +191,12 @@ fn devkitProPath(b: *std.Build) []const u8 {
 pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.Step.Compile {
     const config = Config.resolve(opts.target, opts.overrides);
 
-    // 3DS forces ofmt=c — there's no Zig-native backend for the Horizon
-    // ARM target yet, so we emit C and let an external 3DS toolchain
-    // (devkitARM/libctru) compile the result. Stub backends keep the
-    // engine compiling end-to-end until a real SDK is wired in.
-    const target = if (config.platform == .nintendo_3ds) blk: {
+    // 3DS and Switch force ofmt=c — there's no Zig-native backend for
+    // either Horizon target yet, so we emit C and let an external
+    // toolchain (devkitARM/libctru on 3DS, devkitA64/libnx on Switch)
+    // compile the result. Stub backends keep the engine compiling
+    // end-to-end until a real SDK is wired in.
+    const target = if (config.platform == .nintendo_3ds or config.platform == .nintendo_switch) blk: {
         var q = opts.target.query;
         q.ofmt = .c;
         break :blk b.resolveTargetQuery(q);
@@ -201,9 +222,9 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
 
     if (psp_dep) |pd| {
         mod.addImport("pspsdk", pd.module("pspsdk"));
-    } else if (config.platform == .nintendo_3ds) {
-        // No 3DS SDK is wired in yet; stubs satisfy every backend
-        // contract so addImport calls are unnecessary here.
+    } else if (config.platform == .nintendo_3ds or config.platform == .nintendo_switch) {
+        // No 3DS/Switch SDK is wired in yet; stubs satisfy every
+        // backend contract so addImport calls are unnecessary here.
     } else {
         const zglfw = owner.dependency("zglfw", .{
             .target = target,
@@ -294,11 +315,13 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
         exe.subsystem = .windows;
     }
 
-    if (config.platform == .nintendo_3ds) {
-        // std/start.zig opts `.@"3ds"` out of exporting a default entry
-        // symbol, so without an explicit entry the linker DCEs `main`
-        // and the emitted C is constants-only. Force `main` to keep
-        // the whole call graph alive for the external 3DS toolchain.
+    if (config.platform == .nintendo_3ds or config.platform == .nintendo_switch) {
+        // std/start.zig opts `.@"3ds"` and freestanding out of
+        // exporting a default entry symbol, so without an explicit
+        // entry the linker DCEs `main` and the emitted C is
+        // constants-only. Force `main` to keep the whole call graph
+        // alive for the external toolchain. (libnx's switch.specs
+        // also `--require-defined=main` at link time.)
         exe.entry = .{ .symbol_name = "main" };
     }
 
@@ -321,8 +344,8 @@ pub fn addHeadless(owner: *std.Build, b: *std.Build, opts: HeadlessOptions) *std
     config.gfx = .headless;
     config.audio = .none;
 
-    // 3DS forces ofmt=c (see addGame for details).
-    const target = if (config.platform == .nintendo_3ds) blk: {
+    // 3DS and Switch force ofmt=c (see addGame for details).
+    const target = if (config.platform == .nintendo_3ds or config.platform == .nintendo_switch) blk: {
         var q = opts.target.query;
         q.ofmt = .c;
         break :blk b.resolveTargetQuery(q);
@@ -445,6 +468,18 @@ pub const ExportOptions = struct {
     smdh_icon: ?std.Build.LazyPath = null,
     /// 3DS: directory (or pre-built `.romfs`) embedded into the 3DSX.
     romfs: ?std.Build.LazyPath = null,
+    /// Switch: NACP author string (shows under the title in the HOME
+    /// menu). Empty falls back to "Aether".
+    switch_author: []const u8 = "",
+    /// Switch: NACP version string (e.g. "1.0.0"). Empty falls back to
+    /// "1.0.0".
+    switch_version: []const u8 = "",
+    /// Switch: 256x256 JPEG icon embedded in the NRO. When null, libnx's
+    /// `default_icon.jpg` is used.
+    switch_icon: ?std.Build.LazyPath = null,
+    /// Switch: directory embedded into the NRO as RomFS. When null, no
+    /// RomFS is attached.
+    switch_romfs: ?std.Build.LazyPath = null,
 
     pub const Resource = struct {
         /// Source file to copy.
@@ -470,6 +505,8 @@ pub fn exportArtifact(owner: *std.Build, b: *std.Build, exe: *std.Build.Step.Com
         _ = pspEbootPipeline(b, exe, psp_dep, opts);
     } else if (config.platform == .nintendo_3ds) {
         threedsxPipeline(b, exe, opts);
+    } else if (config.platform == .nintendo_switch) {
+        switchNroPipeline(b, exe, opts);
     } else if (config.platform == .macos) {
         macosAppBundle(b, exe, opts);
     } else {
@@ -896,6 +933,145 @@ fn threedsxPipeline(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOpt
     }
 }
 
+/// Compiles the zig-emitted C with devkitA64, links against libnx, and
+/// packages the ELF (plus a NACP and optional RomFS) into a `.nro`
+/// homebrew bundle. Mirrors `threedsxPipeline` for the Switch toolchain.
+fn switchNroPipeline(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOptions) void {
+    // aarch64 GCC supports __int128 natively, so we don't need the
+    // `zig.h` align(16) -> align(8) patch the 3DS pipeline applies.
+    //
+    // We do still need a compiler_rt object: zig.h calls helpers like
+    // `__floatunsisf` / `__floatundidf` / `__floatdisf` unconditionally,
+    // but devkitA64's libgcc doesn't ship them — gcc on aarch64 with
+    // hardware FP inlines these casts as `ucvtf`/`scvtf`, so the
+    // helpers are dead code in normal compilations. Zig's emitted C
+    // takes the slow path, so we drop in zig's own compiler_rt to
+    // satisfy the references. Like the 3DS pipeline we localize
+    // symbols that overlap newlib (memset/memcpy/...) so the linker
+    // pulls newlib's strong implementations.
+    const game_target = exe.root_module.resolved_target.?;
+    var crt_query = game_target.query;
+    crt_query.os_tag = .freestanding;
+    crt_query.ofmt = null;
+    crt_query.cpu_model = .{ .explicit = game_target.result.cpu.model };
+    const crt_target = b.resolveTargetQuery(crt_query);
+
+    const compiler_rt_path = b.pathJoin(&.{
+        b.graph.zig_lib_directory.path orelse ".",
+        "compiler_rt.zig",
+    });
+    const crt_obj = b.addObject(.{
+        .name = "aether_switch_compiler_rt",
+        .root_module = b.createModule(.{
+            .root_source_file = .{ .cwd_relative = compiler_rt_path },
+            .target = crt_target,
+            .optimize = .ReleaseSmall,
+            .strip = true,
+            // Switch homebrew uses libnx's switch.specs which links
+            // with `-z text`. PIC is mandatory for any object that
+            // ends up in the read-only .text segment, otherwise the
+            // linker rejects the dynamic absolute relocations.
+            .pic = true,
+        }),
+    });
+
+    const dkp = devkitProPath(b);
+
+    const strip_libc = b.addSystemCommand(&.{
+        b.pathJoin(&.{ dkp, "devkitA64/bin/aarch64-none-elf-objcopy" }),
+        "--localize-symbol=memset",
+        "--localize-symbol=memcpy",
+        "--localize-symbol=memmove",
+        "--localize-symbol=memcmp",
+        "--localize-symbol=strlen",
+        "--localize-symbol=bcmp",
+    });
+    strip_libc.addArtifactArg(crt_obj);
+    const crt_clean = strip_libc.addOutputFileArg("aether_switch_compiler_rt.o");
+    const gcc = b.pathJoin(&.{ dkp, "devkitA64/bin/aarch64-none-elf-gcc" });
+    const tool_elf2nro = b.pathJoin(&.{ dkp, "tools/bin/elf2nro" });
+    const tool_nacp = b.pathJoin(&.{ dkp, "tools/bin/nacptool" });
+    const libnx_inc = b.pathJoin(&.{ dkp, "libnx/include" });
+    const libnx_lib = b.pathJoin(&.{ dkp, "libnx/lib" });
+    const libnx_specs = b.pathJoin(&.{ dkp, "libnx/switch.specs" });
+    const default_icon = b.pathJoin(&.{ dkp, "libnx/default_icon.jpg" });
+
+    // Standard Switch arch flags from devkitPro's switch_rules /
+    // example Makefiles. `-mtp=soft` matches what libnx is built
+    // against; mismatching the TLS access mode crashes on the first
+    // thread-local read.
+    const arch = [_][]const u8{
+        "-march=armv8-a+crc+crypto", "-mtune=cortex-a57", "-mtp=soft", "-fPIE",
+    };
+
+    const link = b.addSystemCommand(&.{gcc});
+    link.addArgs(&arch);
+    link.addArgs(&.{
+        "-ffunction-sections", "-fdata-sections",
+        "-D__SWITCH__",        "-O2",
+        "-g",                  b.fmt("-specs={s}", .{libnx_specs}),
+        // Pin the C standard to C11 (zig.h targets `_Noreturn`, not
+        // C23's `[[noreturn]]`).
+        "-std=gnu11",
+        // zig's -ofmt=c emitter has known pointer/int-conversion
+        // mismatches that gcc 14+ promotes to errors. We don't author
+        // the C, so demote them.
+                 "-Wno-incompatible-pointer-types",
+        "-Wno-int-conversion", "-Wno-builtin-declaration-mismatch",
+    });
+    link.addArg(b.fmt("-I{s}", .{libnx_inc}));
+    // zig's emitted C `#include "zig.h"`. The header lives in zig's
+    // own lib directory; point gcc at it. aarch64 GCC's __int128
+    // alignment matches zig's, so no patching is needed (unlike 3DS).
+    link.addArg(b.fmt("-I{s}", .{b.graph.zig_lib_directory.path orelse "."}));
+    link.addArg("-x");
+    link.addArg("c");
+    link.addArtifactArg(exe);
+    link.addArg("-x");
+    link.addArg("none");
+    link.addFileArg(crt_clean);
+    link.addArg(b.fmt("-L{s}", .{libnx_lib}));
+    link.addArgs(&.{ "-lnx", "-lm" });
+    link.addArg("-o");
+    const elf = link.addOutputFileArg(b.fmt("{s}.elf", .{exe.name}));
+
+    // NACP metadata (HOME-menu title, author, version).
+    const nacp_run = b.addSystemCommand(&.{ tool_nacp, "--create" });
+    nacp_run.addArg(if (opts.title.len > 0) opts.title else exe.name);
+    nacp_run.addArg(if (opts.switch_author.len > 0) opts.switch_author else "Aether");
+    nacp_run.addArg(if (opts.switch_version.len > 0) opts.switch_version else "1.0.0");
+    const nacp = nacp_run.addOutputFileArg(b.fmt("{s}.nacp", .{exe.name}));
+
+    // ELF -> NRO. The icon, NACP, and (optional) romfs ride in via
+    // flag-form args.
+    const pack = b.addSystemCommand(&.{tool_elf2nro});
+    pack.addFileArg(elf);
+    const nro = pack.addOutputFileArg(b.fmt("{s}.nro", .{exe.name}));
+    if (opts.switch_icon) |icon|
+        pack.addPrefixedFileArg("--icon=", icon)
+    else
+        pack.addArg(b.fmt("--icon={s}", .{default_icon}));
+    pack.addPrefixedFileArg("--nacp=", nacp);
+    if (opts.switch_romfs) |r| pack.addPrefixedDirectoryArg("--romfsdir=", r);
+
+    if (opts.output_dir) |dir| {
+        const alloc = b.allocator;
+        b.getInstallStep().dependOn(&b.addInstallBinFile(
+            nro,
+            std.mem.concat(alloc, u8, &.{ dir, "/", exe.name, ".nro" }) catch @panic("OOM"),
+        ).step);
+        b.getInstallStep().dependOn(&b.addInstallBinFile(
+            elf,
+            std.mem.concat(alloc, u8, &.{ dir, "/", exe.name, ".elf" }) catch @panic("OOM"),
+        ).step);
+    } else {
+        b.getInstallStep().dependOn(&b.addInstallBinFile(
+            nro,
+            b.fmt("{s}.nro", .{exe.name}),
+        ).step);
+    }
+}
+
 /// Registers a shader pair for the game executable. Slang sources are
 /// compiled to SPIR-V (Vulkan) or GLSL (OpenGL) via slangc. On
 /// shaderless platforms (PSP), empty stubs are provided.
@@ -963,6 +1139,7 @@ pub fn build(b: *std.Build) void {
         .psp_display_mode = b.option(PspDisplayMode, "psp-display", "PSP display mode: rgba8888 (32-bit, default) or rgb565 (16-bit)"),
         .psp_mipmaps = b.option(bool, "psp-mipmaps", "PSP: generate mip levels for VRAM-resident textures (default: false)"),
         .use_cwd = b.option(bool, "use-cwd", "Force resources+data dirs to CWD (debug/CI convenience; default: false)"),
+        .nintendo_switch = b.option(bool, "nintendo-switch", "Build for Nintendo Switch (requires -Dtarget=aarch64-freestanding-none and devkitA64/libnx)"),
     };
 
     const config = Config.resolve(target, overrides);
@@ -984,6 +1161,7 @@ pub fn build(b: *std.Build) void {
         .output_dir = switch (config.platform) {
             .psp => "Aether-PSP",
             .nintendo_3ds => "Aether-3DS",
+            .nintendo_switch => "Aether-Switch",
             else => null,
         },
         .smdh_long_description = "Aether engine test app",
@@ -1016,6 +1194,35 @@ pub fn build(b: *std.Build) void {
         // `zig build run` aliases to 3dslink for 3DS so the same
         // command works across host/PSP/3DS workflows.
         run_step.dependOn(&link_cmd.step);
+    } else if (config.platform == .nintendo_switch) {
+        // Switch can't run natively on the host. nxlink pushes the
+        // .nro to nx-hbloader on a networked Switch (mDNS by default,
+        // explicit IP via -a).
+        const dkp = devkitProPath(b);
+        const link_cmd = b.addSystemCommand(&.{b.pathJoin(&.{ dkp, "tools/bin/nxlink" })});
+        if (b.option([]const u8, "nxlink-address", "Switch: target IP for nxlink push (default: mDNS auto-discover)")) |ip| {
+            link_cmd.addArgs(&.{ "-a", ip });
+        }
+        if (b.option(u32, "nxlink-retries", "Switch: nxlink retry count (default: 10)")) |n| {
+            link_cmd.addArgs(&.{ "-r", b.fmt("{d}", .{n}) });
+        }
+        if (b.option(bool, "nxlink-server", "Switch: pass -s so nxlink stays listening after upload (relays stdout/stderr from nro)") orelse false) {
+            link_cmd.addArg("-s");
+        }
+        link_cmd.addArg(b.getInstallPath(.bin, "Aether-Switch/Aether.nro"));
+        link_cmd.step.dependOn(b.getInstallStep());
+        if (b.args) |args| {
+            // nxlink takes nro args after a `--args` separator.
+            link_cmd.addArg("--args");
+            link_cmd.addArgs(args);
+        }
+
+        const link_step = b.step("nxlink", "Push the nro to a networked Switch via nxlink");
+        link_step.dependOn(&link_cmd.step);
+
+        // `zig build run` aliases to nxlink for Switch so the same
+        // command works across host/PSP/3DS/Switch workflows.
+        run_step.dependOn(&link_cmd.step);
     } else {
         const run_cmd = b.addRunArtifact(exe);
         run_cmd.step.dependOn(b.getInstallStep());
@@ -1023,9 +1230,9 @@ pub fn build(b: *std.Build) void {
         run_step.dependOn(&run_cmd.step);
     }
 
-    // Engine unit tests (desktop only — PSP/3DS pull in symbols that
-    // can't be linked or analyzed under the test runner)
-    if (config.platform != .psp and config.platform != .nintendo_3ds) {
+    // Engine unit tests (desktop only — PSP/3DS/Switch pull in symbols
+    // that can't be linked or analyzed under the test runner)
+    if (config.platform != .psp and config.platform != .nintendo_3ds and config.platform != .nintendo_switch) {
         const mod_tests = b.addTest(.{
             .root_module = exe.root_module.import_table.get("aether").?,
         });
