@@ -122,27 +122,44 @@ export fn char_callback(_: *glfw.Window, codepoint: c_uint) callconv(.c) void {
     core.deliver_text(buf[0..len]);
 }
 
-export fn mouse_button_callback(_: *glfw.Window, button: c_int, action: c_int, mods: c_int) callconv(.c) void {
+export fn mouse_button_callback(window: *glfw.Window, button: c_int, action: c_int, mods: c_int) callconv(.c) void {
     if (button < 0 or button > 2) return;
     current_modifiers = convert_mods(mods);
     const mb: core.MouseButton = @enumFromInt(button);
+    var win_w: c_int = 0;
+    var win_h: c_int = 0;
+    var fb_w: c_int = 0;
+    var fb_h: c_int = 0;
+    glfw.getWindowSize(window, &win_w, &win_h);
+    glfw.getFramebufferSize(window, &fb_w, &fb_h);
+    const sx = @as(f64, @floatFromInt(fb_w)) / @as(f64, @floatFromInt(win_w));
+    const sy = @as(f64, @floatFromInt(fb_h)) / @as(f64, @floatFromInt(win_h));
     const pos = core.Vec2{
-        .x = @floatCast(prev_cursor_x),
-        .y = @floatCast(prev_cursor_y),
+        .x = @floatCast(prev_cursor_x * sx),
+        .y = @floatCast(prev_cursor_y * sy),
     };
     const edge: core.ButtonState = if (action == glfw.Press) .pressed else .released;
     core.deliver_mouse_button(mb, edge, pos);
 }
 
-export fn cursor_pos_callback(_: *glfw.Window, xpos: f64, ypos: f64) callconv(.c) void {
+export fn cursor_pos_callback(window: *glfw.Window, xpos: f64, ypos: f64) callconv(.c) void {
     const dx = if (have_prev_cursor) xpos - prev_cursor_x else 0;
     const dy = if (have_prev_cursor) ypos - prev_cursor_y else 0;
     prev_cursor_x = xpos;
     prev_cursor_y = ypos;
     have_prev_cursor = true;
+    // GLFW gives window coords; rest of the engine works in framebuffer pixels.
+    var win_w: c_int = 0;
+    var win_h: c_int = 0;
+    var fb_w: c_int = 0;
+    var fb_h: c_int = 0;
+    glfw.getWindowSize(window, &win_w, &win_h);
+    glfw.getFramebufferSize(window, &fb_w, &fb_h);
+    const sx = @as(f64, @floatFromInt(fb_w)) / @as(f64, @floatFromInt(win_w));
+    const sy = @as(f64, @floatFromInt(fb_h)) / @as(f64, @floatFromInt(win_h));
     core.deliver_mouse_move(
-        .{ .x = @floatCast(xpos), .y = @floatCast(ypos) },
-        .{ .x = @floatCast(dx), .y = @floatCast(dy) },
+        .{ .x = @floatCast(xpos * sx), .y = @floatCast(ypos * sy) },
+        .{ .x = @floatCast(dx * sx), .y = @floatCast(dy * sy) },
     );
 }
 
