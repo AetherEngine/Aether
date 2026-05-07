@@ -22,6 +22,7 @@ pub const TextInputTarget = struct {
 pub const TextInputOptions = struct {
     multiline: bool = false,
     max_bytes: ?usize = null,
+    initial: ?[]const u8 = null,
 };
 
 pub const TextInputSession = struct {
