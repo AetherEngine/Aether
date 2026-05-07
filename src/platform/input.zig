@@ -22,9 +22,11 @@ pub fn init(alloc: std.mem.Allocator, io: std.Io) !void {
     try core.init(alloc);
     Api.setup(alloc, io);
     try Api.init();
+    core.set_text_session_hooks(Api.begin_text_input_session, Api.end_text_input_session);
 }
 
 pub fn deinit() void {
+    core.set_text_session_hooks(null, null);
     Api.deinit();
     core.deinit();
 }
