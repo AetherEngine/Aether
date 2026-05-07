@@ -67,7 +67,7 @@ pub fn CircularBuffer(comptime T: type, comptime SIZE: usize) type {
                 }
                 idx = next_index(idx);
             } else {
-                // Shouldn’t be reachable because we checked isFull(), but be safe.
+                // Shouldn't be reachable because we checked isFull(), but be safe.
                 return null;
             }
         }

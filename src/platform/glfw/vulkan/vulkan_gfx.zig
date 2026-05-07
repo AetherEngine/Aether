@@ -553,7 +553,7 @@ pub fn start_frame() bool {
     command_buffer.setScissor(0, @ptrCast(&scissor));
 
     // Every state listed in a pipeline's VkPipelineDynamicStateCreateInfo must
-    // be set on each fresh command buffer before the first draw — the baked
+    // be set on each fresh command buffer before the first draw -- the baked
     // pipeline value is ignored once the state is marked dynamic. Re-apply the
     // tracked values here so downstream projects get deterministic defaults
     // regardless of whether they call the setters. MoltenVK/Metal in particular
@@ -871,7 +871,7 @@ pub fn create_pipeline(layout: Pipeline.VertexLayout, vs: ?[:0]align(4) const u8
         .blend_constants = @splat(0),
     };
 
-    // On macOS drop color_blend_enable_ext — MoltenVK cannot back it. The
+    // On macOS drop color_blend_enable_ext -- MoltenVK cannot back it. The
     // pipeline bakes blend_enable=true and set_alpha_blend is a no-op there.
     const dynstate_mac = [_]vk.DynamicState{ .viewport, .scissor, .primitive_topology, .depth_write_enable };
     const dynstate_full = [_]vk.DynamicState{ .viewport, .scissor, .color_blend_enable_ext, .primitive_topology, .depth_write_enable };
@@ -1375,7 +1375,7 @@ pub fn destroy_texture(handle: Texture.Handle) void {
     const rec = textures.get_element(handle) orelse return;
 
     // Null out the image slot in the bindless array (binding 1).
-    // Binding 0 is a single shared sampler (element 0 only) — don't touch it here.
+    // Binding 0 is a single shared sampler (element 0 only) -- don't touch it here.
     const null_img = vk.DescriptorImageInfo{
         .sampler = .null_handle,
         .image_view = .null_handle,

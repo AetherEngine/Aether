@@ -138,7 +138,7 @@ pub fn Mixer(comptime Backend: type) type {
                 }
             }
 
-            // 3. Sort by score descending (insertion sort — count <= 64).
+            // 3. Sort by score descending (insertion sort -- count <= 64).
             if (count > 1) {
                 for (1..count) |i| {
                     const key = order[i];

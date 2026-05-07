@@ -10,9 +10,9 @@
 //! Over-aligned requests (alignment > BLOCK_SIZE) are handled by constraining
 //! the starting block index to a multiple of (alignment / BLOCK_SIZE).
 //!
-//! alloc — O(1) single-block via L1→L0 descent; O(n/32) multi-block scan
-//! free  — O(1): set bits + update summary
-//! resize — O(1): test/set adjacent bits
+//! alloc -- O(1) single-block via L1->L0 descent; O(n/32) multi-block scan
+//! free  -- O(1): set bits + update summary
+//! resize -- O(1): test/set adjacent bits
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -282,7 +282,7 @@ pub const PoolAlloc = struct {
             }
             const l0w = self.l0[l0i];
             if (l0w == 0) {
-                // Stale L1 bit — shouldn't happen, but handle gracefully.
+                // Stale L1 bit -- shouldn't happen, but handle gracefully.
                 l1i += 1;
                 continue;
             }
@@ -321,13 +321,13 @@ pub const PoolAlloc = struct {
                 const w = self.l0[wi];
 
                 if (w == 0) {
-                    // Fully allocated word — reset run.
+                    // Fully allocated word -- reset run.
                     run_len = 0;
                     continue;
                 }
 
                 if (w == 0xFFFF_FFFF) {
-                    // Fully free word — extend or start run.
+                    // Fully free word -- extend or start run.
                     const word_base = wi * WORD_BITS;
                     if (run_len == 0) {
                         // Start a new run, aligned.
@@ -351,7 +351,7 @@ pub const PoolAlloc = struct {
                     continue;
                 }
 
-                // Partial word — process bit by bit via sub-runs.
+                // Partial word -- process bit by bit via sub-runs.
                 const word_base = wi * WORD_BITS;
 
                 // If we have a run from a previous word, try to extend it

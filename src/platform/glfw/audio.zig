@@ -1,4 +1,4 @@
-//! Desktop audio backend — uses zaudio (miniaudio) with a low-level device
+//! Desktop audio backend -- uses zaudio (miniaudio) with a low-level device
 //! callback. The audio thread pulls PCM from each slot's Stream reader,
 //! converts to float32 stereo, applies gain/pan from the mixer, and writes
 //! to the output device.

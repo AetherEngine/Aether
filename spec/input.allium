@@ -1,0 +1,732 @@
+-- allium: 3
+-- input.allium
+
+-- Scope: Aether's input system as exposed to game code and as required from
+-- platform backends. Captures the new layered design that replaces the global
+-- single-callback action registry with: a per-frame raw event stream, queryable
+-- action sets, an explicit context stack with mandatory cursor policy,
+-- text-input sessions, and capture-next-input sessions for rebinding.
+--
+-- Includes:
+--   - Per-frame raw event stream with ordering guarantees
+--   - Action sets with multiple bindings; only the top context's set is queryable
+--   - Context stack with mandatory cursor mode per layer; top wins absolutely
+--   - Text-input sessions (one active at a time)
+--   - Capture-next-input sessions for rebinding (held-at-start ignored)
+--   - Pointer position vs delta separation
+--   - Platform-backend contract (what each backend must deliver)
+--
+-- Excludes:
+--   - The specific Key / MouseButton / GamepadButton / GamepadAxis enumeration
+--     (data dictionary, treated as external opaque types here)
+--   - Per-backend implementation (GLFW, PSP, headless)
+--   - Threading and allocator policy
+--   - Input recording / replay
+--
+-- Replaces: the legacy single global action map, the single context+callback
+-- per action, and the clear()-based teardown pattern.
+
+actor GameRuntime {
+    identified_by: this
+}
+
+actor PlatformBackend {
+    identified_by: this
+}
+
+-- =====================================================================
+-- Opaque data-dictionary types
+-- =====================================================================
+
+external entity Key { code: Integer }
+external entity MouseButton { code: Integer }
+external entity GamepadButton { code: Integer }
+external entity GamepadAxis { code: Integer }
+external entity Modifier { code: Integer }
+
+-- The engine assumes a single active gamepad. Multi-gamepad support is out
+-- of scope for this spec -- gamepad events carry no GamepadId.
+
+value Vec2 { x: Decimal, y: Decimal }
+
+enum BindingSourceKind {
+    key | mouse_button | mouse_wheel | mouse_delta | gamepad_button | gamepad_axis
+}
+
+enum AxisComponent { x | y | none }
+
+-- AxisComponent excluding 'none', for sources that are intrinsically axis-bound
+-- (mouse delta, mouse wheel). A binding source declared on these without a
+-- specific axis would be meaningless.
+enum Vec2Axis { x | y }
+
+enum ButtonState { pressed | released }
+
+enum CursorMode { captured | free | hidden | visible }
+
+-- =====================================================================
+-- Raw events (sum type)
+-- =====================================================================
+
+entity RawEvent {
+    sequence: Integer
+    kind: KeyDown | KeyUp | TextUtf8 | MouseButtonDown | MouseButtonUp | MouseMoveAbs | MouseMoveRel | MouseWheel | GamepadButtonDown | GamepadButtonUp | GamepadAxisChanged | FocusLost | FocusGained
+}
+
+variant KeyDown : RawEvent {
+    key: Key
+    modifiers: Set<Modifier>
+    is_repeat: Boolean
+}
+
+variant KeyUp : RawEvent {
+    key: Key
+    modifiers: Set<Modifier>
+}
+
+variant TextUtf8 : RawEvent {
+    text: String
+}
+
+variant MouseButtonDown : RawEvent {
+    button: MouseButton
+    position: Vec2
+}
+
+variant MouseButtonUp : RawEvent {
+    button: MouseButton
+    position: Vec2
+}
+
+variant MouseMoveAbs : RawEvent {
+    position: Vec2
+}
+
+variant MouseMoveRel : RawEvent {
+    delta: Vec2
+}
+
+variant MouseWheel : RawEvent {
+    delta: Vec2
+}
+
+variant GamepadButtonDown : RawEvent {
+    button: GamepadButton
+}
+
+variant GamepadButtonUp : RawEvent {
+    button: GamepadButton
+}
+
+variant GamepadAxisChanged : RawEvent {
+    axis: GamepadAxis
+    value: Decimal
+}
+
+variant FocusLost : RawEvent { }
+variant FocusGained : RawEvent { }
+
+-- =====================================================================
+-- Per-frame snapshot
+-- =====================================================================
+
+entity InputFrame {
+    sequence: Integer
+    events: List<RawEvent>
+    pointer: Pointer
+}
+
+value Pointer {
+    -- Cursor position in surface-pixel coordinates, top-left origin.
+    -- Always the literal cursor location, regardless of capture state.
+    position: Vec2
+    -- Per-frame motion delta in pixel space. Always a delta.
+    -- Never overloaded with position.
+    delta: Vec2
+}
+
+-- =====================================================================
+-- Bindings
+-- =====================================================================
+
+entity BindingSource {
+    kind: KeySource | MouseButtonSource | MouseDeltaSource | MouseWheelSource | GamepadButtonSource | GamepadAxisSource
+}
+
+variant KeySource : BindingSource { key: Key }
+variant MouseButtonSource : BindingSource { button: MouseButton }
+variant MouseDeltaSource : BindingSource { axis: Vec2Axis }
+variant MouseWheelSource : BindingSource { axis: Vec2Axis }
+variant GamepadButtonSource : BindingSource { button: GamepadButton }
+variant GamepadAxisSource : BindingSource { axis: GamepadAxis }
+
+value Binding {
+    source: BindingSource
+    component: AxisComponent
+    multiplier: Decimal
+    deadzone: Decimal
+}
+
+-- =====================================================================
+-- Actions
+-- =====================================================================
+
+entity ActionSet {
+    name: String
+    actions: Set<Action> with set = this
+    installed: Boolean
+}
+
+entity Action {
+    name: String
+    set: ActionSet
+    kind: ButtonAction | AxisAction | Vector2Action
+    bindings: List<Binding>
+}
+
+variant ButtonAction : Action {
+    button_state: ButtonState
+}
+
+variant AxisAction : Action {
+    axis_value: Decimal
+}
+
+variant Vector2Action : Action {
+    vector_x: Decimal
+    vector_y: Decimal
+}
+
+-- =====================================================================
+-- Context stack
+-- =====================================================================
+
+entity InputContext {
+    name: String
+    -- Required: every context declares cursor mode. Top of stack wins absolutely.
+    cursor_mode: CursorMode
+    -- The single action set queryable while this context is on top.
+    -- All lower contexts' action sets are fully masked.
+    actions: ActionSet
+    -- When true, TextUtf8 events route to the active TextInputSession (if any).
+    -- TextUtf8 events still appear in the frame's event list regardless.
+    consumes_text: Boolean
+    -- Whether mouse-button / pointer-delta events are interpreted by this
+    -- context's logic. Events still appear in the event list regardless.
+    consumes_pointer: Boolean
+}
+
+-- Pause is not modelled in this spec. Games implement pause as whatever makes
+-- sense for them -- typically by pushing a context whose action set masks
+-- gameplay actions; the game's own update logic decides whether to advance
+-- simulation. The engine has no opinion.
+
+entity ContextStack {
+    layers: List<InputContext>
+    top: InputContext? = layers.last
+}
+
+-- =====================================================================
+-- Text input
+-- =====================================================================
+
+entity TextInputSession {
+    target: TextInputTarget
+    options: TextInputOptions
+    buffer: String
+    -- 'suspended' is entered when the surface loses focus while a session is
+    -- active; on FocusGained the session resumes ('active') and routing of
+    -- subsequent TextUtf8 events resumes. The session is never implicitly
+    -- cancelled by focus changes -- only by explicit Submit or Cancel actions.
+    status: active | suspended | submitted | cancelled
+
+    transitions status {
+        active -> suspended
+        suspended -> active
+        active -> submitted
+        active -> cancelled
+        suspended -> cancelled
+        terminal: submitted, cancelled
+    }
+}
+
+external entity TextInputTarget { id: String }
+
+value TextInputOptions {
+    multiline: Boolean
+    max_bytes: Integer?
+}
+
+-- =====================================================================
+-- Capture-next-input (rebinding)
+-- =====================================================================
+
+entity CaptureNextInputSession {
+    eligible_kinds: Set<BindingSourceKind>
+    -- Sources observed in 'pressed' state at session start. Until a source
+    -- transitions through 'released' once, its press events are ignored.
+    held_at_start: Set<BindingSource>
+    -- Sources that have transitioned through released since session start
+    -- (or were never held), and are therefore eligible to complete capture
+    -- on a fresh down-edge.
+    armed: Set<BindingSource>
+    status: waiting | captured | cancelled
+    result: CaptureResult? when status = captured
+
+    transitions status {
+        waiting -> captured
+        waiting -> cancelled
+        terminal: captured, cancelled
+    }
+}
+
+value CaptureResult {
+    source: BindingSource
+    modifiers: Set<Modifier>
+    -- Human-readable label for UI; storage form is the source itself.
+    display_label: String
+}
+
+-- =====================================================================
+-- Module bindings
+-- =====================================================================
+
+given {
+    stack: ContextStack
+}
+
+-- =====================================================================
+-- Configuration
+-- =====================================================================
+
+config {
+    -- Magnitude an analog axis must exceed to count as a fresh down-edge for
+    -- capture sessions and last-input-mode tracking.
+    axis_activity_threshold: Decimal = 0.1
+    -- Default deadzone applied to gamepad-axis bindings unless overridden.
+    default_axis_deadzone: Decimal = 0.4
+}
+
+-- =====================================================================
+-- Rules: text-input session lifecycle and routing
+-- =====================================================================
+
+rule TextInputBegun {
+    when: BeginTextInput(target, options)
+    requires: (TextInputSessions where status = active).count = 0
+    ensures: TextInputSession.created(
+        target: target,
+        options: options,
+        buffer: "",
+        status: active,
+    )
+}
+
+rule TextRoutedToActiveSession {
+    when: event: RawEvent.created
+    requires: event.kind = TextUtf8
+    requires: stack.top != null
+    requires: stack.top.consumes_text
+    for session in TextInputSessions where status = active:
+        ensures: session.buffer = session.buffer + event.text
+
+    @guidance
+        -- TextUtf8 events still appear in InputFrame.events even when no
+        -- session is active or the top context does not consume text, or
+        -- when the active session is suspended (focus lost). Routing is a
+        -- side-effect; the raw event stream is unaffected.
+        -- Suspended sessions do not accumulate text -- events delivered
+        -- while focus is lost are dropped at the routing step.
+}
+
+rule TextSubmitted {
+    when: SubmitText(session)
+    requires: session.status = active
+    ensures: session.status = submitted
+}
+
+rule TextCancelled {
+    when: CancelText(session)
+    requires: session.status = active or session.status = suspended
+    ensures: session.status = cancelled
+}
+
+rule TextInputSuspendedOnFocusLost {
+    when: event: RawEvent.created
+    requires: event.kind = FocusLost
+    for session in TextInputSessions where status = active:
+        ensures: session.status = suspended
+}
+
+rule TextInputResumedOnFocusGained {
+    when: event: RawEvent.created
+    requires: event.kind = FocusGained
+    for session in TextInputSessions where status = suspended:
+        ensures: session.status = active
+}
+
+-- =====================================================================
+-- Rules: capture-next-input session
+-- =====================================================================
+
+rule CaptureBegun {
+    when: BeginCaptureNextInput(eligible)
+    requires: (CaptureNextInputSessions where status = waiting).count = 0
+    let held = currently_pressed_sources()
+    ensures: CaptureNextInputSession.created(
+        eligible_kinds: eligible,
+        held_at_start: held,
+        armed: {},
+        status: waiting,
+    )
+
+    @guidance
+        -- currently_pressed_sources() is a black-box snapshot of device
+        -- state at the moment capture begins: every BindingSource currently
+        -- in 'pressed' state (or with an analog axis above
+        -- axis_activity_threshold). These sources are excluded from
+        -- completing capture until they release at least once.
+}
+
+rule CaptureKeyArmedOnRelease {
+    when: event: RawEvent.created
+    requires: event.kind = KeyUp
+    for s in CaptureNextInputSessions where status = waiting:
+        for src in s.held_at_start:
+            requires: src.kind = KeySource
+            requires: src.key = event.key
+            ensures: s.armed = s.armed + { src }
+            ensures: s.held_at_start = s.held_at_start - { src }
+
+    @guidance
+        -- A KeySource is matched against the released key. Once released,
+        -- the source moves from held_at_start to armed and is eligible to
+        -- complete capture on its next pressed edge.
+}
+
+rule CaptureKeyCompletedOnFreshDown {
+    when: event: RawEvent.created
+    requires: event.kind = KeyDown
+    requires: not event.is_repeat
+    for s in CaptureNextInputSessions where status = waiting:
+        requires: key in s.eligible_kinds
+        let candidate = KeySource{key: event.key}
+        requires: candidate in s.armed or candidate not in (s.armed + s.held_at_start)
+        ensures: s.status = captured
+        ensures: s.result = CaptureResult{
+            source: candidate,
+            modifiers: event.modifiers,
+            display_label: format_label(candidate, event.modifiers),
+        }
+
+    @guidance
+        -- Analogous protocols apply for MouseButton, GamepadButton and
+        -- GamepadAxis sources: a source held at session start must
+        -- transition through its 'released' equivalent (button up, or axis
+        -- below axis_activity_threshold) before its next pressed edge can
+        -- complete capture. For axes the 'pressed' equivalent is crossing
+        -- axis_activity_threshold from below. Those rules are omitted for
+        -- compactness but follow the same shape.
+}
+
+rule CaptureCancelled {
+    when: CancelCapture(session)
+    requires: session.status = waiting
+    ensures: session.status = cancelled
+}
+
+-- =====================================================================
+-- Rules: action set installation
+-- =====================================================================
+
+rule InstallActionSetRule {
+    when: InstallActionSet(set)
+    requires: not set.installed
+    ensures: set.installed = true
+}
+
+rule UninstallActionSetRule {
+    when: UninstallActionSet(set)
+    requires: set.installed
+    requires: not exists ctx in stack.layers where ctx.actions = set
+    ensures: set.installed = false
+
+    @guidance
+        -- An ActionSet may not be uninstalled while any layer in the
+        -- context stack still references it. Game code must pop or replace
+        -- those layers first.
+}
+
+-- =====================================================================
+-- Invariants
+-- =====================================================================
+
+invariant ContextStackNonEmpty {
+    stack.layers.count >= 1
+}
+
+invariant SingleNonTerminalTextSession {
+    -- At most one TextInputSession is non-terminal (active or suspended) at
+    -- a time. Combined with the BeginTextInput precondition, this guarantees
+    -- callers cannot start a second session while another is in flight.
+    for a in TextInputSessions:
+        for b in TextInputSessions:
+            a != b and a.status in {active, suspended}
+                implies b.status not in {active, suspended}
+}
+
+invariant SingleWaitingCaptureSession {
+    for a in CaptureNextInputSessions:
+        for b in CaptureNextInputSessions:
+            a != b and a.status = waiting implies b.status != waiting
+}
+
+invariant CaptureSourceMutuallyExclusive {
+    for s in CaptureNextInputSessions:
+        s.status = waiting implies
+            for src in s.held_at_start:
+                src not in s.armed
+}
+
+invariant ActionSetInUseIsInstalled {
+    for ctx in stack.layers:
+        ctx.actions.installed
+}
+
+-- =====================================================================
+-- Surfaces
+-- =====================================================================
+
+surface FrameApi {
+    facing _: GameRuntime
+
+    context frame: InputFrame
+
+    exposes:
+        frame.sequence
+        for event in frame.events:
+            event.sequence
+            event.kind
+        frame.pointer.position
+        frame.pointer.delta
+
+    @guarantee EventOrderingStable
+        -- Events in frame.events are ordered by their sequence field, with
+        -- sequence numbers strictly increasing within the frame. Game code
+        -- iterates the list and trusts ordering matches arrival order.
+
+    @guarantee PointerNeverOverloaded
+        -- frame.pointer.position is always the cursor position regardless
+        -- of capture state. frame.pointer.delta is always per-frame motion.
+        -- Neither is ever conflated with the other.
+
+    @guarantee EventStreamUnfiltered
+        -- All events delivered by the platform backend appear in
+        -- frame.events. Context masking and session routing affect action
+        -- values and session buffers, never the event list. Game code that
+        -- needs a system-wide chord (e.g. F3 debug toggle) reads events.
+}
+
+surface ActionApi {
+    facing _: GameRuntime
+
+    context active: ActionSet where installed = true
+
+    exposes:
+        active.name
+        for action in active.actions:
+            action.name
+            action.kind
+
+    provides:
+        RegisterActionSet(name: String)
+        AddAction(set: ActionSet, name: String)
+        BindAction(action: Action, binding: Binding)
+        InstallActionSet(set: ActionSet)
+            when not set.installed
+        UninstallActionSet(set: ActionSet)
+            when set.installed
+
+    @guarantee TopActionSetIsAuthoritative
+        -- Only the action set belonging to stack.top is queryable. Actions
+        -- in lower contexts' sets are fully masked: their values are not
+        -- updated and game code cannot read them. Coexisting installed sets
+        -- (GameplayActions, MenuActions, DebugActions) become live by
+        -- being attached to the context that is currently top of stack.
+
+    @guarantee NoGlobalRegistry
+        -- There is no single global action map. Multiple ActionSets coexist
+        -- without name collisions across sets. Switching contexts does not
+        -- require clearing or rebuilding any registry.
+
+    @guarantee ActionValuesPersistAcrossReinstall
+        -- Action values are preserved across uninstall/reinstall cycles of
+        -- their ActionSet. If a player holds a button while the set's
+        -- containing context is popped, then pushes the context again
+        -- without releasing, the button still reads 'pressed'. The engine
+        -- does not reset action values on uninstall -- values reflect the
+        -- last-computed state from when the set was top of stack, plus any
+        -- updates applied immediately upon being top of stack again.
+}
+
+surface ContextStackApi {
+    facing _: GameRuntime
+
+    context stack: ContextStack
+
+    exposes:
+        for layer in stack.layers:
+            layer.name
+            layer.cursor_mode
+        stack.top
+
+    provides:
+        PushContext(context: InputContext)
+        PopContext()
+            when stack.layers.count > 1
+        ReplaceTop(context: InputContext)
+            when stack.layers.count >= 1
+
+    @guarantee CursorModeFromTop
+        -- Every InputContext declares a cursor_mode. The effective cursor
+        -- mode at any time equals stack.top.cursor_mode -- the platform
+        -- backend reflects this on the next frame boundary at the latest.
+        -- Stack walking does not occur; the spec requires every layer to
+        -- declare its preference rather than falling back to a layer below.
+
+    @guarantee FullActionMasking
+        -- Pushing a context fully masks all action sets below it. An action
+        -- bound only in a lower context cannot fire while a higher context
+        -- is on top, even if the corresponding raw input is delivered.
+
+    @guidance
+        -- PushContext appends a layer to the top of the stack. PopContext
+        -- removes the top layer. ReplaceTop atomically substitutes the top
+        -- layer. The stack must always retain a base context (the
+        -- ContextStackNonEmpty invariant); PopContext is unavailable when
+        -- only the base remains. Push/Pop/Replace are mechanical operations
+        -- on stack.layers; their outcome is fully determined by the input,
+        -- so no behavioural rule is needed beyond the surface contract.
+}
+
+surface TextInputApi {
+    facing _: GameRuntime
+
+    provides:
+        BeginTextInput(target: TextInputTarget, options: TextInputOptions)
+            when (TextInputSessions where status in {active, suspended}).count = 0
+        SubmitText(session: TextInputSession)
+            when session.status = active
+        CancelText(session: TextInputSession)
+            when session.status in {active, suspended}
+
+    @guarantee SingleSession
+        -- At most one TextInputSession may be in flight (active or
+        -- suspended) at any time. Attempts to begin a second session are
+        -- rejected by the precondition; callers must submit or cancel the
+        -- existing session first.
+
+    @guarantee SuspendOnFocusLoss
+        -- If the surface loses focus while a session is active, the session
+        -- transitions to 'suspended' and TextUtf8 events delivered during
+        -- the focus-lost window are dropped at the routing step (they still
+        -- appear in InputFrame.events). On FocusGained the session returns
+        -- to 'active' and routing resumes -- buffer state is preserved
+        -- across the suspension. The session is never implicitly cancelled
+        -- by focus changes; only Submit or Cancel terminate it.
+
+    @guarantee SourceUniformAcrossPlatforms
+        -- The same TextInputApi is used on every backend. On platforms
+        -- where text comes from the OS keyboard, the buffer accumulates
+        -- from TextUtf8 events. On platforms where text comes from a
+        -- system OSK (e.g. PSP), the buffer is populated by the OSK on
+        -- completion and TextUtf8 events may not appear in InputFrame.events
+        -- for the session's lifetime. Game code does not branch on platform.
+}
+
+surface CaptureNextInputApi {
+    facing _: GameRuntime
+
+    provides:
+        BeginCaptureNextInput(eligible: Set<BindingSourceKind>)
+            when (CaptureNextInputSessions where status = waiting).count = 0
+        CancelCapture(session: CaptureNextInputSession)
+            when session.status = waiting
+
+    @guarantee IgnoreHeldAtStart
+        -- A source that is in 'pressed' state when capture begins will not
+        -- complete capture until it has transitioned through its 'released'
+        -- equivalent at least once. The release transition itself does not
+        -- count as a capture-completing edge. Only a subsequent press from
+        -- the now-armed source completes capture.
+
+    @guarantee FreshDownEdgeOnly
+        -- Capture completes on a 'pressed' transition (or analog activity
+        -- crossing axis_activity_threshold from below) whose source is
+        -- either armed or was never held at session start. Key-repeat
+        -- events do not complete capture.
+
+    @guarantee ResultExposesLabelAndStorage
+        -- CaptureResult separates the source (binding form, used to store
+        -- the new binding) from the display_label (human-readable form).
+        -- Game code never has to format the binding source itself.
+}
+
+surface PlatformContract {
+    facing _: PlatformBackend
+
+    provides:
+        DeliverKeyDown(key: Key, modifiers: Set<Modifier>, is_repeat: Boolean)
+        DeliverKeyUp(key: Key, modifiers: Set<Modifier>)
+        DeliverText(text: String)
+        DeliverMouseButton(button: MouseButton, edge: ButtonState, position: Vec2)
+        DeliverMouseMove(position: Vec2, delta: Vec2)
+        DeliverMouseWheel(delta: Vec2)
+        DeliverGamepadButton(button: GamepadButton, edge: ButtonState)
+        DeliverGamepadAxis(axis: GamepadAxis, value: Decimal)
+        DeliverFocusChange(gained: Boolean)
+        SignalFrameBoundary()
+
+    @guarantee DeliveryWithinFrame
+        -- Backends accumulate events between SignalFrameBoundary calls.
+        -- Each event is timestamped (sequence number) at delivery time.
+        -- Order of delivery is preserved; the engine does not reorder.
+
+    @guarantee CursorModePropagation
+        -- The engine reads stack.top.cursor_mode at each frame boundary
+        -- and reflects it back through the platform backend's cursor API.
+        -- Backends honour the requested mode before the next event is
+        -- delivered for that frame.
+
+    @guarantee GamepadAxisEmittedWhenNonZero
+        -- Backends call DeliverGamepadAxis every frame an analog axis is
+        -- non-zero (post-deadzone), not only on threshold crossings or
+        -- value changes. Game code reading axis-bound actions sees a
+        -- continuous stream of values for as long as the stick is pushed,
+        -- which is what movement code relies on. Re-emission is the
+        -- contract, not a quirk to be debounced.
+
+    @guarantee SingleGamepad
+        -- Aether assumes a single active gamepad. DeliverGamepadButton and
+        -- DeliverGamepadAxis carry no GamepadId. Backends that see multiple
+        -- gamepads pick one (typically the most-recently-active) and route
+        -- only its events.
+
+    @guidance
+        -- Backends without windowed focus (e.g. PSP) never call
+        -- DeliverFocusChange. Backends without a pointing device call
+        -- neither DeliverMouseButton nor DeliverMouseMove; the engine
+        -- then leaves Pointer.position and Pointer.delta unchanged.
+        -- Backends with a system OSK (PSP) feed text directly into the
+        -- active TextInputSession and may bypass DeliverText for that
+        -- text. Headless backends call no Deliver methods and never call
+        -- SignalFrameBoundary; the input system surfaces an empty frame.
+        -- This is intentional: headless is for use cases like dedicated
+        -- servers that have no input device at all.
+}
+
+-- =====================================================================
+-- Open questions
+-- =====================================================================
+
+-- (None -- initial design questions resolved.)

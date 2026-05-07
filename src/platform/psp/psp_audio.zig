@@ -1,8 +1,8 @@
-//! PSP audio backend — single hardware channel with software mixing.
+//! PSP audio backend -- single hardware channel with software mixing.
 //!
 //! Reserves one stereo sceAudio channel and runs a dedicated audio thread
 //! that mixes all active slots into a stereo i16 double buffer.
-//! `output_panned_blocking` provides natural timing — the call blocks until
+//! `output_panned_blocking` provides natural timing -- the call blocks until
 //! the hardware consumes the previous buffer, then queues the new one.
 
 const std = @import("std");

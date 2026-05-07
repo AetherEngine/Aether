@@ -2,12 +2,12 @@
 //!
 //! Games write two kinds of files that want different locations:
 //!
-//!   * **Resources** — read-only assets shipped with the app (pack.zip,
+//!   * **Resources** -- read-only assets shipped with the app (pack.zip,
 //!     embedded shaders, icons). On macOS these live inside
 //!     `<Bundle>.app/Contents/Resources/`; on desktop Linux/Windows they
 //!     sit alongside the exe; on PSP they sit at CWD.
 //!
-//!   * **Data** — user-writable persistent state (world saves, logs,
+//!   * **Data** -- user-writable persistent state (world saves, logs,
 //!     config, user-installed texture packs). OS-conventional locations
 //!     apply here: `~/Library/Application Support/<app>` on macOS,
 //!     `%APPDATA%\<app>` on Windows, `$XDG_DATA_HOME/<app>` on Linux.
@@ -20,7 +20,7 @@
 //!
 //! Env-var access is routed through the caller-supplied
 //! `std.process.Environ.Map`; this module never touches `std.c`,
-//! `std.os`, or `std.posix` — paths are an engine-boundary concern but
+//! `std.os`, or `std.posix` -- paths are an engine-boundary concern but
 //! per project style guide they go through `std.Io` / `std.process`.
 
 const std = @import("std");
@@ -52,7 +52,7 @@ pub const Dirs = struct {
 };
 
 pub const Error = error{
-    /// `HOME` (mac/linux) env var missing — no way to derive user data dir.
+    /// `HOME` (mac/linux) env var missing -- no way to derive user data dir.
     MissingHome,
     /// `APPDATA` (windows) env var missing.
     MissingAppData,
