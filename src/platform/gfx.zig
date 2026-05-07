@@ -6,7 +6,7 @@ const gfx_api = @import("gfx_api.zig");
 const surface_iface = @import("surface.zig");
 
 /// Comptime-selected graphics backend module. Backends carry no instance
-/// state, so this is a pure namespace alias — calls like
+/// state, so this is a pure namespace alias -- calls like
 /// `gfx.api.start_frame()` resolve to direct function calls with no
 /// indirection.
 pub const Api = switch (options.config.gfx) {

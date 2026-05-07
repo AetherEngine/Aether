@@ -2,7 +2,7 @@ const std = @import("std");
 const Stream = @import("../audio/stream.zig").Stream;
 
 /// The contract every audio backend must satisfy. Backends are thin
-/// slot-based PCM outputs — all scheduling, priority, and spatial math
+/// slot-based PCM outputs -- all scheduling, priority, and spatial math
 /// lives in the platform-independent mixer (`audio/mixer.zig`).
 ///
 /// The backend's audio thread pulls PCM from the Stream's reader, applies

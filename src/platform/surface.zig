@@ -2,7 +2,7 @@ const std = @import("std");
 
 /// The contract every surface backend must satisfy. Surfaces have real
 /// instance state (window handle, dimensions, etc.) so methods take a
-/// `*Backend` self pointer. This struct is never instantiated — it
+/// `*Backend` self pointer. This struct is never instantiated -- it
 /// exists purely to drive `assertImpl` at comptime.
 pub fn Interface(comptime Backend: type) type {
     return struct {

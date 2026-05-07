@@ -183,7 +183,7 @@ const Swapchain = struct {
 
         // Fixed carve-out at EDRAM base: swapchain color buffers followed
         // by the depth buffer. These are never freed, so they don't need
-        // an allocator — just deterministic offsets.
+        // an allocator -- just deterministic offsets.
         const color_size = std.mem.alignForward(
             usize,
             buffer_size_bytes(SCR_BUF_WIDTH, SCREEN_HEIGHT, vram_color_format),
@@ -413,7 +413,7 @@ fn must(result: ge_list.WriteError!void) void {
 //
 // Verbatim copy of pspsdk's `ge_init_list` (the table sceGuInit enqueues to
 // reset every GE register to a known default before any user state is set
-// up). The trailing 0x0f / 0x0c / 0 / 0 entries — finish, end, padding —
+// up). The trailing 0x0f / 0x0c / 0 / 0 entries -- finish, end, padding --
 // are dropped because we splice this into the middle of our own display
 // list rather than running it as a separate enqueue.
 
@@ -600,7 +600,7 @@ pub fn init() anyerror!void {
     must(cmd.texture_offset(0.0, 0.0));
 
     // Initialize all matrix slots to identity so hardware registers are
-    // never garbage. The new ge command_buffer takes raw [16]f32 — the
+    // never garbage. The new ge command_buffer takes raw [16]f32 -- the
     // view/world/texture variants only emit the 12 elements actually
     // consumed by the 3x4 GE matrix uploads.
     const identity = [_]f32{

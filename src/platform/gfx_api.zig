@@ -7,7 +7,7 @@ const Texture = Rendering.Texture;
 
 /// The contract every graphics backend must satisfy. Each field names a
 /// public top-level fn on the backend module and gives its exact type.
-/// This struct is never instantiated — it exists purely to drive
+/// This struct is never instantiated -- it exists purely to drive
 /// `assertImpl` at comptime, replacing the runtime vtable that used to
 /// hold function pointers here.
 pub const Interface = struct {

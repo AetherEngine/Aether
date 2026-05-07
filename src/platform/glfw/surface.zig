@@ -8,7 +8,7 @@ const api = @import("options").config.gfx;
 
 // macOS: we link MoltenVK directly as the Vulkan ICD and skip the Vulkan
 // loader entirely. Feed MoltenVK's vkGetInstanceProcAddr to GLFW before
-// glfwInit so glfwVulkanSupported doesn't dlopen("libvulkan.1.dylib") —
+// glfwInit so glfwVulkanSupported doesn't dlopen("libvulkan.1.dylib") --
 // that name lookup hits DYLD_FALLBACK_LIBRARY_PATH (which doesn't include
 // /opt/homebrew/...) and either fails outright or picks up a stale
 // LunarG SDK loader from /usr/local/lib. Both are common and produce a
@@ -24,22 +24,11 @@ alloc: std.mem.Allocator,
 window: *glfw.Window = undefined,
 width: c_int = 0,
 height: c_int = 0,
-active_joystick: c_int = 0,
-
-pub var curr_scroll: f32 = 0;
-pub var cursor_x: f64 = 0;
-pub var cursor_y: f64 = 0;
-pub var prev_cursor_x: f64 = 0;
-pub var prev_cursor_y: f64 = 0;
-pub var cursor_dx: f64 = 0;
-pub var cursor_dy: f64 = 0;
 
 pub var on_resize: ?*const fn () void = null;
 
 pub fn init(self: *Self, width: u32, height: u32, title: [:0]const u8, fullscreen: bool, sync: bool, resizable: bool) anyerror!void {
-    self.active_joystick = 0;
-
-    // See extern decls above — bypass GLFW's libvulkan.1.dylib dlopen on macOS.
+    // See extern decls above -- bypass GLFW's libvulkan.1.dylib dlopen on macOS.
     // Must run BEFORE glfw.init() per GLFW 3.4 API contract.
     if (builtin.target.os.tag == .macos and api == .vulkan) {
         glfwInitVulkanLoader(&vkGetInstanceProcAddr);
@@ -93,13 +82,6 @@ pub fn init(self: *Self, width: u32, height: u32, title: [:0]const u8, fullscree
 
     // Resize callback
     _ = glfw.setFramebufferSizeCallback(self.window, framebuffer_size_callback);
-
-    // Focus callback
-    _ = glfw.setWindowFocusCallback(self.window, window_focus_callback);
-
-    // Input
-    _ = glfw.updateGamepadMappings(@embedFile("gamecontrollerdb.txt"));
-    _ = glfw.setScrollCallback(self.window, scroll_callback);
 }
 
 export fn framebuffer_size_callback(_: *c_long, width: c_int, height: c_int) void {
@@ -109,50 +91,12 @@ export fn framebuffer_size_callback(_: *c_long, width: c_int, height: c_int) voi
     if (on_resize) |cb| cb();
 }
 
-export fn scroll_callback(_: *c_long, _: f64, yoffset: f64) void {
-    curr_scroll += @floatCast(yoffset);
-}
-
-export fn window_focus_callback(_: *c_long, focused: c_int) void {
-    if (focused == 0) {
-        const input = @import("../../core/input.zig");
-        input.fire_lost_focus();
-    }
-}
-
 pub fn deinit(self: *Self) void {
     glfw.destroyWindow(self.window);
 }
 
 pub fn update(self: *Self) bool {
-    glfw.pollEvents();
     glfw.getFramebufferSize(self.window, &self.width, &self.height);
-
-    for (0..16) |joystick| {
-        if (glfw.joystickPresent(@intCast(joystick))) {
-            self.active_joystick = @intCast(joystick);
-
-            break;
-        }
-    }
-
-    glfw.getCursorPos(self.window, &cursor_x, &cursor_y);
-    const raw_dx = cursor_x - prev_cursor_x;
-    const raw_dy = cursor_y - prev_cursor_y;
-    prev_cursor_x = cursor_x;
-    prev_cursor_y = cursor_y;
-
-    // Normalize by monitor height so sensitivity 1.0 means a full
-    // monitor-height sweep produces a delta of 1.0.  This keeps
-    // "same physical movement = same delta" across window sizes
-    // (we don't use window size) and across resolutions (higher-res
-    // monitors have more pixels but the same normalized range).
-    const monitor_h: f64 = if (glfw.getVideoMode(glfw.getPrimaryMonitor())) |mode|
-        @floatFromInt(mode.height)
-    else
-        1080.0;
-    cursor_dx = raw_dx / monitor_h;
-    cursor_dy = raw_dy / monitor_h;
     return !glfw.windowShouldClose(self.window);
 }
 

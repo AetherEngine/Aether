@@ -66,7 +66,7 @@ pub fn init_defaults(alloc: std.mem.Allocator) !void {
 ///
 /// Callers pass `engine.dirs.resources` for bundled textures or
 /// `engine.dirs.data` for user-provided ones. Do not use
-/// `std.Io.Dir.cwd()` — CWD is not guaranteed to be the app root
+/// `std.Io.Dir.cwd()` -- CWD is not guaranteed to be the app root
 /// (Finder-launched `.app` bundles give CWD = `/`).
 pub fn load(io: std.Io, dir: std.Io.Dir, alloc: std.mem.Allocator, path: []const u8) !Texture {
     var file = try dir.openFile(io, path, .{});

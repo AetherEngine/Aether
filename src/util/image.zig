@@ -16,7 +16,7 @@ pub const Image = struct {
 
 const png_signature = "\x89PNG\r\n\x1a\n";
 
-/// Decode PNG from a reader → RGBA8. Caller owns returned slice.
+/// Decode PNG from a reader -> RGBA8. Caller owns returned slice.
 pub fn load_png(allocator: std.mem.Allocator, reader: *std.Io.Reader) ![]u8 {
     const img = try load_png_ex(allocator, allocator, reader, .rgba8);
     return img.data;

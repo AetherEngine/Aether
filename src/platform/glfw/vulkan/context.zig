@@ -61,7 +61,7 @@ fn create_instance(self: *Self, name: [:0]const u8) !void {
     // khr_portability_enumeration and the matching enumerate_portability
     // instance flag are LOADER-implemented. On macOS we link MoltenVK
     // directly (no loader) so requesting either fails with
-    // VK_ERROR_EXTENSION_NOT_PRESENT. Skip on mac — we don't need to tell
+    // VK_ERROR_EXTENSION_NOT_PRESENT. Skip on mac -- we don't need to tell
     // the loader "include portability ICDs" when MoltenVK is the only
     // thing we talk to.
     if (!is_macos) {

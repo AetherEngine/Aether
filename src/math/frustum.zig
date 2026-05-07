@@ -74,7 +74,7 @@ pub fn containsPoint(self: Self, p: Vec3) bool {
     return true;
 }
 
-/// Conservative AABB test — returns false only if the AABB is fully outside any plane.
+/// Conservative AABB test -- returns false only if the AABB is fully outside any plane.
 pub fn containsAABB(self: Self, aabb: AABB) bool {
     for (&self.planes) |*plane| {
         // Positive vertex: the corner furthest in the plane's normal direction.

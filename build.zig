@@ -213,7 +213,7 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
         }
 
         if (opts.target.result.os.tag == .macos) {
-            // Link MoltenVK directly as the Vulkan ICD — no loader. Feeds
+            // Link MoltenVK directly as the Vulkan ICD -- no loader. Feeds
             // its vkGetInstanceProcAddr into GLFW via glfwInitVulkanLoader
             // in platform/glfw/surface.zig so GLFW doesn't dlopen libvulkan
             // (which is brittle across brew/SDK installs).
@@ -252,7 +252,7 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
     });
 
     if (psp_dep) |pd| {
-        // Inline PSP config — pspsdk.configurePspExecutable uses
+        // Inline PSP config -- pspsdk.configurePspExecutable uses
         // dependencyFromBuildZig on exe.step.owner which fails when
         // the exe is owned by a downstream builder.
         if (exe.root_module.import_table.get("pspsdk") == null) {
@@ -280,7 +280,7 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
 ///     const exe = Aether.addHeadless(ae_dep.builder, b, .{ ... });
 ///
 pub fn addHeadless(owner: *std.Build, b: *std.Build, opts: HeadlessOptions) *std.Build.Step.Compile {
-    // Headless ignores any caller-supplied gfx/audio overrides — those
+    // Headless ignores any caller-supplied gfx/audio overrides -- those
     // backends are always stubbed in this mode. Other knobs (use_cwd,
     // PSP display/mip) flow through unchanged.
     var config = Config.resolve(opts.target, opts.overrides);
@@ -385,8 +385,8 @@ pub const ExportOptions = struct {
     /// Defaults to "com.aether.<exe-name>".
     bundle_id: ?[]const u8 = null,
     /// macOS: PNG icon to use for the bundle. Compiled to AppIcon.icns at
-    /// build time via `sips` + `iconutil` (mac-only tools, which is fine —
-    /// the .app branch only runs on mac builds). 1024×1024 PNG is ideal
+    /// build time via `sips` + `iconutil` (mac-only tools, which is fine --
+    /// the .app branch only runs on mac builds). 1024x1024 PNG is ideal
     /// since every other size downscales cleanly from that; smaller
     /// sources are upscaled via bilinear, which is fine for placeholders.
     icon_png: ?std.Build.LazyPath = null,
@@ -429,11 +429,11 @@ pub fn exportArtifact(owner: *std.Build, b: *std.Build, exe: *std.Build.Step.Com
 }
 
 /// Builds a `<exe.name>.app` directory under zig-out/bin/ with:
-///   Contents/MacOS/<exe>                   — patched load commands
-///   Contents/Frameworks/libMoltenVK.dylib  — id rewritten to @rpath
-///   Contents/Frameworks/libglfw.3.dylib    — id rewritten to @rpath
-///   Contents/Info.plist                    — minimum viable plist
-///   Contents/Resources/<name>              — opts.resources
+///   Contents/MacOS/<exe>                   -- patched load commands
+///   Contents/Frameworks/libMoltenVK.dylib  -- id rewritten to @rpath
+///   Contents/Frameworks/libglfw.3.dylib    -- id rewritten to @rpath
+///   Contents/Info.plist                    -- minimum viable plist
+///   Contents/Resources/<name>              -- opts.resources
 ///
 /// After install, a post-install Run step invokes `codesign --force
 /// --sign -` on each leaf dylib, then the exe, then the bundle dir.
@@ -464,7 +464,7 @@ fn macosAppBundle(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOptio
     // strip it first. Xcode 16.4 `codesign --remove-signature` leaves
     // __LINKEDIT's filesize pointing past its actual contents, which
     // trips install_name_tool's stricter linkedit check. Use
-    // `codesign_allocate -r` — it removes LC_CODE_SIGNATURE and
+    // `codesign_allocate -r` -- it removes LC_CODE_SIGNATURE and
     // rewrites __LINKEDIT.filesize/vmsize to match the real extent,
     // which plain `codesign --remove-signature` and `lipo -create` on
     // thin Mach-Os don't do. Fall back to `codesign --remove-signature`
@@ -496,7 +496,7 @@ fn macosAppBundle(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOptio
             "sh", "-c",
             // mktemp a scratch .iconset dir, sips-resize the source PNG into
             // the canonical slot names, then iconutil-pack. Cleanup is
-            // best-effort — on failure the tmpdir leaks, but it's under /tmp.
+            // best-effort -- on failure the tmpdir leaks, but it's under /tmp.
             \\set -euo pipefail
             \\IN="$1"; OUT="$2"
             \\T=$(mktemp -d -t aether_icns.XXXXXX)
@@ -564,7 +564,7 @@ fn macosAppBundle(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOptio
 
     // --- ad-hoc codesign (post-install, operates on zig-out paths) -----
     // Must run AFTER install_name_tool is long done. Sign leaves first,
-    // then the exe, then the bundle dir — avoids --deep which is
+    // then the exe, then the bundle dir -- avoids --deep which is
     // deprecated and unreliable.
     const bundle_path = b.getInstallPath(.bin, app_name);
     const sign = b.addSystemCommand(&.{ "sh", "-c", b.fmt(

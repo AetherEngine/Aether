@@ -106,7 +106,7 @@ pub const Engine = struct {
     };
 
     /// Initializes the engine in place. `self` must live at a stable address
-    /// for the lifetime of the program — the allocators produced by
+    /// for the lifetime of the program -- the allocators produced by
     /// `allocator(p)` each carry a pointer into `self.trackers`, so moving or
     /// copying an initialized `Engine` will leave those pointers dangling.
     ///
@@ -150,13 +150,11 @@ pub const Engine = struct {
 
         try Platform.init(self, config.width, config.height, config.title, config.fullscreen, config.vsync, config.resizable);
         try Rendering.Texture.init_defaults(self.allocator(.render));
-        try Core.input.init(self.allocator(.game));
         try Core.state_machine.init(self, state);
     }
 
     pub fn deinit(self: *Engine) void {
         Core.state_machine.deinit(self);
-        Core.input.deinit();
         Rendering.Texture.Default.deinit(self.allocator(.render));
         Platform.deinit();
         logger.deinit(self.io);
@@ -230,7 +228,7 @@ pub const Engine = struct {
         const US_PER_S: u64 = std.time.us_per_s;
         const NS_PER_US: i64 = 1000;
 
-        // Fixed-step rates — PSP targets 60 Hz display
+        // Fixed-step rates -- PSP targets 60 Hz display
         const UPDATES_HZ: u32 = if (options.config.platform == .psp) 60 else 144;
         const TICKS_HZ: u32 = 20;
         const UPDATE_US: u64 = US_PER_S / UPDATES_HZ;
@@ -278,6 +276,7 @@ pub const Engine = struct {
                 @branchHint(.unpredictable);
 
                 const step_start_ns: i64 = @truncate(clock.now(self.io).toNanoseconds());
+                Platform.input.update();
                 Platform.update(self);
                 Core.input.update();
                 const engine_done_ns: i64 = @truncate(clock.now(self.io).toNanoseconds());
