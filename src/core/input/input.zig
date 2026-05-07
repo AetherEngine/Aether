@@ -76,6 +76,9 @@ var current_modifiers: ModifierSet = .{};
 var last_mode: InputMode = .keyboard_mouse;
 var initialised: bool = false;
 
+var begin_text_session_hook: ?*const fn (TextInputTarget, TextInputOptions) anyerror!void = null;
+var end_text_session_hook: ?*const fn () void = null;
+
 const base_set_name = "__base";
 
 // -- lifecycle ----------------------------------------------------------------
@@ -380,6 +383,7 @@ pub fn begin_text_input(target: TextInputTarget, options: TextInputOptions) !*Te
         .buffer = .empty,
         .status = .active,
     };
+    if (begin_text_session_hook) |h| try h(target, options);
     return &text_session_state.?;
 }
 
@@ -387,12 +391,24 @@ pub fn submit_text() !void {
     const s = &(text_session_state orelse return error.NoActiveTextSession);
     if (s.status != .active) return error.TextSessionNotActive;
     s.status = .submitted;
+    if (end_text_session_hook) |h| h();
 }
 
 pub fn cancel_text() !void {
     const s = &(text_session_state orelse return error.NoActiveTextSession);
     if (s.status != .active and s.status != .suspended) return error.TextSessionTerminal;
     s.status = .cancelled;
+    if (end_text_session_hook) |h| h();
+}
+
+/// Install platform hooks for text-session begin/end. Called by
+/// `Platform.input.init` once per process; passing null detaches.
+pub fn set_text_session_hooks(
+    begin_hook: ?*const fn (TextInputTarget, TextInputOptions) anyerror!void,
+    end_hook: ?*const fn () void,
+) void {
+    begin_text_session_hook = begin_hook;
+    end_text_session_hook = end_hook;
 }
 
 pub fn current_text_session() ?*const TextInputSession {
