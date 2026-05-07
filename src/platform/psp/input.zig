@@ -51,7 +51,19 @@ pub fn begin_text_input_session(target: core.TextInputTarget, options: core.Text
     var out_buf: [257]u16 = @splat(0);
     const out_slice = out_buf[0 .. max_chars + 1];
 
-    const result = dialogs.showOSK(desc_buf[0..desc_len], out_slice, @intCast(max_chars));
+    var in_buf: [257]u16 = @splat(0);
+    var in_len: usize = 0;
+    if (core.current_text_session()) |s| {
+        if (s.buffer.items.len > 0) {
+            const cap: usize = in_buf.len - 1;
+            const written = std.unicode.utf8ToUtf16Le(&in_buf, s.buffer.items) catch 0;
+            in_len = @min(written, cap);
+            in_buf[in_len] = 0;
+        }
+    }
+    const in_slice: []const u16 = if (in_len > 0) in_buf[0 .. in_len + 1] else &.{};
+
+    const result = dialogs.showOSK(desc_buf[0..desc_len], in_slice, out_slice, @intCast(max_chars));
 
     var utf8_buf: [1024]u8 = undefined;
     var u_len: usize = 0;

@@ -383,6 +383,13 @@ pub fn begin_text_input(target: TextInputTarget, options: TextInputOptions) !*Te
         .buffer = .empty,
         .status = .active,
     };
+    if (options.initial) |seed| {
+        if (seed.len > 0) {
+            const limit = options.max_bytes orelse seed.len;
+            const take = @min(seed.len, limit);
+            try text_session_state.?.buffer.appendSlice(alloc, seed[0..take]);
+        }
+    }
     if (begin_text_session_hook) |h| try h(target, options);
     return &text_session_state.?;
 }
@@ -420,6 +427,7 @@ pub fn current_text_session() ?*const TextInputSession {
 /// platform layer calls this in lieu of `deliver_text`.
 pub fn write_text_session_buffer(text: []const u8, terminal: TextInputStatus) void {
     if (text_session_state) |*s| {
+        s.buffer.clearRetainingCapacity();
         s.buffer.appendSlice(alloc, text) catch {};
         s.status = terminal;
     }
