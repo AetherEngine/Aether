@@ -129,6 +129,7 @@ var bound_pipeline: Pipeline.Handle = 0;
 var alpha_blend_enabled: bool = true;
 var clip_planes_enabled: bool = false;
 var fog_enabled: bool = false;
+var cull_face_enabled: bool = true;
 var clear_color: u24 = 0x000000;
 
 // ---- swapchain -------------------------------------------------------------
@@ -762,6 +763,18 @@ pub fn set_clip_planes(enabled: bool) void {
     if (enabled == clip_planes_enabled) return;
     clip_planes_enabled = enabled;
     must(cmd.enable(.clip_planes, enabled));
+    advance_stall();
+}
+
+pub fn set_culling(enabled: bool) void {
+    if (enabled == cull_face_enabled) return;
+    cull_face_enabled = enabled;
+    must(cmd.enable(.cull_face, enabled));
+    advance_stall();
+}
+
+pub fn set_uv_offset(u: f32, v: f32) void {
+    must(cmd.texture_offset(u, v));
     advance_stall();
 }
 
