@@ -20,6 +20,8 @@ pub const Interface = struct {
     set_depth_write: fn (bool) void,
     set_fog: fn (bool, f32, f32, f32, f32, f32) void,
     set_clip_planes: fn (bool) void,
+    set_culling: fn (bool) void,
+    set_uv_offset: fn (f32, f32) void,
     set_proj_matrix: fn (*const Mat4) void,
     set_view_matrix: fn (*const Mat4) void,
 

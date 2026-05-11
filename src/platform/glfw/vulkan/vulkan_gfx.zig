@@ -75,6 +75,7 @@ pub const DrawState = struct {
     fog_end: f32 = 0.0,
     fog_color: [3]f32 = .{ 0.0, 0.0, 0.0 },
     alpha_blend_enabled: u32 = 1,
+    uv_offset: [2]f32 = .{ 0.0, 0.0 },
 };
 
 pub var draw_state = DrawState{
@@ -120,6 +121,7 @@ var meshes = Util.CircularBuffer(MeshData, 8192).init();
 var swap_state: Swapchain.PresentState = .optimal;
 var alpha_blend_enabled: bool = true;
 var depth_write_enabled: bool = true;
+var cull_enabled: bool = true;
 
 const depth_format: vk.Format = .d32_sfloat;
 var depth_image: vk.Image = .null_handle;
@@ -491,6 +493,16 @@ pub fn set_depth_write(enabled: bool) void {
 
 pub fn set_clip_planes(_: bool) void {}
 
+pub fn set_culling(enabled: bool) void {
+    if (enabled == cull_enabled) return;
+    cull_enabled = enabled;
+    command_buffer.setCullMode(if (enabled) .{ .back_bit = true } else .{});
+}
+
+pub fn set_uv_offset(u: f32, v: f32) void {
+    draw_state.uv_offset = .{ u, v };
+}
+
 pub fn set_fog(enabled: bool, start: f32, end: f32, r: f32, g: f32, b: f32) void {
     draw_state.fog_enabled = @intFromBool(enabled);
     draw_state.fog_start = start;
@@ -560,6 +572,7 @@ pub fn start_frame() bool {
     // leaves these states undefined otherwise, which manifests as broken depth
     // writes or unexpected blend state on macOS.
     command_buffer.setDepthWriteEnable(if (depth_write_enabled) .true else .false);
+    command_buffer.setCullMode(if (cull_enabled) .{ .back_bit = true } else .{});
     if (!is_macos) {
         const enable: vk.Bool32 = if (alpha_blend_enabled) .true else .false;
         command_buffer.setColorBlendEnableEXT(0, @ptrCast(&[1]vk.Bool32{enable}));
@@ -873,8 +886,8 @@ pub fn create_pipeline(layout: Pipeline.VertexLayout, vs: ?[:0]align(4) const u8
 
     // On macOS drop color_blend_enable_ext -- MoltenVK cannot back it. The
     // pipeline bakes blend_enable=true and set_alpha_blend is a no-op there.
-    const dynstate_mac = [_]vk.DynamicState{ .viewport, .scissor, .primitive_topology, .depth_write_enable };
-    const dynstate_full = [_]vk.DynamicState{ .viewport, .scissor, .color_blend_enable_ext, .primitive_topology, .depth_write_enable };
+    const dynstate_mac = [_]vk.DynamicState{ .viewport, .scissor, .primitive_topology, .depth_write_enable, .cull_mode };
+    const dynstate_full = [_]vk.DynamicState{ .viewport, .scissor, .color_blend_enable_ext, .primitive_topology, .depth_write_enable, .cull_mode };
     const dynstate: []const vk.DynamicState = if (is_macos) &dynstate_mac else &dynstate_full;
 
     const pipeline_dynamic_state_create_info = vk.PipelineDynamicStateCreateInfo{

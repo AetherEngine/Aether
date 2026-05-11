@@ -21,6 +21,7 @@ struct CameraState {
     uint _pad;
     float3 fogColor;
     uint alphaBlendEnabled;
+    float2 uvOffset;
 #endif
 };
 
@@ -37,6 +38,7 @@ struct PushConstants {
     float fogEnd;
     float3 fogColor;
     uint alphaBlendEnabled;
+    float2 uvOffset;
 };
 
 [[vk::push_constant]]
@@ -75,7 +77,11 @@ VertexOutput vertexMain(VertexInput input) {
     float4 viewPos = mul(camera.view, mul(getModel(), float4(input.position, 1.0)));
     output.position = mul(camera.proj, viewPos);
     output.viewDepth = -viewPos.z;
-    output.uv = input.uv;
+#ifdef VULKAN
+    output.uv = input.uv + pc.uvOffset;
+#else
+    output.uv = input.uv + camera.uvOffset;
+#endif
     output.color = input.color;
     return output;
 }

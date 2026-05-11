@@ -27,6 +27,7 @@ var last_height: u32 = 0;
 var pipelines = Util.CircularBuffer(PipelineData, 16).init();
 var meshes = Util.CircularBuffer(MeshInternal, 8192).init();
 var alpha_blend_enabled: bool = true;
+var cull_face_enabled: bool = true;
 
 const PipelineData = struct {
     layout: Pipeline.VertexLayout,
@@ -93,6 +94,18 @@ pub fn set_depth_write(enabled: bool) void {
 }
 
 pub fn set_clip_planes(_: bool) void {}
+
+pub fn set_culling(enabled: bool) void {
+    if (enabled == cull_face_enabled) return;
+    cull_face_enabled = enabled;
+    if (enabled) gl.Enable(gl.CULL_FACE) else gl.Disable(gl.CULL_FACE);
+}
+
+pub fn set_uv_offset(u: f32, v: f32) void {
+    if (shader.state.uv_offset[0] == u and shader.state.uv_offset[1] == v) return;
+    shader.state.uv_offset = .{ u, v };
+    shader.update_ubo();
+}
 
 pub fn set_fog(enabled: bool, start: f32, end: f32, r: f32, g: f32, b: f32) void {
     const fog_en: u32 = @intFromBool(enabled);
