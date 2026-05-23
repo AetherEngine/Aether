@@ -43,8 +43,8 @@ pub fn init(self: *Self, width: u32, height: u32, title: [:0]const u8, fullscree
     if (api == .opengl) {
         glfw.windowHint(glfw.OpenGLProfile, glfw.OpenGLCoreProfile);
         glfw.windowHint(glfw.ContextVersionMajor, 4);
-        glfw.windowHint(glfw.ContextVersionMinor, 6);
-        Util.engine_logger.debug("Requesting OpenGL Core 4.6!", .{});
+        glfw.windowHint(glfw.ContextVersionMinor, 5);
+        Util.engine_logger.debug("Requesting OpenGL Core 4.5!", .{});
     } else if (api == .vulkan) {
         glfw.windowHint(glfw.ClientAPI, glfw.NoAPI);
 
