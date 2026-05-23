@@ -130,6 +130,7 @@ var alpha_blend_enabled: bool = true;
 var clip_planes_enabled: bool = false;
 var fog_enabled: bool = false;
 var cull_face_enabled: bool = true;
+var uv_offset: [2]f32 = .{ 0.0, 0.0 };
 var clear_color: u24 = 0x000000;
 
 // ---- swapchain -------------------------------------------------------------
@@ -774,6 +775,7 @@ pub fn set_culling(enabled: bool) void {
 }
 
 pub fn set_uv_offset(u: f32, v: f32) void {
+    uv_offset = .{ u, v };
     must(cmd.texture_offset(u, v));
     advance_stall();
 }
@@ -952,10 +954,10 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize, primitiv
     must(cmd.world_matrix(mat4_as_floats(model)));
 
     if (pl.uv_unorm8) {
-        must(cmd.texture_offset(1.0, 1.0));
+        must(cmd.texture_offset(1.0 + uv_offset[0], 1.0 + uv_offset[1]));
         must(cmd.texture_scale(0.5, 0.5));
     } else {
-        must(cmd.texture_offset(0.0, 0.0));
+        must(cmd.texture_offset(uv_offset[0], uv_offset[1]));
         must(cmd.texture_scale(1.0, 1.0));
     }
 
