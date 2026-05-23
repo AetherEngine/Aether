@@ -192,7 +192,6 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
             .api = .gl,
             .version = .@"4.5",
             .profile = .core,
-            .extensions = &.{.ARB_gl_spirv},
         });
 
         const vulkan = owner.dependency("vulkan", .{
@@ -691,12 +690,12 @@ pub fn addShader(owner: *std.Build, b: *std.Build, exe: *std.Build.Step.Compile,
             const slangc = slangcPath(owner);
             const vert = addSlangStep(b, slangc, &.{
                 "-target",    "glsl",     "-matrix-layout-column-major",
-                "-profile",   "glsl_460", "-entry",
+                "-profile",   "glsl_450", "-entry",
                 "vertexMain", "-stage",   "vertex",
             }, name ++ ".vert.glsl", paths.slang);
             const frag = addSlangStep(b, slangc, &.{
                 "-target",      "glsl",     "-matrix-layout-column-major",
-                "-profile",     "glsl_460", "-entry",
+                "-profile",     "glsl_450", "-entry",
                 "fragmentMain", "-stage",   "fragment",
             }, name ++ ".frag.glsl", paths.slang);
             if (vert) |v| exe.root_module.addAnonymousImport(name ++ "_vert", .{ .root_source_file = v });

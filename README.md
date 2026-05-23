@@ -67,7 +67,7 @@ pub fn build(b: *std.Build) void {
         .overrides = overrides,
     });
 
-    // Compile a Slang shader to SPIR-V and embed it at compile time
+    // Compile a Slang shader for the selected backend and embed it at compile time
     Aether.addShader(ae_dep.builder, b, exe, config, "basic", .{
         .slang = b.path("shaders/basic.slang"),
     });
@@ -194,7 +194,7 @@ const Vertex = struct {
 const MyMesh = Rendering.Mesh(Vertex);
 ```
 
-Shaders are written in [Slang](https://shader-slang.com/) (`.slang` files), compiled to SPIR-V at build time via `addShader`, and embedded into the binary. Both Vulkan and OpenGL consume SPIR-V (OpenGL loads it via `GL_ARB_gl_spirv`). PSP targets ignore shaders entirely (fixed-function pipeline); the build system generates empty stubs.
+Shaders are written in [Slang](https://shader-slang.com/) (`.slang` files), compiled at build time via `addShader`, and embedded into the binary. Vulkan consumes SPIR-V; OpenGL consumes GLSL 4.50. PSP targets ignore shaders entirely (fixed-function pipeline); the build system generates empty stubs.
 
 ## Build API Reference
 
@@ -212,7 +212,7 @@ Creates a game executable with the engine module and platform dependencies wired
 
 ### `Aether.addShader(owner, b, exe, config, name, paths)`
 
-Compiles a Slang shader to SPIR-V and embeds it into the executable. PSP targets get empty stubs.
+Compiles a Slang shader for the selected backend and embeds it into the executable. Vulkan gets SPIR-V, OpenGL gets GLSL 4.50, and PSP targets get empty stubs.
 
 | Option | Type | Description |
 |--------|------|-------------|
