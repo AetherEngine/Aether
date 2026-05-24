@@ -152,16 +152,16 @@ const Swapchain = struct {
     /// to dcache-flush the list itself. This is shared across color buffers;
     /// `acquire_draw_buffer` waits for the previous GE submission to finish
     /// before allowing the list to be reused.
-    display_list: [DISPLAY_LIST_WORDS]u32 align(16) = [_]u32{0} ** DISPLAY_LIST_WORDS,
+    display_list: [DISPLAY_LIST_WORDS]u32 align(16) = @splat(0),
     list_uncached: []u32 = &.{},
 
-    buffers_rel: [BUFFER_COUNT]?*anyopaque = [_]?*anyopaque{null} ** BUFFER_COUNT,
-    buffers_abs: [BUFFER_COUNT]?[]align(16) u8 = [_]?[]align(16) u8{null} ** BUFFER_COUNT,
+    buffers_rel: [BUFFER_COUNT]?*anyopaque = @splat(null),
+    buffers_abs: [BUFFER_COUNT]?[]align(16) u8 = @splat(null),
     depth_buffer_rel: ?*anyopaque = null,
     draw_idx: BufferIndex = 1,
     front_idx: BufferIndex = 0,
     pending_idx: ?BufferIndex = null,
-    submitted_queue: [BUFFER_COUNT]BufferIndex = [_]BufferIndex{0} ** BUFFER_COUNT,
+    submitted_queue: [BUFFER_COUNT]BufferIndex = @splat(0),
     submitted_head: usize = 0,
     submitted_count: usize = 0,
     vblank_registered: bool = false,
@@ -180,8 +180,8 @@ const Swapchain = struct {
         self.submitted_head = 0;
         self.submitted_count = 0;
         self.vblank_registered = false;
-        self.buffers_rel = [_]?*anyopaque{null} ** BUFFER_COUNT;
-        self.buffers_abs = [_]?[]align(16) u8{null} ** BUFFER_COUNT;
+        self.buffers_rel = @splat(null);
+        self.buffers_abs = @splat(null);
 
         // Fixed carve-out at EDRAM base: swapchain color buffers followed
         // by the depth buffer. These are never freed, so they don't need
@@ -474,7 +474,7 @@ const ClearVertex = extern struct {
 const CLEAR_COUNT: usize = ((SCREEN_WIDTH + 63) / 64) * 2;
 var clear_vertices: [Swapchain.BUFFER_COUNT][CLEAR_COUNT]ClearVertex align(16) = undefined;
 var clear_filter_for_buffer: [Swapchain.BUFFER_COUNT]u32 =
-    [_]u32{0xFFFFFFFF} ** Swapchain.BUFFER_COUNT; // sentinel forces an initial rebuild
+    @splat(0xFFFFFFFF); // sentinel forces an initial rebuild
 
 const clear_vertex_type = VertexType{
     .color = .Color8888,
