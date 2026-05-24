@@ -41,9 +41,9 @@ const PipelineData = struct {
 const MAX_FRAMES = 3;
 
 const MeshData = struct {
-    buffers: [MAX_FRAMES]vk.Buffer = .{.null_handle} ** MAX_FRAMES,
-    memories: [MAX_FRAMES]vk.DeviceMemory = .{.null_handle} ** MAX_FRAMES,
-    mapped: [MAX_FRAMES]?[*]u8 = .{null} ** MAX_FRAMES,
+    buffers: [MAX_FRAMES]vk.Buffer = @splat(.null_handle),
+    memories: [MAX_FRAMES]vk.DeviceMemory = @splat(.null_handle),
+    mapped: [MAX_FRAMES]?[*]u8 = @splat(null),
     capacity: usize = 0,
     pipeline: Pipeline.Handle = 0,
     built: bool = false,

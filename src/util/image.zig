@@ -41,7 +41,7 @@ pub fn load_png_ex(scratch: std.mem.Allocator, render: std.mem.Allocator, reader
 
     var palette: [256][3]u8 = undefined;
     var palette_len: u32 = 0;
-    var trns_alpha: [256]u8 = [_]u8{255} ** 256;
+    var trns_alpha: [256]u8 = @splat(255);
     var trns_len: u32 = 0;
     var trns_gray: u16 = 0;
     var trns_rgb: [3]u16 = .{ 0, 0, 0 };

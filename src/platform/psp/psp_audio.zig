@@ -54,8 +54,7 @@ var thread_id: sdk.SceUID = -1;
 var running: std.atomic.Value(u8) = std.atomic.Value(u8).init(0);
 
 /// Double output buffers, 64-byte aligned for PSP DMA.
-var output_bufs: [2][OUTPUT_BUF_BYTES]u8 align(64) = .{ .{0} ** BUF_COUNT, .{0} ** BUF_COUNT };
-const BUF_COUNT = OUTPUT_BUF_BYTES;
+var output_bufs: [2][OUTPUT_BUF_BYTES]u8 align(64) = @splat(@splat(0));
 
 // -- public interface ---------------------------------------------------------
 
