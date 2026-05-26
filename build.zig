@@ -432,6 +432,13 @@ fn addSlangStep(b: *std.Build, slangc: ?std.Build.LazyPath, args: []const []cons
     return output;
 }
 
+fn addUamStep(b: *std.Build, uam: []const u8, stage: []const u8, comptime output_name: []const u8, input: std.Build.LazyPath) std.Build.LazyPath {
+    const run = b.addSystemCommand(&.{ uam, "-s", stage, "-o" });
+    const output = run.addOutputFileArg(output_name);
+    run.addFileArg(input);
+    return output;
+}
+
 pub const ExportOptions = struct {
     /// PSP/macOS: human-readable name shown to the OS (XMB title on PSP,
     /// CFBundleName on macOS). Ignored elsewhere.
@@ -1031,7 +1038,7 @@ fn switchNroPipeline(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOp
     link.addArg("none");
     link.addFileArg(crt_clean);
     link.addArg(b.fmt("-L{s}", .{libnx_lib}));
-    link.addArgs(&.{ "-lnx", "-lm" });
+    link.addArgs(&.{ "-ldeko3d", "-lnx", "-lm" });
     link.addArg("-o");
     const elf = link.addOutputFileArg(b.fmt("{s}.elf", .{exe.name}));
 
@@ -1082,6 +1089,44 @@ fn switchNroPipeline(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOp
 ///     Aether.addShader(ae_dep.builder, b, exe, config, "basic", .{ ... });
 ///
 pub fn addShader(owner: *std.Build, b: *std.Build, exe: *std.Build.Step.Compile, config: Config, comptime name: []const u8, paths: ShaderPaths) void {
+    if (config.platform == .nintendo_switch and config.gfx == .default) {
+        const uam = b.pathJoin(&.{ devkitProPath(b), "tools/bin/uam" });
+        const sources = b.addWriteFiles();
+        const vert_src = sources.add(name ++ "_switch.vert.glsl",
+            \\#version 460
+            \\
+            \\layout (location = 0) in vec3 inPosition;
+            \\layout (location = 1) in vec4 inColor;
+            \\
+            \\layout (location = 0) out vec4 outColor;
+            \\
+            \\void main()
+            \\{
+            \\    gl_Position = vec4(inPosition, 1.0);
+            \\    outColor = inColor;
+            \\}
+            \\
+        );
+        const frag_src = sources.add(name ++ "_switch.frag.glsl",
+            \\#version 460
+            \\
+            \\layout (location = 0) in vec4 inColor;
+            \\layout (location = 0) out vec4 outColor;
+            \\
+            \\void main()
+            \\{
+            \\    outColor = inColor;
+            \\}
+            \\
+        );
+
+        const vert = addUamStep(b, uam, "vert", name ++ ".vert.dksh", vert_src);
+        const frag = addUamStep(b, uam, "frag", name ++ ".frag.dksh", frag_src);
+        exe.root_module.addAnonymousImport(name ++ "_vert", .{ .root_source_file = vert });
+        exe.root_module.addAnonymousImport(name ++ "_frag", .{ .root_source_file = frag });
+        return;
+    }
+
     switch (config.gfx) {
         .vulkan => {
             const slangc = slangcPath(owner);
