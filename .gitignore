@@ -4,3 +4,4 @@ zig-pkg
 .claude
 CLAUDE.md
 *.log
+*.wav
