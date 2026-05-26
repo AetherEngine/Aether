@@ -3,11 +3,12 @@
 //! Switch's framebuffer is 1280x720 in handheld mode and 1920x1080
 //! docked. We advertise 1280x720 so the engine has a sane default;
 //! a real backend will query `appletGetOperationMode` and resize on
-//! dock transitions. `update` returns true so the engine loop keeps
-//! ticking even though nothing is drawn.
+//! dock transitions.
 
 const std = @import("std");
 const Self = @This();
+
+extern fn appletMainLoop() bool;
 
 alloc: std.mem.Allocator,
 
@@ -16,7 +17,7 @@ pub fn init(_: *Self, _: u32, _: u32, _: [:0]const u8, _: bool, _: bool, _: bool
 pub fn deinit(_: *Self) void {}
 
 pub fn update(_: *Self) bool {
-    return true;
+    return appletMainLoop();
 }
 
 pub fn draw(_: *Self) void {}

@@ -74,7 +74,7 @@ const MyState = struct {
     grass_spawn: u32,
 
     fn load_wav(engine: *ae.Engine, path: []const u8) ![]u8 {
-        var file = try std.Io.Dir.cwd().openFile(engine.io, path, .{});
+        var file = try engine.dirs.resources.openFile(engine.io, path, .{});
         defer file.close(engine.io);
 
         var tmp: [4096]u8 = undefined;
