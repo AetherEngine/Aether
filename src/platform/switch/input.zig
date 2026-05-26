@@ -1,24 +1,280 @@
-//! Switch input backend stub.
-//!
-//! Wires up to libnx's `hid` (pads, touch, motion) once an SDK is
-//! available. For now every reading reads as neutral so the action
-//! system is silent on Switch.
+//! Switch input backend. Polls libnx's pad and touchscreen helpers once per
+//! engine update and translates them into Aether core input events.
 
 const std = @import("std");
 const core = @import("../../core/input/input.zig");
 
-pub fn setup(_: std.mem.Allocator, _: std.Io) void {}
+const Result = u32;
 
-pub fn init() anyerror!void {}
+const HidAnalogStickState = extern struct {
+    x: i32,
+    y: i32,
+};
 
-pub fn deinit() void {}
+const HidTouchState = extern struct {
+    delta_time: u64,
+    attributes: u32,
+    finger_id: u32,
+    x: u32,
+    y: u32,
+    diameter_x: u32,
+    diameter_y: u32,
+    rotation_angle: u32,
+    reserved: u32,
+};
+
+const HidTouchScreenState = extern struct {
+    sampling_number: u64,
+    count: i32,
+    reserved: u32,
+    touches: [16]HidTouchState,
+};
+
+const PadState = extern struct {
+    id_mask: u8,
+    active_id_mask: u8,
+    read_handheld: bool,
+    active_handheld: bool,
+    style_set: u32,
+    attributes: u32,
+    buttons_cur: u64,
+    buttons_old: u64,
+    sticks: [2]HidAnalogStickState,
+    gc_triggers: [2]u32,
+};
+
+extern fn hidInitialize() Result;
+extern fn hidExit() void;
+extern fn hidInitializeTouchScreen() void;
+extern fn hidGetTouchScreenStates(states: [*]HidTouchScreenState, count: usize) usize;
+
+extern fn padConfigureInput(max_players: u32, style_set: u32) void;
+extern fn padInitializeWithMask(pad: *PadState, mask: u64) void;
+extern fn padUpdate(pad: *PadState) void;
+
+extern fn swkbdCreate(config: *anyopaque, max_dictwords: i32) Result;
+extern fn swkbdClose(config: *anyopaque) void;
+extern fn swkbdConfigMakePresetDefault(config: *anyopaque) void;
+extern fn swkbdConfigSetOkButtonText(config: *anyopaque, text: [*:0]const u8) void;
+extern fn swkbdConfigSetHeaderText(config: *anyopaque, text: [*:0]const u8) void;
+extern fn swkbdConfigSetGuideText(config: *anyopaque, text: [*:0]const u8) void;
+extern fn swkbdConfigSetInitialText(config: *anyopaque, text: [*:0]const u8) void;
+extern fn swkbdShow(config: *anyopaque, out_string: [*]u8, out_string_size: usize) Result;
+
+const HID_NPAD_STYLE_FULL_KEY: u32 = 1 << 0;
+const HID_NPAD_STYLE_HANDHELD: u32 = 1 << 1;
+const HID_NPAD_STYLE_JOY_DUAL: u32 = 1 << 2;
+const HID_NPAD_STYLE_JOY_LEFT: u32 = 1 << 3;
+const HID_NPAD_STYLE_JOY_RIGHT: u32 = 1 << 4;
+const HID_NPAD_STYLE_STANDARD: u32 = HID_NPAD_STYLE_FULL_KEY | HID_NPAD_STYLE_HANDHELD | HID_NPAD_STYLE_JOY_DUAL | HID_NPAD_STYLE_JOY_LEFT | HID_NPAD_STYLE_JOY_RIGHT;
+
+const HID_NPAD_ID_NO1: u64 = 1 << 0;
+const HID_NPAD_ID_HANDHELD: u64 = 1 << 32;
+const DEFAULT_PAD_MASK: u64 = HID_NPAD_ID_NO1 | HID_NPAD_ID_HANDHELD;
+
+const BUTTON_A: u64 = 1 << 0;
+const BUTTON_B: u64 = 1 << 1;
+const BUTTON_X: u64 = 1 << 2;
+const BUTTON_Y: u64 = 1 << 3;
+const BUTTON_STICK_L: u64 = 1 << 4;
+const BUTTON_STICK_R: u64 = 1 << 5;
+const BUTTON_L: u64 = 1 << 6;
+const BUTTON_R: u64 = 1 << 7;
+const BUTTON_ZL: u64 = 1 << 8;
+const BUTTON_ZR: u64 = 1 << 9;
+const BUTTON_PLUS: u64 = 1 << 10;
+const BUTTON_MINUS: u64 = 1 << 11;
+const BUTTON_LEFT: u64 = 1 << 12;
+const BUTTON_UP: u64 = 1 << 13;
+const BUTTON_RIGHT: u64 = 1 << 14;
+const BUTTON_DOWN: u64 = 1 << 15;
+const BUTTON_LEFT_SL: u64 = 1 << 24;
+const BUTTON_LEFT_SR: u64 = 1 << 25;
+const BUTTON_RIGHT_SL: u64 = 1 << 26;
+const BUTTON_RIGHT_SR: u64 = 1 << 27;
+
+const JOYSTICK_MAX: f32 = 32767.0;
+const MAX_TEXT_BYTES: usize = 1024;
+const SWKBD_CONFIG_BYTES: usize = 0x600;
+
+const axis_count = @typeInfo(core.Axis).@"enum".fields.len;
+
+var initialized: bool = false;
+var pad: PadState = undefined;
+var prev_buttons: u64 = 0;
+var prev_axes: [axis_count]f32 = @splat(0.0);
+var prev_touch_down: bool = false;
+var prev_touch_pos: core.Vec2 = .{};
+
+pub fn setup(_: std.mem.Allocator, _: std.Io) void {
+    initialized = false;
+    pad = std.mem.zeroes(PadState);
+    prev_buttons = 0;
+    prev_axes = @splat(0.0);
+    prev_touch_down = false;
+    prev_touch_pos = .{};
+}
+
+pub fn init() anyerror!void {
+    if (hidInitialize() != 0) return error.InputInitFailed;
+    hidInitializeTouchScreen();
+    padConfigureInput(1, HID_NPAD_STYLE_STANDARD);
+    padInitializeWithMask(&pad, DEFAULT_PAD_MASK);
+    initialized = true;
+}
+
+pub fn deinit() void {
+    if (!initialized) return;
+    hidExit();
+    initialized = false;
+}
 
 pub fn pump() void {
+    padUpdate(&pad);
+
+    diff_buttons(pad.buttons_cur);
+    pump_axes(pad.buttons_cur);
+    pump_touch();
+
+    prev_buttons = pad.buttons_cur;
     core.signal_frame_boundary();
 }
 
 pub fn apply_cursor_mode(_: core.CursorMode) void {}
 
-pub fn begin_text_input_session(_: core.TextInputTarget, _: core.TextInputOptions) anyerror!void {}
+pub fn begin_text_input_session(target: core.TextInputTarget, options: core.TextInputOptions) anyerror!void {
+    var config_buf: [SWKBD_CONFIG_BYTES]u8 align(8) = @splat(0);
+    const config: *anyopaque = @ptrCast(&config_buf);
+
+    var initial_buf: [MAX_TEXT_BYTES:0]u8 = @splat(0);
+    const initial_len = copy_current_text(&initial_buf);
+    const initial = initial_buf[0..initial_len :0];
+
+    var target_buf: [128:0]u8 = @splat(0);
+    const target_text = copy_z(&target_buf, target.id);
+
+    if (swkbdCreate(config, 0) != 0) {
+        core.write_text_session_buffer(initial_buf[0..initial_len], .cancelled);
+        return;
+    }
+    defer swkbdClose(config);
+
+    swkbdConfigMakePresetDefault(config);
+    swkbdConfigSetOkButtonText(config, "OK");
+    swkbdConfigSetHeaderText(config, target_text.ptr);
+    swkbdConfigSetGuideText(config, target_text.ptr);
+    swkbdConfigSetInitialText(config, initial.ptr);
+
+    var out_buf: [MAX_TEXT_BYTES:0]u8 = @splat(0);
+    const out_size = output_buffer_size(options.max_bytes);
+    if (swkbdShow(config, out_buf[0..].ptr, out_size) == 0) {
+        const len = bounded_z_len(out_buf[0..out_size]);
+        core.write_text_session_buffer(out_buf[0..len], .submitted);
+    } else {
+        core.write_text_session_buffer(initial_buf[0..initial_len], .cancelled);
+    }
+}
 
 pub fn end_text_input_session() void {}
+
+fn diff_buttons(buttons: u64) void {
+    const Pair = struct { mask: u64, button: core.Button };
+    const map = [_]Pair{
+        .{ .mask = BUTTON_A, .button = .A },
+        .{ .mask = BUTTON_B, .button = .B },
+        .{ .mask = BUTTON_X, .button = .X },
+        .{ .mask = BUTTON_Y, .button = .Y },
+        .{ .mask = BUTTON_L | BUTTON_LEFT_SL | BUTTON_RIGHT_SL, .button = .LButton },
+        .{ .mask = BUTTON_R | BUTTON_LEFT_SR | BUTTON_RIGHT_SR, .button = .RButton },
+        .{ .mask = BUTTON_MINUS, .button = .Back },
+        .{ .mask = BUTTON_PLUS, .button = .Start },
+        .{ .mask = BUTTON_STICK_L, .button = .LeftThumb },
+        .{ .mask = BUTTON_STICK_R, .button = .RightThumb },
+        .{ .mask = BUTTON_UP, .button = .DpadUp },
+        .{ .mask = BUTTON_RIGHT, .button = .DpadRight },
+        .{ .mask = BUTTON_DOWN, .button = .DpadDown },
+        .{ .mask = BUTTON_LEFT, .button = .DpadLeft },
+    };
+
+    inline for (map) |entry| {
+        const now = buttons & entry.mask != 0;
+        const prev = prev_buttons & entry.mask != 0;
+        if (now != prev) {
+            core.deliver_gamepad_button(entry.button, if (now) .pressed else .released);
+        }
+    }
+}
+
+fn pump_axes(buttons: u64) void {
+    const left = pad.sticks[0];
+    const right = pad.sticks[1];
+
+    deliver_axis(.LeftX, normalize_stick(left.x));
+    deliver_axis(.LeftY, -normalize_stick(left.y));
+    deliver_axis(.RightX, normalize_stick(right.x));
+    deliver_axis(.RightY, -normalize_stick(right.y));
+    deliver_axis(.LeftTrigger, if (buttons & BUTTON_ZL != 0) 1.0 else 0.0);
+    deliver_axis(.RightTrigger, if (buttons & BUTTON_ZR != 0) 1.0 else 0.0);
+}
+
+fn pump_touch() void {
+    var states: [1]HidTouchScreenState = undefined;
+    const state_count = hidGetTouchScreenStates(&states, states.len);
+    const touch_down = state_count > 0 and states[0].count > 0;
+
+    if (touch_down) {
+        const touch = states[0].touches[0];
+        const pos: core.Vec2 = .{
+            .x = @floatFromInt(touch.x),
+            .y = @floatFromInt(touch.y),
+        };
+        const delta: core.Vec2 = if (prev_touch_down)
+            .{ .x = pos.x - prev_touch_pos.x, .y = pos.y - prev_touch_pos.y }
+        else
+            .{};
+
+        core.deliver_mouse_move(pos, delta);
+        if (!prev_touch_down) core.deliver_mouse_button(.Left, .pressed, pos);
+        prev_touch_pos = pos;
+    } else if (prev_touch_down) {
+        core.deliver_mouse_button(.Left, .released, prev_touch_pos);
+    }
+
+    prev_touch_down = touch_down;
+}
+
+fn deliver_axis(axis: core.Axis, value: f32) void {
+    const idx = @intFromEnum(axis);
+    const prev = prev_axes[idx];
+    if (value != 0.0 or prev != 0.0) core.deliver_gamepad_axis(axis, value);
+    prev_axes[idx] = value;
+}
+
+fn normalize_stick(raw: i32) f32 {
+    const value = @as(f32, @floatFromInt(raw)) / JOYSTICK_MAX;
+    return std.math.clamp(value, -1.0, 1.0);
+}
+
+fn output_buffer_size(limit: ?usize) usize {
+    const max = @min(limit orelse (MAX_TEXT_BYTES - 1), MAX_TEXT_BYTES - 1);
+    return max + 1;
+}
+
+fn copy_current_text(dst: []u8) usize {
+    const s = core.current_text_session() orelse return 0;
+    const n = @min(dst.len - 1, s.buffer.items.len);
+    @memcpy(dst[0..n], s.buffer.items[0..n]);
+    dst[n] = 0;
+    return n;
+}
+
+fn copy_z(dst: []u8, text: []const u8) [:0]const u8 {
+    const n = @min(dst.len - 1, text.len);
+    @memcpy(dst[0..n], text[0..n]);
+    dst[n] = 0;
+    return dst[0..n :0];
+}
+
+fn bounded_z_len(buf: []const u8) usize {
+    return std.mem.indexOfScalar(u8, buf, 0) orelse buf.len;
+}
