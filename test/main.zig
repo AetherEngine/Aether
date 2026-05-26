@@ -20,21 +20,17 @@ pub const psp_stack_size: u32 = 256 * 1024;
 
 // PSP, 3DS, and Switch override panic/IO handlers that would otherwise
 // pull in posix symbols (Io.Threaded references std.posix decls that
-// don't exist for these targets). 3DS and Switch don't have SDKs wired
-// up yet, so their debug_io is `undefined` for now — invoking it before
-// libctru/libnx lands is UB, which matches the placeholder entries in
-// each platform's `services.zig`.
+// don't exist for these targets). 3DS and Switch use Aether's newlib-backed
+// baseline so debug prints go through stderr instead of dereferencing an
+// undefined Io implementation.
 const is_freestanding_console = ae.platform == .psp or ae.platform == .nintendo_3ds or ae.platform == .nintendo_switch;
-// 3DS and Switch use `no_panic` while their SDK integration is stubbed:
-// `std_options_debug_io` is `undefined` on those targets, so
-// `defaultPanic` would deref garbage when formatting, re-panic, and
-// recurse until the stack blows. `no_panic` keeps the first fault as
-// the only fault — a single CPU exception you can read off the screen
-// rather than an unbounded loop through `memset`.
+// 3DS and Switch keep `no_panic` while the debug IO baseline is intentionally
+// small. Missing operations should fail at the original call site instead of
+// recursing through stack-trace formatting on early bring-up builds.
 pub const panic = if (ae.platform == .psp) sdk.extra.debug.panic else if (ae.platform == .nintendo_3ds or ae.platform == .nintendo_switch) std.debug.no_panic else std.debug.FullPanic(std.debug.defaultPanic);
 pub const std_options_debug_threaded_io = if (is_freestanding_console) null else std.Io.Threaded.global_single_threaded;
 pub const std_options_debug_io: std.Io =
-    if (ae.platform == .psp) sdk.extra.Io.psp_io else if (ae.platform == .nintendo_3ds or ae.platform == .nintendo_switch) undefined else std.Io.Threaded.global_single_threaded.io();
+    if (ae.platform == .psp) sdk.extra.Io.psp_io else if (ae.platform == .nintendo_3ds or ae.platform == .nintendo_switch) ae.Cio.io() else std.Io.Threaded.global_single_threaded.io();
 pub const std_options_cwd =
     if (ae.platform == .psp) psp_cwd else if (ae.platform == .nintendo_3ds or ae.platform == .nintendo_switch) stub_cwd else null;
 fn psp_cwd() std.Io.Dir {

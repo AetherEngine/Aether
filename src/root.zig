@@ -12,6 +12,7 @@ pub const ctx_to_self = Util.ctx_to_self;
 /// PSP-exclusive system utility dialogs (OSK, network configuration).
 /// Only available when `platform == .psp`; evaluates to `void` otherwise.
 pub const Psp = if (platform == .psp) @import("platform/psp/psp_dialogs.zig") else void;
+pub const Cio = if (platform == .nintendo_3ds or platform == .nintendo_switch) @import("platform/c_io.zig") else void;
 
 // Pull in the 3DS / Switch entry shim on those targets. Each shim's
 // comptime block `@export`s a C-callable `main` so `-ofmt=c` emits
