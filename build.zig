@@ -1156,6 +1156,11 @@ pub fn build(b: *std.Build) void {
         .slang = b.path("test/shaders/basic.slang"),
     });
 
+    const nintendo_romfs = b.addWriteFiles();
+    _ = nintendo_romfs.addCopyFile(b.path("test/test.png"), "test.png");
+    _ = nintendo_romfs.addCopyFile(b.path("test/calm1.wav"), "calm1.wav");
+    _ = nintendo_romfs.addCopyFile(b.path("test/grass1.wav"), "grass1.wav");
+
     exportArtifact(b, b, exe, config, .{
         .title = "Aether",
         .output_dir = switch (config.platform) {
@@ -1166,6 +1171,8 @@ pub fn build(b: *std.Build) void {
         },
         .smdh_long_description = "Aether engine test app",
         .smdh_author = "Aether",
+        .romfs = if (config.platform == .nintendo_3ds) nintendo_romfs.getDirectory() else null,
+        .switch_romfs = if (config.platform == .nintendo_switch) nintendo_romfs.getDirectory() else null,
     });
 
     const run_step = b.step("run", "Run the app");

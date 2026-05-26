@@ -24,10 +24,13 @@
 //! per project style guide they go through `std.Io` / `std.process`.
 
 const std = @import("std");
-const builtin = @import("builtin");
 const options = @import("options");
 
 const Io = std.Io;
+const NintendoIo = if (options.config.platform == .nintendo_3ds or options.config.platform == .nintendo_switch)
+    @import("../platform/c_io.zig")
+else
+    void;
 
 /// Engine-owned directory handles. Cleared via `close()` at engine shutdown.
 pub const Dirs = struct {
@@ -82,13 +85,15 @@ pub fn resolve(
     // and debug/CI builds where state co-located with the binary is a
     // feature, not a bug.
     if (options.config.use_cwd) {
+        if (NintendoIo != void) NintendoIo.useCwdDirs();
         return .{ .resources = Io.Dir.cwd(), .data = Io.Dir.cwd() };
     }
 
-    return switch (builtin.os.tag) {
+    return switch (options.config.platform) {
         .macos => resolve_macos(io, environ_map, app_name),
         .windows => resolve_windows(io, environ_map, app_name),
         .linux => resolve_linux(io, environ_map, app_name),
+        .nintendo_3ds, .nintendo_switch => resolve_nintendo(app_name),
         // PSP: both dirs collapse to CWD. The EBOOT and its siblings all
         // live under `ms0:/PSP/GAME/<id>/`; the runtime sets CWD there
         // before main. No separation to enforce.
@@ -98,6 +103,11 @@ pub fn resolve(
         // platform-specific code.
         else => .{ .resources = Io.Dir.cwd(), .data = Io.Dir.cwd() },
     };
+}
+
+fn resolve_nintendo(app_name: []const u8) Error!Dirs {
+    try NintendoIo.initAppDirs(app_name);
+    return .{ .resources = Io.Dir.cwd(), .data = Io.Dir.cwd() };
 }
 
 // -- macOS --------------------------------------------------------------------
