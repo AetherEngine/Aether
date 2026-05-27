@@ -425,6 +425,7 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize, primitiv
     const mvp = Mat4.mul(model.*, view_proj);
 
     C3D_BindProgram(&pl.program);
+    configure_fixed_attributes();
     upload_matrix_uniform(pl.projection_loc, &screen_projection);
 
     C3D_ImmDrawBegin(GPU_TRIANGLES);

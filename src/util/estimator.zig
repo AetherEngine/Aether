@@ -30,12 +30,12 @@ pub const Estimator = struct {
     }
 
     pub fn begin(self: *Estimator, io: std.Io) void {
-        var clock = std.Io.Clock.real;
+        var clock = std.Io.Clock.boot;
         self.start_ns = @truncate(clock.now(io).toNanoseconds());
     }
 
     pub fn end(self: *Estimator, io: std.Io) void {
-        var clock = std.Io.Clock.real;
+        var clock = std.Io.Clock.boot;
         const now_ns: i64 = @truncate(clock.now(io).toNanoseconds());
         const elapsed = now_ns - self.start_ns;
         self.start_ns = 0;
