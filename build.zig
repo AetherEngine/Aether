@@ -886,22 +886,32 @@ fn threedsxPipeline(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOpt
     const link = b.addSystemCommand(&.{gcc});
     link.addArgs(&arch);
     link.addArgs(&.{
-        "-mword-relocations",  "-ffunction-sections",
-        "-D__3DS__",           "-DARM11",
-        "-O2",                 "-g",
-        "-specs=3dsx.specs",   "-Wl,--wrap=threadCreate",
+        "-mword-relocations",
+        "-ffunction-sections",
+        "-D__3DS__",
+        "-DARM11",
+        if (exe.root_module.optimize != .Debug or exe.root_module.optimize == .ReleaseSmall) "-O2" else if (exe.root_module.optimize == .ReleaseSmall) "-Os" else "-O0",
+        if (exe.root_module.optimize == .Debug or exe.root_module.optimize == .ReleaseSafe) "-g" else "-g0",
+        "-specs=3dsx.specs",
+        "-Wl,--wrap=threadCreate",
+        "-Wl,--no-warn-execstack",
+    });
+    link.addArgs(&.{
         // Pin the C standard to C11. zig.h picks `[[noreturn]]` under
         // C23 but emits it in attribute-list position that gcc rejects;
         // C11's `_Noreturn` is what zig's emitter actually targets.
         "-std=gnu11",
+    });
+    link.addArgs(&.{
         // zig's -ofmt=c emitter treats `uintptr_t` and `uint32_t` as
         // interchangeable on 32-bit ARM (they ARE the same width) but
         // gcc 14+ promotes the resulting pointer-type mismatch from a
         // warning to an error. Demote it and a couple of related
         // chatters; we don't author this C and there's nothing
         // actionable in the warnings.
-                 "-Wno-incompatible-pointer-types",
-        "-Wno-int-conversion", "-Wno-builtin-declaration-mismatch",
+        "-Wno-incompatible-pointer-types",
+        "-Wno-int-conversion",
+        "-Wno-builtin-declaration-mismatch",
     });
     link.addArg(b.fmt("-I{s}", .{ctru_inc}));
     link.addPrefixedDirectoryArg("-I", include_wf.getDirectory());

@@ -87,7 +87,7 @@ pub const Engine = struct {
     trackers: [TRACKER_COUNT]CategoryTracker,
     running: bool,
     vsync: bool,
-    state: *const Core.State,
+    state: Core.State,
     dirs: Core.paths.Dirs,
 
     pub const Config = struct {
@@ -127,7 +127,7 @@ pub const Engine = struct {
         self.io = sys_io;
         self.running = true;
         self.vsync = config.vsync;
-        self.state = state;
+        self.state = state.*;
 
         self.pool = memory.PoolAlloc.init(mem, "main");
         const inner = self.pool.allocator();
@@ -150,7 +150,7 @@ pub const Engine = struct {
 
         try Platform.init(self, config.width, config.height, config.title, config.fullscreen, config.vsync, config.resizable);
         try Rendering.Texture.init_defaults(self.allocator(.render));
-        try Core.state_machine.init(self, state);
+        try Core.state_machine.init(self, &self.state);
     }
 
     pub fn deinit(self: *Engine) void {
@@ -236,11 +236,12 @@ pub const Engine = struct {
 
         const update_budget_ns: i64 = @as(i64, @intCast(UPDATE_US)) * NS_PER_US;
 
-        var clock = std.Io.Clock.real;
+        var clock = std.Io.Clock.boot;
 
         var last_us: i64 = @truncate(@divTrunc(clock.now(self.io).toNanoseconds(), 1000));
         var update_accum: i64 = 0;
         var tick_accum: i64 = 0;
+        var stale_time_frames: u32 = 0;
 
         const report_fps = options.config.gfx != .headless;
         var fps_count: u32 = 0;
@@ -249,12 +250,34 @@ pub const Engine = struct {
         while (self.running) {
             const now_us: i64 = @truncate(@divTrunc(clock.now(self.io).toNanoseconds(), 1000));
             var frame_dt_us: i64 = now_us - last_us;
-            last_us = now_us;
+            var synthetic_frame_dt = false;
+
+            if (frame_dt_us <= 0) {
+                frame_dt_us = 0;
+                if (options.config.platform == .nintendo_3ds and self.vsync) {
+                    stale_time_frames +|= 1;
+                    if (stale_time_frames >= 2) {
+                        frame_dt_us = @intCast(US_PER_S / 60);
+                        synthetic_frame_dt = true;
+                    }
+                }
+            } else {
+                stale_time_frames = 0;
+            }
 
             if (frame_dt_us > 500_000) frame_dt_us = 500_000;
+            last_us = if (synthetic_frame_dt) last_us + frame_dt_us else now_us;
 
             update_accum += frame_dt_us;
             tick_accum += frame_dt_us;
+
+            const platform_start_ns: i64 = @truncate(clock.now(self.io).toNanoseconds());
+            Platform.input.update();
+            Platform.update(self);
+            Core.input.update();
+            const platform_done_ns: i64 = @truncate(clock.now(self.io).toNanoseconds());
+            var pre_update_elapsed_ns = platform_done_ns - platform_start_ns;
+            if (!self.running) break;
 
             // ---- fixed-rate TICK steps (e.g., 20 Hz logic) ----
             var is_tick_frame = false;
@@ -270,28 +293,22 @@ pub const Engine = struct {
                 tick_accum -= tick_us;
             }
 
-            // ---- fixed-rate UPDATE steps (input update & interpolation) ----
+            // ---- fixed-rate UPDATE steps (simulation & interpolation) ----
             const UPDATE_DT_S: f32 = @as(f32, @floatFromInt(UPDATE_US)) / @as(f32, US_PER_S);
             while (update_accum >= UPDATE_US) {
                 @branchHint(.unpredictable);
 
-                const step_start_ns: i64 = @truncate(clock.now(self.io).toNanoseconds());
-                Platform.input.update();
-                Platform.update(self);
-                Core.input.update();
-                const engine_done_ns: i64 = @truncate(clock.now(self.io).toNanoseconds());
-                const engine_elapsed_ns = engine_done_ns - step_start_ns;
-
                 const budget = Util.BudgetContext{
                     .phase_budget_ns = update_budget_ns,
-                    .engine_elapsed_ns = engine_elapsed_ns,
-                    .remaining_ns = update_budget_ns - engine_elapsed_ns,
+                    .engine_elapsed_ns = pre_update_elapsed_ns,
+                    .remaining_ns = update_budget_ns - pre_update_elapsed_ns,
                     .is_tick_frame = is_tick_frame,
                     .tick_cost_ns = tick_cost_ns,
                     .safety_margin_ns = Util.BudgetContext.DEFAULT_SAFETY_MARGIN_NS,
                 };
 
                 try Core.state_machine.update(self, UPDATE_DT_S, &budget);
+                pre_update_elapsed_ns = 0;
                 update_accum -= UPDATE_US;
             }
 
