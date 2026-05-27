@@ -96,8 +96,8 @@ pub const Config = struct {
         // macOS default is `.none` because the current miniaudio build is
         // bugged there. Flip back to `.default` with `-Daudio=default` once
         // that's fixed.
-        const default_audio: Audio = switch (target.result.os.tag) {
-            .macos => .none,
+        const default_audio: Audio = switch (plat) {
+            .macos, .nintendo_3ds => .none,
             else => .default,
         };
 
@@ -194,8 +194,7 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
     // 3DS and Switch force ofmt=c — there's no Zig-native backend for
     // either Horizon target yet, so we emit C and let an external
     // toolchain (devkitARM/libctru on 3DS, devkitA64/libnx on Switch)
-    // compile the result. Stub backends keep the engine compiling
-    // end-to-end until a real SDK is wired in.
+    // compile the result.
     const target = if (config.platform == .nintendo_3ds or config.platform == .nintendo_switch) blk: {
         var q = opts.target.query;
         q.ofmt = .c;
@@ -223,8 +222,8 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
     if (psp_dep) |pd| {
         mod.addImport("pspsdk", pd.module("pspsdk"));
     } else if (config.platform == .nintendo_3ds or config.platform == .nintendo_switch) {
-        // No 3DS/Switch SDK is wired in yet; stubs satisfy every
-        // backend contract so addImport calls are unnecessary here.
+        // Console SDK symbols are declared as backend-local externs and
+        // resolved by the export pipeline's devkitPro link step.
     } else {
         const zglfw = owner.dependency("zglfw", .{
             .target = target,
@@ -434,6 +433,13 @@ fn addSlangStep(b: *std.Build, slangc: ?std.Build.LazyPath, args: []const []cons
 
 fn addUamStep(b: *std.Build, uam: []const u8, stage: []const u8, comptime output_name: []const u8, input: std.Build.LazyPath) std.Build.LazyPath {
     const run = b.addSystemCommand(&.{ uam, "-s", stage, "-o" });
+    const output = run.addOutputFileArg(output_name);
+    run.addFileArg(input);
+    return output;
+}
+
+fn addPicassoStep(b: *std.Build, picasso: []const u8, comptime output_name: []const u8, input: std.Build.LazyPath) std.Build.LazyPath {
+    const run = b.addSystemCommand(&.{ picasso, "-o" });
     const output = run.addOutputFileArg(output_name);
     run.addFileArg(input);
     return output;
@@ -857,6 +863,18 @@ fn threedsxPipeline(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOpt
     const include_wf = b.addWriteFiles();
     _ = include_wf.addCopyFile(patched_zig_h, "zig.h");
 
+    const shim_wf = b.addWriteFiles();
+    const exception_shim = shim_wf.add("aether_3ds_exception.c",
+        \\#include <3ds.h>
+        \\
+        \\extern void aether3dsExceptionHandler(ERRF_ExceptionInfo *excep, CpuRegisters *regs);
+        \\
+        \\void aether3dsInstallExceptionHandler(void *stack_top) {
+        \\    threadOnException(aether3dsExceptionHandler, stack_top, WRITE_DATA_TO_HANDLER_STACK);
+        \\}
+        \\
+    );
+
     // Standard 3DS arch flags from devkitPro's template Makefile.
     const arch = [_][]const u8{
         "-march=armv6k", "-mtune=mpcore", "-mfloat-abi=hard", "-mtp=soft",
@@ -868,35 +886,36 @@ fn threedsxPipeline(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOpt
     const link = b.addSystemCommand(&.{gcc});
     link.addArgs(&arch);
     link.addArgs(&.{
-        "-mword-relocations",                "-ffunction-sections",
-        "-D__3DS__",                         "-DARM11",
-        "-O2",                               "-g",
-        "-specs=3dsx.specs",
+        "-mword-relocations",  "-ffunction-sections",
+        "-D__3DS__",           "-DARM11",
+        "-O2",                 "-g",
+        "-specs=3dsx.specs",   "-Wl,--wrap=threadCreate",
         // Pin the C standard to C11. zig.h picks `[[noreturn]]` under
         // C23 but emits it in attribute-list position that gcc rejects;
         // C11's `_Noreturn` is what zig's emitter actually targets.
-                        "-std=gnu11",
+        "-std=gnu11",
         // zig's -ofmt=c emitter treats `uintptr_t` and `uint32_t` as
         // interchangeable on 32-bit ARM (they ARE the same width) but
         // gcc 14+ promotes the resulting pointer-type mismatch from a
         // warning to an error. Demote it and a couple of related
         // chatters; we don't author this C and there's nothing
         // actionable in the warnings.
-        "-Wno-incompatible-pointer-types",   "-Wno-int-conversion",
-        "-Wno-builtin-declaration-mismatch",
+                 "-Wno-incompatible-pointer-types",
+        "-Wno-int-conversion", "-Wno-builtin-declaration-mismatch",
     });
     link.addArg(b.fmt("-I{s}", .{ctru_inc}));
     link.addPrefixedDirectoryArg("-I", include_wf.getDirectory());
     link.addArg("-x");
     link.addArg("c");
     link.addArtifactArg(exe);
+    link.addFileArg(exception_shim);
     // Reset language so gcc treats subsequent inputs by extension; the
     // compiler_rt object is ELF arm and `-x c` would mis-parse it.
     link.addArg("-x");
     link.addArg("none");
     link.addFileArg(crt_clean);
     link.addArg(b.fmt("-L{s}", .{ctru_lib}));
-    link.addArgs(&.{ "-lctru", "-lm" });
+    link.addArgs(&.{ "-lcitro3d", "-lctru", "-lm" });
     link.addArg("-o");
     const elf = link.addOutputFileArg(b.fmt("{s}.elf", .{exe.name}));
 
@@ -1089,6 +1108,43 @@ fn switchNroPipeline(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOp
 ///     Aether.addShader(ae_dep.builder, b, exe, config, "basic", .{ ... });
 ///
 pub fn addShader(owner: *std.Build, b: *std.Build, exe: *std.Build.Step.Compile, config: Config, comptime name: []const u8, paths: ShaderPaths) void {
+    if (config.platform == .nintendo_3ds and config.gfx == .default) {
+        const picasso = b.pathJoin(&.{ devkitProPath(b), "tools/bin/picasso" });
+        const sources = b.addWriteFiles();
+        const vert_src = sources.add(name ++ "_3ds.v.pica",
+            \\.fvec projection[4]
+            \\
+            \\.constf myconst(0.0, 1.0, 0.0, 0.0)
+            \\.alias ones myconst.yyyy
+            \\
+            \\.out outpos position
+            \\.out outclr color
+            \\
+            \\.alias inpos v0
+            \\.alias inclr v1
+            \\
+            \\.proc main
+            \\    mov r0.xyz, inpos
+            \\    mov r0.w, ones
+            \\
+            \\    dp4 outpos.x, projection[0], r0
+            \\    dp4 outpos.y, projection[1], r0
+            \\    dp4 outpos.z, projection[2], r0
+            \\    dp4 outpos.w, projection[3], r0
+            \\
+            \\    mov outclr, inclr
+            \\    end
+            \\.end
+            \\
+        );
+        const vert = addPicassoStep(b, picasso, name ++ ".shbin", vert_src);
+        const empty = b.addWriteFiles();
+        const frag = empty.add(name ++ "_3ds_frag_stub", "");
+        exe.root_module.addAnonymousImport(name ++ "_vert", .{ .root_source_file = vert });
+        exe.root_module.addAnonymousImport(name ++ "_frag", .{ .root_source_file = frag });
+        return;
+    }
+
     if (config.platform == .nintendo_switch and config.gfx == .default) {
         const uam = b.pathJoin(&.{ devkitProPath(b), "tools/bin/uam" });
         const sources = b.addWriteFiles();

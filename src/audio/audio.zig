@@ -1,6 +1,7 @@
 const std = @import("std");
 const Vec3 = @import("../math/math.zig").Vec3;
 const platform_audio = @import("../platform/audio.zig");
+const options = @import("options");
 
 // -- types -------------------------------------------------------------------
 
@@ -13,6 +14,7 @@ pub const mixer_mod = @import("mixer.zig");
 pub const SoundHandle = mixer_mod.SoundHandle;
 pub const PlayOptions = mixer_mod.PlayOptions;
 pub const Priority = mixer_mod.Priority;
+pub const enabled = options.config.audio != .none;
 
 // -- forwarding to the instantiated mixer ------------------------------------
 
