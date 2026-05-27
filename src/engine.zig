@@ -326,10 +326,11 @@ pub const Engine = struct {
                     const next_tick = @as(i64, @intCast(TICK_US)) - tick_accum;
                     const sleep_us = @max(0, @min(next_update, next_tick));
                     if (sleep_us > 0) {
-                        try std.Io.sleep(self.io, .fromMicroseconds(sleep_us), clock);
+                        const sleep_ns = sleep_us * NS_PER_US;
+                        try std.Io.sleep(self.io, .fromNanoseconds(@intCast(sleep_ns)), clock);
                     }
                 } else if (options.config.platform != .psp) {
-                    try std.Io.sleep(self.io, .fromMilliseconds(50), clock);
+                    try std.Io.sleep(self.io, .fromNanoseconds(50 * std.time.ns_per_ms), clock);
                 }
             }
 
