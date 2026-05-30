@@ -1128,10 +1128,12 @@ pub fn addShader(owner: *std.Build, b: *std.Build, exe: *std.Build.Step.Compile,
             \\.alias ones myconst.yyyy
             \\
             \\.out outpos position
+            \\.out outtc0 texcoord0
             \\.out outclr color
             \\
             \\.alias inpos v0
-            \\.alias inclr v1
+            \\.alias inuv v1
+            \\.alias inclr v2
             \\
             \\.proc main
             \\    mov r0.xyz, inpos
@@ -1142,6 +1144,7 @@ pub fn addShader(owner: *std.Build, b: *std.Build, exe: *std.Build.Step.Compile,
             \\    dp4 outpos.z, projection[2], r0
             \\    dp4 outpos.w, projection[3], r0
             \\
+            \\    mov outtc0, inuv
             \\    mov outclr, inclr
             \\    end
             \\.end

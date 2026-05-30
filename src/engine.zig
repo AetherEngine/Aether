@@ -228,8 +228,8 @@ pub const Engine = struct {
         const US_PER_S: u64 = std.time.us_per_s;
         const NS_PER_US: i64 = 1000;
 
-        // Fixed-step rates -- PSP targets 60 Hz display
-        const UPDATES_HZ: u32 = if (options.config.platform == .psp) 60 else 144;
+        // Fixed-step rates -- handheld backends target 60 Hz displays.
+        const UPDATES_HZ: u32 = if (options.config.platform == .psp or options.config.platform == .nintendo_3ds) 60 else 144;
         const TICKS_HZ: u32 = 20;
         const UPDATE_US: u64 = US_PER_S / UPDATES_HZ;
         const TICK_US: u64 = US_PER_S / TICKS_HZ;
@@ -237,19 +237,21 @@ pub const Engine = struct {
         const update_budget_ns: i64 = @as(i64, @intCast(UPDATE_US)) * NS_PER_US;
 
         var clock = std.Io.Clock.boot;
+        const run_start_ns = clock.now(self.io).toNanoseconds();
+        const fps_window_us: i64 = @intCast(US_PER_S);
 
-        var last_us: i64 = @truncate(@divTrunc(clock.now(self.io).toNanoseconds(), 1000));
+        var last_us: i64 = 0;
         var update_accum: i64 = 0;
         var tick_accum: i64 = 0;
         var stale_time_frames: u32 = 0;
 
         const report_fps = options.config.gfx != .headless;
         var fps_count: u32 = 0;
-        var fps_window_end: i64 = last_us + US_PER_S;
+        var fps_window_end: i64 = saturatingAddI64(last_us, fps_window_us);
 
         while (self.running) {
-            const now_us: i64 = @truncate(@divTrunc(clock.now(self.io).toNanoseconds(), 1000));
-            var frame_dt_us: i64 = now_us - last_us;
+            const now_us = elapsedUsSince(run_start_ns, clock.now(self.io).toNanoseconds());
+            var frame_dt_us = saturatingSubI64(now_us, last_us);
             var synthetic_frame_dt = false;
 
             if (frame_dt_us <= 0) {
@@ -266,17 +268,17 @@ pub const Engine = struct {
             }
 
             if (frame_dt_us > 500_000) frame_dt_us = 500_000;
-            last_us = if (synthetic_frame_dt) last_us + frame_dt_us else now_us;
+            last_us = if (synthetic_frame_dt) saturatingAddI64(last_us, frame_dt_us) else now_us;
 
-            update_accum += frame_dt_us;
-            tick_accum += frame_dt_us;
+            update_accum = saturatingAddI64(update_accum, frame_dt_us);
+            tick_accum = saturatingAddI64(tick_accum, frame_dt_us);
 
-            const platform_start_ns: i64 = @truncate(clock.now(self.io).toNanoseconds());
+            const platform_start_ns = clock.now(self.io).toNanoseconds();
             Platform.input.update();
             Platform.update(self);
             Core.input.update();
-            const platform_done_ns: i64 = @truncate(clock.now(self.io).toNanoseconds());
-            var pre_update_elapsed_ns = platform_done_ns - platform_start_ns;
+            const platform_done_ns = clock.now(self.io).toNanoseconds();
+            var pre_update_elapsed_ns = elapsedNsBetween(platform_start_ns, platform_done_ns);
             if (!self.running) break;
 
             // ---- fixed-rate TICK steps (e.g., 20 Hz logic) ----
@@ -286,10 +288,10 @@ pub const Engine = struct {
             while (tick_accum >= tick_us) {
                 @branchHint(.unpredictable);
                 is_tick_frame = true;
-                const tick_start_ns: i64 = @truncate(clock.now(self.io).toNanoseconds());
+                const tick_start_ns = clock.now(self.io).toNanoseconds();
                 try Core.state_machine.tick(self);
-                const tick_end_ns: i64 = @truncate(clock.now(self.io).toNanoseconds());
-                tick_cost_ns += tick_end_ns - tick_start_ns;
+                const tick_end_ns = clock.now(self.io).toNanoseconds();
+                tick_cost_ns = saturatingAddI64(tick_cost_ns, elapsedNsBetween(tick_start_ns, tick_end_ns));
                 tick_accum -= tick_us;
             }
 
@@ -316,7 +318,7 @@ pub const Engine = struct {
             const frame_dt_s: f32 = @as(f32, @floatFromInt(frame_dt_us)) / @as(f32, US_PER_S);
             const drew_frame = Platform.gfx.api.start_frame();
             if (drew_frame) {
-                const draw_start_ns: i64 = @truncate(clock.now(self.io).toNanoseconds());
+                const draw_start_ns = clock.now(self.io).toNanoseconds();
                 // Time until next update step is due
                 const slack_us: i64 = @as(i64, @intCast(UPDATE_US)) - @max(0, update_accum);
                 const draw_budget_ns: i64 = if (self.vsync)
@@ -354,13 +356,37 @@ pub const Engine = struct {
             // ---- FPS counting ----
             if (report_fps) {
                 if (drew_frame) fps_count += 1;
-                const end_us: i64 = @truncate(@divTrunc(clock.now(self.io).toNanoseconds(), 1000));
+                const end_us = elapsedUsSince(run_start_ns, clock.now(self.io).toNanoseconds());
                 if (end_us >= fps_window_end) {
                     Util.engine_logger.info("FPS: {}", .{fps_count});
                     fps_count = 0;
-                    fps_window_end = end_us + US_PER_S;
+                    fps_window_end = saturatingAddI64(end_us, fps_window_us);
                 }
             }
         }
     }
 };
+
+fn elapsedNsBetween(start_ns: i96, end_ns: i96) i64 {
+    return clampI96ToI64(end_ns - start_ns);
+}
+
+fn elapsedUsSince(start_ns: i96, end_ns: i96) i64 {
+    return clampI96ToI64(@divTrunc(end_ns - start_ns, std.time.ns_per_us));
+}
+
+fn saturatingAddI64(a: i64, b: i64) i64 {
+    return clampI96ToI64(@as(i96, a) + @as(i96, b));
+}
+
+fn saturatingSubI64(a: i64, b: i64) i64 {
+    return clampI96ToI64(@as(i96, a) - @as(i96, b));
+}
+
+fn clampI96ToI64(value: i96) i64 {
+    const max: i96 = std.math.maxInt(i64);
+    const min: i96 = std.math.minInt(i64);
+    if (value > max) return std.math.maxInt(i64);
+    if (value < min) return std.math.minInt(i64);
+    return @intCast(value);
+}
