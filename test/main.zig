@@ -121,13 +121,13 @@ const MyState = struct {
         if (!Audio.enabled) return;
 
         // -- background music --
-        self.music_data = try load_wav(engine, "calm1.wav");
-        self.music_reader = .fixed(self.music_data);
-        const music_stream = try Audio.wav.open(&self.music_reader);
-        _ = try Audio.play(music_stream, .{ .priority = .critical });
+        // self.music_data = try load_wav(engine, "calm1.wav");
+        // self.music_reader = .fixed(self.music_data);
+        // const music_stream = try Audio.wav.open(&self.music_reader);
+        // _ = try Audio.play(music_stream, .{ .priority = .critical });
 
-        // -- spatial SFX data --
-        self.grass_data = try load_wav(engine, "grass1.wav");
+        // // -- spatial SFX data --
+        // self.grass_data = try load_wav(engine, "grass1.wav");
 
         // Listener at origin, facing -Z
         Audio.set_listener(Vec3.zero(), Vec3.new(0, 0, -1), Vec3.new(0, 1, 0));
@@ -163,11 +163,11 @@ const MyState = struct {
             const pos = Vec3.new(@cos(angle) * dist, 0, @sin(angle) * dist);
 
             self.grass_readers[i] = .fixed(self.grass_data);
-            const stream = Audio.wav.open(&self.grass_readers[i]) catch return;
-            _ = Audio.play_at(stream, pos, .{
-                .ref_distance = 1.0,
-                .max_distance = 25.0,
-            }) catch return;
+            // const stream = Audio.wav.open(&self.grass_readers[i]) catch return;
+            // _ = Audio.play_at(stream, pos, .{
+            //     .ref_distance = 1.0,
+            //     .max_distance = 25.0,
+            // }) catch return;
 
             Util.game_logger.info("grass at ({d:.1}, 0, {d:.1})  dist={d:.1}", .{ pos.x, pos.z, dist });
         }

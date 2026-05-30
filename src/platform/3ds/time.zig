@@ -8,13 +8,20 @@ const Timespec = extern struct {
 extern fn clock_gettime(clock_id: c_int, tp: *Timespec) c_int;
 extern fn clock_getres(clock_id: c_int, res: *Timespec) c_int;
 extern fn svcSleepThread(ns: i64) void;
+extern fn svcGetSystemTick() u64;
 
 const ns_per_s: u64 = std.time.ns_per_s;
 const max_i64_ns: i64 = std.math.maxInt(i64);
 const CLOCK_REALTIME: c_int = 1;
 const CLOCK_MONOTONIC: c_int = 4;
+const SYSCLOCK_ARM11: u128 = 268_111_856;
 
 pub fn now(clock: std.Io.Clock) std.Io.Timestamp {
+    switch (clock) {
+        .awake, .boot => return .fromNanoseconds(systemTickNanoseconds(svcGetSystemTick())),
+        else => {},
+    }
+
     const id = clockId(clock) orelse std.debug.panic("3ds std.Io clock {s} is not implemented", .{@tagName(clock)});
     var ts: Timespec = undefined;
     if (clock_gettime(id, &ts) != 0) {
@@ -24,6 +31,11 @@ pub fn now(clock: std.Io.Clock) std.Io.Timestamp {
 }
 
 pub fn clockResolution(clock: std.Io.Clock) std.Io.Clock.ResolutionError!std.Io.Duration {
+    switch (clock) {
+        .awake, .boot => return .fromNanoseconds(@intCast((@as(u128, ns_per_s) + SYSCLOCK_ARM11 - 1) / SYSCLOCK_ARM11)),
+        else => {},
+    }
+
     const id = clockId(clock) orelse return error.ClockUnavailable;
     var ts: Timespec = undefined;
     if (clock_getres(id, &ts) != 0) return error.ClockUnavailable;
@@ -38,6 +50,11 @@ fn clockId(clock: std.Io.Clock) ?c_int {
         .awake, .boot => CLOCK_MONOTONIC,
         else => null,
     };
+}
+
+fn systemTickNanoseconds(ticks: u64) i64 {
+    const ns = (@as(u128, ticks) * @as(u128, ns_per_s)) / SYSCLOCK_ARM11;
+    return @intCast(@min(ns, @as(u128, @intCast(max_i64_ns))));
 }
 
 fn timespecNanoseconds(ts: Timespec) i64 {
