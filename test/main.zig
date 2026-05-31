@@ -21,8 +21,8 @@ pub const psp_stack_size: u32 = 256 * 1024;
 // PSP, 3DS, and Switch override panic/IO handlers that would otherwise
 // pull in posix symbols (Io.Threaded references std.posix decls that
 // don't exist for these targets). 3DS and Switch use Aether's newlib-backed
-// baseline so debug prints go through stderr instead of dereferencing an
-// undefined Io implementation.
+// baseline so debug prints and file IO go through the backend instead of
+// dereferencing an undefined Io implementation.
 const is_freestanding_console = ae.platform == .psp or ae.platform == .nintendo_3ds or ae.platform == .nintendo_switch;
 // 3DS routes panics through err:f; Switch keeps `no_panic` while the debug IO
 // baseline is intentionally small.
@@ -31,15 +31,9 @@ pub const std_options_debug_threaded_io = if (is_freestanding_console) null else
 pub const std_options_debug_io: std.Io =
     if (ae.platform == .psp) sdk.extra.Io.psp_io else if (ae.platform == .nintendo_3ds or ae.platform == .nintendo_switch) ae.Cio.io() else std.Io.Threaded.global_single_threaded.io();
 pub const std_options_cwd =
-    if (ae.platform == .psp) psp_cwd else if (ae.platform == .nintendo_3ds or ae.platform == .nintendo_switch) stub_cwd else null;
+    if (ae.platform == .psp) psp_cwd else if (ae.platform == .nintendo_3ds or ae.platform == .nintendo_switch) ae.Cio.cwd else null;
 fn psp_cwd() std.Io.Dir {
     return .{ .handle = -1 };
-}
-fn stub_cwd() std.Io.Dir {
-    // Dir.Handle resolves to `void` on 3DS/Switch freestanding targets
-    // (posix.fd_t falls back to void in the empty system struct). Init
-    // with `{}` to match.
-    return .{ .handle = {} };
 }
 
 const Vertex = extern struct {
@@ -77,7 +71,10 @@ const MyState = struct {
         defer file.close(engine.io);
 
         var tmp: [4096]u8 = undefined;
-        var rdr = file.reader(engine.io, &tmp);
+        var rdr = if (ae.platform == .nintendo_3ds or ae.platform == .nintendo_switch)
+            file.readerStreaming(engine.io, &tmp)
+        else
+            file.reader(engine.io, &tmp);
 
         var riff_hdr: [8]u8 = undefined;
         try rdr.interface.readSliceAll(&riff_hdr);
@@ -100,9 +97,7 @@ const MyState = struct {
         self.mesh = try MyMesh.new(render, pipeline);
         self.transform = Rendering.Transform.new();
 
-        const texture_bytes = @embedFile("test.png");
-        var texture_reader: std.Io.Reader = .fixed(texture_bytes);
-        self.texture = try Rendering.Texture.load_from_reader(render, &texture_reader);
+        self.texture = try Rendering.Texture.load(engine.io, engine.dirs.resources, render, "test.png");
 
         try self.mesh.append(render, &.{
             Vertex{ .pos = .{ -16383, -16383, 0 }, .color = 0xFF0000FF, .uv = .{ 0, 32767 } },
@@ -121,13 +116,13 @@ const MyState = struct {
         if (!Audio.enabled) return;
 
         // -- background music --
-        // self.music_data = try load_wav(engine, "calm1.wav");
-        // self.music_reader = .fixed(self.music_data);
-        // const music_stream = try Audio.wav.open(&self.music_reader);
-        // _ = try Audio.play(music_stream, .{ .priority = .critical });
+        self.music_data = try load_wav(engine, "calm1.wav");
+        self.music_reader = .fixed(self.music_data);
+        const music_stream = try Audio.wav.open(&self.music_reader);
+        _ = try Audio.play(music_stream, .{ .priority = .critical });
 
-        // // -- spatial SFX data --
-        // self.grass_data = try load_wav(engine, "grass1.wav");
+        // -- spatial SFX data --
+        self.grass_data = try load_wav(engine, "grass1.wav");
 
         // Listener at origin, facing -Z
         Audio.set_listener(Vec3.zero(), Vec3.new(0, 0, -1), Vec3.new(0, 1, 0));
@@ -163,11 +158,11 @@ const MyState = struct {
             const pos = Vec3.new(@cos(angle) * dist, 0, @sin(angle) * dist);
 
             self.grass_readers[i] = .fixed(self.grass_data);
-            // const stream = Audio.wav.open(&self.grass_readers[i]) catch return;
-            // _ = Audio.play_at(stream, pos, .{
-            //     .ref_distance = 1.0,
-            //     .max_distance = 25.0,
-            // }) catch return;
+            const stream = Audio.wav.open(&self.grass_readers[i]) catch return;
+            _ = Audio.play_at(stream, pos, .{
+                .ref_distance = 1.0,
+                .max_distance = 25.0,
+            }) catch return;
 
             Util.game_logger.info("grass at ({d:.1}, 0, {d:.1})  dist={d:.1}", .{ pos.x, pos.z, dist });
         }

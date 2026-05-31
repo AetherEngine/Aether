@@ -93,9 +93,25 @@ fn entry() callconv(.c) c_int {
 
     const init = process_init.makeInit(.{ .vector = &argv });
     @import("root").main(init) catch |err| {
-        fatal("Aether main returned error.{s} at 0x{x}", .{ @errorName(err), @returnAddress() });
+        fatalMainError(err, @errorReturnTrace(), @returnAddress());
     };
     return 0;
+}
+
+fn fatalMainError(err: anyerror, maybe_trace: ?*std.builtin.StackTrace, fallback_addr: usize) noreturn {
+    if (maybe_trace) |trace| {
+        const len = @min(trace.instruction_addresses.len, trace.index);
+        const addrs = trace.instruction_addresses[0..@min(len, 4)];
+        switch (addrs.len) {
+            0 => {},
+            1 => fatal("Aether main returned error.{s} at 0x{x}", .{ @errorName(err), addrs[0] }),
+            2 => fatal("Aether main returned error.{s} at 0x{x} 0x{x}", .{ @errorName(err), addrs[0], addrs[1] }),
+            3 => fatal("Aether main returned error.{s} at 0x{x} 0x{x} 0x{x}", .{ @errorName(err), addrs[0], addrs[1], addrs[2] }),
+            else => fatal("Aether main returned error.{s} at 0x{x} 0x{x} 0x{x} 0x{x}", .{ @errorName(err), addrs[0], addrs[1], addrs[2], addrs[3] }),
+        }
+    }
+
+    fatal("Aether main returned error.{s} at 0x{x}", .{ @errorName(err), fallback_addr });
 }
 
 pub fn panic(msg: []const u8, _: ?*std.builtin.StackTrace, first_trace_addr: ?usize) noreturn {

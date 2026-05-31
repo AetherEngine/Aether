@@ -31,17 +31,25 @@ const NintendoIo = if (options.config.platform == .nintendo_3ds or options.confi
     @import("../platform/c_io.zig")
 else
     void;
+const PathDir = if (NintendoIo != void) NintendoIo.AppDir else Io.Dir;
 
 /// Engine-owned directory handles. Cleared via `close()` at engine shutdown.
 pub const Dirs = struct {
     /// Read-only assets shipped with the app. On platforms where the
     /// concept doesn't apply, points at CWD.
-    resources: Io.Dir,
+    resources: PathDir,
     /// User-writable persistent state. On platforms where the concept
     /// doesn't apply, points at CWD (same handle as `resources`).
-    data: Io.Dir,
+    data: PathDir,
 
     pub fn close(self: *Dirs, io: Io) void {
+        if (NintendoIo != void) {
+            self.resources.close(io);
+            if (!self.data.eql(self.resources)) self.data.close(io);
+            NintendoIo.deinitAppDirs();
+            return;
+        }
+
         // std.Io.Dir.cwd() docs: "Closing the returned Dir is checked
         // illegal behavior." On CWD-fallback platforms (use_cwd, PSP,
         // unsupported OS) either handle may be the cwd sentinel, so skip
@@ -86,6 +94,7 @@ pub fn resolve(
     // feature, not a bug.
     if (options.config.use_cwd) {
         if (NintendoIo != void) NintendoIo.useCwdDirs();
+        if (NintendoIo != void) return .{ .resources = NintendoIo.cwdDir(), .data = NintendoIo.cwdDir() };
         return .{ .resources = Io.Dir.cwd(), .data = Io.Dir.cwd() };
     }
 
@@ -107,7 +116,7 @@ pub fn resolve(
 
 fn resolve_nintendo(app_name: []const u8) Error!Dirs {
     try NintendoIo.initAppDirs(app_name);
-    return .{ .resources = Io.Dir.cwd(), .data = Io.Dir.cwd() };
+    return .{ .resources = NintendoIo.resourcesDir(), .data = NintendoIo.dataDir() };
 }
 
 // -- macOS --------------------------------------------------------------------

@@ -11,7 +11,7 @@ var writer: *std.Io.Writer = undefined;
 /// other platform routes through the engine-resolved data dir so
 /// Finder-launched `.app` bundles don't try to write into read-only
 /// bundle internals.
-pub fn init(io: std.Io, data_dir: std.Io.Dir) !void {
+pub fn init(io: std.Io, data_dir: anytype) !void {
     if (builtin.os.tag == .psp) {
         file_log = try std.Io.Dir.cwd().createFile(io, "ms0:/aether.log", .{ .truncate = true });
     } else {
