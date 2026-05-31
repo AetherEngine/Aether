@@ -6,6 +6,7 @@ const Platform = @import("../platform/platform.zig");
 const gfx = Platform.gfx;
 const options = @import("options");
 const psp_gfx = if (builtin.os.tag == .psp) @import("../platform/psp/psp_gfx_ge.zig") else struct {};
+const use_streaming_file_reader = options.config.platform == .nintendo_3ds or options.config.platform == .nintendo_switch;
 
 pub const Handle = u32;
 
@@ -68,12 +69,15 @@ pub fn init_defaults(alloc: std.mem.Allocator) !void {
 /// `engine.dirs.data` for user-provided ones. Do not use
 /// `std.Io.Dir.cwd()` -- CWD is not guaranteed to be the app root
 /// (Finder-launched `.app` bundles give CWD = `/`).
-pub fn load(io: std.Io, dir: std.Io.Dir, alloc: std.mem.Allocator, path: []const u8) !Texture {
+pub fn load(io: std.Io, dir: anytype, alloc: std.mem.Allocator, path: []const u8) !Texture {
     var file = try dir.openFile(io, path, .{});
     defer file.close(io);
 
     var temp: [4096]u8 = undefined;
-    var reader = file.reader(io, &temp);
+    var reader = if (use_streaming_file_reader)
+        file.readerStreaming(io, &temp)
+    else
+        file.reader(io, &temp);
 
     return load_from_reader(alloc, &reader.interface);
 }

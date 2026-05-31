@@ -97,7 +97,7 @@ pub const Config = struct {
         // bugged there. Flip back to `.default` with `-Daudio=default` once
         // that's fixed.
         const default_audio: Audio = switch (plat) {
-            .macos, .nintendo_3ds => .none,
+            .macos => .none,
             else => .default,
         };
 
@@ -190,12 +190,13 @@ fn devkitProPath(b: *std.Build) []const u8 {
 /// the actual build steps and executable.
 pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.Step.Compile {
     const config = Config.resolve(opts.target, opts.overrides);
+    const uses_nintendo_c_io = config.platform == .nintendo_3ds or config.platform == .nintendo_switch;
 
     // 3DS and Switch force ofmt=c — there's no Zig-native backend for
     // either Horizon target yet, so we emit C and let an external
     // toolchain (devkitARM/libctru on 3DS, devkitA64/libnx on Switch)
     // compile the result.
-    const target = if (config.platform == .nintendo_3ds or config.platform == .nintendo_switch) blk: {
+    const target = if (uses_nintendo_c_io) blk: {
         var q = opts.target.query;
         q.ofmt = .c;
         break :blk b.resolveTargetQuery(q);
@@ -314,7 +315,7 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
         exe.subsystem = .windows;
     }
 
-    if (config.platform == .nintendo_3ds or config.platform == .nintendo_switch) {
+    if (uses_nintendo_c_io) {
         // std/start.zig opts `.@"3ds"` and freestanding out of
         // exporting a default entry symbol, so without an explicit
         // entry the linker DCEs `main` and the emitted C is
@@ -342,9 +343,10 @@ pub fn addHeadless(owner: *std.Build, b: *std.Build, opts: HeadlessOptions) *std
     var config = Config.resolve(opts.target, opts.overrides);
     config.gfx = .headless;
     config.audio = .none;
+    const uses_nintendo_c_io = config.platform == .nintendo_3ds or config.platform == .nintendo_switch;
 
     // 3DS and Switch force ofmt=c (see addGame for details).
-    const target = if (config.platform == .nintendo_3ds or config.platform == .nintendo_switch) blk: {
+    const target = if (uses_nintendo_c_io) blk: {
         var q = opts.target.query;
         q.ofmt = .c;
         break :blk b.resolveTargetQuery(q);
@@ -392,6 +394,10 @@ pub fn addHeadless(owner: *std.Build, b: *std.Build, opts: HeadlessOptions) *std
         exe.link_emit_relocs = true;
         exe.entry = .{ .symbol_name = "module_start" };
         exe.setLinkerScript(pd.path("tools/linkfile.ld"));
+    }
+
+    if (uses_nintendo_c_io) {
+        exe.entry = .{ .symbol_name = "main" };
     }
 
     return exe;
@@ -1285,6 +1291,11 @@ pub fn build(b: *std.Build) void {
         },
         .smdh_long_description = "Aether engine test app",
         .smdh_author = "Aether",
+        .resources = &.{
+            .{ .path = b.path("test/test.png"), .name = "test.png" },
+            .{ .path = b.path("test/calm1.wav"), .name = "calm1.wav" },
+            .{ .path = b.path("test/grass1.wav"), .name = "grass1.wav" },
+        },
         .romfs = if (config.platform == .nintendo_3ds) nintendo_romfs.getDirectory() else null,
         .switch_romfs = if (config.platform == .nintendo_switch) nintendo_romfs.getDirectory() else null,
     });
