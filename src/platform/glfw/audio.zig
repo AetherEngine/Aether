@@ -1,17 +1,19 @@
-//! Desktop audio backend -- uses zaudio (miniaudio) with a low-level device
+//! Desktop audio backend -- uses SDL3 audio with an on-demand stream
 //! callback. The audio thread pulls PCM from each slot's Stream reader,
-//! converts to float32 stereo, applies gain/pan from the mixer, and writes
-//! to the output device.
+//! converts to float32 stereo, applies gain/pan from the mixer, and queues
+//! mixed frames to SDL.
 
 const std = @import("std");
-const zaudio = @import("zaudio");
+const sdl3 = @import("sdl3");
 const Stream = @import("../../audio/stream.zig").Stream;
 const PcmFormat = @import("../../audio/stream.zig").PcmFormat;
 
-const DEVICE_SAMPLE_RATE: u32 = 44_100;
-const DEVICE_CHANNELS: u32 = 2;
+const SDL_AUDIO_FLAGS = sdl3.InitFlags{ .audio = true };
+const DEVICE_SAMPLE_RATE: usize = 44_100;
+const DEVICE_CHANNELS: usize = 2;
 const NUM_SLOTS: usize = 32;
-/// Maximum frames the device callback will request per invocation.
+const OUTPUT_FRAME_BYTES: usize = DEVICE_CHANNELS * @sizeOf(f32);
+/// Maximum frames mixed per callback chunk.
 const MAX_PERIOD_FRAMES: usize = 1024;
 /// Per-slot scratch buffer: room for MAX_PERIOD_FRAMES of stereo 32-bit PCM.
 const READ_BUF_SIZE: usize = MAX_PERIOD_FRAMES * 2 * 4;
@@ -48,35 +50,46 @@ fn init_slots() [NUM_SLOTS]Slot {
 
 // -- device ------------------------------------------------------------------
 
-var device: ?*zaudio.Device = null;
-var audio_alloc: std.mem.Allocator = undefined;
-var audio_io: std.Io = undefined;
+var device_stream: ?sdl3.audio.Stream = null;
+var sdl_audio_initialized = false;
+var output_buf: [MAX_PERIOD_FRAMES * DEVICE_CHANNELS]f32 = undefined;
 
-pub fn setup(alloc: std.mem.Allocator, io: std.Io) void {
-    audio_alloc = alloc;
-    audio_io = io;
-}
+pub fn setup(_: std.mem.Allocator, _: std.Io) void {}
 
 pub fn init() anyerror!void {
-    zaudio.init(audio_alloc);
+    try sdl3.init(SDL_AUDIO_FLAGS);
+    sdl_audio_initialized = true;
+    errdefer {
+        sdl3.quit(SDL_AUDIO_FLAGS);
+        sdl_audio_initialized = false;
+    }
 
-    var config = zaudio.Device.Config.init(.playback);
-    config.playback.format = .float32;
-    config.playback.channels = DEVICE_CHANNELS;
-    config.sample_rate = DEVICE_SAMPLE_RATE;
-    config.data_callback = data_callback;
+    const spec = sdl3.audio.Spec{
+        .format = .floating_32_bit,
+        .num_channels = DEVICE_CHANNELS,
+        .sample_rate = DEVICE_SAMPLE_RATE,
+    };
 
-    device = try zaudio.Device.create(null, config);
-    try device.?.start();
+    const stream = try sdl3.audio.Device.default_playback.openStream(spec, anyopaque, data_callback, null);
+    device_stream = stream;
+    errdefer {
+        stream.deinit();
+        device_stream = null;
+    }
+
+    try stream.resumeDevice();
 }
 
 pub fn deinit() void {
-    if (device) |d| {
-        d.stop() catch {};
-        d.destroy();
-        device = null;
+    if (device_stream) |stream| {
+        stream.pauseDevice() catch {};
+        stream.deinit();
+        device_stream = null;
     }
-    zaudio.deinit();
+    if (sdl_audio_initialized) {
+        sdl3.quit(SDL_AUDIO_FLAGS);
+        sdl_audio_initialized = false;
+    }
 }
 
 pub fn update() void {}
@@ -109,19 +122,33 @@ pub fn is_slot_active(slot: u8) bool {
     return state != .inactive and state != .finished;
 }
 
-// -- audio thread callback ---------------------------------------------------
+// -- audio stream callback ---------------------------------------------------
 
 fn data_callback(
-    _: *zaudio.Device,
-    raw_output: ?*anyopaque,
-    _: ?*const anyopaque,
-    frame_count: u32,
-) callconv(.c) void {
-    const out: [*]f32 = @ptrCast(@alignCast(raw_output orelse return));
-    const total_samples: usize = @as(usize, frame_count) * DEVICE_CHANNELS;
+    _: ?*anyopaque,
+    stream: sdl3.audio.Stream,
+    additional_amount: usize,
+    _: usize,
+) void {
+    var bytes_remaining = additional_amount;
+    while (bytes_remaining > 0) {
+        const frames = @min(
+            MAX_PERIOD_FRAMES,
+            (bytes_remaining + OUTPUT_FRAME_BYTES - 1) / OUTPUT_FRAME_BYTES,
+        );
+        const out = output_buf[0 .. frames * DEVICE_CHANNELS];
+        fill_output(out, frames);
 
-    // Start with silence.
-    @memset(out[0..total_samples], 0);
+        const bytes = std.mem.sliceAsBytes(out);
+        stream.putData(bytes) catch return;
+
+        if (bytes_remaining <= bytes.len) break;
+        bytes_remaining -= bytes.len;
+    }
+}
+
+fn fill_output(out: []f32, frame_count: usize) void {
+    @memset(out, 0);
 
     for (&slots) |*slot| {
         const raw_state = slot.state.load(.acquire);
@@ -141,7 +168,7 @@ fn data_callback(
         const right_gain = gain * std.math.clamp(1.0 + pan, 0.0, 1.0);
 
         const fmt = slot.stream.format;
-        const bytes_needed: usize = @as(usize, frame_count) * fmt.frame_size();
+        const bytes_needed: usize = frame_count * @as(usize, fmt.frame_size());
 
         if (bytes_needed > READ_BUF_SIZE) {
             slot.state.store(@intFromEnum(SlotState.finished), .release);
@@ -171,24 +198,22 @@ fn read_f32(buf: []const u8, index: usize) f32 {
 }
 
 fn mix_into(
-    out: [*]f32,
+    out: []f32,
     buf: []const u8,
     fmt: PcmFormat,
-    frame_count: u32,
+    frame_count: usize,
     left_gain: f32,
     right_gain: f32,
 ) void {
-    const frames: usize = frame_count;
-
     if (fmt.bit_depth == 16) {
         if (fmt.channels == 1) {
-            for (0..frames) |f| {
+            for (0..frame_count) |f| {
                 const s = read_i16(buf, f);
                 out[f * 2] += s * left_gain;
                 out[f * 2 + 1] += s * right_gain;
             }
         } else {
-            for (0..frames) |f| {
+            for (0..frame_count) |f| {
                 const l = read_i16(buf, f * 2);
                 const r = read_i16(buf, f * 2 + 1);
                 out[f * 2] += l * left_gain;
@@ -197,13 +222,13 @@ fn mix_into(
         }
     } else if (fmt.bit_depth == 32) {
         if (fmt.channels == 1) {
-            for (0..frames) |f| {
+            for (0..frame_count) |f| {
                 const s = read_f32(buf, f);
                 out[f * 2] += s * left_gain;
                 out[f * 2 + 1] += s * right_gain;
             }
         } else {
-            for (0..frames) |f| {
+            for (0..frame_count) |f| {
                 out[f * 2] += read_f32(buf, f * 2) * left_gain;
                 out[f * 2 + 1] += read_f32(buf, f * 2 + 1) * right_gain;
             }

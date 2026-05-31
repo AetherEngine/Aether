@@ -93,13 +93,7 @@ pub const Config = struct {
             else => .default,
         };
 
-        // macOS default is `.none` because the current miniaudio build is
-        // bugged there. Flip back to `.default` with `-Daudio=default` once
-        // that's fixed.
-        const default_audio: Audio = switch (plat) {
-            .macos => .none,
-            else => .default,
-        };
+        const default_audio: Audio = .default;
 
         return .{
             .platform = plat,
@@ -251,12 +245,30 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
         mod.addImport("vulkan", vulkan);
 
         if (config.audio != .none) {
-            const zaudio_dep = owner.dependency("zaudio", .{
+            const sdl3_dep = owner.lazyDependency("sdl3", .{
                 .target = target,
                 .optimize = opts.optimize,
-            });
-            mod.addImport("zaudio", zaudio_dep.module("root"));
-            mod.linkLibrary(zaudio_dep.artifact("miniaudio"));
+                .main = false,
+                .ext_image = false,
+                .ext_net = false,
+                .ext_ttf = false,
+                // Static SDL3 and static GLFW both embed generated Wayland
+                // protocol objects on Linux. Keep SDL dynamic there since
+                // Aether only uses its audio subsystem.
+                .c_sdl_preferred_linkage = @as(
+                    std.builtin.LinkMode,
+                    if (target.result.os.tag == .linux) .dynamic else .static,
+                ),
+            }) orelse @panic("sdl3 dependency is required when desktop audio is enabled");
+            mod.addImport("sdl3", sdl3_dep.module("sdl3"));
+
+            if (target.result.os.tag == .linux) {
+                mod.addRPathSpecial("$ORIGIN");
+                const install_sdl3 = b.addInstallArtifact(sdl3_dep.artifact("SDL3"), .{
+                    .dest_dir = .{ .override = .bin },
+                });
+                b.getInstallStep().dependOn(&install_sdl3.step);
+            }
         }
 
         if (target.result.os.tag == .macos) {
@@ -1255,7 +1267,7 @@ pub fn build(b: *std.Build) void {
 
     const overrides: Config.Overrides = .{
         .gfx = b.option(Gfx, "gfx", "Graphics backend override (default: auto-detect from target)"),
-        .audio = b.option(Audio, "audio", "Audio backend override (default: .none on macOS, .default elsewhere)"),
+        .audio = b.option(Audio, "audio", "Audio backend override (default: platform default)"),
         .psp_display_mode = b.option(PspDisplayMode, "psp-display", "PSP display mode: rgba8888 (32-bit, default) or rgb565 (16-bit)"),
         .psp_mipmaps = b.option(bool, "psp-mipmaps", "PSP: generate mip levels for VRAM-resident textures (default: false)"),
         .use_cwd = b.option(bool, "use-cwd", "Force resources+data dirs to CWD (debug/CI convenience; default: false)"),

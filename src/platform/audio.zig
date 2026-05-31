@@ -6,8 +6,8 @@ const audio_api = @import("audio_api.zig");
 const mixer_mod = @import("../audio/mixer.zig");
 
 /// Comptime-selected audio backend module (slot-based PCM output).
-/// `.none` routes to the silent backend -- used by headless builds and by
-/// the macOS default while miniaudio is bugged there.
+/// `.none` routes to the silent backend -- used by headless builds and
+/// explicit `-Daudio=none` builds.
 pub const Api = if (options.config.audio == .none)
     @import("headless/headless_audio.zig")
 else if (builtin.os.tag == .psp)
