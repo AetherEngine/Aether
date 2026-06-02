@@ -10,7 +10,25 @@
 //! ld picks the first definition seen — to route the entry through
 //! Aether instead of libnx's nnMain wrapper.
 
-const process_init = @import("../c_process_init.zig");
+const process_init = @import("aether").CProcessInit;
+const std = @import("std");
+
+pub const os = struct {
+    pub const PATH_MAX = 1024;
+    pub const NAME_MAX = 255;
+};
+
+fn AppRoot() type {
+    const root = @import("root");
+    return if (@hasDecl(root, "main")) root else @import("aether_user_root");
+}
+
+pub const std_options = if (@hasDecl(AppRoot(), "std_options")) AppRoot().std_options else std.Options{};
+pub const panic = if (@hasDecl(AppRoot(), "panic")) AppRoot().panic else std.debug.no_panic;
+pub const std_options_debug_threaded_io = if (@hasDecl(AppRoot(), "std_options_debug_threaded_io")) AppRoot().std_options_debug_threaded_io else null;
+pub const std_options_debug_io = if (@hasDecl(AppRoot(), "std_options_debug_io")) AppRoot().std_options_debug_io else std.Io.failing;
+const app_std_options_cwd: ?fn () std.Io.Dir = if (@hasDecl(AppRoot(), "std_options_cwd")) AppRoot().std_options_cwd else null;
+pub const std_options_cwd = app_std_options_cwd orelse @import("aether").Cio.cwd;
 
 comptime {
     @export(&entry, .{ .name = "main" });
@@ -18,6 +36,6 @@ comptime {
 
 fn entry(_: c_int, _: [*c][*c]u8) callconv(.c) c_int {
     const init = process_init.makeInit(.{ .vector = {} });
-    @import("root").main(init) catch return 1;
+    AppRoot().main(init) catch return 1;
     return 0;
 }

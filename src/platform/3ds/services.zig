@@ -14,8 +14,24 @@
 //! code is on the stack. The 3DS link step wraps `threadCreate`, and the
 //! wrapper below raises tiny service-thread stacks to a conservative floor.
 
-const process_init = @import("../c_process_init.zig");
+const process_init = @import("aether").CProcessInit;
 const std = @import("std");
+
+pub const os = struct {
+    pub const PATH_MAX = 1024;
+    pub const NAME_MAX = 255;
+};
+
+fn AppRoot() type {
+    const root = @import("root");
+    return if (@hasDecl(root, "main")) root else @import("aether_user_root");
+}
+
+pub const std_options = if (@hasDecl(AppRoot(), "std_options")) AppRoot().std_options else std.Options{};
+pub const std_options_debug_threaded_io = if (@hasDecl(AppRoot(), "std_options_debug_threaded_io")) AppRoot().std_options_debug_threaded_io else null;
+pub const std_options_debug_io = if (@hasDecl(AppRoot(), "std_options_debug_io")) AppRoot().std_options_debug_io else std.Io.failing;
+const app_std_options_cwd: ?fn () std.Io.Dir = if (@hasDecl(AppRoot(), "std_options_cwd")) AppRoot().std_options_cwd else null;
+pub const std_options_cwd = app_std_options_cwd orelse @import("aether").Cio.cwd;
 
 const argv = [_][*:0]const u8{"Aether"};
 const min_service_thread_stack = 128 * 1024;
@@ -92,7 +108,7 @@ fn entry() callconv(.c) c_int {
     installCrashHandlers();
 
     const init = process_init.makeInit(.{ .vector = &argv });
-    @import("root").main(init) catch |err| {
+    AppRoot().main(init) catch |err| {
         fatalMainError(err, @errorReturnTrace(), @returnAddress());
     };
     return 0;

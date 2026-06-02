@@ -199,27 +199,26 @@ pub const Engine = struct {
     }
 
     pub fn report(self: *const Engine) void {
-        const mib = 1024.0 * 1024.0;
         Util.engine_logger.info("--- memory pools ---", .{});
         inline for (std.meta.fields(Pool)) |f| {
             const p: Pool = @enumFromInt(f.value);
             const used = self.pool_used(p);
             const budget = self.pool_budget(p);
             const remaining = self.pool_remaining(p);
-            Util.engine_logger.info("  {s}: {}/{} bytes ({d:.3}/{d:.3} MiB, {} remaining)", .{
+            Util.engine_logger.info("  {s}: {}/{} bytes ({}/{} KiB, {} remaining)", .{
                 f.name,
                 used,
                 budget,
-                @as(f64, @floatFromInt(used)) / mib,
-                @as(f64, @floatFromInt(budget)) / mib,
+                used / 1024,
+                budget / 1024,
                 remaining,
             });
         }
-        Util.engine_logger.info("  total: {}/{} bytes ({d:.3}/{d:.3} MiB)", .{
+        Util.engine_logger.info("  total: {}/{} bytes ({}/{} KiB)", .{
             self.pool.used,
             self.pool.budget,
-            @as(f64, @floatFromInt(self.pool.used)) / mib,
-            @as(f64, @floatFromInt(self.pool.budget)) / mib,
+            self.pool.used / 1024,
+            self.pool.budget / 1024,
         });
         Util.engine_logger.info("--------------------", .{});
     }

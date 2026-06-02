@@ -13,19 +13,10 @@ pub const ctx_to_self = Util.ctx_to_self;
 /// Only available when `platform == .psp`; evaluates to `void` otherwise.
 pub const Psp = if (platform == .psp) @import("platform/psp/psp_dialogs.zig") else void;
 pub const Cio = if (platform == .nintendo_3ds or platform == .nintendo_switch) @import("platform/c_io.zig") else void;
-pub const ThreeDS = if (platform == .nintendo_3ds) @import("platform/3ds/services.zig") else void;
-
-// Pull in the 3DS / Switch entry shim on those targets. Each shim's
-// comptime block `@export`s a C-callable `main` so `-ofmt=c` emits
-// the full engine call graph rather than constants-only output.
-comptime {
-    if (platform == .nintendo_3ds) {
-        _ = @import("platform/3ds/services.zig");
-    }
-    if (platform == .nintendo_switch) {
-        _ = @import("platform/switch/services.zig");
-    }
-}
+pub const CProcessInit = if (platform == .nintendo_3ds or platform == .nintendo_switch) @import("platform/c_process_init.zig") else void;
+pub const ThreeDS = if (platform == .nintendo_3ds) struct {
+    pub const panic = @import("root").panic;
+} else void;
 
 /// Comptime-known platform and graphics backend, resolved from build options.
 /// User code can switch on these for per-platform configuration without
