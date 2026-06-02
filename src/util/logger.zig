@@ -5,6 +5,7 @@ var log_buffer: [4096]u8 = @splat(0);
 var file_log: std.Io.File = undefined;
 var file_writer: std.Io.File.Writer = undefined;
 var writer: *std.Io.Writer = undefined;
+var file_logging = false;
 
 /// PSP has no per-user data dir concept; the log sits at CWD (which is
 /// where the EBOOT lives) regardless of what `data_dir` points at. Every
@@ -19,11 +20,14 @@ pub fn init(io: std.Io, data_dir: anytype) !void {
     }
     file_writer = file_log.writer(io, &log_buffer);
     writer = &file_writer.interface;
+    file_logging = true;
 }
 
 pub fn deinit(io: std.Io) void {
+    if (!file_logging) return;
     writer.flush() catch {};
     file_log.close(io);
+    file_logging = false;
 }
 
 pub fn aether_log_fn(
@@ -36,6 +40,6 @@ pub fn aether_log_fn(
 
     const prefix = scope_prefix ++ "[" ++ comptime level.asText() ++ "]: ";
 
-    writer.print(prefix ++ format ++ "\n", args) catch {};
+    if (file_logging) writer.print(prefix ++ format ++ "\n", args) catch {};
     std.debug.print(prefix ++ format ++ "\n", args);
 }

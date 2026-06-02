@@ -31,25 +31,17 @@ const NintendoIo = if (options.config.platform == .nintendo_3ds or options.confi
     @import("../platform/c_io.zig")
 else
     void;
-const PathDir = if (NintendoIo != void) NintendoIo.AppDir else Io.Dir;
 
 /// Engine-owned directory handles. Cleared via `close()` at engine shutdown.
 pub const Dirs = struct {
     /// Read-only assets shipped with the app. On platforms where the
     /// concept doesn't apply, points at CWD.
-    resources: PathDir,
+    resources: Io.Dir,
     /// User-writable persistent state. On platforms where the concept
     /// doesn't apply, points at CWD (same handle as `resources`).
-    data: PathDir,
+    data: Io.Dir,
 
     pub fn close(self: *Dirs, io: Io) void {
-        if (NintendoIo != void) {
-            self.resources.close(io);
-            if (!self.data.eql(self.resources)) self.data.close(io);
-            NintendoIo.deinitAppDirs();
-            return;
-        }
-
         // std.Io.Dir.cwd() docs: "Closing the returned Dir is checked
         // illegal behavior." On CWD-fallback platforms (use_cwd, PSP,
         // unsupported OS) either handle may be the cwd sentinel, so skip
@@ -59,6 +51,8 @@ pub const Dirs = struct {
         if (self.resources.handle != cwd_handle) self.resources.close(io);
         if (self.data.handle != cwd_handle and self.data.handle != self.resources.handle)
             self.data.close(io);
+
+        if (NintendoIo != void) NintendoIo.deinitAppDirs();
     }
 };
 
@@ -94,7 +88,6 @@ pub fn resolve(
     // feature, not a bug.
     if (options.config.use_cwd) {
         if (NintendoIo != void) NintendoIo.useCwdDirs();
-        if (NintendoIo != void) return .{ .resources = NintendoIo.cwdDir(), .data = NintendoIo.cwdDir() };
         return .{ .resources = Io.Dir.cwd(), .data = Io.Dir.cwd() };
     }
 
@@ -102,7 +95,7 @@ pub fn resolve(
         .macos => resolve_macos(io, environ_map, app_name),
         .windows => resolve_windows(io, environ_map, app_name),
         .linux => resolve_linux(io, environ_map, app_name),
-        .nintendo_3ds, .nintendo_switch => resolve_nintendo(app_name),
+        .nintendo_3ds, .nintendo_switch => resolve_nintendo(io, app_name),
         // PSP: both dirs collapse to CWD. The EBOOT and its siblings all
         // live under `ms0:/PSP/GAME/<id>/`; the runtime sets CWD there
         // before main. No separation to enforce.
@@ -114,9 +107,21 @@ pub fn resolve(
     };
 }
 
-fn resolve_nintendo(app_name: []const u8) Error!Dirs {
-    try NintendoIo.initAppDirs(app_name);
-    return .{ .resources = NintendoIo.resourcesDir(), .data = NintendoIo.dataDir() };
+fn resolve_nintendo(io: Io, app_name: []const u8) Error!Dirs {
+    NintendoIo.mountData();
+    errdefer NintendoIo.deinitAppDirs();
+
+    var data_buf: [Io.Dir.max_path_bytes]u8 = undefined;
+    const data_path = NintendoIo.dataRoot(&data_buf, app_name) catch return error.PathTooLong;
+    const data = try Io.Dir.cwd().createDirPathOpen(io, data_path, .{ .open_options = .{ .iterate = true } });
+    errdefer data.close(io);
+
+    const resources = if (NintendoIo.mountResources())
+        Io.Dir.openDirAbsolute(io, "romfs:/", .{}) catch data
+    else
+        data;
+
+    return .{ .resources = resources, .data = data };
 }
 
 // -- macOS --------------------------------------------------------------------

@@ -16,24 +16,25 @@ const platform_paths = switch (options.config.platform) {
     else => unreachable,
 };
 
-const c = struct {
-    extern fn open(path: [*:0]const u8, flags: c_int, ...) c_int;
-    extern fn close(fd: c_int) c_int;
-    extern fn read(fd: c_int, buf: [*]u8, count: usize) isize;
-    extern fn write(fd: c_int, buf: [*]const u8, count: usize) isize;
-    extern fn lseek(fd: c_int, offset: c_long, whence: c_int) c_long;
-    extern fn rename(old: [*:0]const u8, new: [*:0]const u8) c_int;
-    extern fn unlink(path: [*:0]const u8) c_int;
-    extern fn fsync(fd: c_int) c_int;
-    extern fn ftruncate(fd: c_int, length: c_long) c_int;
-    extern fn getcwd(buf: [*]u8, size: usize) ?[*:0]u8;
-    extern fn chdir(path: [*:0]const u8) c_int;
-    extern fn mkdir(path: [*:0]const u8, mode: c_int) c_int;
-    extern fn __errno() *c_int;
+const c = std.c;
+
+const CDirent = extern struct {
+    d_ino: c_int,
+    d_type: u8,
+    d_name: [256:0]u8,
 };
 
+const devkit = struct {
+    extern "c" fn open(path: [*:0]const u8, flags: c_int, ...) c_int;
+    extern "c" fn mkdir(path: [*:0]const u8, mode: c_int) c_int;
+    extern "c" fn readdir(dirp: *c.DIR) ?*CDirent;
+    extern "c" fn lseek(fd: c_int, offset: c_long, whence: c_int) c_long;
+    extern "c" fn ftruncate(fd: c_int, length: c_long) c_int;
+    extern "c" fn __errno() *c_int;
+};
 const max_path_bytes = 1024;
 
+const AT_FDCWD: c_int = -2;
 const O_RDONLY: c_int = 0;
 const O_WRONLY: c_int = 1;
 const O_RDWR: c_int = 2;
@@ -41,108 +42,37 @@ const O_CREAT: c_int = 0x0200;
 const O_TRUNC: c_int = 0x0400;
 const O_EXCL: c_int = 0x0800;
 const O_BINARY: c_int = 0x10000;
-
+const O_CLOEXEC: c_int = 0x40000;
+const O_NOFOLLOW: c_int = 0x100000;
 const SEEK_SET: c_int = 0;
 const SEEK_CUR: c_int = 1;
 const SEEK_END: c_int = 2;
+
+const DT_FIFO: u8 = 1;
+const DT_CHR: u8 = 2;
+const DT_DIR: u8 = 4;
+const DT_BLK: u8 = 6;
+const DT_REG: u8 = 8;
+const DT_LNK: u8 = 10;
+const DT_SOCK: u8 = 12;
+const DT_WHT: u8 = 14;
 
 var read_fd: c_int = -1;
 var write_fd: c_int = -1;
 var stderr_writer: File.Writer = undefined;
 var stderr_writer_initialized = false;
 var empty_stderr_buffer: [0]u8 = .{};
-var resource_root_buffer: [max_path_bytes:0]u8 = @splat(0);
-var data_root_buffer: [max_path_bytes:0]u8 = @splat(0);
-var resource_root_len: usize = 0;
-var data_root_len: usize = 0;
 var resources_mounted = false;
 var data_mounted = false;
+var atomic_counter: u64 = 0x6165_7468_6572_0000;
 
-const max_dynamic_dirs = 16;
-
+const max_dynamic_dirs = 32;
 const DirSlot = struct {
     used: bool = false,
-    read_only: bool = false,
     path: [max_path_bytes:0]u8 = @splat(0),
     len: usize = 0,
 };
 var dir_slots: [max_dynamic_dirs]DirSlot = [_]DirSlot{.{}} ** max_dynamic_dirs;
-
-const AppDirKind = enum { cwd, resources, data, dynamic };
-
-/// Engine-facing directory token. `std.Io.Dir.Handle` is `void` on the
-/// no-libc Nintendo targets, so resource/data identity has to live outside
-/// the std dir handle.
-pub const AppDir = struct {
-    kind: AppDirKind,
-    slot: usize = 0,
-
-    pub fn eql(self: AppDir, other: AppDir) bool {
-        return self.kind == other.kind and (self.kind != .dynamic or self.slot == other.slot);
-    }
-
-    pub fn openFile(self: AppDir, io_arg: Io, sub_path: []const u8, flags: std.Io.Dir.OpenFileOptions) File.OpenError!File {
-        _ = io_arg;
-        return appDirOpenFile(self, sub_path, flags);
-    }
-
-    pub fn createFile(self: AppDir, io_arg: Io, sub_path: []const u8, flags: std.Io.Dir.CreateFileOptions) File.OpenError!File {
-        _ = io_arg;
-        return appDirCreateFile(self, sub_path, flags);
-    }
-
-    pub fn createDirPathOpen(self: AppDir, io_arg: Io, sub_path: []const u8, create_options: std.Io.Dir.CreateDirPathOpenOptions) std.Io.Dir.CreateDirPathOpenError!AppDir {
-        _ = io_arg;
-        return appDirCreateDirPathOpen(self, sub_path, create_options.open_options);
-    }
-
-    pub fn access(self: AppDir, io_arg: Io, sub_path: []const u8, opts: Dir.AccessOptions) Dir.AccessError!void {
-        _ = io_arg;
-        return appDirAccess(self, sub_path, opts);
-    }
-
-    pub fn createDir(self: AppDir, io_arg: Io, sub_path: []const u8, permissions: Dir.Permissions) Dir.CreateDirError!void {
-        _ = io_arg;
-        _ = permissions;
-        return appDirCreateDir(self, sub_path);
-    }
-
-    pub fn openDir(self: AppDir, io_arg: Io, sub_path: []const u8, opts: Dir.OpenOptions) Dir.OpenError!AppDir {
-        _ = io_arg;
-        return appDirOpenDir(self, sub_path, opts);
-    }
-
-    pub fn deleteFile(self: AppDir, io_arg: Io, sub_path: []const u8) Dir.DeleteFileError!void {
-        _ = io_arg;
-        return appDirDeleteFile(self, sub_path);
-    }
-
-    pub fn rename(self: AppDir, old_sub_path: []const u8, new_dir: AppDir, new_sub_path: []const u8, io_arg: Io) Dir.RenameError!void {
-        _ = io_arg;
-        return appDirRename(self, old_sub_path, new_dir, new_sub_path);
-    }
-
-    pub fn iterate(self: AppDir) Iterator {
-        return .{ .dir = self };
-    }
-
-    pub fn close(self: AppDir, io_arg: Io) void {
-        _ = io_arg;
-        if (self.kind == .dynamic and self.slot < dir_slots.len) {
-            dir_slots[self.slot].used = false;
-        }
-    }
-
-    pub const Iterator = struct {
-        dir: AppDir,
-
-        pub fn next(self: *Iterator, io_arg: Io) anyerror!?Dir.Entry {
-            _ = self;
-            _ = io_arg;
-            unsupported("dir iteration");
-        }
-    };
-};
 
 const vtable: Io.VTable = blk: {
     var v = Io.failing.vtable.*;
@@ -153,10 +83,20 @@ const vtable: Io.VTable = blk: {
     v.swapCancelProtection = swapCancelProtection;
     v.checkCancel = checkCancel;
     v.operate = operate;
+    v.dirCreateDir = dirCreateDir;
+    v.dirCreateDirPath = dirCreateDirPath;
     v.dirCreateDirPathOpen = dirCreateDirPathOpen;
+    v.dirOpenDir = dirOpenDir;
+    v.dirAccess = dirAccess;
     v.dirCreateFile = dirCreateFile;
+    v.dirCreateFileAtomic = dirCreateFileAtomic;
     v.dirOpenFile = dirOpenFile;
     v.dirClose = dirClose;
+    v.dirRead = dirRead;
+    v.dirDeleteFile = dirDeleteFile;
+    v.dirDeleteDir = dirDeleteDir;
+    v.dirRename = dirRename;
+    v.dirRenamePreserve = dirRenamePreserve;
     v.fileStat = fileStat;
     v.fileLength = fileLength;
     v.fileClose = fileClose;
@@ -186,40 +126,24 @@ pub fn io() Io {
 }
 
 pub fn cwd() Dir {
-    return .{ .handle = if (@sizeOf(Dir.Handle) == 0) {} else @as(Dir.Handle, @intCast(-1)) };
+    return .{ .handle = AT_FDCWD };
 }
 
-pub fn cwdDir() AppDir {
-    if (data_root_len != 0) return dataDir();
-    return .{ .kind = .cwd };
-}
-
-pub fn resourcesDir() AppDir {
-    return .{ .kind = .resources };
-}
-
-pub fn dataDir() AppDir {
-    return .{ .kind = .data };
-}
-
-pub fn initAppDirs(app_name: []const u8) Dir.CreateDirPathOpenError!void {
+pub fn mountData() void {
     data_mounted = platform_paths.mountData();
+}
 
+pub fn mountResources() bool {
     resources_mounted = platform_paths.mountResources();
-    errdefer deinitAppDirs();
-    setResourceRoot("romfs:/") catch return error.NameTooLong;
+    return resources_mounted;
+}
 
-    var data_buffer: [max_path_bytes]u8 = undefined;
-    const data_root = platform_paths.dataRoot(&data_buffer, app_name) catch return error.NameTooLong;
-    try setDataRoot(data_root);
-    try ensureDirPath(data_root);
+pub fn dataRoot(buffer: []u8, app_name: []const u8) error{NameTooLong}![]const u8 {
+    return platform_paths.dataRoot(buffer, app_name);
 }
 
 pub fn deinitAppDirs() void {
     for (&dir_slots) |*slot| slot.used = false;
-    setResourceRoot("") catch unreachable;
-    setDataRoot("") catch unreachable;
-
     if (resources_mounted) {
         platform_paths.unmountResources();
         resources_mounted = false;
@@ -232,8 +156,6 @@ pub fn deinitAppDirs() void {
 
 pub fn useCwdDirs() void {
     deinitAppDirs();
-    setResourceRoot("") catch unreachable;
-    setDataRoot("") catch unreachable;
 }
 
 fn crashHandler(_: ?*anyopaque) void {}
@@ -256,133 +178,275 @@ fn operate(_: ?*anyopaque, operation: Io.Operation) Io.Cancelable!Io.Operation.R
     };
 }
 
-fn dirCreateDirPathOpen(
+fn dirCreateDir(
     _: ?*anyopaque,
     dir: Dir,
     sub_path: []const u8,
-    _: Dir.Permissions,
+    permissions: Dir.Permissions,
+) Dir.CreateDirError!void {
+    var path_buffer: [max_path_bytes:0]u8 = undefined;
+    const path = try rootedPathForDir(&path_buffer, dir, sub_path);
+    const mode = permissionsMode(permissions, 0o777);
+    if (devkit.mkdir(path.ptr, mode) == 0) return;
+    return createDirError(errno());
+}
+
+fn dirCreateDirPath(
+    _: ?*anyopaque,
+    dir: Dir,
+    sub_path: []const u8,
+    permissions: Dir.Permissions,
+) Dir.CreateDirPathError!Dir.CreatePathStatus {
+    return createDirPathAt(dir, sub_path, permissions);
+}
+
+fn dirCreateDirPathOpen(
+    userdata: ?*anyopaque,
+    dir: Dir,
+    sub_path: []const u8,
+    permissions: Dir.Permissions,
     open_options: Dir.OpenOptions,
 ) Dir.CreateDirPathOpenError!Dir {
-    _ = dir;
-    _ = try appDirCreateDirPathOpen(cwdDir(), sub_path, open_options);
-    return cwd();
+    _ = try dirCreateDirPath(userdata, dir, sub_path, permissions);
+    return dirOpenDir(userdata, dir, sub_path, open_options);
 }
 
-fn dirOpenFile(_: ?*anyopaque, dir: Dir, sub_path: []const u8, flags: Dir.OpenFileOptions) File.OpenError!File {
-    _ = dir;
-    return appDirOpenFile(cwdDir(), sub_path, flags);
-}
-
-fn dirCreateFile(_: ?*anyopaque, dir: Dir, sub_path: []const u8, flags: Dir.CreateFileOptions) File.OpenError!File {
-    _ = dir;
-    return appDirCreateFile(cwdDir(), sub_path, flags);
-}
-
-fn dirClose(_: ?*anyopaque, _: []const Dir) void {}
-
-fn appDirCreateDirPathOpen(
-    dir: AppDir,
-    sub_path: []const u8,
-    open_options: Dir.OpenOptions,
-) Dir.CreateDirPathOpenError!AppDir {
-    if (!open_options.access_sub_paths or open_options.iterate or !open_options.follow_symlinks)
-        unsupported("dirCreateDirPathOpen option");
-    if (writeDenied(dir, sub_path)) return error.ReadOnlyFileSystem;
+fn dirOpenDir(_: ?*anyopaque, dir: Dir, sub_path: []const u8, options_arg: Dir.OpenOptions) Dir.OpenError!Dir {
+    if (!options_arg.access_sub_paths) unsupported("dirOpenDir without sub-path access");
 
     var path_buffer: [max_path_bytes:0]u8 = undefined;
     const path = try rootedPathForDir(&path_buffer, dir, sub_path);
-    try ensureDirPath(path);
-    return registerDir(path, false);
+    const stream = c.opendir(path.ptr) orelse return dirOpenError(errno());
+    _ = c.closedir(stream);
+
+    return registerDir(path);
 }
 
-fn appDirAccess(dir: AppDir, sub_path: []const u8, opts: Dir.AccessOptions) Dir.AccessError!void {
-    if (!opts.follow_symlinks) unsupported("dirAccess option");
-    if (opts.write and writeDenied(dir, sub_path)) return error.ReadOnlyFileSystem;
+fn dirAccess(_: ?*anyopaque, dir: Dir, sub_path: []const u8, opts: Dir.AccessOptions) Dir.AccessError!void {
+    if (!opts.follow_symlinks) unsupported("dirAccess without symlink following");
 
     var path_buffer: [max_path_bytes:0]u8 = undefined;
     const path = try rootedPathForDir(&path_buffer, dir, sub_path);
-    const fd = c.open(path.ptr, O_BINARY | O_RDONLY, @as(c_int, 0));
+    const fd = devkit.open(path.ptr, O_BINARY | O_RDONLY | O_CLOEXEC, @as(c_int, 0));
     if (fd < 0) return accessError(errno());
     _ = c.close(fd);
 }
 
-fn appDirCreateDir(dir: AppDir, sub_path: []const u8) Dir.CreateDirError!void {
-    if (writeDenied(dir, sub_path)) return error.ReadOnlyFileSystem;
+fn dirOpenFile(_: ?*anyopaque, dir: Dir, sub_path: []const u8, flags: Dir.OpenFileOptions) File.OpenError!File {
+    if (flags.lock != .none) return error.FileLocksUnsupported;
+    if (flags.path_only) unsupported("path-only file open");
+    if (!flags.allow_ctty) {}
 
-    var path_buffer: [max_path_bytes:0]u8 = undefined;
-    const path = try rootedPathForDir(&path_buffer, dir, sub_path);
-    try createSingleDir(path.ptr);
-}
-
-fn appDirOpenDir(dir: AppDir, sub_path: []const u8, opts: Dir.OpenOptions) Dir.OpenError!AppDir {
-    _ = dir;
-    _ = sub_path;
-    _ = opts;
-    unsupported("dirOpenDir");
-}
-
-fn appDirOpenFile(dir: AppDir, sub_path: []const u8, flags: Dir.OpenFileOptions) File.OpenError!File {
-    if (flags.lock != .none or flags.path_only or flags.allow_ctty or flags.resolve_beneath)
-        unsupported("dirOpenFile option");
-    if (!flags.allow_directory or !flags.follow_symlinks)
-        unsupported("dirOpenFile path policy");
     const role: FileRole = switch (flags.mode) {
         .read_only => .read,
         .write_only => .write,
         .read_write => .read_write,
     };
-    if (flags.mode != .read_only and writeDenied(dir, sub_path)) return error.ReadOnlyFileSystem;
 
     var path_buffer: [max_path_bytes:0]u8 = undefined;
-    const open_flags: c_int = O_BINARY | switch (flags.mode) {
+    var open_flags: c_int = O_BINARY | O_CLOEXEC | switch (flags.mode) {
         .read_only => O_RDONLY,
         .write_only => O_WRONLY,
         .read_write => O_RDWR,
     };
+    if (!flags.follow_symlinks) open_flags |= O_NOFOLLOW;
+
     const path = try rootedPathForDir(&path_buffer, dir, sub_path);
-    const fd = c.open(path.ptr, open_flags, @as(c_int, 0));
+    const fd = devkit.open(path.ptr, open_flags, @as(c_int, 0));
     if (fd < 0) return openError(errno());
     errdefer _ = c.close(fd);
     return registerFile(fd, role);
 }
 
-fn appDirCreateFile(dir: AppDir, sub_path: []const u8, flags: Dir.CreateFileOptions) File.OpenError!File {
-    if (flags.lock != .none or flags.resolve_beneath) unsupported("dirCreateFile option");
-    if (writeDenied(dir, sub_path)) return error.ReadOnlyFileSystem;
+fn dirCreateFile(_: ?*anyopaque, dir: Dir, sub_path: []const u8, flags: Dir.CreateFileOptions) File.OpenError!File {
+    if (flags.lock != .none) return error.FileLocksUnsupported;
 
     var path_buffer: [max_path_bytes:0]u8 = undefined;
-    const path = try rootedPathForDir(&path_buffer, dir, sub_path);
-    var open_flags: c_int = O_BINARY | if (flags.read) O_RDWR else O_WRONLY;
+    var open_flags: c_int = O_BINARY | O_CLOEXEC | if (flags.read) O_RDWR else O_WRONLY;
     open_flags |= O_CREAT;
     if (flags.truncate) open_flags |= O_TRUNC;
     if (flags.exclusive) open_flags |= O_EXCL;
 
-    const mode: c_int = if (@bitSizeOf(File.Permissions) == 0)
-        0o666
-    else
-        @intCast(@intFromEnum(flags.permissions));
-    const fd = c.open(path.ptr, open_flags, mode);
+    const mode = permissionsMode(flags.permissions, 0o666);
+    const path = try rootedPathForDir(&path_buffer, dir, sub_path);
+    const fd = devkit.open(path.ptr, open_flags, mode);
     if (fd < 0) return openError(errno());
     errdefer _ = c.close(fd);
     return registerFile(fd, if (flags.read) .read_write else .write);
 }
 
-fn appDirDeleteFile(dir: AppDir, sub_path: []const u8) Dir.DeleteFileError!void {
-    if (writeDenied(dir, sub_path)) return error.ReadOnlyFileSystem;
+fn dirCreateFileAtomic(
+    userdata: ?*anyopaque,
+    dir: Dir,
+    sub_path: []const u8,
+    opts: Dir.CreateFileAtomicOptions,
+) Dir.CreateFileAtomicError!File.Atomic {
+    var target_dir = dir;
+    var close_target_dir = false;
+    var dest_sub_path = sub_path;
+    errdefer if (close_target_dir) target_dir.close(io());
 
-    var path_buffer: [max_path_bytes:0]u8 = undefined;
-    const path = try rootedPathForDir(&path_buffer, dir, sub_path);
-    if (c.unlink(path.ptr) != 0) return deleteFileError(errno());
+    if (std.fs.path.dirname(sub_path)) |parent| {
+        target_dir = if (opts.make_path)
+            dirCreateDirPathOpen(userdata, dir, parent, .default_dir, .{}) catch |err| return createFileAtomicDirError(err)
+        else
+            dirOpenDir(userdata, dir, parent, .{}) catch |err| return createFileAtomicDirError(err);
+        close_target_dir = true;
+        dest_sub_path = std.fs.path.basename(sub_path);
+    } else if (opts.make_path) {
+        _ = opts.make_path;
+    }
+
+    var attempts: u8 = 0;
+    while (attempts < 16) : (attempts += 1) {
+        atomic_counter +%= 1;
+        const basename_hex = atomic_counter;
+        const tmp_sub_path = std.fmt.hex(basename_hex);
+        const file = dirCreateFile(userdata, target_dir, &tmp_sub_path, .{
+            .read = true,
+            .exclusive = true,
+            .permissions = opts.permissions,
+        }) catch |err| switch (err) {
+            error.PathAlreadyExists => continue,
+            error.FileTooBig, error.IsDir, error.DeviceBusy, error.FileLocksUnsupported, error.PipeBusy => return error.Unexpected,
+            else => |e| return @errorCast(e),
+        };
+        errdefer file.close(io());
+
+        const result: File.Atomic = .{
+            .file = file,
+            .file_basename_hex = basename_hex,
+            .file_open = true,
+            .file_exists = true,
+            .dir = target_dir,
+            .close_dir_on_deinit = close_target_dir,
+            .dest_sub_path = dest_sub_path,
+        };
+        close_target_dir = false;
+        return result;
+    }
+
+    return error.SystemResources;
 }
 
-fn appDirRename(old_dir: AppDir, old_sub_path: []const u8, new_dir: AppDir, new_sub_path: []const u8) Dir.RenameError!void {
-    if (writeDenied(old_dir, old_sub_path) or writeDenied(new_dir, new_sub_path)) return error.ReadOnlyFileSystem;
+fn dirClose(_: ?*anyopaque, dirs: []const Dir) void {
+    for (dirs) |dir| {
+        if (dirSlotIndex(dir)) |i| dir_slots[i].used = false;
+    }
+}
 
+fn dirRead(_: ?*anyopaque, reader: *Dir.Reader, out: []Dir.Entry) Dir.Reader.Error!usize {
+    const Header = extern struct {
+        pos: c_long,
+    };
+    const header_end = @sizeOf(Header);
+    if (reader.index < header_end) {
+        reader.index = header_end;
+        reader.end = header_end;
+        const header: *Header = @ptrCast(@alignCast(reader.buffer.ptr));
+        header.* = .{ .pos = 0 };
+    }
+
+    const header: *Header = @ptrCast(@alignCast(reader.buffer.ptr));
+    if (reader.state == .reset) {
+        header.pos = 0;
+        reader.state = .reading;
+    }
+    if (reader.state == .finished) return 0;
+
+    var path_buffer: [max_path_bytes:0]u8 = undefined;
+    const root = dirRoot(reader.dir);
+    const path = zPath(&path_buffer, if (root.len == 0) "." else root) catch return error.Unexpected;
+    const stream = c.opendir(path.ptr) orelse return dirReadError(errno());
+    var stream_open = true;
+    defer if (stream_open) {
+        _ = c.closedir(stream);
+    };
+
+    c.seekdir(stream, header.pos);
+
+    var count: usize = 0;
+    var name_end = reader.buffer.len;
+    while (count < out.len) {
+        devkit.__errno().* = 0;
+        const entry = devkit.readdir(stream) orelse {
+            if (errno() != 0) return dirReadError(errno());
+            reader.state = .finished;
+            return count;
+        };
+        header.pos = c.telldir(stream);
+
+        const name = std.mem.span(@as([*:0]const u8, @ptrCast(&entry.d_name)));
+        if (std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) continue;
+        if (name.len + 1 > name_end - header_end) {
+            if (count == 0) return error.Unexpected;
+            break;
+        }
+
+        name_end -= name.len + 1;
+        @memcpy(reader.buffer[name_end..][0..name.len], name);
+        reader.buffer[name_end + name.len] = 0;
+        out[count] = .{
+            .name = reader.buffer[name_end .. name_end + name.len],
+            .kind = direntKind(entry.d_type),
+            .inode = @intCast(entry.d_ino),
+        };
+        count += 1;
+    }
+
+    stream_open = false;
+    _ = c.closedir(stream);
+    return count;
+}
+
+fn dirDeleteFile(_: ?*anyopaque, dir: Dir, sub_path: []const u8) Dir.DeleteFileError!void {
+    var path_buffer: [max_path_bytes:0]u8 = undefined;
+    const path = try rootedPathForDir(&path_buffer, dir, sub_path);
+    if (c.unlink(path.ptr) == 0) return;
+    return deleteFileError(errno());
+}
+
+fn dirDeleteDir(_: ?*anyopaque, dir: Dir, sub_path: []const u8) Dir.DeleteDirError!void {
+    var path_buffer: [max_path_bytes:0]u8 = undefined;
+    const path = try rootedPathForDir(&path_buffer, dir, sub_path);
+    if (c.rmdir(path.ptr) == 0) return;
+    return deleteDirError(errno());
+}
+
+fn dirRename(
+    _: ?*anyopaque,
+    old_dir: Dir,
+    old_sub_path: []const u8,
+    new_dir: Dir,
+    new_sub_path: []const u8,
+) Dir.RenameError!void {
     var old_path_buffer: [max_path_bytes:0]u8 = undefined;
     var new_path_buffer: [max_path_bytes:0]u8 = undefined;
     const old_path = try rootedPathForDir(&old_path_buffer, old_dir, old_sub_path);
     const new_path = try rootedPathForDir(&new_path_buffer, new_dir, new_sub_path);
-    if (c.rename(old_path.ptr, new_path.ptr) != 0) return renameError(errno());
+    if (c.rename(old_path.ptr, new_path.ptr) == 0) return;
+    return renameError(errno());
+}
+
+fn dirRenamePreserve(
+    userdata: ?*anyopaque,
+    old_dir: Dir,
+    old_sub_path: []const u8,
+    new_dir: Dir,
+    new_sub_path: []const u8,
+) Dir.RenamePreserveError!void {
+    dirAccess(userdata, new_dir, new_sub_path, .{}) catch |err| switch (err) {
+        error.FileNotFound => {},
+        else => |e| return @errorCast(e),
+    };
+    if (dirAccess(userdata, new_dir, new_sub_path, .{})) |_| return error.PathAlreadyExists else |err| switch (err) {
+        error.FileNotFound => {},
+        else => |e| return @errorCast(e),
+    }
+    return dirRename(userdata, old_dir, old_sub_path, new_dir, new_sub_path) catch |err| switch (err) {
+        error.DiskQuota, error.IsDir, error.LinkQuotaExceeded, error.NoDevice, error.PipeBusy, error.AntivirusInterference, error.HardwareFailure => return error.Unexpected,
+        else => |e| return @errorCast(e),
+    };
 }
 
 fn fileStat(_: ?*anyopaque, file: File) File.StatError!File.Stat {
@@ -401,11 +465,11 @@ fn fileStat(_: ?*anyopaque, file: File) File.StatError!File.Stat {
 
 fn fileLength(_: ?*anyopaque, file: File) File.LengthError!u64 {
     const fd = fdForRegular(file);
-    const current = c.lseek(fd, 0, SEEK_CUR);
+    const current = devkit.lseek(fd, 0, SEEK_CUR);
     if (current < 0) return seekToLengthError();
-    const end = c.lseek(fd, 0, SEEK_END);
+    const end = devkit.lseek(fd, 0, SEEK_END);
     if (end < 0) return seekToLengthError();
-    _ = c.lseek(fd, current, SEEK_SET);
+    _ = devkit.lseek(fd, current, SEEK_SET);
     return @intCast(end);
 }
 
@@ -495,7 +559,7 @@ fn fileWriteStreaming(file: File, header: []const u8, data: []const []const u8, 
 }
 
 fn fileSeekBy(_: ?*anyopaque, file: File, relative_offset: i64) File.SeekError!void {
-    if (c.lseek(fdForRegular(file), @intCast(relative_offset), SEEK_CUR) < 0) return seekError();
+    if (devkit.lseek(fdForRegular(file), @intCast(relative_offset), SEEK_CUR) < 0) return seekError();
 }
 
 fn fileSeekTo(_: ?*anyopaque, file: File, absolute_offset: u64) File.SeekError!void {
@@ -521,7 +585,7 @@ fn fileSupportsAnsiEscapeCodes(_: ?*anyopaque, _: File) Io.Cancelable!bool {
 
 fn fileSetLength(_: ?*anyopaque, file: File, length: u64) File.SetLengthError!void {
     if (length > std.math.maxInt(c_long)) return error.FileTooBig;
-    if (c.ftruncate(fdForRegular(file), @intCast(length)) < 0) return setLengthError();
+    if (devkit.ftruncate(fdForRegular(file), @intCast(length)) < 0) return setLengthError();
 }
 
 fn lockStderr(_: ?*anyopaque, terminal_mode: ?Io.Terminal.Mode) Io.Cancelable!Io.LockedStderr {
@@ -551,9 +615,8 @@ fn unlockStderr(_: ?*anyopaque) void {
 fn processCurrentPath(_: ?*anyopaque, buffer: []u8) std.process.CurrentPathError!usize {
     if (buffer.len == 0) return error.NameTooLong;
     const ptr = c.getcwd(buffer.ptr, buffer.len) orelse return currentPathError();
-    const path = std.mem.span(ptr);
-    if (path.len >= buffer.len) return error.NameTooLong;
-    return path.len;
+    _ = ptr;
+    return std.mem.indexOfScalar(u8, buffer, 0) orelse error.NameTooLong;
 }
 
 fn processSetCurrentPath(_: ?*anyopaque, path: []const u8) std.process.SetCurrentPathError!void {
@@ -583,71 +646,45 @@ fn random(_: ?*anyopaque, buffer: []u8) void {
 
 const FileRole = enum { read, write, read_write };
 
-fn resourceRoot() []const u8 {
-    return resource_root_buffer[0..resource_root_len];
-}
+fn createDirPathAt(dir: Dir, sub_path: []const u8, permissions: Dir.Permissions) Dir.CreateDirPathError!Dir.CreatePathStatus {
+    if (sub_path.len == 0) return error.BadPathName;
 
-fn dataRoot() []const u8 {
-    return data_root_buffer[0..data_root_len];
-}
+    var path_buffer: [max_path_bytes:0]u8 = undefined;
+    const full = rootedPathForDir(&path_buffer, dir, sub_path) catch |err| return err;
+    const full_len = full.len;
+    const full_ptr = path_buffer[0..].ptr;
+    const mode = permissionsMode(permissions, 0o777);
 
-fn setResourceRoot(root: []const u8) error{NameTooLong}!void {
-    try setRoot(&resource_root_buffer, &resource_root_len, root);
-}
-
-fn setDataRoot(root: []const u8) error{NameTooLong}!void {
-    try setRoot(&data_root_buffer, &data_root_len, root);
-}
-
-fn setRoot(buffer: *[max_path_bytes:0]u8, len: *usize, root: []const u8) error{NameTooLong}!void {
-    if (root.len >= max_path_bytes) return error.NameTooLong;
-    @memcpy(buffer[0..root.len], root);
-    buffer[root.len] = 0;
-    len.* = root.len;
-}
-
-fn dirRoot(dir: AppDir) []const u8 {
-    return switch (dir.kind) {
-        .cwd => "",
-        .resources => resourceRoot(),
-        .data => dataRoot(),
-        .dynamic => {
-            if (dir.slot >= dir_slots.len or !dir_slots[dir.slot].used)
-                unsupported("closed Nintendo dir handle");
-            return dir_slots[dir.slot].path[0..dir_slots[dir.slot].len];
-        },
-    };
-}
-
-fn dirReadOnly(dir: AppDir) bool {
-    return switch (dir.kind) {
-        .resources => true,
-        .cwd, .data => false,
-        .dynamic => {
-            if (dir.slot >= dir_slots.len or !dir_slots[dir.slot].used)
-                unsupported("closed Nintendo dir handle");
-            return dir_slots[dir.slot].read_only;
-        },
-    };
-}
-
-fn writeDenied(dir: AppDir, sub_path: []const u8) bool {
-    if (isRomfsPath(sub_path)) return true;
-    return !isAbsoluteOrDevicePath(sub_path) and dirReadOnly(dir);
-}
-
-fn registerDir(path: []const u8, read_only: bool) Dir.CreateDirPathOpenError!AppDir {
-    for (&dir_slots, 0..) |*slot, i| {
-        if (slot.used) continue;
-        if (path.len >= max_path_bytes) return error.NameTooLong;
-        @memcpy(slot.path[0..path.len], path);
-        slot.path[path.len] = 0;
-        slot.len = path.len;
-        slot.read_only = read_only;
-        slot.used = true;
-        return .{ .kind = .dynamic, .slot = i };
+    var status: Dir.CreatePathStatus = .existed;
+    const start = pathRootEnd(full);
+    var i = start;
+    while (i < full_len) : (i += 1) {
+        if (path_buffer[i] != '/') continue;
+        if (i == start) continue;
+        path_buffer[i] = 0;
+        if (try createSingleDirPath(full_ptr, mode) == .created) status = .created;
+        path_buffer[i] = '/';
     }
-    return error.SystemResources;
+    if (try createSingleDirPath(full_ptr, mode) == .created) status = .created;
+    return status;
+}
+
+fn createSingleDirPath(path: [*:0]const u8, mode: c_int) Dir.CreateDirPathError!Dir.CreatePathStatus {
+    if (devkit.mkdir(path, mode) == 0) return .created;
+    switch (errno()) {
+        17 => return .existed,
+        1 => return error.PermissionDenied,
+        2 => return error.FileNotFound,
+        6 => return error.NoDevice,
+        12 => return error.SystemResources,
+        13 => return error.AccessDenied,
+        20 => return error.NotDir,
+        28 => return error.NoSpaceLeft,
+        30 => return error.ReadOnlyFileSystem,
+        91 => return error.NameTooLong,
+        92 => return error.SymLinkLoop,
+        else => return error.Unexpected,
+    }
 }
 
 fn registerFile(fd: c_int, role: FileRole) File {
@@ -701,13 +738,87 @@ fn fdFromFileHandle(file: File) c_int {
     return @intCast(file.handle);
 }
 
+fn fdFromDirHandle(dir: Dir) c_int {
+    return @intCast(dir.handle);
+}
+
+fn permissionsMode(permissions: File.Permissions, default: c_int) c_int {
+    if (@bitSizeOf(File.Permissions) == 0) return default;
+    return @intCast(@intFromEnum(permissions));
+}
+
 fn isStderrFile(file: File) bool {
     return file.flags.nonblocking;
 }
 
+fn registerDir(path: []const u8) Dir.OpenError!Dir {
+    for (&dir_slots, 0..) |*slot, i| {
+        if (slot.used) continue;
+        if (path.len >= max_path_bytes) return error.NameTooLong;
+        @memcpy(slot.path[0..path.len], path);
+        slot.path[path.len] = 0;
+        slot.len = path.len;
+        slot.used = true;
+        return .{ .handle = @intCast(i + 3) };
+    }
+    return error.SystemResources;
+}
+
+fn dirSlotIndex(dir: Dir) ?usize {
+    const handle = fdFromDirHandle(dir);
+    if (handle < 3) return null;
+    const index: usize = @intCast(handle - 3);
+    if (index >= dir_slots.len or !dir_slots[index].used) return null;
+    return index;
+}
+
+fn dirRoot(dir: Dir) []const u8 {
+    if (fdFromDirHandle(dir) == AT_FDCWD) return "";
+    const index = dirSlotIndex(dir) orelse unsupported("closed Nintendo dir handle");
+    return dir_slots[index].path[0..dir_slots[index].len];
+}
+
+fn rootedPath(buf: *[max_path_bytes:0]u8, path: []const u8, root: []const u8) error{ NameTooLong, BadPathName }![:0]const u8 {
+    if (isAbsoluteOrDevicePath(path) or root.len == 0) return zPath(buf, path);
+    if (std.mem.indexOfScalar(u8, path, 0) != null) return error.BadPathName;
+
+    const needs_sep = !std.mem.endsWith(u8, root, "/") and !std.mem.startsWith(u8, path, "/");
+    const len = root.len + @intFromBool(needs_sep) + path.len;
+    if (len >= max_path_bytes) return error.NameTooLong;
+
+    var i: usize = 0;
+    @memcpy(buf[i..][0..root.len], root);
+    i += root.len;
+    if (needs_sep) {
+        buf[i] = '/';
+        i += 1;
+    }
+    @memcpy(buf[i..][0..path.len], path);
+    buf[len] = 0;
+    return buf[0..len :0];
+}
+
+fn rootedPathForDir(buf: *[max_path_bytes:0]u8, dir: Dir, path: []const u8) error{ NameTooLong, BadPathName }![:0]const u8 {
+    return rootedPath(buf, path, dirRoot(dir));
+}
+
+fn direntKind(kind: u8) File.Kind {
+    return switch (kind) {
+        DT_BLK => .block_device,
+        DT_CHR => .character_device,
+        DT_DIR => .directory,
+        DT_FIFO => .named_pipe,
+        DT_LNK => .sym_link,
+        DT_REG => .file,
+        DT_SOCK => .unix_domain_socket,
+        DT_WHT => .whiteout,
+        else => .unknown,
+    };
+}
+
 fn seekToOffset(fd: c_int, offset: u64) File.SeekError!void {
     if (offset > std.math.maxInt(c_long)) return error.Unseekable;
-    if (c.lseek(fd, @intCast(offset), SEEK_SET) < 0) return seekError();
+    if (devkit.lseek(fd, @intCast(offset), SEEK_SET) < 0) return seekError();
 }
 
 fn writeVectors(fd: c_int, header: []const u8, data: []const []const u8, splat: usize) File.WritePositionalError!usize {
@@ -743,60 +854,12 @@ fn zPath(buf: *[max_path_bytes:0]u8, path: []const u8) error{ NameTooLong, BadPa
     return buf[0..path.len :0];
 }
 
-fn rootedPath(buf: *[max_path_bytes:0]u8, path: []const u8, root: []const u8) error{ NameTooLong, BadPathName }![:0]const u8 {
-    if (isAbsoluteOrDevicePath(path) or root.len == 0) return zPath(buf, path);
-    if (std.mem.indexOfScalar(u8, path, 0) != null) return error.BadPathName;
-
-    const needs_sep = root.len > 0 and !std.mem.endsWith(u8, root, "/") and !std.mem.startsWith(u8, path, "/");
-    const len = root.len + @intFromBool(needs_sep) + path.len;
-    if (len >= max_path_bytes) return error.NameTooLong;
-
-    var i: usize = 0;
-    @memcpy(buf[i..][0..root.len], root);
-    i += root.len;
-    if (needs_sep) {
-        buf[i] = '/';
-        i += 1;
-    }
-    @memcpy(buf[i..][0..path.len], path);
-    buf[len] = 0;
-    return buf[0..len :0];
-}
-
-fn rootedPathForDir(buf: *[max_path_bytes:0]u8, dir: AppDir, path: []const u8) error{ NameTooLong, BadPathName }![:0]const u8 {
-    return rootedPath(buf, path, dirRoot(dir));
-}
-
 fn isAbsoluteOrDevicePath(path: []const u8) bool {
     if (path.len == 0) return false;
     if (path[0] == '/') return true;
     const colon = std.mem.indexOfScalar(u8, path, ':') orelse return false;
     const slash = std.mem.indexOfAny(u8, path, "/\\") orelse path.len;
     return colon < slash;
-}
-
-fn isRomfsPath(path: []const u8) bool {
-    if (path.len < "romfs:".len) return false;
-    return std.ascii.eqlIgnoreCase(path[0.."romfs:".len], "romfs:");
-}
-
-fn ensureDirPath(path: []const u8) Dir.CreateDirPathOpenError!void {
-    if (path.len == 0) return error.BadPathName;
-    var path_buffer: [max_path_bytes:0]u8 = undefined;
-    const full = zPath(&path_buffer, path) catch |err| return err;
-    const full_len = full.len;
-    const full_ptr = path_buffer[0..].ptr;
-
-    const start = pathRootEnd(path);
-    var i = start;
-    while (i < full_len) : (i += 1) {
-        if (path_buffer[i] != '/') continue;
-        if (i == start) continue;
-        path_buffer[i] = 0;
-        try createDir(full_ptr);
-        path_buffer[i] = '/';
-    }
-    try createDir(full_ptr);
 }
 
 fn pathRootEnd(path: []const u8) usize {
@@ -807,44 +870,33 @@ fn pathRootEnd(path: []const u8) usize {
     return if (path.len > 0 and path[0] == '/') 1 else 0;
 }
 
-fn createDir(path: [*:0]const u8) Dir.CreateDirPathOpenError!void {
-    if (c.mkdir(path, 0o777) == 0) return;
-    switch (errno()) {
-        17 => return,
-        1 => return error.PermissionDenied,
-        2 => return error.FileNotFound,
-        6 => return error.NoDevice,
-        12 => return error.SystemResources,
-        13 => return error.AccessDenied,
-        20 => return error.NotDir,
-        28 => return error.NoSpaceLeft,
-        30 => return error.ReadOnlyFileSystem,
-        91 => return error.NameTooLong,
-        92 => return error.SymLinkLoop,
-        else => return error.Unexpected,
-    }
-}
-
-fn createSingleDir(path: [*:0]const u8) Dir.CreateDirError!void {
-    if (c.mkdir(path, 0o777) == 0) return;
-    switch (errno()) {
-        1 => return error.PermissionDenied,
-        2 => return error.FileNotFound,
-        6 => return error.NoDevice,
-        12 => return error.SystemResources,
-        13 => return error.AccessDenied,
-        17 => return error.PathAlreadyExists,
-        20 => return error.NotDir,
-        28 => return error.NoSpaceLeft,
-        30 => return error.ReadOnlyFileSystem,
-        91 => return error.NameTooLong,
-        92 => return error.SymLinkLoop,
-        else => return error.Unexpected,
-    }
+fn createFileAtomicDirError(err: anyerror) Dir.CreateFileAtomicError {
+    return switch (err) {
+        error.PathAlreadyExists, error.NotDir => error.NotDir,
+        error.FileTooBig, error.IsDir, error.DeviceBusy, error.FileLocksUnsupported => error.Unexpected,
+        else => @errorCast(err),
+    };
 }
 
 fn errno() c_int {
-    return c.__errno().*;
+    return devkit.__errno().*;
+}
+
+fn createDirError(code: c_int) Dir.CreateDirError {
+    return switch (code) {
+        1 => error.PermissionDenied,
+        2 => error.FileNotFound,
+        6 => error.NoDevice,
+        12 => error.SystemResources,
+        13 => error.AccessDenied,
+        17 => error.PathAlreadyExists,
+        20 => error.NotDir,
+        28 => error.NoSpaceLeft,
+        30 => error.ReadOnlyFileSystem,
+        91 => error.NameTooLong,
+        92 => error.SymLinkLoop,
+        else => error.Unexpected,
+    };
 }
 
 fn accessError(code: c_int) Dir.AccessError {
@@ -856,6 +908,22 @@ fn accessError(code: c_int) Dir.AccessError {
         13 => error.AccessDenied,
         16 => error.FileBusy,
         30 => error.ReadOnlyFileSystem,
+        91 => error.NameTooLong,
+        92 => error.SymLinkLoop,
+        else => error.Unexpected,
+    };
+}
+
+fn dirOpenError(code: c_int) Dir.OpenError {
+    return switch (code) {
+        1 => error.PermissionDenied,
+        2 => error.FileNotFound,
+        6 => error.NoDevice,
+        12 => error.SystemResources,
+        13 => error.AccessDenied,
+        20 => error.NotDir,
+        23 => error.ProcessFdQuotaExceeded,
+        24 => error.SystemFdQuotaExceeded,
         91 => error.NameTooLong,
         92 => error.SymLinkLoop,
         else => error.Unexpected,
@@ -895,6 +963,22 @@ fn deleteFileError(code: c_int) Dir.DeleteFileError {
         20 => error.NotDir,
         21 => error.IsDir,
         30 => error.ReadOnlyFileSystem,
+        91 => error.NameTooLong,
+        92 => error.SymLinkLoop,
+        else => error.Unexpected,
+    };
+}
+
+fn deleteDirError(code: c_int) Dir.DeleteDirError {
+    return switch (code) {
+        1 => error.PermissionDenied,
+        2 => error.FileNotFound,
+        12 => error.SystemResources,
+        13 => error.AccessDenied,
+        16 => error.FileBusy,
+        20 => error.NotDir,
+        30 => error.ReadOnlyFileSystem,
+        39 => error.DirNotEmpty,
         91 => error.NameTooLong,
         92 => error.SymLinkLoop,
         else => error.Unexpected,
@@ -941,6 +1025,15 @@ fn readStreamingError() Io.Operation.FileReadStreaming.Error {
         12 => error.SystemResources,
         13 => error.AccessDenied,
         21 => error.IsDir,
+        else => error.Unexpected,
+    };
+}
+
+fn dirReadError(code: c_int) Dir.Reader.Error {
+    return switch (code) {
+        1 => error.PermissionDenied,
+        12 => error.SystemResources,
+        13 => error.AccessDenied,
         else => error.Unexpected,
     };
 }

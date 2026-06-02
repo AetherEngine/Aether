@@ -137,6 +137,12 @@ pub const ShaderPaths = struct {
     slang: std.Build.LazyPath,
 };
 
+const user_root_import_name = "aether_user_root";
+
+pub fn userRootModule(exe: *std.Build.Step.Compile) *std.Build.Module {
+    return exe.root_module.import_table.get(user_root_import_name) orelse exe.root_module;
+}
+
 // Cached per-build user options. b.option panics on second declaration, so
 // these getters declare once and memoize. Accessed from both addGame (for
 // linking) and exportArtifact (for bundle packaging). Module-level mutable
@@ -224,6 +230,7 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
     const mod = b.addModule("Aether", .{
         .root_source_file = owner.path("src/root.zig"),
         .target = target,
+        .link_libc = if (uses_nintendo_c_io) true else null,
         .imports = &.{
             .{ .name = "options", .module = options_module },
         },
@@ -318,25 +325,44 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
     }
 
     // --- user executable ---
+    const user_mod = b.createModule(.{
+        .root_source_file = opts.root_source_file,
+        .target = target,
+        .optimize = opts.optimize,
+        .strip = if (config.platform == .psp) false else null,
+        .link_libc = if (uses_nintendo_c_io) true else null,
+        .imports = &.{
+            .{ .name = "aether", .module = mod },
+        },
+    });
+
+    const root_mod = if (uses_nintendo_c_io) b.createModule(.{
+        .root_source_file = owner.path(switch (config.platform) {
+            .nintendo_3ds => "src/platform/3ds/services.zig",
+            .nintendo_switch => "src/platform/switch/services.zig",
+            else => unreachable,
+        }),
+        .target = target,
+        .optimize = opts.optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "aether", .module = mod },
+            .{ .name = user_root_import_name, .module = user_mod },
+            .{ .name = "options", .module = options_module },
+        },
+    }) else user_mod;
+
     const exe = b.addExecutable(.{
         .name = opts.name,
-        .root_module = b.createModule(.{
-            .root_source_file = opts.root_source_file,
-            .target = target,
-            .optimize = opts.optimize,
-            .strip = if (config.platform == .psp) false else null,
-            .imports = &.{
-                .{ .name = "aether", .module = mod },
-            },
-        }),
+        .root_module = root_mod,
     });
 
     if (psp_dep) |pd| {
         // Inline PSP config -- pspsdk.configurePspExecutable uses
         // dependencyFromBuildZig on exe.step.owner which fails when
         // the exe is owned by a downstream builder.
-        if (exe.root_module.import_table.get("pspsdk") == null) {
-            exe.root_module.addImport("pspsdk", mod.import_table.get("pspsdk").?);
+        if (userRootModule(exe).import_table.get("pspsdk") == null) {
+            userRootModule(exe).addImport("pspsdk", mod.import_table.get("pspsdk").?);
         }
         exe.link_eh_frame_hdr = true;
         exe.link_emit_relocs = true;
@@ -349,13 +375,11 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
     }
 
     if (uses_nintendo_c_io) {
-        // std/start.zig opts `.@"3ds"` and freestanding out of
-        // exporting a default entry symbol, so without an explicit
-        // entry the linker DCEs `main` and the emitted C is
-        // constants-only. Force `main` to keep the whole call graph
-        // alive for the external toolchain. (libnx's switch.specs
-        // also `--require-defined=main` at link time.)
-        exe.entry = .{ .symbol_name = "main" };
+        // The platform shim exports C `main` itself. Keeping std/start's
+        // libc main wrapper disabled avoids pulling in unsupported
+        // freestanding libc/thread startup paths while still preserving the
+        // exported shim in the emitted C.
+        exe.entry = .disabled;
     }
 
     return exe;
@@ -392,6 +416,7 @@ pub fn addHeadless(owner: *std.Build, b: *std.Build, opts: HeadlessOptions) *std
     const mod = b.addModule("Aether", .{
         .root_source_file = owner.path("src/root.zig"),
         .target = target,
+        .link_libc = if (uses_nintendo_c_io) true else null,
         .imports = &.{
             .{ .name = "options", .module = options_module },
         },
@@ -406,22 +431,41 @@ pub fn addHeadless(owner: *std.Build, b: *std.Build, opts: HeadlessOptions) *std
         mod.addImport("pspsdk", pd.module("pspsdk"));
     }
 
+    const user_mod = b.createModule(.{
+        .root_source_file = opts.root_source_file,
+        .target = target,
+        .optimize = opts.optimize,
+        .strip = if (config.platform == .psp) false else null,
+        .link_libc = if (uses_nintendo_c_io) true else null,
+        .imports = &.{
+            .{ .name = "aether", .module = mod },
+        },
+    });
+
+    const root_mod = if (uses_nintendo_c_io) b.createModule(.{
+        .root_source_file = owner.path(switch (config.platform) {
+            .nintendo_3ds => "src/platform/3ds/services.zig",
+            .nintendo_switch => "src/platform/switch/services.zig",
+            else => unreachable,
+        }),
+        .target = target,
+        .optimize = opts.optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "aether", .module = mod },
+            .{ .name = user_root_import_name, .module = user_mod },
+            .{ .name = "options", .module = options_module },
+        },
+    }) else user_mod;
+
     const exe = b.addExecutable(.{
         .name = opts.name,
-        .root_module = b.createModule(.{
-            .root_source_file = opts.root_source_file,
-            .target = target,
-            .optimize = opts.optimize,
-            .strip = if (config.platform == .psp) false else null,
-            .imports = &.{
-                .{ .name = "aether", .module = mod },
-            },
-        }),
+        .root_module = root_mod,
     });
 
     if (psp_dep) |pd| {
-        if (exe.root_module.import_table.get("pspsdk") == null) {
-            exe.root_module.addImport("pspsdk", mod.import_table.get("pspsdk").?);
+        if (userRootModule(exe).import_table.get("pspsdk") == null) {
+            userRootModule(exe).addImport("pspsdk", mod.import_table.get("pspsdk").?);
         }
         exe.link_eh_frame_hdr = true;
         exe.link_emit_relocs = true;
@@ -430,7 +474,7 @@ pub fn addHeadless(owner: *std.Build, b: *std.Build, opts: HeadlessOptions) *std
     }
 
     if (uses_nintendo_c_io) {
-        exe.entry = .{ .symbol_name = "main" };
+        exe.entry = .disabled;
     }
 
     return exe;
@@ -1194,6 +1238,8 @@ fn switchNroPipeline(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOp
 ///     Aether.addShader(ae_dep.builder, b, exe, config, "basic", .{ ... });
 ///
 pub fn addShader(owner: *std.Build, b: *std.Build, exe: *std.Build.Step.Compile, config: Config, comptime name: []const u8, paths: ShaderPaths) void {
+    const root_module = userRootModule(exe);
+
     if (config.platform == .nintendo_3ds and config.gfx == .default) {
         const picasso = b.pathJoin(&.{ devkitProPath(b), "tools/bin/picasso" });
         const sources = b.addWriteFiles();
@@ -1229,8 +1275,8 @@ pub fn addShader(owner: *std.Build, b: *std.Build, exe: *std.Build.Step.Compile,
         const vert = addPicassoStep(b, picasso, name ++ ".shbin", vert_src);
         const empty = b.addWriteFiles();
         const frag = empty.add(name ++ "_3ds_frag_stub", "");
-        exe.root_module.addAnonymousImport(name ++ "_vert", .{ .root_source_file = vert });
-        exe.root_module.addAnonymousImport(name ++ "_frag", .{ .root_source_file = frag });
+        root_module.addAnonymousImport(name ++ "_vert", .{ .root_source_file = vert });
+        root_module.addAnonymousImport(name ++ "_frag", .{ .root_source_file = frag });
         return;
     }
 
@@ -1267,8 +1313,8 @@ pub fn addShader(owner: *std.Build, b: *std.Build, exe: *std.Build.Step.Compile,
 
         const vert = addUamStep(b, uam, "vert", name ++ ".vert.dksh", vert_src);
         const frag = addUamStep(b, uam, "frag", name ++ ".frag.dksh", frag_src);
-        exe.root_module.addAnonymousImport(name ++ "_vert", .{ .root_source_file = vert });
-        exe.root_module.addAnonymousImport(name ++ "_frag", .{ .root_source_file = frag });
+        root_module.addAnonymousImport(name ++ "_vert", .{ .root_source_file = vert });
+        root_module.addAnonymousImport(name ++ "_frag", .{ .root_source_file = frag });
         return;
     }
 
@@ -1285,8 +1331,8 @@ pub fn addShader(owner: *std.Build, b: *std.Build, exe: *std.Build.Step.Compile,
                 "-DVULKAN", "-entry", "fragmentMain",         "-stage",
                 "fragment",
             }, name ++ ".frag.spv", paths.slang);
-            if (vert) |v| exe.root_module.addAnonymousImport(name ++ "_vert", .{ .root_source_file = v });
-            if (frag) |f| exe.root_module.addAnonymousImport(name ++ "_frag", .{ .root_source_file = f });
+            if (vert) |v| root_module.addAnonymousImport(name ++ "_vert", .{ .root_source_file = v });
+            if (frag) |f| root_module.addAnonymousImport(name ++ "_frag", .{ .root_source_file = f });
         },
         .opengl => {
             const slangc = slangcPath(owner);
@@ -1300,17 +1346,17 @@ pub fn addShader(owner: *std.Build, b: *std.Build, exe: *std.Build.Step.Compile,
                 "-profile",     "glsl_450", "-entry",
                 "fragmentMain", "-stage",   "fragment",
             }, name ++ ".frag.glsl", paths.slang);
-            if (vert) |v| exe.root_module.addAnonymousImport(name ++ "_vert", .{ .root_source_file = v });
-            if (frag) |f| exe.root_module.addAnonymousImport(name ++ "_frag", .{ .root_source_file = f });
+            if (vert) |v| root_module.addAnonymousImport(name ++ "_vert", .{ .root_source_file = v });
+            if (frag) |f| root_module.addAnonymousImport(name ++ "_frag", .{ .root_source_file = f });
         },
         .default, .headless => {
             // Provide empty stubs so @embedFile(name ++ "_vert") still compiles.
             const empty = b.addWriteFiles();
             const stub = empty.add(name ++ "_stub", "");
-            exe.root_module.addAnonymousImport(name ++ "_vert", .{
+            root_module.addAnonymousImport(name ++ "_vert", .{
                 .root_source_file = stub,
             });
-            exe.root_module.addAnonymousImport(name ++ "_frag", .{
+            root_module.addAnonymousImport(name ++ "_frag", .{
                 .root_source_file = stub,
             });
         },
