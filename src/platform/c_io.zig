@@ -22,6 +22,8 @@ const c = struct {
     extern fn read(fd: c_int, buf: [*]u8, count: usize) isize;
     extern fn write(fd: c_int, buf: [*]const u8, count: usize) isize;
     extern fn lseek(fd: c_int, offset: c_long, whence: c_int) c_long;
+    extern fn rename(old: [*:0]const u8, new: [*:0]const u8) c_int;
+    extern fn unlink(path: [*:0]const u8) c_int;
     extern fn fsync(fd: c_int) c_int;
     extern fn ftruncate(fd: c_int, length: c_long) c_int;
     extern fn getcwd(buf: [*]u8, size: usize) ?[*:0]u8;
@@ -94,12 +96,52 @@ pub const AppDir = struct {
         return appDirCreateDirPathOpen(self, sub_path, create_options.open_options);
     }
 
+    pub fn access(self: AppDir, io_arg: Io, sub_path: []const u8, opts: Dir.AccessOptions) Dir.AccessError!void {
+        _ = io_arg;
+        return appDirAccess(self, sub_path, opts);
+    }
+
+    pub fn createDir(self: AppDir, io_arg: Io, sub_path: []const u8, permissions: Dir.Permissions) Dir.CreateDirError!void {
+        _ = io_arg;
+        _ = permissions;
+        return appDirCreateDir(self, sub_path);
+    }
+
+    pub fn openDir(self: AppDir, io_arg: Io, sub_path: []const u8, opts: Dir.OpenOptions) Dir.OpenError!AppDir {
+        _ = io_arg;
+        return appDirOpenDir(self, sub_path, opts);
+    }
+
+    pub fn deleteFile(self: AppDir, io_arg: Io, sub_path: []const u8) Dir.DeleteFileError!void {
+        _ = io_arg;
+        return appDirDeleteFile(self, sub_path);
+    }
+
+    pub fn rename(self: AppDir, old_sub_path: []const u8, new_dir: AppDir, new_sub_path: []const u8, io_arg: Io) Dir.RenameError!void {
+        _ = io_arg;
+        return appDirRename(self, old_sub_path, new_dir, new_sub_path);
+    }
+
+    pub fn iterate(self: AppDir) Iterator {
+        return .{ .dir = self };
+    }
+
     pub fn close(self: AppDir, io_arg: Io) void {
         _ = io_arg;
         if (self.kind == .dynamic and self.slot < dir_slots.len) {
             dir_slots[self.slot].used = false;
         }
     }
+
+    pub const Iterator = struct {
+        dir: AppDir,
+
+        pub fn next(self: *Iterator, io_arg: Io) anyerror!?Dir.Entry {
+            _ = self;
+            _ = io_arg;
+            unsupported("dir iteration");
+        }
+    };
 };
 
 const vtable: Io.VTable = blk: {
@@ -148,6 +190,7 @@ pub fn cwd() Dir {
 }
 
 pub fn cwdDir() AppDir {
+    if (data_root_len != 0) return dataDir();
     return .{ .kind = .cwd };
 }
 
@@ -252,6 +295,32 @@ fn appDirCreateDirPathOpen(
     return registerDir(path, false);
 }
 
+fn appDirAccess(dir: AppDir, sub_path: []const u8, opts: Dir.AccessOptions) Dir.AccessError!void {
+    if (!opts.follow_symlinks) unsupported("dirAccess option");
+    if (opts.write and writeDenied(dir, sub_path)) return error.ReadOnlyFileSystem;
+
+    var path_buffer: [max_path_bytes:0]u8 = undefined;
+    const path = try rootedPathForDir(&path_buffer, dir, sub_path);
+    const fd = c.open(path.ptr, O_BINARY | O_RDONLY, @as(c_int, 0));
+    if (fd < 0) return accessError(errno());
+    _ = c.close(fd);
+}
+
+fn appDirCreateDir(dir: AppDir, sub_path: []const u8) Dir.CreateDirError!void {
+    if (writeDenied(dir, sub_path)) return error.ReadOnlyFileSystem;
+
+    var path_buffer: [max_path_bytes:0]u8 = undefined;
+    const path = try rootedPathForDir(&path_buffer, dir, sub_path);
+    try createSingleDir(path.ptr);
+}
+
+fn appDirOpenDir(dir: AppDir, sub_path: []const u8, opts: Dir.OpenOptions) Dir.OpenError!AppDir {
+    _ = dir;
+    _ = sub_path;
+    _ = opts;
+    unsupported("dirOpenDir");
+}
+
 fn appDirOpenFile(dir: AppDir, sub_path: []const u8, flags: Dir.OpenFileOptions) File.OpenError!File {
     if (flags.lock != .none or flags.path_only or flags.allow_ctty or flags.resolve_beneath)
         unsupported("dirOpenFile option");
@@ -296,6 +365,24 @@ fn appDirCreateFile(dir: AppDir, sub_path: []const u8, flags: Dir.CreateFileOpti
     if (fd < 0) return openError(errno());
     errdefer _ = c.close(fd);
     return registerFile(fd, if (flags.read) .read_write else .write);
+}
+
+fn appDirDeleteFile(dir: AppDir, sub_path: []const u8) Dir.DeleteFileError!void {
+    if (writeDenied(dir, sub_path)) return error.ReadOnlyFileSystem;
+
+    var path_buffer: [max_path_bytes:0]u8 = undefined;
+    const path = try rootedPathForDir(&path_buffer, dir, sub_path);
+    if (c.unlink(path.ptr) != 0) return deleteFileError(errno());
+}
+
+fn appDirRename(old_dir: AppDir, old_sub_path: []const u8, new_dir: AppDir, new_sub_path: []const u8) Dir.RenameError!void {
+    if (writeDenied(old_dir, old_sub_path) or writeDenied(new_dir, new_sub_path)) return error.ReadOnlyFileSystem;
+
+    var old_path_buffer: [max_path_bytes:0]u8 = undefined;
+    var new_path_buffer: [max_path_bytes:0]u8 = undefined;
+    const old_path = try rootedPathForDir(&old_path_buffer, old_dir, old_sub_path);
+    const new_path = try rootedPathForDir(&new_path_buffer, new_dir, new_sub_path);
+    if (c.rename(old_path.ptr, new_path.ptr) != 0) return renameError(errno());
 }
 
 fn fileStat(_: ?*anyopaque, file: File) File.StatError!File.Stat {
@@ -738,8 +825,41 @@ fn createDir(path: [*:0]const u8) Dir.CreateDirPathOpenError!void {
     }
 }
 
+fn createSingleDir(path: [*:0]const u8) Dir.CreateDirError!void {
+    if (c.mkdir(path, 0o777) == 0) return;
+    switch (errno()) {
+        1 => return error.PermissionDenied,
+        2 => return error.FileNotFound,
+        6 => return error.NoDevice,
+        12 => return error.SystemResources,
+        13 => return error.AccessDenied,
+        17 => return error.PathAlreadyExists,
+        20 => return error.NotDir,
+        28 => return error.NoSpaceLeft,
+        30 => return error.ReadOnlyFileSystem,
+        91 => return error.NameTooLong,
+        92 => return error.SymLinkLoop,
+        else => return error.Unexpected,
+    }
+}
+
 fn errno() c_int {
     return c.__errno().*;
+}
+
+fn accessError(code: c_int) Dir.AccessError {
+    return switch (code) {
+        1 => error.PermissionDenied,
+        2 => error.FileNotFound,
+        5 => error.InputOutput,
+        12 => error.SystemResources,
+        13 => error.AccessDenied,
+        16 => error.FileBusy,
+        30 => error.ReadOnlyFileSystem,
+        91 => error.NameTooLong,
+        92 => error.SymLinkLoop,
+        else => error.Unexpected,
+    };
 }
 
 fn openError(code: c_int) File.OpenError {
@@ -759,6 +879,43 @@ fn openError(code: c_int) File.OpenError {
         27 => error.FileTooBig,
         28 => error.NoSpaceLeft,
         30 => error.ReadOnlyFileSystem,
+        91 => error.NameTooLong,
+        92 => error.SymLinkLoop,
+        else => error.Unexpected,
+    };
+}
+
+fn deleteFileError(code: c_int) Dir.DeleteFileError {
+    return switch (code) {
+        1 => error.PermissionDenied,
+        2 => error.FileNotFound,
+        12 => error.SystemResources,
+        13 => error.AccessDenied,
+        16 => error.FileBusy,
+        20 => error.NotDir,
+        21 => error.IsDir,
+        30 => error.ReadOnlyFileSystem,
+        91 => error.NameTooLong,
+        92 => error.SymLinkLoop,
+        else => error.Unexpected,
+    };
+}
+
+fn renameError(code: c_int) Dir.RenameError {
+    return switch (code) {
+        1 => error.PermissionDenied,
+        2 => error.FileNotFound,
+        5 => error.HardwareFailure,
+        6 => error.NoDevice,
+        12 => error.SystemResources,
+        13 => error.AccessDenied,
+        16 => error.FileBusy,
+        18 => error.CrossDevice,
+        20 => error.NotDir,
+        21 => error.IsDir,
+        28 => error.NoSpaceLeft,
+        30 => error.ReadOnlyFileSystem,
+        39 => error.DirNotEmpty,
         91 => error.NameTooLong,
         92 => error.SymLinkLoop,
         else => error.Unexpected,
