@@ -28,8 +28,6 @@ const devkit = struct {
     extern "c" fn open(path: [*:0]const u8, flags: c_int, ...) c_int;
     extern "c" fn mkdir(path: [*:0]const u8, mode: c_int) c_int;
     extern "c" fn readdir(dirp: *c.DIR) ?*CDirent;
-    extern "c" fn lseek(fd: c_int, offset: c_long, whence: c_int) c_long;
-    extern "c" fn ftruncate(fd: c_int, length: c_long) c_int;
     extern "c" fn __errno() *c_int;
 };
 const max_path_bytes = 1024;
@@ -465,11 +463,11 @@ fn fileStat(_: ?*anyopaque, file: File) File.StatError!File.Stat {
 
 fn fileLength(_: ?*anyopaque, file: File) File.LengthError!u64 {
     const fd = fdForRegular(file);
-    const current = devkit.lseek(fd, 0, SEEK_CUR);
+    const current = c.lseek(fd, 0, SEEK_CUR);
     if (current < 0) return seekToLengthError();
-    const end = devkit.lseek(fd, 0, SEEK_END);
+    const end = c.lseek(fd, 0, SEEK_END);
     if (end < 0) return seekToLengthError();
-    _ = devkit.lseek(fd, current, SEEK_SET);
+    _ = c.lseek(fd, current, SEEK_SET);
     return @intCast(end);
 }
 
@@ -559,7 +557,7 @@ fn fileWriteStreaming(file: File, header: []const u8, data: []const []const u8, 
 }
 
 fn fileSeekBy(_: ?*anyopaque, file: File, relative_offset: i64) File.SeekError!void {
-    if (devkit.lseek(fdForRegular(file), @intCast(relative_offset), SEEK_CUR) < 0) return seekError();
+    if (c.lseek(fdForRegular(file), @intCast(relative_offset), SEEK_CUR) < 0) return seekError();
 }
 
 fn fileSeekTo(_: ?*anyopaque, file: File, absolute_offset: u64) File.SeekError!void {
@@ -584,8 +582,8 @@ fn fileSupportsAnsiEscapeCodes(_: ?*anyopaque, _: File) Io.Cancelable!bool {
 }
 
 fn fileSetLength(_: ?*anyopaque, file: File, length: u64) File.SetLengthError!void {
-    if (length > std.math.maxInt(c_long)) return error.FileTooBig;
-    if (devkit.ftruncate(fdForRegular(file), @intCast(length)) < 0) return setLengthError();
+    if (length > std.math.maxInt(c.off_t)) return error.FileTooBig;
+    if (c.ftruncate(fdForRegular(file), @intCast(length)) < 0) return setLengthError();
 }
 
 fn lockStderr(_: ?*anyopaque, terminal_mode: ?Io.Terminal.Mode) Io.Cancelable!Io.LockedStderr {
@@ -817,8 +815,8 @@ fn direntKind(kind: u8) File.Kind {
 }
 
 fn seekToOffset(fd: c_int, offset: u64) File.SeekError!void {
-    if (offset > std.math.maxInt(c_long)) return error.Unseekable;
-    if (devkit.lseek(fd, @intCast(offset), SEEK_SET) < 0) return seekError();
+    if (offset > std.math.maxInt(c.off_t)) return error.Unseekable;
+    if (c.lseek(fd, @intCast(offset), SEEK_SET) < 0) return seekError();
 }
 
 fn writeVectors(fd: c_int, header: []const u8, data: []const []const u8, splat: usize) File.WritePositionalError!usize {
