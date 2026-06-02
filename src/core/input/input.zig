@@ -277,7 +277,7 @@ pub fn register_action_set(name: []const u8) !ActionSetHandle {
 
 pub fn add_action(set: ActionSetHandle, name: []const u8, kind: ActionKind) !void {
     const s = set_ptr(set) orelse return error.UnknownActionSet;
-    if (s.actions.contains(name)) return error.ActionAlreadyExists;
+    if (action_ptr(s, name) != null) return error.ActionAlreadyExists;
     try s.actions.put(alloc, name, .{
         .kind = kind,
         .bindings = .empty,
@@ -288,7 +288,7 @@ pub fn add_action(set: ActionSetHandle, name: []const u8, kind: ActionKind) !voi
 
 pub fn bind_action(set: ActionSetHandle, action_name: []const u8, b: Binding) !void {
     const s = set_ptr(set) orelse return error.UnknownActionSet;
-    const a = s.actions.getPtr(action_name) orelse return error.ActionNotFound;
+    const a = action_ptr(s, action_name) orelse return error.ActionNotFound;
     if (a.kind == .vector2 and b.component == .none) return error.Vector2BindingNeedsComponent;
     try a.bindings.append(alloc, b);
 }
@@ -310,7 +310,7 @@ pub fn get_action(name: []const u8) ?ActionValue {
     const top = stack.top() orelse return null;
     const s = set_ptr(top.actions) orelse return null;
     if (!s.installed) return null;
-    const a = s.actions.getPtr(name) orelse return null;
+    const a = action_ptr(s, name) orelse return null;
     return a.current_value;
 }
 
@@ -477,6 +477,16 @@ fn set_ptr(handle: ActionSetHandle) ?*ActionSet {
 
 fn set_ptr_or_null(handle: ActionSetHandle) ?*ActionSet {
     return set_ptr(handle);
+}
+
+fn action_ptr(set: *ActionSet, name: []const u8) ?*Action {
+    if (set.actions.getPtr(name)) |action| return action;
+
+    var it = set.actions.iterator();
+    while (it.next()) |entry| {
+        if (std.mem.eql(u8, entry.key_ptr.*, name)) return entry.value_ptr;
+    }
+    return null;
 }
 
 fn route_text_to_session(text: []const u8) void {

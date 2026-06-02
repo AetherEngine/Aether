@@ -469,7 +469,7 @@ pub fn create_pipeline(layout: Pipeline.VertexLayout, v_shader: ?[:0]align(4) co
 }
 
 pub fn destroy_pipeline(handle: Pipeline.Handle) void {
-    var pl = pipelines.get_element(handle) orelse return;
+    const pl = get_pipeline_ptr(handle) orelse return;
     _ = shaderProgramFree(&pl.program);
     DVLB_Free(pl.dvlb);
     _ = pipelines.remove_element(handle);
@@ -481,26 +481,25 @@ pub fn bind_pipeline(handle: Pipeline.Handle) void {
 }
 
 pub fn create_mesh(pipeline: Pipeline.Handle) anyerror!Mesh.Handle {
-    _ = pipelines.get_element(pipeline) orelse return error.InvalidPipeline;
+    _ = get_pipeline_ptr(pipeline) orelse return error.InvalidPipeline;
     const handle = meshes.add_element(.{ .pipeline = pipeline }) orelse return error.OutOfMeshes;
     return @intCast(handle);
 }
 
 pub fn destroy_mesh(handle: Mesh.Handle) void {
-    var mesh = meshes.get_element(handle) orelse return;
-    free_mesh_vertices(&mesh);
+    const mesh = get_mesh_ptr(handle) orelse return;
+    free_mesh_vertices(mesh);
     _ = meshes.remove_element(handle);
 }
 
 pub fn update_mesh(handle: Mesh.Handle, data: []const u8) void {
-    var mesh = meshes.get_element(handle) orelse return;
+    const mesh = get_mesh_ptr(handle) orelse return;
 
     if (data.len > mesh.capacity) {
-        free_mesh_vertices(&mesh);
+        free_mesh_vertices(mesh);
         const bytes = render_alloc.alloc(u8, data.len) catch {
             mesh.len = 0;
             mesh.capacity = 0;
-            meshes.update_element(handle, mesh);
             return;
         };
         mesh.ptr = bytes.ptr;
@@ -511,16 +510,15 @@ pub fn update_mesh(handle: Mesh.Handle, data: []const u8) void {
         @memcpy(ptr[0..data.len], data);
     }
     mesh.len = data.len;
-    meshes.update_element(handle, mesh);
 }
 
 pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize, primitive: Mesh.Primitive) void {
     if (!initialized) return;
 
-    const mesh = meshes.get_element(handle) orelse return;
+    const mesh = get_mesh_ptr(handle) orelse return;
     const ptr = mesh.ptr orelse return;
     const pipeline_handle = if (current_pipeline != 0) current_pipeline else mesh.pipeline;
-    var pl = pipelines.get_element(pipeline_handle) orelse return;
+    const pl = get_pipeline_ptr(pipeline_handle) orelse return;
     const available_count = if (pl.stride == 0) 0 else mesh.len / pl.stride;
     const draw_count = @min(count, available_count);
     if (draw_count == 0) return;
@@ -545,7 +543,7 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize, primitiv
     switch (primitive) {
         .triangles => {
             for (0..draw_count) |i| {
-                const vertex = decode_mesh_vertex(ptr, i, pl);
+                const vertex = decode_mesh_vertex(ptr, i, pl.*);
                 out[i] = to_gpu_vertex(to_screen_vertex(vertex, &mvp));
             }
             written_count = draw_count;
@@ -554,8 +552,8 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize, primitiv
             var src_i: usize = 0;
             var dst_i: usize = 0;
             while (src_i + 1 < draw_count) : (src_i += 2) {
-                const a = decode_mesh_vertex(ptr, src_i, pl);
-                const b = decode_mesh_vertex(ptr, src_i + 1, pl);
+                const a = decode_mesh_vertex(ptr, src_i, pl.*);
+                const b = decode_mesh_vertex(ptr, src_i + 1, pl.*);
                 dst_i = write_line_segment(out, dst_i, a, b, &mvp);
             }
             written_count = dst_i;
@@ -968,6 +966,18 @@ fn gpu_texture_wrap_t(v: u32) u32 {
 fn get_texture_ptr(handle: Texture.Handle) ?*TextureData {
     if (handle == 0 or handle >= textures.buffer.len) return null;
     if (textures.buffer[handle]) |*tex| return tex;
+    return null;
+}
+
+fn get_pipeline_ptr(handle: Pipeline.Handle) ?*PipelineData {
+    if (handle == 0 or handle >= pipelines.buffer.len) return null;
+    if (pipelines.buffer[handle]) |*pl| return pl;
+    return null;
+}
+
+fn get_mesh_ptr(handle: Mesh.Handle) ?*MeshData {
+    if (handle == 0 or handle >= meshes.buffer.len) return null;
+    if (meshes.buffer[handle]) |*mesh| return mesh;
     return null;
 }
 
