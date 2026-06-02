@@ -169,6 +169,27 @@ fn devkitProPath(b: *std.Build) []const u8 {
     return p;
 }
 
+/// Creates a `3dslink` command for pushing an installed `.3dsx` to a
+/// networked 3DS. Reuses Aether's devkitPro option/cache so downstream
+/// builds do not need to redeclare `-Ddevkitpro-path`.
+pub fn add3dslink(b: *std.Build, threedsx_path: []const u8) *std.Build.Step.Run {
+    const dkp = devkitProPath(b);
+    const link_cmd = b.addSystemCommand(&.{b.pathJoin(&.{ dkp, "tools/bin/3dslink" })});
+    if (b.option([]const u8, "3dslink-address", "3DS: target IP for 3dslink push (default: mDNS auto-discover)")) |ip| {
+        link_cmd.addArgs(&.{ "-a", ip });
+    }
+    if (b.option(u32, "3dslink-retries", "3DS: 3dslink retry count (default: 10)")) |n| {
+        link_cmd.addArgs(&.{ "-r", b.fmt("{d}", .{n}) });
+    }
+    if (b.option(bool, "3dslink-server", "3DS: pass -s so 3dslink stays listening after the upload (useful for some Rosalina versions and for stdout relay)") orelse false) {
+        link_cmd.addArg("-s");
+    }
+    link_cmd.addArg(threedsx_path);
+    link_cmd.step.dependOn(b.getInstallStep());
+    if (b.args) |args| link_cmd.addArgs(args);
+    return link_cmd;
+}
+
 /// Creates an executable with the Aether engine module and all platform
 /// dependencies wired up. Returns the compile step so the caller can
 /// further customize it (install, add run steps, etc.).
@@ -782,6 +803,36 @@ fn pspEbootPipeline(b: *std.Build, exe: *std.Build.Step.Compile, psp_dep: *std.B
     return result;
 }
 
+fn patch3dsGeneratedC(b: *std.Build, exe: *std.Build.Step.Compile) std.Build.LazyPath {
+    const patch = b.addSystemCommand(&.{
+        "perl", "-e",
+        \\local $/;
+        \\my $src = <>;
+        \\my %align16 = ();
+        \\while ($src =~ /zig_static_assert\(_Alignof \(struct ([A-Za-z0-9_]+)\) == 16,/g) {
+        \\    $align16{$1} = 1;
+        \\}
+        \\my $pending = "";
+        \\for my $line (split /(?<=\n)/, $src) {
+        \\    if ($pending ne "") {
+        \\        if ($line =~ s/^};/} __attribute__((aligned(16)));/) {
+        \\            $pending = "";
+        \\        }
+        \\    } elsif ($line =~ /^struct\s+([A-Za-z0-9_]+)\s*\{/) {
+        \\        my $name = $1;
+        \\        if ($align16{$name}) {
+        \\            if ($line !~ s/\};/} __attribute__((aligned(16)));/) {
+        \\                $pending = $name;
+        \\            }
+        \\        }
+        \\    }
+        \\    print $line;
+        \\}
+    });
+    patch.addArtifactArg(exe);
+    return patch.captureStdOut(.{ .basename = b.fmt("{s}.3ds.c", .{exe.name}) });
+}
+
 /// Compiles the zig-emitted C with devkitARM, links against libctru, and
 /// packages the ELF (plus an SMDH and optional RomFS) into a `.3dsx`
 /// homebrew bundle. Mirrors `pspEbootPipeline` for the PSP toolchain.
@@ -867,14 +918,21 @@ fn threedsxPipeline(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOpt
 
     // zig.h hardcodes `zig_align(16)` for its `zig_i128`/`zig_u128`
     // struct fallback (used when `__int128` isn't supported by the C
-    // compiler — gcc on 32-bit ARM is one such target). But zig's own
-    // layout pass uses 8-byte alignment for i128 on 32-bit ARM, so
-    // the `_Static_assert(_Alignof(...) == 8)` baked into the
-    // generated C fails against gcc's 16-byte view. Patch the four
-    // sites down to `zig_align(8)`. The patched copy lands in a
-    // dedicated include dir we point gcc at first.
-    const patch = b.addSystemCommand(&.{"sed"});
-    patch.addArg("s/zig_align(16)/zig_align(8)/g");
+    // compiler -- gcc on 32-bit ARM is one such target). Zig's ARM
+    // layout uses 8-byte alignment for those integer types, while f128
+    // still needs 16-byte alignment. Patch only the integer fallback
+    // typedefs, then route unsupported ARM f128 through zig.h's vector
+    // fallback with explicit 16-byte alignment.
+    const patch = b.addSystemCommand(&.{"perl"});
+    patch.addArgs(&.{
+        "-0pe",
+        \\s/typedef struct \{ zig_align\(16\) uint64_t lo; uint64_t hi; \} zig_u128;/typedef struct { zig_align(8) uint64_t lo; uint64_t hi; } zig_u128;/g;
+        \\s/typedef struct \{ zig_align\(16\) uint64_t lo;  int64_t hi; \} zig_i128;/typedef struct { zig_align(8) uint64_t lo;  int64_t hi; } zig_i128;/g;
+        \\s/typedef struct \{ zig_align\(16\) uint64_t hi; uint64_t lo; \} zig_u128;/typedef struct { zig_align(8) uint64_t hi; uint64_t lo; } zig_u128;/g;
+        \\s/typedef struct \{ zig_align\(16\)  int64_t hi; uint64_t lo; \} zig_i128;/typedef struct { zig_align(8)  int64_t hi; uint64_t lo; } zig_i128;/g;
+        \\s/#if defined\(zig_darwin\) \|\| defined\(zig_aarch64\)/#if defined(zig_darwin) || defined(zig_aarch64) || defined(zig_arm)/;
+        \\s/typedef __attribute__\(\(__vector_size__\(2 \* sizeof\(uint64_t\)\)\)\) uint64_t zig_v2u64;/typedef __attribute__((__vector_size__(2 * sizeof(uint64_t)), aligned(16))) uint64_t zig_v2u64;/;
+    });
     patch.addFileArg(.{ .cwd_relative = zig_h_src });
     const patched_zig_h = patch.captureStdOut(.{ .basename = "zig.h" });
 
@@ -935,7 +993,7 @@ fn threedsxPipeline(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOpt
     link.addPrefixedDirectoryArg("-I", include_wf.getDirectory());
     link.addArg("-x");
     link.addArg("c");
-    link.addArtifactArg(exe);
+    link.addFileArg(patch3dsGeneratedC(b, exe));
     link.addFileArg(exception_shim);
     // Reset language so gcc treats subsequent inputs by extension; the
     // compiler_rt object is ELF arm and `-x c` would mis-parse it.
@@ -1317,20 +1375,7 @@ pub fn build(b: *std.Build) void {
         // 3DS can't run natively on the host. The 3DS-side homebrew
         // launcher listens for incoming .3dsx pushes on port 17491;
         // `3dslink` finds it via mDNS or accepts an explicit IP.
-        const dkp = devkitProPath(b);
-        const link_cmd = b.addSystemCommand(&.{b.pathJoin(&.{ dkp, "tools/bin/3dslink" })});
-        if (b.option([]const u8, "3dslink-address", "3DS: target IP for 3dslink push (default: mDNS auto-discover)")) |ip| {
-            link_cmd.addArgs(&.{ "-a", ip });
-        }
-        if (b.option(u32, "3dslink-retries", "3DS: 3dslink retry count (default: 10)")) |n| {
-            link_cmd.addArgs(&.{ "-r", b.fmt("{d}", .{n}) });
-        }
-        if (b.option(bool, "3dslink-server", "3DS: pass -s so 3dslink stays listening after the upload (useful for some Rosalina versions and for stdout relay)") orelse false) {
-            link_cmd.addArg("-s");
-        }
-        link_cmd.addArg(b.getInstallPath(.bin, "Aether-3DS/Aether.3dsx"));
-        link_cmd.step.dependOn(b.getInstallStep());
-        if (b.args) |args| link_cmd.addArgs(args);
+        const link_cmd = add3dslink(b, b.getInstallPath(.bin, "Aether-3DS/Aether.3dsx"));
 
         const link_step = b.step("3dslink", "Push the 3dsx to a networked 3DS via 3dslink");
         link_step.dependOn(&link_cmd.step);
