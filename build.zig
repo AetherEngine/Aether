@@ -1244,10 +1244,15 @@ pub fn addShader(owner: *std.Build, b: *std.Build, exe: *std.Build.Step.Compile,
         const picasso = b.pathJoin(&.{ devkitProPath(b), "tools/bin/picasso" });
         const sources = b.addWriteFiles();
         const vert_src = sources.add(name ++ "_3ds.v.pica",
-            \\.fvec projection[4]
+            \\.fvec projection[4], modelView[4], screenProjection[4]
+            \\.fvec posScale, uvScaleOffset, colorScale
             \\
-            \\.constf myconst(0.0, 1.0, 0.0, 0.0)
+            \\.constf myconst(0.0, 1.0, -1.0, 0.0)
+            \\.constf viewport(200.0, 120.0, 0.0, 0.0)
+            \\.alias zeros myconst.xxxx
             \\.alias ones myconst.yyyy
+            \\.alias negOnes myconst.zzzz
+            \\.alias halfViewport viewport.xyyy
             \\
             \\.out outpos position
             \\.out outtc0 texcoord0
@@ -1258,16 +1263,36 @@ pub fn addShader(owner: *std.Build, b: *std.Build, exe: *std.Build.Step.Compile,
             \\.alias inclr v2
             \\
             \\.proc main
-            \\    mov r0.xyz, inpos
+            \\    mul r0.xyz, posScale, inpos
             \\    mov r0.w, ones
             \\
-            \\    dp4 outpos.x, projection[0], r0
-            \\    dp4 outpos.y, projection[1], r0
-            \\    dp4 outpos.z, projection[2], r0
-            \\    dp4 outpos.w, projection[3], r0
+            \\    dp4 r1.x, modelView[0], r0
+            \\    dp4 r1.y, modelView[1], r0
+            \\    dp4 r1.z, modelView[2], r0
+            \\    dp4 r1.w, modelView[3], r0
             \\
-            \\    mov outtc0, inuv
-            \\    mov outclr, inclr
+            \\    dp4 r2.x, projection[0], r1
+            \\    dp4 r2.y, projection[1], r1
+            \\    dp4 r2.z, projection[2], r1
+            \\    dp4 r2.w, projection[3], r1
+            \\
+            \\    add r3.x, r2.x, r2.w
+            \\    mul r3.x, halfViewport.x, r3.x
+            \\    add r3.y, r2.y, r2.w
+            \\    mul r3.y, halfViewport.y, r3.y
+            \\    mul r3.z, negOnes.z, r2.z
+            \\    add r3.z, r2.w, r3.z
+            \\    mov r3.w, r2.w
+            \\
+            \\    dp4 outpos.x, screenProjection[0], r3
+            \\    dp4 outpos.y, screenProjection[1], r3
+            \\    dp4 outpos.z, screenProjection[2], r3
+            \\    dp4 outpos.w, screenProjection[3], r3
+            \\
+            \\    mul outtc0.xy, uvScaleOffset.xy, inuv.xy
+            \\    add outtc0.xy, uvScaleOffset.zw, outtc0.xy
+            \\    mov outtc0.zw, zeros
+            \\    mul outclr, colorScale, inclr
             \\    end
             \\.end
             \\
