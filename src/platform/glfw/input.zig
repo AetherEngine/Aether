@@ -148,7 +148,10 @@ export fn cursor_pos_callback(window: *glfw.Window, xpos: f64, ypos: f64) callco
     prev_cursor_x = xpos;
     prev_cursor_y = ypos;
     have_prev_cursor = true;
-    // GLFW gives window coords; rest of the engine works in framebuffer pixels.
+    // GLFW positions are window coordinates, while rendering/UI picking uses
+    // framebuffer pixels. Keep the absolute position scaled, but leave the
+    // relative delta in GLFW cursor-motion units so mouse-look is not warped
+    // or quantized by DPI/content-scale changes.
     var win_w: c_int = 0;
     var win_h: c_int = 0;
     var fb_w: c_int = 0;
@@ -159,7 +162,7 @@ export fn cursor_pos_callback(window: *glfw.Window, xpos: f64, ypos: f64) callco
     const sy = @as(f64, @floatFromInt(fb_h)) / @as(f64, @floatFromInt(win_h));
     core.deliver_mouse_move(
         .{ .x = @floatCast(xpos * sx), .y = @floatCast(ypos * sy) },
-        .{ .x = @floatCast(dx * sx), .y = @floatCast(dy * sy) },
+        .{ .x = @floatCast(dx), .y = @floatCast(dy) },
     );
 }
 
