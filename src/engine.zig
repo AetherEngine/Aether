@@ -273,9 +273,7 @@ pub const Engine = struct {
             tick_accum = saturatingAddI64(tick_accum, frame_dt_us);
 
             const platform_start_ns = clock.now(self.io).toNanoseconds();
-            Platform.input.update();
             Platform.update(self);
-            Core.input.update();
             const platform_done_ns = clock.now(self.io).toNanoseconds();
             var pre_update_elapsed_ns = elapsedNsBetween(platform_start_ns, platform_done_ns);
             if (!self.running) break;
@@ -299,10 +297,17 @@ pub const Engine = struct {
             while (update_accum >= UPDATE_US) {
                 @branchHint(.unpredictable);
 
+                const input_start_ns = clock.now(self.io).toNanoseconds();
+                Platform.input.update();
+                Core.input.update();
+                const input_done_ns = clock.now(self.io).toNanoseconds();
+                const engine_elapsed_ns = saturatingAddI64(pre_update_elapsed_ns, elapsedNsBetween(input_start_ns, input_done_ns));
+                if (!self.running) break;
+
                 const budget = Util.BudgetContext{
                     .phase_budget_ns = update_budget_ns,
-                    .engine_elapsed_ns = pre_update_elapsed_ns,
-                    .remaining_ns = update_budget_ns - pre_update_elapsed_ns,
+                    .engine_elapsed_ns = engine_elapsed_ns,
+                    .remaining_ns = update_budget_ns - engine_elapsed_ns,
                     .is_tick_frame = is_tick_frame,
                     .tick_cost_ns = tick_cost_ns,
                     .safety_margin_ns = Util.BudgetContext.DEFAULT_SAFETY_MARGIN_NS,
