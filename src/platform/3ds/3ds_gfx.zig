@@ -240,7 +240,8 @@ const SMALL_TEXTURE_EXPAND_SIZE: u32 = 32;
 const MAX_TEXTURE_SIZE: u32 = 1024;
 const DEBUG_TEXTURE_ONLY = false;
 const DEBUG_COLOR_ONLY = false;
-const DEBUG_DRAW_QUAD_CHUNKS = false;
+const DEBUG_DRAW_QUAD_CHUNKS = true;
+const DEBUG_DRAW_CHUNK_VERTICES: usize = 3;
 
 const PipelineData = struct {
     program: ShaderProgram,
@@ -611,14 +612,16 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize, primitiv
     upload_uv_uniform(pl.*);
     upload_vec_uniform(pl.color_scale_loc, pl.color_scale);
 
-    if (!configure_draw_buffer(ptr, pl.*)) return;
     if (DEBUG_DRAW_QUAD_CHUNKS) {
         var first: usize = 0;
-        while (first < draw_count) : (first += 6) {
-            const chunk_count = @min(@as(usize, 6), draw_count - first);
-            C3D_DrawArrays(GPU_TRIANGLES, @intCast(first), @intCast(chunk_count));
+        while (first < draw_count) : (first += DEBUG_DRAW_CHUNK_VERTICES) {
+            const chunk_count = @min(DEBUG_DRAW_CHUNK_VERTICES, draw_count - first);
+            const chunk_ptr = ptr + first * pl.stride;
+            if (!configure_draw_buffer(chunk_ptr, pl.*)) return;
+            C3D_DrawArrays(GPU_TRIANGLES, 0, @intCast(chunk_count));
         }
     } else {
+        if (!configure_draw_buffer(ptr, pl.*)) return;
         C3D_DrawArrays(GPU_TRIANGLES, 0, @intCast(draw_count));
     }
 }
