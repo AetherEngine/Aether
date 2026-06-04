@@ -229,6 +229,12 @@ const DATA_CACHE_LINE_SIZE: usize = 32;
 const DEPTH_CLEAR: u32 = 0;
 const ALPHA_REF: c_int = 26;
 const LINEAR_MESH_MIN_CAPACITY: usize = 256;
+const OS_OLD_FCRAM_VADDR: usize = 0x14000000;
+const OS_OLD_FCRAM_SIZE: usize = 0x08000000;
+const OS_FCRAM_VADDR: usize = 0x30000000;
+const OS_FCRAM_SIZE: usize = 0x10000000;
+const OS_VRAM_VADDR: usize = 0x1F000000;
+const OS_VRAM_SIZE: usize = 0x00600000;
 const MIN_TEXTURE_SIZE: u32 = 8;
 const SMALL_TEXTURE_EXPAND_SIZE: u32 = 32;
 const MAX_TEXTURE_SIZE: u32 = 1024;
@@ -262,7 +268,8 @@ const PipelineData = struct {
 
 const MeshData = struct {
     pipeline: Pipeline.Handle,
-    ptr: ?[*]u8 = null,
+    ptr: ?[*]const u8 = null,
+    owned_ptr: ?[*]u8 = null,
     len: usize = 0,
     capacity: usize = 0,
 };
@@ -481,6 +488,12 @@ pub fn create_pipeline(layout: Pipeline.VertexLayout, v_shader: ?[:0]align(4) co
     const pos_scale = position_scale(position_attr) orelse return error.UnsupportedVertexLayout;
     const uv_attr_scale = uv_scale(uv_attr) orelse return error.UnsupportedVertexLayout;
     const color_attr_scale = color_scale(color_attr) orelse return error.UnsupportedVertexLayout;
+    if (!supported_attr_location(position_attr) or
+        !supported_attr_location(uv_attr) or
+        !supported_attr_location(color_attr))
+    {
+        return error.UnsupportedVertexLayout;
+    }
     const buffer_layout = buffer_layout_from_attrs(layout.stride, position_attr, uv_attr, color_attr) orelse return error.UnsupportedVertexLayout;
     const data = PipelineData{
         .program = program,
@@ -537,21 +550,37 @@ pub fn destroy_mesh(handle: Mesh.Handle) void {
 pub fn update_mesh(handle: Mesh.Handle, data: []const u8) void {
     const mesh = get_mesh_ptr(handle) orelse return;
 
+    if (data.len == 0) {
+        mesh.ptr = null;
+        mesh.len = 0;
+        return;
+    }
+
+    if (is_linear_gpu_memory(data.ptr, data.len)) {
+        if (mesh.owned_ptr != null) free_owned_mesh_vertices(mesh);
+        mesh.ptr = data.ptr;
+        mesh.len = data.len;
+        flush_data_cache_range(data.ptr, data.len);
+        return;
+    }
+
     if (data.len > mesh.capacity) {
-        free_mesh_vertices(mesh);
+        free_owned_mesh_vertices(mesh);
         const new_capacity = linear_mesh_capacity(data.len);
         const bytes = alloc_linear_bytes(new_capacity) catch {
+            mesh.ptr = null;
             mesh.len = 0;
             mesh.capacity = 0;
             return;
         };
-        mesh.ptr = bytes.ptr;
+        mesh.owned_ptr = bytes.ptr;
         mesh.capacity = bytes.len;
     }
 
-    if (mesh.ptr) |ptr| {
+    if (mesh.owned_ptr) |ptr| {
         @memcpy(ptr[0..data.len], data);
         flush_data_cache_range(@ptrCast(&ptr[0]), data.len);
+        mesh.ptr = ptr;
     }
     mesh.len = data.len;
 }
@@ -659,17 +688,17 @@ fn apply_depth_state() void {
 fn configure_fixed_attributes(pl: PipelineData) void {
     const attr = C3D_GetAttrInfo();
     AttrInfo_Init(attr);
-    add_attr_loader(attr, 0, pl.position_attr, pl.position_loader_size);
-    add_attr_loader(attr, 1, pl.uv_attr, pl.uv_loader_size);
-    add_attr_loader(attr, 2, pl.color_attr, pl.color_loader_size);
+    add_attr_loader(attr, pl.position_attr, pl.position_loader_size);
+    add_attr_loader(attr, pl.uv_attr, pl.uv_loader_size);
+    add_attr_loader(attr, pl.color_attr, pl.color_loader_size);
 }
 
-fn add_attr_loader(info: *C3D_AttrInfo, reg_id: c_int, attr: Pipeline.Attribute, loader_size: u8) void {
+fn add_attr_loader(info: *C3D_AttrInfo, attr: Pipeline.Attribute, loader_size: u8) void {
     const fmt = gpu_attribute_format(attr.format);
-    _ = AttrInfo_AddLoader(info, reg_id, fmt, loader_size);
+    _ = AttrInfo_AddLoader(info, @intCast(attr.location), fmt, loader_size);
 }
 
-fn configure_draw_buffer(ptr: [*]u8, pl: PipelineData) bool {
+fn configure_draw_buffer(ptr: [*]const u8, pl: PipelineData) bool {
     const buf = C3D_GetBufInfo();
     BufInfo_Init(buf);
     const result = BufInfo_Add(
@@ -827,11 +856,16 @@ fn destroy_all_textures() void {
 }
 
 fn free_mesh_vertices(mesh: *MeshData) void {
-    if (mesh.ptr) |ptr| {
-        linearFree(ptr);
-        mesh.ptr = null;
-    }
+    free_owned_mesh_vertices(mesh);
+    mesh.ptr = null;
     mesh.len = 0;
+}
+
+fn free_owned_mesh_vertices(mesh: *MeshData) void {
+    if (mesh.owned_ptr) |ptr| {
+        linearFree(ptr);
+        mesh.owned_ptr = null;
+    }
     mesh.capacity = 0;
 }
 
@@ -840,6 +874,10 @@ fn find_attr(layout: Pipeline.VertexLayout, usage: Pipeline.AttributeUsage) ?Pip
         if (attr.usage == usage) return attr;
     }
     return null;
+}
+
+fn supported_attr_location(attr: Pipeline.Attribute) bool {
+    return attr.location < 12;
 }
 
 const BufferLayout = struct {
@@ -1041,6 +1079,21 @@ fn flush_data_cache_range(ptr: *const anyopaque, len: usize) void {
     const aligned_len = aligned_end - aligned_start;
     const aligned_ptr: *const anyopaque = @ptrFromInt(aligned_start);
     _ = GSPGPU_FlushDataCache(aligned_ptr, @intCast(aligned_len));
+}
+
+fn is_linear_gpu_memory(ptr: *const anyopaque, len: usize) bool {
+    if (len == 0) return true;
+
+    const start = @intFromPtr(ptr);
+    return range_in_region(start, len, OS_FCRAM_VADDR, OS_FCRAM_SIZE) or
+        range_in_region(start, len, OS_OLD_FCRAM_VADDR, OS_OLD_FCRAM_SIZE) or
+        range_in_region(start, len, OS_VRAM_VADDR, OS_VRAM_SIZE);
+}
+
+fn range_in_region(start: usize, len: usize, base: usize, size: usize) bool {
+    if (start < base) return false;
+    const rel = start - base;
+    return rel <= size and len <= size - rel;
 }
 
 fn tex_set_default_params(tex: *C3D_Tex) void {

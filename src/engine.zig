@@ -13,6 +13,12 @@ const options = @import("options");
 pub const Pool = memory.Pool;
 pub const MemoryConfig = memory.MemoryConfig;
 
+extern fn linearAlloc(size: usize) ?*anyopaque;
+extern fn linearFree(mem: ?*anyopaque) void;
+extern fn linearSpaceFree() u32;
+
+const LINEAR_RENDER_RESERVE_BYTES: usize = 2 * 1024 * 1024;
+
 // -- category tracker (wrapper allocator with per-category accounting) --------
 
 pub const CategoryTracker = struct {
@@ -79,11 +85,20 @@ pub const CategoryTracker = struct {
 
 const TRACKER_COUNT = @typeInfo(Pool).@"enum".fields.len;
 
+fn alloc_linear_bytes(len: usize) ![]align(16) u8 {
+    const mem = linearAlloc(len) orelse return error.OutOfMemory;
+    const aligned: *align(16) anyopaque = @alignCast(mem);
+    const ptr: [*]align(16) u8 = @ptrCast(aligned);
+    return ptr[0..len];
+}
+
 // -- engine -------------------------------------------------------------------
 
 pub const Engine = struct {
     io: std.Io,
     pool: memory.PoolAlloc,
+    linear_render_pool: memory.PoolAlloc,
+    linear_render_mem: ?[]align(16) u8,
     trackers: [TRACKER_COUNT]CategoryTracker,
     running: bool,
     vsync: bool,
@@ -103,6 +118,9 @@ pub const Engine = struct {
         /// `title` so single-word titles just work; override when the
         /// title contains characters you don't want in a filesystem path.
         app_name: ?[]const u8 = null,
+        /// On 3DS, provide this to back the render category with linear
+        /// FCRAM so vertex buffers can be used as direct PICA sources.
+        render_capacity: ?usize = null,
     };
 
     /// Initializes the engine in place. `self` must live at a stable address
@@ -122,12 +140,18 @@ pub const Engine = struct {
         config: Config,
         state: *const Core.State,
     ) !void {
-        assert(config.memory.total() <= mem.len);
+        const external_render = use_external_render_pool(config);
+        const main_required = if (external_render)
+            config.memory.total() - config.memory.render
+        else
+            config.memory.total();
+        assert(main_required <= mem.len);
 
         self.io = sys_io;
         self.running = true;
         self.vsync = config.vsync;
         self.state = state.*;
+        self.linear_render_mem = null;
 
         self.pool = memory.PoolAlloc.init(mem, "main");
         const inner = self.pool.allocator();
@@ -149,6 +173,9 @@ pub const Engine = struct {
         try logger.init(sys_io, self.dirs.data);
 
         try Platform.init(self, config.width, config.height, config.title, config.fullscreen, config.vsync, config.resizable);
+        if (external_render) try self.init_linear_render_pool(config);
+        errdefer self.deinit_linear_render_pool();
+
         try Rendering.Texture.init_defaults(self.allocator(.render));
         try Core.state_machine.init(self, &self.state);
     }
@@ -159,6 +186,36 @@ pub const Engine = struct {
         Platform.deinit();
         logger.deinit(self.io);
         self.dirs.close(self.io);
+        self.deinit_linear_render_pool();
+    }
+
+    fn use_external_render_pool(config: Config) bool {
+        return options.config.platform == .nintendo_3ds and config.render_capacity != null;
+    }
+
+    fn init_linear_render_pool(self: *Engine, config: Config) !void {
+        assert(config.render_capacity.? >= config.memory.render);
+
+        const available: usize = linearSpaceFree();
+        if (available <= LINEAR_RENDER_RESERVE_BYTES) return error.OutOfMemory;
+
+        const capacity = @min(config.render_capacity.?, available - LINEAR_RENDER_RESERVE_BYTES);
+        if (capacity < config.memory.render) return error.OutOfMemory;
+
+        const linear_mem = try alloc_linear_bytes(capacity);
+        self.linear_render_mem = linear_mem;
+        self.linear_render_pool = memory.PoolAlloc.init(linear_mem, "render-linear");
+
+        const render_idx = @intFromEnum(Pool.render);
+        self.trackers[render_idx].inner = self.linear_render_pool.allocator();
+        self.trackers[render_idx].budget = @min(self.trackers[render_idx].budget, capacity);
+    }
+
+    fn deinit_linear_render_pool(self: *Engine) void {
+        if (self.linear_render_mem) |mem| {
+            linearFree(mem.ptr);
+            self.linear_render_mem = null;
+        }
     }
 
     pub fn allocator(self: *Engine, p: Pool) std.mem.Allocator {
@@ -187,15 +244,22 @@ pub const Engine = struct {
     }
 
     pub fn set_budget(self: *Engine, p: Pool, new_budget: usize) void {
-        self.trackers[@intFromEnum(p)].budget = new_budget;
+        self.trackers[@intFromEnum(p)].budget = if (p == .render) blk: {
+            const mem = self.linear_render_mem orelse break :blk new_budget;
+            break :blk @min(new_budget, mem.len);
+        } else new_budget;
     }
 
     pub fn total_used(self: *const Engine) usize {
-        return self.pool.used;
+        var total: usize = 0;
+        for (self.trackers) |tracker| total += tracker.used;
+        return total;
     }
 
     pub fn total_budget(self: *const Engine) usize {
-        return self.pool.budget;
+        var total: usize = 0;
+        for (self.trackers) |tracker| total += tracker.budget;
+        return total;
     }
 
     pub fn report(self: *const Engine) void {
@@ -215,10 +279,10 @@ pub const Engine = struct {
             });
         }
         Util.engine_logger.info("  total: {}/{} bytes ({}/{} KiB)", .{
-            self.pool.used,
-            self.pool.budget,
-            self.pool.used / 1024,
-            self.pool.budget / 1024,
+            self.total_used(),
+            self.total_budget(),
+            self.total_used() / 1024,
+            self.total_budget() / 1024,
         });
         Util.engine_logger.info("--------------------", .{});
     }
