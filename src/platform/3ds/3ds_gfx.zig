@@ -215,6 +215,7 @@ const GPU_TEXFACE_2D = 0;
 const GPU_RGBA8 = 0;
 const GPU_NEAREST = 0;
 const GPU_LINEAR = 1;
+const GPU_CLAMP_TO_EDGE = 0;
 const GPU_REPEAT = 2;
 
 const GFX_TOP = 0;
@@ -224,6 +225,7 @@ const DISPLAY_TRANSFER_FLAGS = GX_TRANSFER_FMT_RGB8 << 12;
 const TOP_SCREEN_WIDTH: f32 = 400.0;
 const TOP_SCREEN_HEIGHT: f32 = 240.0;
 const TEXTURE_BPP: usize = 4;
+const DATA_CACHE_LINE_SIZE: usize = 32;
 const DEPTH_CLEAR: u32 = 0;
 const ALPHA_REF: c_int = 26;
 const LINEAR_MESH_MIN_CAPACITY: usize = 256;
@@ -231,6 +233,8 @@ const MIN_TEXTURE_SIZE: u32 = 8;
 const SMALL_TEXTURE_EXPAND_SIZE: u32 = 32;
 const MAX_TEXTURE_SIZE: u32 = 1024;
 const DEBUG_TEXTURE_ONLY = false;
+const DEBUG_COLOR_ONLY = false;
+const DEBUG_DRAW_QUAD_CHUNKS = false;
 
 const PipelineData = struct {
     program: ShaderProgram,
@@ -239,6 +243,12 @@ const PipelineData = struct {
     position_attr: Pipeline.Attribute,
     uv_attr: Pipeline.Attribute,
     color_attr: Pipeline.Attribute,
+    position_loader_size: u8,
+    uv_loader_size: u8,
+    color_loader_size: u8,
+    buffer_base_offset: usize,
+    buffer_attribute_count: u8,
+    buffer_permutation: u64,
     projection_loc: i8,
     model_view_loc: i8,
     screen_projection_loc: i8,
@@ -356,7 +366,7 @@ pub fn set_clear_color(r: f32, g: f32, b: f32, a: f32) void {
 pub fn set_alpha_blend(enabled: bool) void {
     if (enabled) {
         C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA, GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA);
-        C3D_AlphaTest(true, GPU_GREATER, ALPHA_REF);
+        C3D_AlphaTest(false, GPU_ALWAYS, 0);
     } else {
         C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_ONE, GPU_ZERO, GPU_ONE, GPU_ZERO);
         C3D_AlphaTest(false, GPU_ALWAYS, 0);
@@ -410,8 +420,8 @@ pub fn start_frame() bool {
     const t = target orelse return false;
     if (!initialized) return false;
 
-    const flags: u8 = if (vsync_enabled) C3D_FRAME_SYNCDRAW else 0;
-    if (!C3D_FrameBegin(flags)) return false;
+    _ = vsync_enabled;
+    if (!C3D_FrameBegin(C3D_FRAME_SYNCDRAW)) return false;
 
     render_target_clear(t, C3D_CLEAR_ALL, clear_color, DEPTH_CLEAR);
     if (!C3D_FrameDrawOn(t)) {
@@ -471,7 +481,7 @@ pub fn create_pipeline(layout: Pipeline.VertexLayout, v_shader: ?[:0]align(4) co
     const pos_scale = position_scale(position_attr) orelse return error.UnsupportedVertexLayout;
     const uv_attr_scale = uv_scale(uv_attr) orelse return error.UnsupportedVertexLayout;
     const color_attr_scale = color_scale(color_attr) orelse return error.UnsupportedVertexLayout;
-    if (!direct_layout_supported(layout.stride, position_attr, uv_attr, color_attr)) return error.UnsupportedVertexLayout;
+    const buffer_layout = buffer_layout_from_attrs(layout.stride, position_attr, uv_attr, color_attr) orelse return error.UnsupportedVertexLayout;
     const data = PipelineData{
         .program = program,
         .dvlb = dvlb,
@@ -479,6 +489,12 @@ pub fn create_pipeline(layout: Pipeline.VertexLayout, v_shader: ?[:0]align(4) co
         .position_attr = position_attr,
         .uv_attr = uv_attr,
         .color_attr = color_attr,
+        .position_loader_size = buffer_layout.position_loader_size,
+        .uv_loader_size = buffer_layout.uv_loader_size,
+        .color_loader_size = buffer_layout.color_loader_size,
+        .buffer_base_offset = buffer_layout.base_offset,
+        .buffer_attribute_count = buffer_layout.attribute_count,
+        .buffer_permutation = buffer_layout.permutation,
         .projection_loc = projection_loc,
         .model_view_loc = model_view_loc,
         .screen_projection_loc = screen_projection_loc,
@@ -535,9 +551,7 @@ pub fn update_mesh(handle: Mesh.Handle, data: []const u8) void {
 
     if (mesh.ptr) |ptr| {
         @memcpy(ptr[0..data.len], data);
-        if (data.len > 0) {
-            _ = GSPGPU_FlushDataCache(@ptrCast(&ptr[0]), @intCast(data.len));
-        }
+        flush_data_cache_range(@ptrCast(&ptr[0]), data.len);
     }
     mesh.len = data.len;
 }
@@ -569,7 +583,15 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize, primitiv
     upload_vec_uniform(pl.color_scale_loc, pl.color_scale);
 
     if (!configure_draw_buffer(ptr, pl.*)) return;
-    C3D_DrawArrays(GPU_TRIANGLES, 0, @intCast(draw_count));
+    if (DEBUG_DRAW_QUAD_CHUNKS) {
+        var first: usize = 0;
+        while (first < draw_count) : (first += 6) {
+            const chunk_count = @min(@as(usize, 6), draw_count - first);
+            C3D_DrawArrays(GPU_TRIANGLES, @intCast(first), @intCast(chunk_count));
+        }
+    } else {
+        C3D_DrawArrays(GPU_TRIANGLES, 0, @intCast(draw_count));
+    }
 }
 
 pub fn create_texture(width: u32, height: u32, data: []align(16) u8) anyerror!Texture.Handle {
@@ -630,35 +652,33 @@ fn render_target_clear(t: *C3D_RenderTarget, bits: c_int, color: u32, depth: u32
 }
 
 fn apply_depth_state() void {
-    const depth_mask: c_int = if (depth_write_enabled) GPU_WRITE_DEPTH else 0;
-    const mask: c_int = GPU_WRITE_COLOR | depth_mask;
-    C3D_DepthTest(true, GPU_GEQUAL, mask);
+    _ = depth_write_enabled;
+    C3D_DepthTest(false, GPU_ALWAYS, GPU_WRITE_COLOR);
 }
 
 fn configure_fixed_attributes(pl: PipelineData) void {
     const attr = C3D_GetAttrInfo();
     AttrInfo_Init(attr);
-    add_attr_loader(attr, 0, pl.position_attr);
-    add_attr_loader(attr, 1, pl.uv_attr);
-    add_attr_loader(attr, 2, pl.color_attr);
+    add_attr_loader(attr, 0, pl.position_attr, pl.position_loader_size);
+    add_attr_loader(attr, 1, pl.uv_attr, pl.uv_loader_size);
+    add_attr_loader(attr, 2, pl.color_attr, pl.color_loader_size);
 }
 
-fn add_attr_loader(info: *C3D_AttrInfo, reg_id: c_int, attr: Pipeline.Attribute) void {
+fn add_attr_loader(info: *C3D_AttrInfo, reg_id: c_int, attr: Pipeline.Attribute, loader_size: u8) void {
     const fmt = gpu_attribute_format(attr.format);
-    _ = AttrInfo_AddLoader(info, reg_id, fmt, @intCast(attr.size));
+    _ = AttrInfo_AddLoader(info, reg_id, fmt, loader_size);
 }
 
 fn configure_draw_buffer(ptr: [*]u8, pl: PipelineData) bool {
     const buf = C3D_GetBufInfo();
     BufInfo_Init(buf);
-    if (!add_attr_buffer(buf, ptr, pl.stride, pl.position_attr, 0)) return false;
-    if (!add_attr_buffer(buf, ptr, pl.stride, pl.uv_attr, 1)) return false;
-    if (!add_attr_buffer(buf, ptr, pl.stride, pl.color_attr, 2)) return false;
-    return true;
-}
-
-fn add_attr_buffer(buf: *C3D_BufInfo, ptr: [*]u8, stride: usize, attr: Pipeline.Attribute, reg_id: u64) bool {
-    const result = BufInfo_Add(buf, @ptrCast(&ptr[attr.offset]), @intCast(stride), 1, reg_id);
+    const result = BufInfo_Add(
+        buf,
+        @ptrCast(&ptr[pl.buffer_base_offset]),
+        @intCast(pl.stride),
+        @intCast(pl.buffer_attribute_count),
+        pl.buffer_permutation,
+    );
     if (result < 0) {
         BufInfo_Init(buf);
         return false;
@@ -668,11 +688,13 @@ fn add_attr_buffer(buf: *C3D_BufInfo, ptr: [*]u8, stride: usize, attr: Pipeline.
 
 fn configure_texture_texenv() void {
     const env = C3D_GetTexEnv(0);
-    const src = if (DEBUG_TEXTURE_ONLY)
+    const src = if (DEBUG_COLOR_ONLY)
+        tev_sources(GPU_PRIMARY_COLOR, GPU_PRIMARY_COLOR, GPU_PRIMARY_COLOR)
+    else if (DEBUG_TEXTURE_ONLY)
         tev_sources(GPU_TEXTURE0, GPU_TEXTURE0, GPU_TEXTURE0)
     else
         tev_sources(GPU_TEXTURE0, GPU_PRIMARY_COLOR, GPU_PRIMARY_COLOR);
-    const func = if (DEBUG_TEXTURE_ONLY) GPU_REPLACE else GPU_MODULATE;
+    const func = if (DEBUG_COLOR_ONLY or DEBUG_TEXTURE_ONLY) GPU_REPLACE else GPU_MODULATE;
 
     env.* = .{
         .srcRgb = src,
@@ -820,15 +842,95 @@ fn find_attr(layout: Pipeline.VertexLayout, usage: Pipeline.AttributeUsage) ?Pip
     return null;
 }
 
-fn direct_layout_supported(stride: usize, position_attr: Pipeline.Attribute, uv_attr: Pipeline.Attribute, color_attr: Pipeline.Attribute) bool {
-    return attr_fits(stride, position_attr) and
-        attr_fits(stride, uv_attr) and
-        attr_fits(stride, color_attr);
+const BufferLayout = struct {
+    base_offset: usize,
+    attribute_count: u8,
+    permutation: u64,
+    position_loader_size: u8,
+    uv_loader_size: u8,
+    color_loader_size: u8,
+};
+
+fn buffer_layout_from_attrs(stride: usize, position_attr: Pipeline.Attribute, uv_attr: Pipeline.Attribute, color_attr: Pipeline.Attribute) ?BufferLayout {
+    var attrs = [_]Pipeline.Attribute{ position_attr, uv_attr, color_attr };
+    sort_attrs_by_offset(&attrs);
+
+    const base_offset = attrs[0].offset;
+    var current_rel: usize = 0;
+    var attribute_count: usize = 0;
+    var permutation: u64 = 0;
+    var position_loader_size: u8 = 0;
+    var uv_loader_size: u8 = 0;
+    var color_loader_size: u8 = 0;
+
+    for (attrs, 0..) |attr, i| {
+        if (!attr_fits(stride, attr)) return null;
+        if (attr.offset < base_offset) return null;
+        const rel_offset = attr.offset - base_offset;
+        if (rel_offset != current_rel) return null;
+        const next_offset = if (i + 1 < attrs.len) attrs[i + 1].offset else stride;
+        if (next_offset < attr.offset) return null;
+        const loader_size = attribute_loader_size(attr, next_offset - attr.offset) orelse return null;
+        const loaded_bytes = attribute_size_bytes_with_count(attr.format, loader_size) orelse return null;
+        if (loaded_bytes > next_offset - attr.offset) return null;
+        if (i + 1 < attrs.len and loaded_bytes != next_offset - attr.offset) return null;
+        const shift: u6 = @intCast(attribute_count * 4);
+        permutation |= attribute_loader_id(attr.usage) << shift;
+        attribute_count += 1;
+        switch (attr.usage) {
+            .position => position_loader_size = loader_size,
+            .uv => uv_loader_size = loader_size,
+            .color => color_loader_size = loader_size,
+            .normal => unreachable,
+        }
+        current_rel = rel_offset + loaded_bytes;
+    }
+
+    if (stride < current_rel) return null;
+    if (position_loader_size == 0 or uv_loader_size == 0 or color_loader_size == 0) return null;
+
+    return .{
+        .base_offset = base_offset,
+        .attribute_count = @intCast(attribute_count),
+        .permutation = permutation,
+        .position_loader_size = position_loader_size,
+        .uv_loader_size = uv_loader_size,
+        .color_loader_size = color_loader_size,
+    };
+}
+
+fn sort_attrs_by_offset(attrs: *[3]Pipeline.Attribute) void {
+    var i: usize = 1;
+    while (i < attrs.len) : (i += 1) {
+        var j = i;
+        while (j > 0 and attrs[j - 1].offset > attrs[j].offset) : (j -= 1) {
+            const tmp = attrs[j - 1];
+            attrs[j - 1] = attrs[j];
+            attrs[j] = tmp;
+        }
+    }
+}
+
+fn attribute_loader_id(usage: Pipeline.AttributeUsage) u64 {
+    return switch (usage) {
+        .position => 0,
+        .uv => 1,
+        .color => 2,
+        .normal => unreachable,
+    };
 }
 
 fn attr_fits(stride: usize, attr: Pipeline.Attribute) bool {
     const size = attribute_size_bytes(attr.format);
     return attr.offset <= stride and size <= stride - attr.offset;
+}
+
+fn attribute_loader_size(attr: Pipeline.Attribute, available_bytes: usize) ?u8 {
+    if (attr.usage == .position and attr.size == 3 and attribute_component_size_bytes(attr.format) == 2 and available_bytes >= 8) {
+        return 4;
+    }
+    if (attr.size > 4) return null;
+    return @intCast(attr.size);
 }
 
 fn attribute_size_bytes(format: Pipeline.AttributeFormat) usize {
@@ -839,6 +941,19 @@ fn attribute_size_bytes(format: Pipeline.AttributeFormat) usize {
         .unorm8x4 => 4,
         .unorm16x2, .snorm16x2 => 4,
         .unorm16x3, .snorm16x3 => 6,
+    };
+}
+
+fn attribute_size_bytes_with_count(format: Pipeline.AttributeFormat, count: u8) ?usize {
+    if (count == 0 or count > 4) return null;
+    return attribute_component_size_bytes(format) * @as(usize, count);
+}
+
+fn attribute_component_size_bytes(format: Pipeline.AttributeFormat) usize {
+    return switch (format) {
+        .f32x2, .f32x3 => 4,
+        .unorm8x2, .unorm8x4 => 1,
+        .unorm16x2, .unorm16x3, .snorm16x2, .snorm16x3 => 2,
     };
 }
 
@@ -913,15 +1028,26 @@ fn tex_init(tex: *C3D_Tex, width: u16, height: u16, vram: bool) bool {
 }
 
 fn tex_upload(tex: *C3D_Tex, data: []align(16) const u8) void {
-    _ = GSPGPU_FlushDataCache(data.ptr, @intCast(data.len));
+    flush_data_cache_range(data.ptr, data.len);
     C3D_TexLoadImage(tex, data.ptr, GPU_TEXFACE_2D, 0);
+}
+
+fn flush_data_cache_range(ptr: *const anyopaque, len: usize) void {
+    if (len == 0) return;
+
+    const start = @intFromPtr(ptr);
+    const aligned_start = std.mem.alignBackward(usize, start, DATA_CACHE_LINE_SIZE);
+    const aligned_end = std.mem.alignForward(usize, start + len, DATA_CACHE_LINE_SIZE);
+    const aligned_len = aligned_end - aligned_start;
+    const aligned_ptr: *const anyopaque = @ptrFromInt(aligned_start);
+    _ = GSPGPU_FlushDataCache(aligned_ptr, @intCast(aligned_len));
 }
 
 fn tex_set_default_params(tex: *C3D_Tex) void {
     tex.param &= ~(gpu_texture_mag_filter(GPU_LINEAR) | gpu_texture_min_filter(GPU_LINEAR));
     tex.param |= gpu_texture_mag_filter(GPU_NEAREST) | gpu_texture_min_filter(GPU_NEAREST);
     tex.param &= ~(gpu_texture_wrap_s(3) | gpu_texture_wrap_t(3));
-    tex.param |= gpu_texture_wrap_s(GPU_REPEAT) | gpu_texture_wrap_t(GPU_REPEAT);
+    tex.param |= gpu_texture_wrap_s(GPU_CLAMP_TO_EDGE) | gpu_texture_wrap_t(GPU_CLAMP_TO_EDGE);
 }
 
 fn tex_init_params(width: u16, height: u16, max_level: u8, format: u8, tex_type: u8, vram: bool) u64 {
