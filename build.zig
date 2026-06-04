@@ -1259,8 +1259,8 @@ pub fn addShader(owner: *std.Build, b: *std.Build, exe: *std.Build.Step.Compile,
             \\.out outclr color
             \\
             \\.alias inpos v0
-            \\.alias inuv v1
-            \\.alias inclr v2
+            \\.alias inclr v1
+            \\.alias inuv v2
             \\
             \\.proc main
             \\    mul r0.xyz, posScale, inpos
