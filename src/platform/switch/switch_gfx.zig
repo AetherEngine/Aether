@@ -8,7 +8,7 @@ const std = @import("std");
 const Util = @import("../../util/util.zig");
 const Mat4 = @import("../../math/math.zig").Mat4;
 const Rendering = @import("../../rendering/rendering.zig");
-const Pipeline = Rendering.Pipeline;
+const vertex = Rendering.vertex;
 const Mesh = Rendering.mesh;
 const Texture = Rendering.Texture;
 const gfx = @import("../gfx.zig");
@@ -267,7 +267,6 @@ const PipelineData = struct {
 };
 
 const MeshData = struct {
-    pipeline: Pipeline.Handle,
     mem_block: DkMemBlock = null,
     gpu_addr: DkGpuAddr = 0,
     capacity: u32 = 0,
@@ -287,10 +286,10 @@ var command_buffer: DkCmdBuf = null;
 var code_mem: DkMemBlock = null;
 var code_offset: u32 = 0;
 
-var pipelines = Util.CircularBuffer(PipelineData, 16).init();
 var meshes = Util.CircularBuffer(MeshData, 8192).init();
+var render_pipeline: PipelineData = undefined;
 
-var current_pipeline: Pipeline.Handle = 0;
+var render_pipeline_initialized = false;
 var current_slot: c_int = -1;
 var initialized: bool = false;
 var clear_color: [4]f32 = .{ 0.0, 0.0, 0.0, 1.0 };
@@ -325,6 +324,9 @@ pub fn init() anyerror!void {
     try create_code_memory();
     errdefer destroy_code_memory();
 
+    render_pipeline = try init_pipeline(vertex.Layout);
+    render_pipeline_initialized = true;
+
     try create_command_buffer();
     errdefer destroy_command_buffer();
 
@@ -347,8 +349,7 @@ pub fn deinit() void {
     if (render_queue) |_| dkQueueWaitIdle(render_queue);
 
     destroy_all_meshes();
-    pipelines.clear();
-    current_pipeline = 0;
+    render_pipeline_initialized = false;
 
     if (render_queue) |_| {
         dkQueueDestroy(render_queue);
@@ -440,7 +441,7 @@ pub fn set_vsync(v: bool) void {
     if (swapchain) |_| dkSwapchainSetSwapInterval(swapchain, @intFromBool(v));
 }
 
-pub fn create_pipeline(layout: Pipeline.VertexLayout) anyerror!Pipeline.Handle {
+fn init_pipeline(layout: vertex.VertexLayout) !PipelineData {
     const vertex_code: [:0]align(4) const u8 = &shader_data.basic_vert;
     const fragment_code: [:0]align(4) const u8 = &shader_data.basic_frag;
 
@@ -457,22 +458,11 @@ pub fn create_pipeline(layout: Pipeline.VertexLayout) anyerror!Pipeline.Handle {
     try load_shader(&data.vertex_shader, vertex_code);
     try load_shader(&data.fragment_shader, fragment_code);
 
-    const pipeline = pipelines.add_element(data) orelse return error.OutOfPipelines;
-    return @intCast(pipeline);
+    return data;
 }
 
-pub fn destroy_pipeline(pipeline: Pipeline.Handle) void {
-    _ = pipelines.remove_element(pipeline);
-    if (current_pipeline == pipeline) current_pipeline = 0;
-}
-
-pub fn bind_pipeline(pipeline: Pipeline.Handle) void {
-    current_pipeline = pipeline;
-}
-
-pub fn create_mesh(pipeline: Pipeline.Handle) anyerror!Mesh.Handle {
-    _ = pipelines.get_element(pipeline) orelse return error.InvalidPipeline;
-    const mesh = meshes.add_element(.{ .pipeline = pipeline }) orelse return error.OutOfMeshes;
+pub fn create_mesh() anyerror!Mesh.Handle {
+    const mesh = meshes.add_element(.{}) orelse return error.OutOfMeshes;
     return @intCast(mesh);
 }
 
@@ -517,12 +507,11 @@ pub fn update_mesh(handle: Mesh.Handle, data: []const u8) void {
 }
 
 pub fn draw_mesh(handle: Mesh.Handle, _: *const Mat4, count: usize) void {
-    if (!initialized or command_buffer == null) return;
+    if (!initialized or !render_pipeline_initialized or command_buffer == null) return;
     const mesh = meshes.get_element(handle) orelse return;
     if (mesh.mem_block == null or mesh.size == 0 or count == 0) return;
 
-    const pipeline_handle = if (current_pipeline != 0) current_pipeline else mesh.pipeline;
-    const pl = pipelines.get_element(pipeline_handle) orelse return;
+    const pl = &render_pipeline;
 
     const shaders = [_]*const DkShader{ &pl.vertex_shader, &pl.fragment_shader };
     dkCmdBufBindShaders(command_buffer, DK_STAGE_GRAPHICS_MASK, shaders[0..].ptr, shaders.len);
@@ -684,7 +673,7 @@ fn load_shader(shader: *DkShader, code: []const u8) !void {
     code_offset = end;
 }
 
-fn init_layout(data: *PipelineData, layout: Pipeline.VertexLayout) !void {
+fn init_layout(data: *PipelineData, layout: vertex.VertexLayout) !void {
     var max_location: u32 = 0;
     var max_binding: u32 = 0;
 
@@ -707,7 +696,7 @@ fn init_layout(data: *PipelineData, layout: Pipeline.VertexLayout) !void {
     data.vtx_buffer_count = @max(max_binding, 1);
 }
 
-fn vtxAttrib(attr: Pipeline.Attribute) DkVtxAttribState {
+fn vtxAttrib(attr: vertex.Attribute) DkVtxAttribState {
     const Format = struct {
         size: u32,
         kind: u32,

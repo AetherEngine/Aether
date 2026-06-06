@@ -1,15 +1,15 @@
 const std = @import("std");
-const Util = @import("../../../util/util.zig");
 const glfw = @import("glfw");
 const gl = @import("gl");
 const Mat4 = @import("../../../math/math.zig").Mat4;
+const Util = @import("../../../util/util.zig");
 
 const shader = @import("shader.zig");
 const gfx = @import("../../gfx.zig");
 
 const Rendering = @import("../../../rendering/rendering.zig");
 const Mesh = Rendering.mesh;
-const Pipeline = Rendering.Pipeline;
+const vertex = Rendering.vertex;
 const Texture = Rendering.Texture;
 const GLFWSurface = @import("../surface.zig");
 const shaders = @import("aether_shaders");
@@ -25,19 +25,19 @@ pub fn setup(alloc: std.mem.Allocator, io: std.Io) void {
 var procs: gl.ProcTable = undefined;
 var last_width: u32 = 0;
 var last_height: u32 = 0;
-var pipelines = Util.CircularBuffer(PipelineData, 16).init();
 var meshes = Util.CircularBuffer(MeshInternal, 8192).init();
 var alpha_blend_enabled: bool = true;
 var cull_face_enabled: bool = true;
+var pipeline: PipelineData = undefined;
+var pipeline_initialized: bool = false;
 
 const PipelineData = struct {
-    layout: Pipeline.VertexLayout,
+    layout: vertex.VertexLayout,
     vao: gl.uint,
     program: shader.Shader,
 };
 
 const MeshInternal = struct {
-    pipeline: Pipeline.Handle,
     vbo: gl.uint,
 };
 
@@ -61,12 +61,21 @@ pub fn init() anyerror!void {
     gl.LineWidth(5.0);
 
     try shader.init();
+    errdefer shader.deinit();
+
     shader.state.proj = Mat4.identity();
     shader.state.view = Mat4.identity();
     shader.update_ubo();
+
+    pipeline = try init_pipeline(vertex.Layout);
+    pipeline_initialized = true;
 }
 
 pub fn deinit() void {
+    if (pipeline_initialized) {
+        deinit_pipeline(&pipeline);
+        pipeline_initialized = false;
+    }
     shader.deinit();
 
     gl.makeProcTableCurrent(null);
@@ -161,7 +170,7 @@ pub fn set_view_matrix(mat: *const Mat4) void {
     shader.update_ubo();
 }
 
-pub fn create_pipeline(layout: Pipeline.VertexLayout) anyerror!Pipeline.Handle {
+fn init_pipeline(layout: vertex.VertexLayout) !PipelineData {
     var vao: gl.uint = 0;
     gl.CreateVertexArrays(1, @ptrCast(&vao));
     for (layout.attributes) |a| {
@@ -183,39 +192,25 @@ pub fn create_pipeline(layout: Pipeline.VertexLayout) anyerror!Pipeline.Handle {
     const f_shader: [:0]align(4) const u8 = &shaders.basic_frag;
     const program = try shader.Shader.init(v_shader, f_shader);
 
-    const pipeline = pipelines.add_element(.{
+    return .{
         .layout = layout,
         .vao = vao,
         .program = program,
-    }) orelse return error.OutOfPipelines;
-
-    return @intCast(pipeline);
+    };
 }
 
-pub fn bind_pipeline(pipeline: Pipeline.Handle) void {
-    const pl = pipelines.get_element(pipeline) orelse return;
-    gl.BindVertexArray(pl.vao);
-    gl.UseProgram(pl.program.shader_program);
-}
-
-pub fn destroy_pipeline(pipeline: Pipeline.Handle) void {
-    var pl = pipelines.get_element(pipeline) orelse return;
+fn deinit_pipeline(pl: *PipelineData) void {
     gl.DeleteVertexArrays(1, @ptrCast(&pl.vao));
     pl.vao = 0;
     pl.program.deinit();
-
-    _ = pipelines.remove_element(pipeline);
 }
 
-pub fn create_mesh(pipeline: Pipeline.Handle) anyerror!Mesh.Handle {
-    const pl = pipelines.get_element(pipeline).?;
+pub fn create_mesh() anyerror!Mesh.Handle {
     var vbo: gl.uint = 0;
     gl.CreateBuffers(1, @ptrCast(&vbo));
     gl.NamedBufferData(vbo, 0, null, gl.STATIC_DRAW);
-    gl.VertexArrayVertexBuffer(pl.vao, 0, vbo, 0, @intCast(pl.layout.stride));
 
     const mesh_idx = meshes.add_element(.{
-        .pipeline = pipeline,
         .vbo = vbo,
     }) orelse return error.OutOfMeshes;
 
@@ -238,10 +233,13 @@ pub fn update_mesh(handle: Mesh.Handle, data: []const u8) void {
 }
 
 pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize) void {
+    if (!pipeline_initialized) return;
     const mesh = meshes.get_element(handle) orelse return;
-    const pl = pipelines.get_element(mesh.pipeline) orelse return;
+    const pl = &pipeline;
 
     shader.update_per_object(model);
+    gl.BindVertexArray(pl.vao);
+    gl.UseProgram(pl.program.shader_program);
     gl.VertexArrayVertexBuffer(pl.vao, 0, mesh.vbo, 0, @intCast(pl.layout.stride));
     gl.DrawArrays(gl.TRIANGLES, 0, @intCast(count));
 }

@@ -48,20 +48,7 @@ fn psp_cwd() std.Io.Dir {
     return .{ .handle = -1 };
 }
 
-const Vertex = extern struct {
-    uv: [2]i16,
-    color: u32,
-    pos: [3]i16,
-    _pad: i16 = 0,
-
-    pub const Attributes = Rendering.Pipeline.attributes_from_struct(@This(), &[_]Rendering.Pipeline.AttributeSpec{
-        .{ .field = "pos", .location = 0, .usage = .position },
-        .{ .field = "color", .location = 1, .usage = .color },
-        .{ .field = "uv", .location = 2, .usage = .uv },
-    });
-    pub const Layout = Rendering.Pipeline.layout_from_struct(@This(), &Attributes);
-};
-
+const Vertex = Rendering.Vertex;
 const MyMesh = Rendering.Mesh(Vertex);
 
 const BATCH_A_TRIANGLES = 61;
@@ -294,12 +281,11 @@ const MyState = struct {
 
     fn init(ctx: *anyopaque, engine: *ae.Engine) anyerror!void {
         var self = ae.ctx_to_self(MyState, ctx);
-        pipeline = try Rendering.Pipeline.new(Vertex.Layout);
 
         const render = engine.allocator(.render);
 
-        self.batch_a = try MyMesh.new(render, pipeline);
-        self.batch_b = try MyMesh.new(render, pipeline);
+        self.batch_a = try MyMesh.new(render);
+        self.batch_b = try MyMesh.new(render);
         self.batch_a_transform = Rendering.Transform.new();
         self.batch_b_transform = Rendering.Transform.new();
 
@@ -341,7 +327,6 @@ const MyState = struct {
         self.texture.deinit(render);
         self.batch_b.deinit(render);
         self.batch_a.deinit(render);
-        Rendering.Pipeline.deinit(pipeline);
     }
 
     fn tick(ctx: *anyopaque, _: *ae.Engine) anyerror!void {
@@ -400,7 +385,6 @@ const MyState = struct {
             1,
         ));
 
-        Rendering.Pipeline.bind(pipeline);
         Rendering.gfx.api.set_depth_write(false);
         self.texture.bind();
         self.batch_b.draw(&self.batch_b_transform.get_matrix());
@@ -418,8 +402,6 @@ const MyState = struct {
         } };
     }
 };
-
-var pipeline: Rendering.Pipeline.Handle = undefined;
 
 pub fn main(init: std.process.Init) !void {
     const mib = 1024 * 1024;

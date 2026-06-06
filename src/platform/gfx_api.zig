@@ -1,7 +1,6 @@
 const std = @import("std");
 const Mat4 = @import("../math/math.zig").Mat4;
 const Rendering = @import("../rendering/rendering.zig");
-const Pipeline = Rendering.Pipeline;
 const Mesh = Rendering.mesh;
 const Texture = Rendering.Texture;
 
@@ -31,11 +30,7 @@ pub const Interface = struct {
 
     set_vsync: fn (bool) void,
 
-    create_pipeline: fn (Pipeline.VertexLayout) anyerror!Pipeline.Handle,
-    destroy_pipeline: fn (Pipeline.Handle) void,
-    bind_pipeline: fn (Pipeline.Handle) void,
-
-    create_mesh: fn (Pipeline.Handle) anyerror!Mesh.Handle,
+    create_mesh: fn () anyerror!Mesh.Handle,
     destroy_mesh: fn (Mesh.Handle) void,
     update_mesh: fn (Mesh.Handle, []const u8) void,
     draw_mesh: fn (Mesh.Handle, *const Mat4, usize) void,

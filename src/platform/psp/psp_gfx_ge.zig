@@ -9,7 +9,7 @@ const std = @import("std");
 const Util = @import("../../util/util.zig");
 const Mat4 = @import("../../math/math.zig").Mat4;
 const Rendering = @import("../../rendering/rendering.zig");
-const Pipeline = Rendering.Pipeline;
+const vertex = Rendering.vertex;
 const Mesh = Rendering.mesh;
 const Texture = Rendering.Texture;
 
@@ -113,7 +113,7 @@ const frame_bpp: u32 = switch (options.config.psp_display_mode) {
 
 const VertexType = sdk.VertexType;
 
-// ---- pipeline cache --------------------------------------------------------
+// ---- vertex pipeline -------------------------------------------------------
 
 const PipelineData = struct {
     vertex_type: VertexType,
@@ -124,8 +124,7 @@ const PipelineData = struct {
     uv_unorm8: bool,
 };
 
-var pipelines = Util.CircularBuffer(PipelineData, 16).init();
-var bound_pipeline: Pipeline.Handle = 0;
+var render_pipeline: PipelineData = undefined;
 var alpha_blend_enabled: bool = true;
 var clip_planes_enabled: bool = false;
 var fog_enabled: bool = false;
@@ -545,6 +544,7 @@ fn emit_depth_range(near_value: u16, far_value: u16) void {
 // ---- engine state ----------------------------------------------------------
 
 pub fn init() anyerror!void {
+    render_pipeline = init_pipeline(vertex.Layout);
     clear_color = 0x000000;
 
     swapchain.init();
@@ -855,9 +855,9 @@ pub fn set_vsync(v: bool) void {
     gfx.surface.sync = v;
 }
 
-// ---- pipelines -------------------------------------------------------------
+// ---- meshes ---------------------------------------------------------------
 
-pub fn create_pipeline(layout: Pipeline.VertexLayout) anyerror!Pipeline.Handle {
+fn init_pipeline(layout: vertex.VertexLayout) PipelineData {
     var vtype = VertexType{
         .vertex = .Vertex32Bitf, // default, overridden by position attribute
         .transform = .Transform3D,
@@ -895,36 +895,22 @@ pub fn create_pipeline(layout: Pipeline.VertexLayout) anyerror!Pipeline.Handle {
         }
     }
 
-    const handle = pipelines.add_element(.{
+    return .{
         .vertex_type = vtype,
         .stride = layout.stride,
         .uv_unorm8 = uv_unorm8,
-    }) orelse return error.OutOfPipelines;
-
-    return @intCast(handle);
+    };
 }
-
-pub fn destroy_pipeline(handle: Pipeline.Handle) void {
-    _ = pipelines.remove_element(handle);
-}
-
-pub fn bind_pipeline(handle: Pipeline.Handle) void {
-    bound_pipeline = handle;
-}
-
-// ---- meshes ---------------------------------------------------------------
 
 const MeshData = struct {
-    pipeline: Pipeline.Handle,
     data: ?[*]const u8,
     len: usize,
 };
 
 var meshes = Util.CircularBuffer(MeshData, 2048).init();
 
-pub fn create_mesh(pipeline: Pipeline.Handle) anyerror!Mesh.Handle {
+pub fn create_mesh() anyerror!Mesh.Handle {
     const handle = meshes.add_element(.{
-        .pipeline = pipeline,
         .data = null,
         .len = 0,
     }) orelse return error.OutOfMeshes;
@@ -948,7 +934,7 @@ pub fn update_mesh(handle: Mesh.Handle, data: []const u8) void {
 
 pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize) void {
     const mesh = meshes.get_element(handle) orelse return;
-    const pl = pipelines.get_element(mesh.pipeline) orelse return;
+    const pl = &render_pipeline;
     const data = mesh.data orelse return;
 
     must(cmd.world_matrix(mat4_as_floats(model)));

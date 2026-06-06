@@ -4,7 +4,7 @@ const std = @import("std");
 const Util = @import("../../util/util.zig");
 const Mat4 = @import("../../math/math.zig").Mat4;
 const Rendering = @import("../../rendering/rendering.zig");
-const Pipeline = Rendering.Pipeline;
+const vertex = Rendering.vertex;
 const Mesh = Rendering.mesh;
 const Texture = Rendering.Texture;
 const shaders = @import("aether_shaders");
@@ -97,7 +97,6 @@ const PipelineData = struct {
 };
 
 const MeshData = struct {
-    pipeline: Pipeline.Handle,
     slots: [MESH_SLOT_COUNT]MeshSlot = .{ .{}, .{} },
     latest_slot: ?usize = null,
     len: usize,
@@ -166,10 +165,11 @@ const RenderTargetMirror = extern struct {
     frame_buf: FrameBufMirror,
 };
 
-var pipelines = Util.CircularBuffer(PipelineData, 16).init();
 var meshes = Util.CircularBuffer(MeshData, 2048).init();
 var deferred_mesh_frees = Util.CircularBuffer(DeferredMeshFree, MAX_DEFERRED_MESH_FREES + 1).init();
 var textures = Util.CircularBuffer(TextureData, 64).init();
+var render_pipeline: PipelineData = undefined;
+var render_pipeline_initialized = false;
 
 var target: ?*c.C3D_RenderTarget = null;
 var projection_transform: c.C3D_Mtx = undefined;
@@ -185,7 +185,6 @@ var fog_enabled = false;
 var uv_offset: [2]f32 = .{ 0.0, 0.0 };
 var proj_matrix: Mat4 = Mat4.identity();
 var view_matrix: Mat4 = Mat4.identity();
-var bound_pipeline: Pipeline.Handle = 0;
 var bound_texture: Texture.Handle = 0;
 
 pub fn init() anyerror!void {
@@ -215,6 +214,8 @@ pub fn init() anyerror!void {
 
     c.C3D_RenderTargetSetOutput(target, c.GFX_TOP, c.GFX_LEFT, DISPLAY_TRANSFER_FLAGS);
     init_projection_transform();
+    render_pipeline = try init_pipeline(vertex.Layout);
+    render_pipeline_initialized = true;
 
     initialized = true;
     frame_started = false;
@@ -236,13 +237,10 @@ pub fn deinit() void {
     }
     textures.clear();
 
-    for (1..pipelines.buffer.len) |i| {
-        if (pipelines.buffer[i]) |*pl| {
-            _ = c.shaderProgramFree(&pl.program);
-            c.DVLB_Free(pl.dvlb);
-        }
+    if (render_pipeline_initialized) {
+        deinit_pipeline(&render_pipeline);
+        render_pipeline_initialized = false;
     }
-    pipelines.clear();
 
     for (1..meshes.buffer.len) |i| {
         if (meshes.buffer[i]) |*mesh| {
@@ -375,7 +373,7 @@ pub fn set_vsync(v: bool) void {
     vsync_enabled = v;
 }
 
-pub fn create_pipeline(layout: Pipeline.VertexLayout) anyerror!Pipeline.Handle {
+fn init_pipeline(layout: vertex.VertexLayout) !PipelineData {
     const code: [:0]align(4) const u8 = &shaders.basic_vert;
     if (layout.stride == 0 or layout.attributes.len > MAX_VERTEX_ATTRS) return error.UnsupportedVertexLayout;
 
@@ -407,7 +405,7 @@ pub fn create_pipeline(layout: Pipeline.VertexLayout) anyerror!Pipeline.Handle {
     if (add_attr_loader(&attr_info, 1, uv_attr, buffer_layout.uv_loader_size) < 0) return error.UnsupportedVertexLayout;
     if (add_attr_loader(&attr_info, 2, color_attr, buffer_layout.color_loader_size) < 0) return error.UnsupportedVertexLayout;
 
-    const handle = pipelines.add_element(.{
+    return .{
         .dvlb = dvlb,
         .program = program,
         .attr_info = attr_info,
@@ -426,29 +424,16 @@ pub fn create_pipeline(layout: Pipeline.VertexLayout) anyerror!Pipeline.Handle {
         .u_pos_scale = c.shaderInstanceGetUniformLocation(program.vertexShader, "posScale"),
         .u_uv_scale_offset = c.shaderInstanceGetUniformLocation(program.vertexShader, "uvScaleOffset"),
         .u_color_scale = c.shaderInstanceGetUniformLocation(program.vertexShader, "colorScale"),
-    }) orelse return error.OutOfPipelines;
-
-    return @intCast(handle);
+    };
 }
 
-pub fn destroy_pipeline(handle: Pipeline.Handle) void {
-    if (pipeline_slot(handle)) |pl| {
-        _ = c.shaderProgramFree(&pl.program);
-        c.DVLB_Free(pl.dvlb);
-    }
-    if (bound_pipeline == handle) bound_pipeline = 0;
-    _ = pipelines.remove_element(handle);
+fn deinit_pipeline(pl: *PipelineData) void {
+    _ = c.shaderProgramFree(&pl.program);
+    c.DVLB_Free(pl.dvlb);
 }
 
-pub fn bind_pipeline(handle: Pipeline.Handle) void {
-    bound_pipeline = handle;
-    if (pipeline_slot(handle)) |pl| bind_pipeline_data(pl);
-}
-
-pub fn create_mesh(pipeline: Pipeline.Handle) anyerror!Mesh.Handle {
-    if (pipeline_slot(pipeline) == null) return error.InvalidPipeline;
+pub fn create_mesh() anyerror!Mesh.Handle {
     const handle = meshes.add_element(.{
-        .pipeline = pipeline,
         .len = 0,
     }) orelse return error.OutOfMeshes;
 
@@ -490,8 +475,9 @@ pub fn update_mesh(handle: Mesh.Handle, data: []const u8) void {
 }
 
 pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize) void {
+    if (!render_pipeline_initialized) return;
     const mesh = mesh_slot(handle) orelse return;
-    const pl = pipeline_slot(mesh.pipeline) orelse return;
+    const pl = &render_pipeline;
     const slot_idx = mesh.latest_slot orelse return;
     const slot = &mesh.slots[slot_idx];
     const data = slot.data orelse return;
@@ -500,7 +486,7 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize) void {
     const needed = mesh_draw_bytes_needed(pl, count) orelse return;
     if (needed > slot.len) return;
 
-    bind_pipeline_data(pl);
+    bind_vertex_state(pl);
     upload_draw_uniforms(pl, model);
     rebind_texture();
 
@@ -721,7 +707,7 @@ fn texenv_replace_previous(id: c_int) void {
     c.C3D_DirtyTexEnv(env);
 }
 
-fn bind_pipeline_data(pl: *PipelineData) void {
+fn bind_vertex_state(pl: *PipelineData) void {
     c.C3D_BindProgram(&pl.program);
     c.C3D_SetAttrInfo(&pl.attr_info);
 }
@@ -964,13 +950,6 @@ fn target_frame_buf(t: *c.C3D_RenderTarget) *c.C3D_FrameBuf {
     return @ptrCast(&mirror.frame_buf);
 }
 
-fn pipeline_slot(handle: Pipeline.Handle) ?*PipelineData {
-    const idx: usize = handle;
-    if (idx == 0 or idx >= pipelines.buffer.len) return null;
-    if (pipelines.buffer[idx]) |*pl| return pl;
-    return null;
-}
-
 fn mesh_slot(handle: Mesh.Handle) ?*MeshData {
     const idx: usize = handle;
     if (idx == 0 or idx >= meshes.buffer.len) return null;
@@ -985,7 +964,7 @@ fn texture_slot(handle: Texture.Handle) ?*TextureData {
     return null;
 }
 
-fn find_attr(layout: Pipeline.VertexLayout, usage: Pipeline.AttributeUsage) ?Pipeline.Attribute {
+fn find_attr(layout: vertex.VertexLayout, usage: vertex.AttributeUsage) ?vertex.Attribute {
     for (layout.attributes) |attr| {
         if (attr.usage == usage) return attr;
     }
@@ -1002,8 +981,8 @@ const BufferLayout = struct {
     color_loader_size: u8,
 };
 
-fn buffer_layout_from_attrs(stride: usize, position_attr: Pipeline.Attribute, uv_attr: Pipeline.Attribute, color_attr: Pipeline.Attribute) ?BufferLayout {
-    var attrs = [_]Pipeline.Attribute{ position_attr, uv_attr, color_attr };
+fn buffer_layout_from_attrs(stride: usize, position_attr: vertex.Attribute, uv_attr: vertex.Attribute, color_attr: vertex.Attribute) ?BufferLayout {
+    var attrs = [_]vertex.Attribute{ position_attr, uv_attr, color_attr };
     sort_attrs_by_offset(&attrs);
 
     const base_offset = attrs[0].offset;
@@ -1053,7 +1032,7 @@ fn buffer_layout_from_attrs(stride: usize, position_attr: Pipeline.Attribute, uv
     };
 }
 
-fn sort_attrs_by_offset(attrs: *[3]Pipeline.Attribute) void {
+fn sort_attrs_by_offset(attrs: *[3]vertex.Attribute) void {
     var i: usize = 1;
     while (i < attrs.len) : (i += 1) {
         var j = i;
@@ -1065,7 +1044,7 @@ fn sort_attrs_by_offset(attrs: *[3]Pipeline.Attribute) void {
     }
 }
 
-fn attribute_loader_id(usage: Pipeline.AttributeUsage) u64 {
+fn attribute_loader_id(usage: vertex.AttributeUsage) u64 {
     return switch (usage) {
         .position => 0,
         .uv => 1,
@@ -1074,12 +1053,12 @@ fn attribute_loader_id(usage: Pipeline.AttributeUsage) u64 {
     };
 }
 
-fn attr_fits(stride: usize, attr: Pipeline.Attribute) bool {
+fn attr_fits(stride: usize, attr: vertex.Attribute) bool {
     const size = attribute_size_bytes(attr.format);
     return attr.offset <= stride and size <= stride - attr.offset;
 }
 
-fn attribute_loader_size(attr: Pipeline.Attribute, available_bytes: usize) ?u8 {
+fn attribute_loader_size(attr: vertex.Attribute, available_bytes: usize) ?u8 {
     if (attr.usage == .position and attr.size == 3 and attribute_component_size_bytes(attr.format) == 2 and available_bytes >= 8) {
         return 4;
     }
@@ -1087,7 +1066,7 @@ fn attribute_loader_size(attr: Pipeline.Attribute, available_bytes: usize) ?u8 {
     return @intCast(attr.size);
 }
 
-fn attribute_size_bytes(format: Pipeline.AttributeFormat) usize {
+fn attribute_size_bytes(format: vertex.AttributeFormat) usize {
     return switch (format) {
         .f32x2 => 8,
         .f32x3 => 12,
@@ -1098,12 +1077,12 @@ fn attribute_size_bytes(format: Pipeline.AttributeFormat) usize {
     };
 }
 
-fn attribute_size_bytes_with_count(format: Pipeline.AttributeFormat, count: u8) ?usize {
+fn attribute_size_bytes_with_count(format: vertex.AttributeFormat, count: u8) ?usize {
     if (count == 0 or count > 4) return null;
     return attribute_component_size_bytes(format) * @as(usize, count);
 }
 
-fn attribute_component_size_bytes(format: Pipeline.AttributeFormat) usize {
+fn attribute_component_size_bytes(format: vertex.AttributeFormat) usize {
     return switch (format) {
         .f32x2, .f32x3 => 4,
         .unorm8x2, .unorm8x4 => 1,
@@ -1111,7 +1090,7 @@ fn attribute_component_size_bytes(format: Pipeline.AttributeFormat) usize {
     };
 }
 
-fn gpu_format(format: Pipeline.AttributeFormat) c.GPU_FORMATS {
+fn gpu_format(format: vertex.AttributeFormat) c.GPU_FORMATS {
     return switch (format) {
         .f32x2, .f32x3 => c.GPU_FLOAT,
         .unorm8x2, .unorm8x4 => c.GPU_UNSIGNED_BYTE,
@@ -1119,11 +1098,11 @@ fn gpu_format(format: Pipeline.AttributeFormat) c.GPU_FORMATS {
     };
 }
 
-fn add_attr_loader(info: *c.C3D_AttrInfo, reg_id: c_int, attr: Pipeline.Attribute, loader_size: u8) c_int {
+fn add_attr_loader(info: *c.C3D_AttrInfo, reg_id: c_int, attr: vertex.Attribute, loader_size: u8) c_int {
     return c.AttrInfo_AddLoader(info, reg_id, gpu_format(attr.format), loader_size);
 }
 
-fn position_scale(attr: Pipeline.Attribute) ?[4]f32 {
+fn position_scale(attr: vertex.Attribute) ?[4]f32 {
     if (attr.size != 3) return null;
     return switch (attr.format) {
         .f32x3 => .{ 1.0, 1.0, 1.0, 1.0 },
@@ -1132,7 +1111,7 @@ fn position_scale(attr: Pipeline.Attribute) ?[4]f32 {
     };
 }
 
-fn uv_scale(attr: Pipeline.Attribute) ?[2]f32 {
+fn uv_scale(attr: vertex.Attribute) ?[2]f32 {
     if (attr.size != 2) return null;
     return switch (attr.format) {
         .f32x2 => .{ 1.0, 1.0 },
@@ -1142,7 +1121,7 @@ fn uv_scale(attr: Pipeline.Attribute) ?[2]f32 {
     };
 }
 
-fn color_scale(attr: Pipeline.Attribute) ?[4]f32 {
+fn color_scale(attr: vertex.Attribute) ?[4]f32 {
     if (attr.size != 4) return null;
     return switch (attr.format) {
         .unorm8x4 => .{ unorm8_scale(), unorm8_scale(), unorm8_scale(), unorm8_scale() },

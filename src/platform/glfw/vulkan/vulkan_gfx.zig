@@ -15,7 +15,7 @@ const Mat4 = @import("../../../math/math.zig").Mat4;
 const vk = @import("vulkan");
 const gfx = @import("../../gfx.zig");
 const Rendering = @import("../../../rendering/rendering.zig");
-const Pipeline = Rendering.Pipeline;
+const vertex = Rendering.vertex;
 const Mesh = Rendering.mesh;
 const Texture = Rendering.Texture;
 const shaders = @import("aether_shaders");
@@ -34,9 +34,8 @@ pub fn setup(alloc: std.mem.Allocator, io: std.Io) void {
 }
 
 const PipelineData = struct {
-    layout: vk.PipelineLayout,
-    vert_layout: Pipeline.VertexLayout,
-    pipeline: vk.Pipeline,
+    layout: vk.PipelineLayout = .null_handle,
+    pipeline: vk.Pipeline = .null_handle,
 };
 
 const MAX_FRAMES = 3;
@@ -46,7 +45,6 @@ const MeshData = struct {
     memories: [MAX_FRAMES]vk.DeviceMemory = @splat(.null_handle),
     mapped: [MAX_FRAMES]?[*]u8 = @splat(null),
     capacity: usize = 0,
-    pipeline: Pipeline.Handle = 0,
     built: bool = false,
 };
 
@@ -116,8 +114,8 @@ var tex_sampler: vk.Sampler = .null_handle;
 const TextureRec = struct { image: vk.Image, memory: vk.DeviceMemory, view: vk.ImageView, width: u32, height: u32 };
 var textures = Util.CircularBuffer(TextureRec, TEXTURE_CAP).init();
 
-var pipelines = Util.CircularBuffer(PipelineData, 16).init();
 var meshes = Util.CircularBuffer(MeshData, 8192).init();
+var render_pipeline: PipelineData = .{};
 
 var swap_state: Swapchain.PresentState = .optimal;
 var alpha_blend_enabled: bool = true;
@@ -438,6 +436,7 @@ pub fn init() anyerror!void {
     try create_texture_set_layout();
     try create_texture_descriptor_pool_and_set(4096);
     try create_texture_sampler();
+    render_pipeline = try init_pipeline(vertex.Layout);
 
     GLFWSurface.on_resize = resize_flag;
 }
@@ -450,6 +449,7 @@ pub fn deinit() void {
     GLFWSurface.on_resize = null;
     context.logical_device.deviceWaitIdle() catch {};
 
+    deinit_pipeline(&render_pipeline);
     destroy_texture_sampler();
     destroy_texture_descriptor_pool_and_set();
     destroy_texture_set_layout();
@@ -752,7 +752,7 @@ fn flush_camera_if_dirty() void {
     camera_dirty = false;
 }
 
-pub fn create_pipeline(layout: Pipeline.VertexLayout) anyerror!Pipeline.Handle {
+fn init_pipeline(layout: vertex.VertexLayout) !PipelineData {
     const vs: [:0]align(4) const u8 = &shaders.basic_vert;
     const fs: [:0]align(4) const u8 = &shaders.basic_frag;
 
@@ -770,16 +770,19 @@ pub fn create_pipeline(layout: Pipeline.VertexLayout) anyerror!Pipeline.Handle {
         .push_constant_range_count = 1,
         .p_push_constant_ranges = @ptrCast(&range),
     }, null);
+    errdefer context.logical_device.destroyPipelineLayout(pl, null);
 
     const vert = try context.logical_device.createShaderModule(&.{
         .code_size = vs.len,
         .p_code = @ptrCast(@alignCast(vs.ptr)),
     }, null);
+    defer context.logical_device.destroyShaderModule(vert, null);
 
     const frag = try context.logical_device.createShaderModule(&.{
         .code_size = fs.len,
         .p_code = @ptrCast(@alignCast(fs.ptr)),
     }, null);
+    defer context.logical_device.destroyShaderModule(frag, null);
 
     const pipeline_shade_stage_create_info = [_]vk.PipelineShaderStageCreateInfo{
         .{
@@ -956,38 +959,24 @@ pub fn create_pipeline(layout: Pipeline.VertexLayout) anyerror!Pipeline.Handle {
         return error.PipelineCreationFailed;
     }
 
-    const p_handle = pipelines.add_element(.{
+    return .{
         .layout = pl,
-        .vert_layout = layout,
         .pipeline = pipeline,
-    }) orelse return error.OutOfPipelines;
-
-    return @intCast(p_handle);
+    };
 }
 
-pub fn destroy_pipeline(handle: Pipeline.Handle) void {
-    context.logical_device.deviceWaitIdle() catch {};
-    const pd = pipelines.get_element(handle) orelse return;
-
-    context.logical_device.destroyPipeline(pd.pipeline, null);
-    context.logical_device.destroyPipelineLayout(pd.layout, null);
-
-    _ = pipelines.remove_element(handle);
+fn deinit_pipeline(pd: *PipelineData) void {
+    if (pd.pipeline != .null_handle) {
+        context.logical_device.destroyPipeline(pd.pipeline, null);
+    }
+    if (pd.layout != .null_handle) {
+        context.logical_device.destroyPipelineLayout(pd.layout, null);
+    }
+    pd.* = .{};
 }
 
-pub fn bind_pipeline(handle: Pipeline.Handle) void {
-    const pd = pipelines.get_element(handle) orelse return;
-
-    command_buffer.bindPipeline(.graphics, pd.pipeline);
-    // Descriptor sets are (re)bound per draw in draw_mesh because the
-    // dynamic UBO offset can change as the user swaps projection/view
-    // matrices mid-frame.
-}
-
-pub fn create_mesh(pipeline: Pipeline.Handle) anyerror!Mesh.Handle {
-    const m_handle = meshes.add_element(.{
-        .pipeline = pipeline,
-    }) orelse return error.OutOfMeshes;
+pub fn create_mesh() anyerror!Mesh.Handle {
+    const m_handle = meshes.add_element(.{}) orelse return error.OutOfMeshes;
     return @intCast(m_handle);
 }
 
@@ -1062,9 +1051,11 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize) void {
     draw_state.mat = model.*;
 
     const m_data = meshes.get_element(handle) orelse return;
-    const p_data = pipelines.get_element(m_data.pipeline) orelse return;
+    if (render_pipeline.pipeline == .null_handle) return;
+    const p_data = &render_pipeline;
 
     flush_camera_if_dirty();
+    command_buffer.bindPipeline(.graphics, p_data.pipeline);
 
     const sets = [_]vk.DescriptorSet{
         descriptor_sets[swapchain.image_index],
