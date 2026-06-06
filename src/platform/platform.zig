@@ -30,6 +30,7 @@ pub fn update(engine: *Engine) void {
     if (!gfx.surface.update()) {
         // Window should close
         engine.running = false;
+        return;
     }
     audio.update();
 }
