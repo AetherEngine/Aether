@@ -1,6 +1,9 @@
 const std = @import("std");
 const pspsdk = @import("pspsdk");
 
+const DEFAULT_3DS_HEAP_SIZE: u32 = 48 * 1024 * 1024;
+const DEFAULT_3DS_LINEAR_HEAP_SIZE: u32 = 32 * 1024 * 1024;
+
 pub const Platform = enum {
     windows,
     linux,
@@ -49,6 +52,10 @@ pub const Config = struct {
     /// levels for the texture. Off by default since the extra VRAM cost
     /// only pays off for textures sampled at a wide range of distances.
     psp_mipmaps: bool = false,
+    /// 3DS: newlib/application heap reserved by libctru's startup shim.
+    nintendo_3ds_heap_size: u32 = DEFAULT_3DS_HEAP_SIZE,
+    /// 3DS: linear heap reserved by libctru's startup shim.
+    nintendo_3ds_linear_heap_size: u32 = DEFAULT_3DS_LINEAR_HEAP_SIZE,
     /// When true, `Core.paths.resolve` returns CWD for both resources
     /// and data, bypassing the platform-specific layout (.app Resources
     /// on mac, APPDATA on Windows, XDG on Linux).
@@ -101,6 +108,8 @@ pub const Config = struct {
             .audio = overrides.audio orelse default_audio,
             .psp_display_mode = overrides.psp_display_mode orelse .rgba8888,
             .psp_mipmaps = overrides.psp_mipmaps orelse false,
+            .nintendo_3ds_heap_size = overrides.nintendo_3ds_heap_size orelse DEFAULT_3DS_HEAP_SIZE,
+            .nintendo_3ds_linear_heap_size = overrides.nintendo_3ds_linear_heap_size orelse DEFAULT_3DS_LINEAR_HEAP_SIZE,
             .use_cwd = overrides.use_cwd orelse false,
         };
     }
@@ -110,6 +119,8 @@ pub const Config = struct {
         audio: ?Audio = null,
         psp_display_mode: ?PspDisplayMode = null,
         psp_mipmaps: ?bool = null,
+        nintendo_3ds_heap_size: ?u32 = null,
+        nintendo_3ds_linear_heap_size: ?u32 = null,
         use_cwd: ?bool = null,
         /// Promotes an `aarch64-freestanding-none` target to the
         /// `nintendo_switch` platform. No effect when null/false.
@@ -1416,12 +1427,16 @@ pub fn addShader(owner: *std.Build, b: *std.Build, exe: *std.Build.Step.Compile,
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const threeds_heap_mib = b.option(u32, "3ds-heap-mib", "3DS: application heap size in MiB (default: 48)");
+    const threeds_linear_heap_mib = b.option(u32, "3ds-linear-heap-mib", "3DS: linear heap size in MiB (default: 32)");
 
     const overrides: Config.Overrides = .{
         .gfx = b.option(Gfx, "gfx", "Graphics backend override (default: auto-detect from target)"),
         .audio = b.option(Audio, "audio", "Audio backend override (default: platform default)"),
         .psp_display_mode = b.option(PspDisplayMode, "psp-display", "PSP display mode: rgba8888 (32-bit, default) or rgb565 (16-bit)"),
         .psp_mipmaps = b.option(bool, "psp-mipmaps", "PSP: generate mip levels for VRAM-resident textures (default: false)"),
+        .nintendo_3ds_heap_size = if (threeds_heap_mib) |mib| mib * 1024 * 1024 else null,
+        .nintendo_3ds_linear_heap_size = if (threeds_linear_heap_mib) |mib| mib * 1024 * 1024 else null,
         .use_cwd = b.option(bool, "use-cwd", "Force resources+data dirs to CWD (debug/CI convenience; default: false)"),
         .nintendo_switch = b.option(bool, "nintendo-switch", "Build for Nintendo Switch (requires -Dtarget=aarch64-freestanding-none and devkitA64/libnx)"),
     };

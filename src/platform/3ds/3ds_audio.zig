@@ -93,12 +93,12 @@ pub fn init() anyerror!void {
     _ = audio_alloc;
     _ = audio_io;
 
-    audio_data = @ptrCast(linearAlloc(TOTAL_AUDIO_BYTES) orelse return error.AudioInitFailed);
+    audio_data = @ptrCast(linearAlloc(TOTAL_AUDIO_BYTES) orelse return error.AudioLinearAllocFailed);
 
     if (ndspInit() != 0) {
         linearFree(audio_data);
         audio_data = null;
-        return error.AudioInitFailed;
+        return error.NdspInitFailed;
     }
 
     ndspSetOutputMode(NDSP_OUTPUT_STEREO);

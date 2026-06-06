@@ -11,9 +11,18 @@ pub const GraphicsAPI = @import("options").@"build.Gfx";
 /// Initializes the platform subsystems: graphics, audio, then input.
 /// Order matters: input subscribes to surface callbacks created by gfx.
 pub fn init(engine: *Engine, width: u32, height: u32, title: [:0]const u8, fullscreen: bool, sync: bool, resizable: bool) !void {
-    try gfx.init(engine.allocator(.render), engine.io, width, height, title, fullscreen, sync, resizable);
-    try audio.init(engine.allocator(.audio), engine.io);
-    try input.init(engine.allocator(.game), engine.io);
+    gfx.init(engine.allocator(.render), engine.io, width, height, title, fullscreen, sync, resizable) catch |err| switch (err) {
+        error.OutOfMemory => return error.GfxInitOutOfMemory,
+        else => return err,
+    };
+    audio.init(engine.allocator(.audio), engine.io) catch |err| switch (err) {
+        error.OutOfMemory => return error.AudioInitOutOfMemory,
+        else => return err,
+    };
+    input.init(engine.allocator(.game), engine.io) catch |err| switch (err) {
+        error.OutOfMemory => return error.InputInitOutOfMemory,
+        else => return err,
+    };
 }
 
 /// Updates the platform subsystems. Must be called once per frame.

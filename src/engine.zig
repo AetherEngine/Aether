@@ -44,7 +44,10 @@ const LinearRenderMemory = if (options.config.platform == .nintendo_3ds) struct 
     }
 };
 
-const LINEAR_RENDER_RESERVE_BYTES: usize = 2 * 1024 * 1024;
+const LINEAR_RENDER_RESERVE_BYTES: usize = if (options.config.platform == .nintendo_3ds)
+    4 * 1024 * 1024
+else
+    2 * 1024 * 1024;
 
 // -- category tracker (wrapper allocator with per-category accounting) --------
 
@@ -199,12 +202,26 @@ pub const Engine = struct {
 
         try logger.init(sys_io, self.dirs.data);
 
-        try Platform.init(self, config.width, config.height, config.title, config.fullscreen, config.vsync, config.resizable);
-        if (external_render) try self.init_linear_render_pool(config);
+        Platform.init(self, config.width, config.height, config.title, config.fullscreen, config.vsync, config.resizable) catch |err| switch (err) {
+            error.OutOfMemory => return error.PlatformInitOutOfMemory,
+            else => return err,
+        };
+        errdefer Platform.deinit();
+
+        if (external_render) {
+            try self.init_linear_render_pool(config);
+            Platform.gfx.rebind_backend_allocator(self.allocator(.render), self.io);
+        }
         errdefer self.deinit_linear_render_pool();
 
-        try Rendering.Texture.init_defaults(self.allocator(.render));
-        try Core.state_machine.init(self, &self.state);
+        Rendering.Texture.init_defaults(self.allocator(.render)) catch |err| switch (err) {
+            error.OutOfMemory => return error.DefaultTexturesOutOfMemory,
+            else => return err,
+        };
+        Core.state_machine.init(self, &self.state) catch |err| switch (err) {
+            error.OutOfMemory => return error.StateInitOutOfMemory,
+            else => return err,
+        };
     }
 
     pub fn deinit(self: *Engine) void {
@@ -223,14 +240,35 @@ pub const Engine = struct {
 
     fn init_linear_render_pool(self: *Engine, config: Config) !void {
         assert(config.render_capacity.? >= config.memory.render);
+        const mib = 1024 * 1024;
 
         const available: usize = LinearRenderMemory.spaceFree();
-        if (available <= LINEAR_RENDER_RESERVE_BYTES) return error.OutOfMemory;
+        if (available <= LINEAR_RENDER_RESERVE_BYTES) {
+            std.debug.panic(
+                "LinLowMiB a={} q={} h={} l={}",
+                .{
+                    available / mib,
+                    config.render_capacity.? / mib,
+                    options.config.nintendo_3ds_heap_size / mib,
+                    options.config.nintendo_3ds_linear_heap_size / mib,
+                },
+            );
+        }
 
         const capacity = @min(config.render_capacity.?, available - LINEAR_RENDER_RESERVE_BYTES);
-        if (capacity < config.memory.render) return error.OutOfMemory;
 
-        const linear_mem = try alloc_linear_bytes(capacity);
+        const linear_mem = alloc_linear_bytes(capacity) catch |err| switch (err) {
+            error.OutOfMemory => std.debug.panic(
+                "LinAllocMiB a={} c={} q={} h={} l={}",
+                .{
+                    available / mib,
+                    capacity / mib,
+                    config.render_capacity.? / mib,
+                    options.config.nintendo_3ds_heap_size / mib,
+                    options.config.nintendo_3ds_linear_heap_size / mib,
+                },
+            ),
+        };
         self.linear_render_mem = linear_mem;
         self.linear_render_pool = memory.PoolAlloc.init(linear_mem, "render-linear");
 
