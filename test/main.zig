@@ -391,9 +391,11 @@ const MyState = struct {
         ));
 
         Rendering.Pipeline.bind(pipeline);
+        Rendering.gfx.api.set_depth_write(false);
         self.texture.bind();
         self.batch_b.draw(&self.batch_b_transform.get_matrix());
         self.batch_a.draw(&self.batch_a_transform.get_matrix());
+        Rendering.gfx.api.set_depth_write(true);
     }
 
     pub fn state(self: *MyState) State {
@@ -410,20 +412,39 @@ const MyState = struct {
 var pipeline: Rendering.Pipeline.Handle = undefined;
 
 pub fn main(init: std.process.Init) !void {
-    const memory = try init.arena.allocator().alloc(u8, 32 * 1024 * 1024);
+    const mib = 1024 * 1024;
+    const render_memory_bytes = if (ae.platform == .nintendo_3ds) 28 * 1024 * 1024 else 12 * 1024 * 1024;
+    const main_memory_bytes = if (ae.platform == .nintendo_3ds) 24 * 1024 * 1024 else 32 * 1024 * 1024;
+    const memory = init.arena.allocator().alloc(u8, main_memory_bytes) catch |err| switch (err) {
+        error.OutOfMemory => std.debug.panic(
+            "MainOOMMiB m={} r={} h={} l={}",
+            .{
+                main_memory_bytes / mib,
+                render_memory_bytes / mib,
+                ae.nintendo_3ds_heap_size / mib,
+                ae.nintendo_3ds_linear_heap_size / mib,
+            },
+        ),
+    };
 
     var state: MyState = undefined;
     var engine: ae.Engine = undefined;
-    try engine.init(init.io, init.environ_map, memory, .{
+    engine.init(init.io, init.environ_map, memory, .{
         .memory = .{
-            .render = 12 * 1024 * 1024,
+            .render = render_memory_bytes,
             .audio = 10 * 1024 * 1024,
             .game = 2 * 1024 * 1024,
             .user = 8 * 1024 * 1024,
         },
-        .render_capacity = if (ae.platform == .nintendo_3ds) 12 * 1024 * 1024 else null,
+        .render_capacity = if (ae.platform == .nintendo_3ds) render_memory_bytes else null,
         .resizable = true,
-    }, &state.state());
+    }, &state.state()) catch |err| switch (err) {
+        error.OutOfMemory => return error.EngineInitOutOfMemory,
+        else => return err,
+    };
     defer engine.deinit();
-    try engine.run();
+    engine.run() catch |err| switch (err) {
+        error.OutOfMemory => return error.EngineRunOutOfMemory,
+        else => return err,
+    };
 }

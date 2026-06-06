@@ -9,6 +9,11 @@
 //! libctru) with a strong export. 1 MB is comfortable; bump if engine
 //! frames grow.
 //!
+//! libctru also exposes weak `__ctru_heap_size` and
+//! `__ctru_linear_heap_size` symbols. Leaving them at zero asks libctru to
+//! compute a conservative split, which is too small for Aether's explicit
+//! linear render pool. Export strong values from build config instead.
+//!
 //! libctru also creates service threads internally. NDSP currently asks for
 //! a 4 KB stack, which can underflow in its sound-frame worker before Aether
 //! code is on the stack. The 3DS link step wraps `threadCreate`, and the
@@ -16,6 +21,7 @@
 
 const process_init = @import("aether").CProcessInit;
 const std = @import("std");
+const options = @import("options");
 
 pub const os = struct {
     pub const PATH_MAX = 1024;
@@ -86,11 +92,15 @@ extern const __text_end: u8;
 comptime {
     @export(&entry, .{ .name = "main" });
     @export(&stack_size, .{ .name = "__stacksize__" });
+    @export(&heap_size, .{ .name = "__ctru_heap_size" });
+    @export(&linear_heap_size, .{ .name = "__ctru_linear_heap_size" });
     @export(&threadCreateWrap, .{ .name = "__wrap_threadCreate" });
     @export(&exceptionHandler, .{ .name = "aether3dsExceptionHandler" });
 }
 
 var stack_size: u32 = 1 * 1024 * 1024;
+var heap_size: u32 = options.config.nintendo_3ds_heap_size;
+var linear_heap_size: u32 = options.config.nintendo_3ds_linear_heap_size;
 var exception_stack: [exception_stack_size]u8 align(8) = undefined;
 var panic_stage: u8 = 0;
 /// Captured very early in entry() so that the panic walker can scan the full
@@ -404,9 +414,10 @@ pub fn panic(msg: []const u8, _: ?*std.builtin.StackTrace, first_trace_addr: ?us
     // The pretty multi-line version above still goes to debugString (visible via 3dslink etc.).
     var user_buf: [256:0]u8 = @splat(0);
     var uw: std.Io.Writer = .fixed(&user_buf);
-    // short header to leave room for addresses
+    // Put the panic message first: ERRF surfaces have very little room, and
+    // diagnostics often carry the useful measurement in `msg`.
     var hbuf: [96]u8 = undefined;
-    const h = std.fmt.bufPrint(&hbuf, "Aether panic at 0x{x}: {s}\n", .{first, msg}) catch "Aether panic\n";
+    const h = std.fmt.bufPrint(&hbuf, "{s}\npc=0x{x}\n", .{msg, first}) catch "Aether panic\n";
     uw.writeAll(h[0..@min(h.len, 70)]) catch {};
     if (@errorReturnTrace()) |t| {
         const nerr = @min(t.index, t.instruction_addresses.len);
@@ -433,11 +444,11 @@ pub fn panic(msg: []const u8, _: ?*std.builtin.StackTrace, first_trace_addr: ?us
     _ = errfInit();
     _ = ERRF_SetUserString(user_str.ptr);
 
-    // The failure message shown as "Reason" on the error screen is limited (~0x60 bytes).
-    // Use Writer.fixed to cleanly format PC + as many stack addrs as fit.
+    // The failure message shown as "Reason" on the error screen is limited
+    // (~0x60 bytes), so prioritize the measurement text over the PC/stack.
     var throw_buf: [0x60:0]u8 = @splat(0);
     var w: std.Io.Writer = .fixed(&throw_buf);
-    w.print("Aether at 0x{x}: {s}", .{first, msg}) catch {};
+    w.print("{s} pc=0x{x}", .{msg, first}) catch {};
     if (n > 0) {
         w.print(" [", .{}) catch {};
         const max_short = 4;

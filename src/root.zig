@@ -25,6 +25,8 @@ pub const Platform = options.@"build.Platform";
 pub const Gfx = options.@"build.Gfx";
 pub const platform: Platform = options.config.platform;
 pub const gfx: Gfx = options.config.gfx;
+pub const nintendo_3ds_heap_size: u32 = options.config.nintendo_3ds_heap_size;
+pub const nintendo_3ds_linear_heap_size: u32 = options.config.nintendo_3ds_linear_heap_size;
 
 comptime {
     std.testing.refAllDecls(@This());

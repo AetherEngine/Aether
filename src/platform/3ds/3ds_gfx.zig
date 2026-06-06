@@ -48,6 +48,9 @@ const SCREEN_HEIGHT: u32 = 240;
 const TARGET_WIDTH: c_int = 240;
 const TARGET_HEIGHT: c_int = 400;
 const MAX_VERTEX_ATTRS: usize = 12;
+const MESH_SLOT_COUNT: usize = 2;
+const MAX_DEFERRED_MESH_FREES: usize = 4096;
+const C3D_CMD_BUFFER_SIZE: usize = 1024 * 1024;
 const MAX_TEXTURE_SIZE: u32 = 1024;
 const MIN_TEXTURE_SIZE: u32 = 8;
 const TEX_BPP: usize = 4;
@@ -71,6 +74,7 @@ const VERTEX_SHADER_INDEX: usize = 0;
 
 const BufferBinding = struct {
     offset: usize,
+    vertex_span: usize,
     attrib_count: c_int,
     permutation: u64,
 };
@@ -93,8 +97,20 @@ const PipelineData = struct {
 
 const MeshData = struct {
     pipeline: Pipeline.Handle,
-    data: ?[*]const u8,
+    slots: [MESH_SLOT_COUNT]MeshSlot = .{ .{}, .{} },
+    latest_slot: ?usize = null,
     len: usize,
+};
+
+const MeshSlot = struct {
+    data: ?[]align(16) u8 = null,
+    len: usize = 0,
+    in_flight: bool = false,
+    used_this_frame: bool = false,
+};
+
+const DeferredMeshFree = struct {
+    data: []align(16) u8,
 };
 
 const TexMirror = extern struct {
@@ -114,6 +130,7 @@ const TextureData = struct {
     width: u32,
     height: u32,
     tex: TexMirror,
+    staging: ?[]align(16) u8 = null,
 };
 
 const TexEnvMirror = extern struct {
@@ -150,6 +167,7 @@ const RenderTargetMirror = extern struct {
 
 var pipelines = Util.CircularBuffer(PipelineData, 16).init();
 var meshes = Util.CircularBuffer(MeshData, 2048).init();
+var deferred_mesh_frees = Util.CircularBuffer(DeferredMeshFree, MAX_DEFERRED_MESH_FREES + 1).init();
 var textures = Util.CircularBuffer(TextureData, 64).init();
 
 var target: ?*c.C3D_RenderTarget = null;
@@ -174,9 +192,9 @@ pub fn init() anyerror!void {
     _ = render_io;
 
     c.gfxInitDefault();
-    if (!c.C3D_Init(c.C3D_DEFAULT_CMDBUF_SIZE)) {
+    if (!c.C3D_Init(C3D_CMD_BUFFER_SIZE)) {
         c.gfxExit();
-        return error.GfxInitFailed;
+        return error.C3DInitFailed;
     }
     errdefer {
         c.C3D_Fini();
@@ -188,7 +206,7 @@ pub fn init() anyerror!void {
         TARGET_HEIGHT,
         c.GPU_RB_RGBA8,
         c.C3D_DEPTHTYPE{ .__e = c.GPU_RB_DEPTH24_STENCIL8 },
-    ) orelse return error.GfxInitFailed;
+    ) orelse return error.C3DRenderTargetCreateFailed;
     errdefer {
         c.C3D_RenderTargetDelete(target);
         target = null;
@@ -205,10 +223,14 @@ pub fn init() anyerror!void {
 
 pub fn deinit() void {
     frame_started = false;
+    if (initialized) c.C3D_FrameSync();
+    release_completed_mesh_slots();
+    free_deferred_mesh_slots();
 
     for (1..textures.buffer.len) |i| {
         if (textures.buffer[i]) |*tex| {
             c.C3D_TexDelete(tex_ptr(tex));
+            free_texture_staging(tex);
         }
     }
     textures.clear();
@@ -220,6 +242,12 @@ pub fn deinit() void {
         }
     }
     pipelines.clear();
+
+    for (1..meshes.buffer.len) |i| {
+        if (meshes.buffer[i]) |*mesh| {
+            free_mesh_slots(mesh);
+        }
+    }
     meshes.clear();
 
     if (target) |t| {
@@ -311,6 +339,9 @@ pub fn start_frame() bool {
     const flags: u8 = @intCast(if (vsync_enabled) c.C3D_FRAME_SYNCDRAW else c.C3D_FRAME_NONBLOCK);
 
     if (!c.C3D_FrameBegin(flags)) return false;
+    release_completed_mesh_slots();
+    free_deferred_mesh_slots();
+
     c.C3D_FrameBufClear(target_frame_buf(t), c.C3D_CLEAR_ALL, clear_color, 0);
 
     if (!c.C3D_FrameDrawOn(t)) {
@@ -328,6 +359,7 @@ pub fn start_frame() bool {
 
 pub fn end_frame() void {
     if (!frame_started) return;
+    mark_current_frame_mesh_slots_in_flight();
     c.C3D_FrameEnd(0);
     frame_started = false;
 }
@@ -383,6 +415,7 @@ pub fn create_pipeline(layout: Pipeline.VertexLayout, v_shader: ?[:0]align(4) co
         .stride = layout.stride,
         .buffer = .{
             .offset = buffer_layout.base_offset,
+            .vertex_span = buffer_layout.vertex_span,
             .attrib_count = buffer_layout.attribute_count,
             .permutation = buffer_layout.permutation,
         },
@@ -417,7 +450,6 @@ pub fn create_mesh(pipeline: Pipeline.Handle) anyerror!Mesh.Handle {
     if (pipeline_slot(pipeline) == null) return error.InvalidPipeline;
     const handle = meshes.add_element(.{
         .pipeline = pipeline,
-        .data = null,
         .len = 0,
     }) orelse return error.OutOfMeshes;
 
@@ -425,34 +457,49 @@ pub fn create_mesh(pipeline: Pipeline.Handle) anyerror!Mesh.Handle {
 }
 
 pub fn destroy_mesh(handle: Mesh.Handle) void {
+    if (mesh_slot(handle)) |mesh| {
+        free_mesh_slots(mesh);
+    }
     _ = meshes.remove_element(handle);
 }
 
 pub fn update_mesh(handle: Mesh.Handle, data: []const u8) void {
     const mesh = mesh_slot(handle) orelse return;
-    if (data.len == 0) {
-        mesh.data = null;
-        mesh.len = 0;
-        return;
-    }
-
-    if (!is_linear_fcram(data.ptr, data.len)) {
-        std.debug.panic("3ds_gfx: mesh vertex data must be allocated in linear FCRAM", .{});
-    }
     if (data.len > std.math.maxInt(u32)) {
         std.debug.panic("3ds_gfx: mesh vertex data is too large to flush", .{});
     }
 
-    _ = c.GSPGPU_FlushDataCache(data.ptr, @intCast(data.len));
-    mesh.data = data.ptr;
+    if (data.len == 0) {
+        mesh.latest_slot = null;
+        mesh.len = 0;
+        return;
+    }
+
+    const slot_idx = select_upload_slot(mesh) orelse
+        std.debug.panic("3ds_gfx: update_mesh called while both 3DS mesh upload slots are in use", .{});
+    const slot = &mesh.slots[slot_idx];
+    ensure_mesh_slot_capacity(slot, data.len) catch
+        std.debug.panic("3ds_gfx: out of linear memory for mesh upload", .{});
+
+    const dst = slot.data.?;
+    @memcpy(dst[0..data.len], data);
+    slot.len = data.len;
+    _ = c.GSPGPU_FlushDataCache(dst.ptr, @intCast(data.len));
+
+    mesh.latest_slot = slot_idx;
     mesh.len = data.len;
 }
 
 pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize) void {
     const mesh = mesh_slot(handle) orelse return;
     const pl = pipeline_slot(mesh.pipeline) orelse return;
-    const data = mesh.data orelse return;
-    if (count == 0 or mesh.len == 0) return;
+    const slot_idx = mesh.latest_slot orelse return;
+    const slot = &mesh.slots[slot_idx];
+    const data = slot.data orelse return;
+    if (count == 0 or slot.len == 0) return;
+
+    const needed = mesh_draw_bytes_needed(pl, count) orelse return;
+    if (needed > slot.len) return;
 
     bind_pipeline_data(pl);
     upload_draw_uniforms(pl, model);
@@ -460,12 +507,14 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize) void {
 
     const buf = c.C3D_GetBufInfo() orelse return;
     c.BufInfo_Init(buf);
-    const ptr = data + pl.buffer.offset;
+    const ptr = @as([*]const u8, data.ptr) + pl.buffer.offset;
     const added = c.BufInfo_Add(buf, ptr, @intCast(pl.stride), pl.buffer.attrib_count, pl.buffer.permutation);
     if (added < 0) {
         c.BufInfo_Init(buf);
         return;
     }
+
+    slot.used_this_frame = true;
     c.C3D_DrawArrays(c.GPU_TRIANGLES, 0, @intCast(count));
 }
 
@@ -483,6 +532,7 @@ pub fn create_texture(width: u32, height: u32, data: []align(16) u8) anyerror!Te
         .height = height,
         .tex = init_tex_mirror(width, height, mem, size),
     };
+    errdefer free_texture_staging(&tex);
 
     try upload_texture_data(&tex, data[0..size]);
 
@@ -509,6 +559,7 @@ pub fn bind_texture(handle: Texture.Handle) void {
 pub fn destroy_texture(handle: Texture.Handle) void {
     if (texture_slot(handle)) |tex| {
         c.C3D_TexDelete(tex_ptr(tex));
+        free_texture_staging(tex);
     }
     if (bound_texture == handle) {
         bound_texture = 0;
@@ -518,6 +569,109 @@ pub fn destroy_texture(handle: Texture.Handle) void {
 }
 
 pub fn force_texture_resident(_: Texture.Handle) void {}
+
+fn select_upload_slot(mesh: *const MeshData) ?usize {
+    if (mesh.latest_slot) |idx| {
+        const slot = mesh.slots[idx];
+        if (!slot.in_flight and !slot.used_this_frame) return idx;
+    }
+
+    for (0..MESH_SLOT_COUNT) |idx| {
+        const slot = mesh.slots[idx];
+        if (!slot.in_flight and !slot.used_this_frame) return idx;
+    }
+
+    return null;
+}
+
+fn ensure_mesh_slot_capacity(slot: *MeshSlot, len: usize) !void {
+    if (slot.data) |buf| {
+        if (buf.len >= len) return;
+    }
+
+    const cap = mesh_slot_capacity(len);
+    const new_data = try render_alloc.alignedAlloc(u8, .fromByteUnits(16), cap);
+
+    if (!is_linear_fcram(new_data.ptr, new_data.len)) {
+        render_alloc.free(new_data);
+        std.debug.panic("3ds_gfx: mesh upload slots must be allocated in linear FCRAM", .{});
+    }
+
+    if (slot.data) |old| render_alloc.free(old);
+    slot.data = new_data;
+    slot.len = 0;
+}
+
+fn mesh_slot_capacity(len: usize) usize {
+    return @max(len, 256);
+}
+
+fn free_mesh_slots(mesh: *MeshData) void {
+    for (&mesh.slots) |*slot| free_mesh_slot(slot);
+    mesh.latest_slot = null;
+    mesh.len = 0;
+}
+
+fn free_mesh_slot(slot: *MeshSlot) void {
+    if (slot.data) |data| {
+        if (slot.in_flight or slot.used_this_frame) {
+            defer_mesh_free(data);
+        } else {
+            render_alloc.free(data);
+        }
+    }
+    slot.* = .{};
+}
+
+fn defer_mesh_free(data: []align(16) u8) void {
+    if (deferred_mesh_frees.add_element(.{ .data = data }) != null) return;
+    std.debug.panic("3ds_gfx: deferred mesh free queue exhausted", .{});
+}
+
+fn free_deferred_mesh_slots() void {
+    for (1..deferred_mesh_frees.buffer.len) |i| {
+        if (deferred_mesh_frees.buffer[i]) |free| {
+            render_alloc.free(free.data);
+        }
+    }
+    deferred_mesh_frees.clear();
+}
+
+fn release_completed_mesh_slots() void {
+    for (1..meshes.buffer.len) |i| {
+        if (meshes.buffer[i]) |*mesh| {
+            for (&mesh.slots) |*slot| {
+                slot.in_flight = false;
+                slot.used_this_frame = false;
+            }
+        }
+    }
+}
+
+fn mark_current_frame_mesh_slots_in_flight() void {
+    for (1..meshes.buffer.len) |i| {
+        if (meshes.buffer[i]) |*mesh| {
+            for (&mesh.slots) |*slot| {
+                if (slot.used_this_frame) {
+                    slot.in_flight = true;
+                    slot.used_this_frame = false;
+                }
+            }
+        }
+    }
+}
+
+fn mesh_draw_bytes_needed(pl: *const PipelineData, count: usize) ?usize {
+    if (count == 0) return 0;
+
+    const tail_count = count - 1;
+    const max = std.math.maxInt(usize);
+    if (pl.stride != 0 and tail_count > (max - pl.buffer.vertex_span) / pl.stride) return null;
+
+    const rel_end = tail_count * pl.stride + pl.buffer.vertex_span;
+    if (pl.buffer.offset > max - rel_end) return null;
+    return pl.buffer.offset + rel_end;
+}
 
 fn apply_render_state() void {
     set_alpha_blend(alpha_blend_enabled);
@@ -731,13 +885,36 @@ fn texture_param() u32 {
 
 fn upload_texture_data(tex: *TextureData, data: []align(16) const u8) !void {
     const size = texture_size(tex.width, tex.height);
-    const upload = try render_alloc.alignedAlloc(u8, .fromByteUnits(16), size);
-    defer render_alloc.free(upload);
+    const upload = try ensure_texture_staging(tex, size);
 
     convert_texture_data(upload, data, tex.width, tex.height);
     flush_texture_source(upload);
     c.C3D_TexLoadImage(tex_ptr(tex), upload.ptr, c.GPU_TEXFACE_2D, 0);
     c.C3D_TexFlush(tex_ptr(tex));
+}
+
+fn ensure_texture_staging(tex: *TextureData, size: usize) ![]align(16) u8 {
+    if (tex.staging) |buf| {
+        if (buf.len >= size) return buf[0..size];
+        render_alloc.free(buf);
+        tex.staging = null;
+    }
+
+    const staging = try render_alloc.alignedAlloc(u8, .fromByteUnits(16), size);
+    if (!is_linear_fcram(staging.ptr, staging.len)) {
+        render_alloc.free(staging);
+        std.debug.panic("3ds_gfx: texture staging must be allocated in linear FCRAM", .{});
+    }
+
+    tex.staging = staging;
+    return staging;
+}
+
+fn free_texture_staging(tex: *TextureData) void {
+    if (tex.staging) |staging| {
+        render_alloc.free(staging);
+        tex.staging = null;
+    }
 }
 
 fn convert_texture_data(dst: []align(16) u8, src: []align(16) const u8, width: u32, height: u32) void {
@@ -818,6 +995,7 @@ fn find_attr(layout: Pipeline.VertexLayout, usage: Pipeline.AttributeUsage) ?Pip
 
 const BufferLayout = struct {
     base_offset: usize,
+    vertex_span: usize,
     attribute_count: c_int,
     permutation: u64,
     position_loader_size: u8,
@@ -867,6 +1045,7 @@ fn buffer_layout_from_attrs(stride: usize, position_attr: Pipeline.Attribute, uv
 
     return .{
         .base_offset = base_offset,
+        .vertex_span = current_rel,
         .attribute_count = @intCast(attribute_count),
         .permutation = permutation,
         .position_loader_size = position_loader_size,
