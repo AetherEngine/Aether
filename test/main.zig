@@ -18,6 +18,18 @@ comptime {
 
 pub const psp_stack_size: u32 = 256 * 1024;
 
+const ThreeDSLinearHeap = if (ae.platform == .nintendo_3ds) struct {
+    extern fn linearSpaceFree() u32;
+
+    fn spaceFree() usize {
+        return linearSpaceFree();
+    }
+} else struct {
+    fn spaceFree() usize {
+        return 0;
+    }
+};
+
 // PSP, 3DS, and Switch override panic/IO handlers that would otherwise
 // pull in posix symbols (Io.Threaded references std.posix decls that
 // don't exist for these targets). 3DS and Switch use Aether's newlib-backed
@@ -413,30 +425,30 @@ var pipeline: Rendering.Pipeline.Handle = undefined;
 
 pub fn main(init: std.process.Init) !void {
     const mib = 1024 * 1024;
-    const render_memory_bytes = if (ae.platform == .nintendo_3ds) 28 * 1024 * 1024 else 12 * 1024 * 1024;
-    const main_memory_bytes = if (ae.platform == .nintendo_3ds) 24 * 1024 * 1024 else 32 * 1024 * 1024;
-    const memory = init.arena.allocator().alloc(u8, main_memory_bytes) catch |err| switch (err) {
+    const memory_config: ae.Util.MemoryConfig = .{
+        .render = if (ae.platform == .nintendo_3ds) 28 * 1024 * 1024 else 12 * 1024 * 1024,
+        .audio = 10 * 1024 * 1024,
+        .game = 2 * 1024 * 1024,
+        .user = 8 * 1024 * 1024,
+    };
+    const main_memory_bytes = memory_config.total();
+    const memory = init.gpa.alignedAlloc(u8, .fromByteUnits(16), main_memory_bytes) catch |err| switch (err) {
         error.OutOfMemory => std.debug.panic(
-            "MainOOMMiB m={} r={} h={} l={}",
+            "MainOOMMiB m={} f={} h={} l={}",
             .{
                 main_memory_bytes / mib,
-                render_memory_bytes / mib,
+                ThreeDSLinearHeap.spaceFree() / mib,
                 ae.nintendo_3ds_heap_size / mib,
                 ae.nintendo_3ds_linear_heap_size / mib,
             },
         ),
     };
+    defer init.gpa.free(memory);
 
     var state: MyState = undefined;
     var engine: ae.Engine = undefined;
     engine.init(init.io, init.environ_map, memory, .{
-        .memory = .{
-            .render = render_memory_bytes,
-            .audio = 10 * 1024 * 1024,
-            .game = 2 * 1024 * 1024,
-            .user = 8 * 1024 * 1024,
-        },
-        .render_capacity = if (ae.platform == .nintendo_3ds) render_memory_bytes else null,
+        .memory = memory_config,
         .resizable = true,
     }, &state.state()) catch |err| switch (err) {
         error.OutOfMemory => return error.EngineInitOutOfMemory,

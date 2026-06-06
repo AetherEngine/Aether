@@ -1,8 +1,26 @@
 const std = @import("std");
 const c_io = @import("c_io.zig");
+const options = @import("options");
 
-extern fn memalign(alignment: usize, size: usize) ?*anyopaque;
-extern fn free(ptr: ?*anyopaque) void;
+const ProcessHeap = if (options.config.platform == .nintendo_3ds) struct {
+    extern fn linearMemAlign(size: usize, alignment: usize) ?*anyopaque;
+    extern fn linearFree(ptr: ?*anyopaque) void;
+
+    fn alloc(alignment: usize, size: usize) ?*anyopaque {
+        return linearMemAlign(size, alignment);
+    }
+
+    fn free(ptr: ?*anyopaque) void {
+        linearFree(ptr);
+    }
+} else struct {
+    extern fn memalign(alignment: usize, size: usize) ?*anyopaque;
+    extern fn free(ptr: ?*anyopaque) void;
+
+    fn alloc(alignment: usize, size: usize) ?*anyopaque {
+        return memalign(alignment, size);
+    }
+};
 
 var arena_state: std.heap.ArenaAllocator = undefined;
 var environ_map_state: std.process.Environ.Map = undefined;
@@ -48,7 +66,7 @@ fn alloc(
     std.debug.assert(len > 0);
 
     const effective_alignment = @max(alignment.toByteUnits(), @sizeOf(usize));
-    const ptr = memalign(effective_alignment, len) orelse return null;
+    const ptr = ProcessHeap.alloc(effective_alignment, len) orelse return null;
     std.debug.assert(alignment.check(@intFromPtr(ptr)));
     return @ptrCast(ptr);
 }
@@ -84,5 +102,5 @@ fn dealloc(
     _: usize,
 ) void {
     std.debug.assert(memory.len > 0);
-    free(memory.ptr);
+    ProcessHeap.free(memory.ptr);
 }

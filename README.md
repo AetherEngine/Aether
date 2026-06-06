@@ -117,11 +117,12 @@ const MyState = struct {
 };
 
 pub fn main(init: std.process.Init) !void {
-    const memory = try init.arena.allocator().alloc(u8, 32 * 1024 * 1024);
+    const memory = try init.gpa.alignedAlloc(u8, .fromByteUnits(16), 32 * 1024 * 1024);
+    defer init.gpa.free(memory);
 
     var my_state: MyState = undefined;
     var engine: ae.Engine = undefined;
-    try engine.init(init.io, memory, .{
+    try engine.init(init.io, init.environ_map, memory, .{
         .memory = .{
             .render = 8 * 1024 * 1024,
             .audio = 2 * 1024 * 1024,
@@ -159,9 +160,16 @@ zig build run -Dgfx=opengl
 # Build for PSP
 zig build -Dtarget=mipsel-psp
 
+# Build for 3DS
+zig build -Dtarget=arm-3ds-eabihf
+
 # Build in release mode
 zig build -Doptimize=ReleaseFast
 ```
+
+3DS builds default to a 4 MiB regular libctru/newlib heap and a 60 MiB
+linear heap. Aether's process allocator uses linear memory on 3DS, so engine
+pool allocations and GPU upload buffers come from the same memory class.
 
 ## Input System
 

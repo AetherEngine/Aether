@@ -63,13 +63,6 @@ pub fn init(
     try Api.init();
 }
 
-/// Rebinds the backend-side allocator after graphics initialization.
-/// Used by backends that need platform services online before choosing
-/// their final render-memory arena.
-pub fn rebind_backend_allocator(alloc: std.mem.Allocator, io: std.Io) void {
-    Api.setup(alloc, io);
-}
-
 /// Deinitializes the graphics subsystem and frees all associated resources.
 pub fn deinit() void {
     Api.deinit();
