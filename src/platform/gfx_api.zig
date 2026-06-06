@@ -31,7 +31,7 @@ pub const Interface = struct {
 
     set_vsync: fn (bool) void,
 
-    create_pipeline: fn (Pipeline.VertexLayout, ?[:0]align(4) const u8, ?[:0]align(4) const u8) anyerror!Pipeline.Handle,
+    create_pipeline: fn (Pipeline.VertexLayout) anyerror!Pipeline.Handle,
     destroy_pipeline: fn (Pipeline.Handle) void,
     bind_pipeline: fn (Pipeline.Handle) void,
 

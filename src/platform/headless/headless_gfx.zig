@@ -34,7 +34,7 @@ pub fn end_frame() void {}
 pub fn clear_depth() void {}
 pub fn set_vsync(_: bool) void {}
 
-pub fn create_pipeline(_: Pipeline.VertexLayout, _: ?[:0]align(4) const u8, _: ?[:0]align(4) const u8) anyerror!Pipeline.Handle {
+pub fn create_pipeline(_: Pipeline.VertexLayout) anyerror!Pipeline.Handle {
     return 0;
 }
 

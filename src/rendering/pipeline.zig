@@ -88,8 +88,8 @@ pub fn layout_from_struct(comptime V: type, comptime attrs: []const Attribute) V
 
 handle: Handle,
 
-pub fn new(layout: VertexLayout, vs: ?[:0]align(4) const u8, fs: ?[:0]align(4) const u8) !Handle {
-    return gfx.api.create_pipeline(layout, vs, fs);
+pub fn new(layout: VertexLayout) !Handle {
+    return gfx.api.create_pipeline(layout);
 }
 
 pub fn deinit(handle: Handle) void {

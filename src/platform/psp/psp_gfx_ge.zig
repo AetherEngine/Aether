@@ -857,7 +857,7 @@ pub fn set_vsync(v: bool) void {
 
 // ---- pipelines -------------------------------------------------------------
 
-pub fn create_pipeline(layout: Pipeline.VertexLayout, _: ?[:0]align(4) const u8, _: ?[:0]align(4) const u8) anyerror!Pipeline.Handle {
+pub fn create_pipeline(layout: Pipeline.VertexLayout) anyerror!Pipeline.Handle {
     var vtype = VertexType{
         .vertex = .Vertex32Bitf, // default, overridden by position attribute
         .transform = .Transform3D,

@@ -12,6 +12,7 @@ const Pipeline = Rendering.Pipeline;
 const Mesh = Rendering.mesh;
 const Texture = Rendering.Texture;
 const gfx = @import("../gfx.zig");
+const shader_data = @import("aether_shaders");
 
 const DkDevice_T = opaque {};
 const DkMemBlock_T = opaque {};
@@ -439,9 +440,9 @@ pub fn set_vsync(v: bool) void {
     if (swapchain) |_| dkSwapchainSetSwapInterval(swapchain, @intFromBool(v));
 }
 
-pub fn create_pipeline(layout: Pipeline.VertexLayout, v_shader: ?[:0]align(4) const u8, f_shader: ?[:0]align(4) const u8) anyerror!Pipeline.Handle {
-    const vertex_code = v_shader orelse return error.InvalidShader;
-    const fragment_code = f_shader orelse return error.InvalidShader;
+pub fn create_pipeline(layout: Pipeline.VertexLayout) anyerror!Pipeline.Handle {
+    const vertex_code: [:0]align(4) const u8 = &shader_data.basic_vert;
+    const fragment_code: [:0]align(4) const u8 = &shader_data.basic_frag;
 
     var data = PipelineData{
         .vertex_shader = undefined,
