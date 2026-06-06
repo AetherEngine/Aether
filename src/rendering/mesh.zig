@@ -1,6 +1,5 @@
 const std = @import("std");
 const Mat4 = @import("../math/math.zig").Mat4;
-const Pipeline = @import("pipeline.zig");
 const Util = @import("../util/util.zig");
 const Platform = @import("../platform/platform.zig");
 const gfx = Platform.gfx;
@@ -22,9 +21,9 @@ pub fn Mesh(comptime V: type) type {
         handle: Handle,
         vertices: std.ArrayList(Vertex),
 
-        pub fn new(alloc: std.mem.Allocator, pipeline: Pipeline.Handle) !Self {
+        pub fn new(alloc: std.mem.Allocator) !Self {
             return .{
-                .handle = try gfx.api.create_mesh(pipeline),
+                .handle = try gfx.api.create_mesh(),
                 .vertices = try std.ArrayList(V).initCapacity(alloc, 32),
             };
         }

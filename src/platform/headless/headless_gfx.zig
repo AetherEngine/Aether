@@ -1,7 +1,6 @@
 const std = @import("std");
 const Mat4 = @import("../../math/math.zig").Mat4;
 const Rendering = @import("../../rendering/rendering.zig");
-const Pipeline = Rendering.Pipeline;
 const Mesh = Rendering.mesh;
 const Texture = Rendering.Texture;
 
@@ -34,14 +33,7 @@ pub fn end_frame() void {}
 pub fn clear_depth() void {}
 pub fn set_vsync(_: bool) void {}
 
-pub fn create_pipeline(_: Pipeline.VertexLayout) anyerror!Pipeline.Handle {
-    return 0;
-}
-
-pub fn destroy_pipeline(_: Pipeline.Handle) void {}
-pub fn bind_pipeline(_: Pipeline.Handle) void {}
-
-pub fn create_mesh(_: Pipeline.Handle) anyerror!Mesh.Handle {
+pub fn create_mesh() anyerror!Mesh.Handle {
     return 0;
 }
 
