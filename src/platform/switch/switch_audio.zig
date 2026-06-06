@@ -7,6 +7,7 @@
 const std = @import("std");
 const Stream = @import("../../audio/stream.zig").Stream;
 const PcmFormat = @import("../../audio/stream.zig").PcmFormat;
+const c = @import("../nintendo_c.zig").c;
 
 const DEVICE_SAMPLE_RATE: u32 = 48_000;
 const DEVICE_CHANNELS: usize = 2;
@@ -17,25 +18,6 @@ const OUTPUT_BYTES: usize = SAMPLES_PER_BUF * DEVICE_CHANNELS * @sizeOf(i16);
 const OUTPUT_BUFFER_BYTES: usize = std.mem.alignForward(usize, OUTPUT_BYTES, 0x1000);
 const TOTAL_OUTPUT_BYTES: usize = BUFFER_COUNT * OUTPUT_BUFFER_BYTES;
 const FP_ONE: u64 = 1 << 32;
-
-const Result = u32;
-
-const AudioOutBuffer = extern struct {
-    next: ?*AudioOutBuffer,
-    buffer: ?*anyopaque,
-    buffer_size: u64,
-    data_size: u64,
-    data_offset: u64,
-};
-
-extern fn audoutInitialize() Result;
-extern fn audoutExit() void;
-extern fn audoutStartAudioOut() Result;
-extern fn audoutStopAudioOut() Result;
-extern fn audoutAppendAudioOutBuffer(buffer: *AudioOutBuffer) Result;
-extern fn audoutGetReleasedAudioOutBuffer(buffer: *?*AudioOutBuffer, released_count: *u32) Result;
-extern fn memalign(alignment: usize, size: usize) ?*anyopaque;
-extern fn free(ptr: ?*anyopaque) void;
 
 const SlotState = enum(u8) {
     inactive = 0,
@@ -60,7 +42,7 @@ var slots: [NUM_SLOTS]Slot = init_slots();
 var audio_alloc: std.mem.Allocator = undefined;
 var audio_io: std.Io = undefined;
 var output_data: ?[*]u8 = null;
-var buffers: [BUFFER_COUNT]AudioOutBuffer = undefined;
+var buffers: [BUFFER_COUNT]c.AudioOutBuffer = undefined;
 var initialized: bool = false;
 
 fn init_slots() [NUM_SLOTS]Slot {
@@ -80,16 +62,16 @@ pub fn init() anyerror!void {
     _ = audio_alloc;
     _ = audio_io;
 
-    output_data = @ptrCast(memalign(0x1000, TOTAL_OUTPUT_BYTES) orelse return error.AudioInitFailed);
+    output_data = @ptrCast(c.memalign(0x1000, TOTAL_OUTPUT_BYTES) orelse return error.AudioInitFailed);
     @memset(output_data.?[0..TOTAL_OUTPUT_BYTES], 0);
 
-    if (audoutInitialize() != 0) {
+    if (c.audoutInitialize() != 0) {
         free_output();
         return error.AudioInitFailed;
     }
 
-    if (audoutStartAudioOut() != 0) {
-        audoutExit();
+    if (c.audoutStartAudioOut() != 0) {
+        c.audoutExit();
         free_output();
         return error.AudioInitFailed;
     }
@@ -104,9 +86,9 @@ pub fn init() anyerror!void {
             .data_size = OUTPUT_BYTES,
             .data_offset = 0,
         };
-        if (audoutAppendAudioOutBuffer(buf) != 0) {
-            _ = audoutStopAudioOut();
-            audoutExit();
+        if (c.audoutAppendAudioOutBuffer(buf) != 0) {
+            _ = c.audoutStopAudioOut();
+            c.audoutExit();
             initialized = false;
             free_output();
             return error.AudioInitFailed;
@@ -116,8 +98,8 @@ pub fn init() anyerror!void {
 
 pub fn deinit() void {
     if (initialized) {
-        _ = audoutStopAudioOut();
-        audoutExit();
+        _ = c.audoutStopAudioOut();
+        c.audoutExit();
         initialized = false;
     }
 
@@ -132,14 +114,14 @@ pub fn update() void {
     if (!initialized) return;
 
     while (true) {
-        var released: ?*AudioOutBuffer = null;
+        var released: ?*c.AudioOutBuffer = null;
         var released_count: u32 = 0;
-        if (audoutGetReleasedAudioOutBuffer(&released, &released_count) != 0) return;
+        if (c.audoutGetReleasedAudioOutBuffer(&released, &released_count) != 0) return;
         if (released_count == 0 or released == null) return;
 
         const buf = released.?;
         fill_output_buffer(buf);
-        _ = audoutAppendAudioOutBuffer(buf);
+        _ = c.audoutAppendAudioOutBuffer(buf);
     }
 }
 
@@ -177,7 +159,7 @@ pub fn is_slot_active(slot: u8) bool {
     return slots[slot].state != .inactive and slots[slot].state != .finished;
 }
 
-fn fill_output_buffer(buf: *AudioOutBuffer) void {
+fn fill_output_buffer(buf: *c.AudioOutBuffer) void {
     const out: [*]i16 = @ptrCast(@alignCast(buf.buffer.?));
 
     for (0..SAMPLES_PER_BUF) |frame| {
@@ -250,7 +232,7 @@ fn clamp_i16(v: i32) i16 {
 
 fn free_output() void {
     if (output_data) |data| {
-        free(data);
+        c.free(data);
         output_data = null;
     }
 }

@@ -187,12 +187,22 @@ fn devkitProPath(b: *std.Build) []const u8 {
     return p;
 }
 
-fn add3dsCImportPaths(mod: *std.Build.Module, dkp: []const u8) void {
+fn addNintendoCImportPaths(owner: *std.Build, mod: *std.Build.Module, config: Config, dkp: []const u8) void {
     const b = mod.owner;
-    // Keep newlib before libctru so libctru's include_next sys wrappers
-    // resolve during Zig's C translation of Citro3D/libctru headers.
-    mod.addIncludePath(.{ .cwd_relative = b.pathJoin(&.{ dkp, "devkitARM/arm-none-eabi/include" }) });
-    mod.addIncludePath(.{ .cwd_relative = b.pathJoin(&.{ dkp, "libctru/include" }) });
+    mod.addIncludePath(owner.path("src/platform"));
+    switch (config.platform) {
+        .nintendo_3ds => {
+            // Keep newlib before libctru so libctru's include_next sys wrappers
+            // resolve during Zig's C translation of Citro3D/libctru headers.
+            mod.addIncludePath(.{ .cwd_relative = b.pathJoin(&.{ dkp, "devkitARM/arm-none-eabi/include" }) });
+            mod.addIncludePath(.{ .cwd_relative = b.pathJoin(&.{ dkp, "libctru/include" }) });
+        },
+        .nintendo_switch => {
+            mod.addIncludePath(.{ .cwd_relative = b.pathJoin(&.{ dkp, "devkitA64/aarch64-none-elf/include" }) });
+            mod.addIncludePath(.{ .cwd_relative = b.pathJoin(&.{ dkp, "libnx/include" }) });
+        },
+        else => {},
+    }
 }
 
 /// Creates a `3dslink` command for pushing an installed `.3dsx` to a
@@ -344,8 +354,8 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
         }
     }
 
-    if (config.platform == .nintendo_3ds) {
-        add3dsCImportPaths(mod, devkitProPath(b));
+    if (uses_nintendo_c_io) {
+        addNintendoCImportPaths(owner, mod, config, devkitProPath(b));
     }
 
     addInternalShaderModule(owner, b, mod, config);
@@ -457,8 +467,8 @@ pub fn addHeadless(owner: *std.Build, b: *std.Build, opts: HeadlessOptions) *std
         mod.addImport("pspsdk", pd.module("pspsdk"));
     }
 
-    if (config.platform == .nintendo_3ds) {
-        add3dsCImportPaths(mod, devkitProPath(b));
+    if (uses_nintendo_c_io) {
+        addNintendoCImportPaths(owner, mod, config, devkitProPath(b));
     }
 
     const user_mod = b.createModule(.{

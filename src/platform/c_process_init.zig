@@ -1,24 +1,23 @@
 const std = @import("std");
 const c_io = @import("c_io.zig");
+const c = @import("nintendo_c.zig").c;
 const options = @import("options");
 
 const ProcessHeap = if (options.config.platform == .nintendo_3ds) struct {
-    extern fn linearMemAlign(size: usize, alignment: usize) ?*anyopaque;
-    extern fn linearFree(ptr: ?*anyopaque) void;
-
     fn alloc(alignment: usize, size: usize) ?*anyopaque {
-        return linearMemAlign(size, alignment);
+        return c.linearMemAlign(size, alignment);
     }
 
     fn free(ptr: ?*anyopaque) void {
-        linearFree(ptr);
+        c.linearFree(ptr);
     }
 } else struct {
-    extern fn memalign(alignment: usize, size: usize) ?*anyopaque;
-    extern fn free(ptr: ?*anyopaque) void;
-
     fn alloc(alignment: usize, size: usize) ?*anyopaque {
-        return memalign(alignment, size);
+        return c.memalign(alignment, size);
+    }
+
+    fn free(ptr: ?*anyopaque) void {
+        c.free(ptr);
     }
 };
 
