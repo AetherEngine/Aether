@@ -1,19 +1,16 @@
-const options = @import("options");
-
-pub const Vertex = if (options.config.platform == .nintendo_3ds) Vertex3DS else VertexBaseline;
-
-const Vertex3DS = extern struct {
-    pos: [3]i16,
-    uv: [2]i16,
-    color: u32 align(2),
-};
-
-const VertexBaseline = extern struct {
-    uv: [2]i16,
-    color: u32,
+pub const Vertex = extern struct {
     pos: [3]i16,
     _pad: i16 = 0,
+    uv: [2]i16,
+    color: u32,
 };
+
+comptime {
+    if (@sizeOf(Vertex) != 16) @compileError("Rendering.Vertex must stay 16 bytes");
+    if (@offsetOf(Vertex, "pos") != 0) @compileError("Rendering.Vertex.pos must stay at byte offset 0");
+    if (@offsetOf(Vertex, "uv") != 8) @compileError("Rendering.Vertex.uv must stay at byte offset 8");
+    if (@offsetOf(Vertex, "color") != 12) @compileError("Rendering.Vertex.color must stay at byte offset 12");
+}
 
 pub const AttributeUsage = enum {
     position,

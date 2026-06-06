@@ -4,7 +4,6 @@ const std = @import("std");
 const Util = @import("../../util/util.zig");
 const Mat4 = @import("../../math/math.zig").Mat4;
 const Rendering = @import("../../rendering/rendering.zig");
-const vertex = Rendering.vertex;
 const Mesh = Rendering.mesh;
 const Texture = Rendering.Texture;
 const surface = @import("surface.zig");
@@ -49,7 +48,6 @@ const SCREEN_WIDTH: u32 = 400;
 const SCREEN_HEIGHT: u32 = 240;
 const TARGET_WIDTH: c_int = 240;
 const TARGET_HEIGHT: c_int = 400;
-const MAX_VERTEX_ATTRS: usize = 12;
 const MESH_SLOT_COUNT: usize = 2;
 const MAX_DEFERRED_MESH_FREES: usize = 4096;
 const C3D_CMD_BUFFER_SIZE: usize = 1024 * 1024;
@@ -70,26 +68,28 @@ const DISPLAY_TRANSFER_FLAGS: u32 = @intCast(
         c.GX_TRANSFER_SCALING(c.GX_TRANSFER_SCALE_NO),
 );
 
-const ShaderType = c.GPU_SHADER_TYPE;
-const VERTEX_SHADER: ShaderType = @intCast(c.GPU_VERTEX_SHADER);
 const VERTEX_SHADER_INDEX: usize = 0;
+const VERTEX_STRIDE: usize = @sizeOf(Rendering.Vertex);
+const VERTEX_ATTR_COUNT: c_int = 3;
+const VERTEX_BUFFER_PERMUTATION: u64 = 0x210; // buffer order pos,uv,color -> shader v0,v1,v2
+const VERTEX_POSITION_REG: c_int = 0;
+const VERTEX_UV_REG: c_int = 1;
+const VERTEX_COLOR_REG: c_int = 2;
+const POS_SCALE: [4]f32 = .{ snorm16_scale(), snorm16_scale(), snorm16_scale(), 1.0 };
+const UV_SCALE: [2]f32 = .{ snorm16_scale(), snorm16_scale() };
+const COLOR_SCALE: [4]f32 = .{ unorm8_scale(), unorm8_scale(), unorm8_scale(), unorm8_scale() };
 
-const BufferBinding = struct {
-    offset: usize,
-    vertex_span: usize,
-    attrib_count: c_int,
-    permutation: u64,
-};
+comptime {
+    std.debug.assert(VERTEX_STRIDE == 16);
+    std.debug.assert(@offsetOf(Rendering.Vertex, "pos") == 0);
+    std.debug.assert(@offsetOf(Rendering.Vertex, "uv") == 8);
+    std.debug.assert(@offsetOf(Rendering.Vertex, "color") == 12);
+}
 
 const PipelineData = struct {
     dvlb: [*c]c.DVLB_s,
     program: c.shaderProgram_s,
     attr_info: c.C3D_AttrInfo,
-    stride: usize,
-    buffer: BufferBinding,
-    pos_scale: [4]f32,
-    uv_scale: [2]f32,
-    color_scale: [4]f32,
     u_projection: c_int,
     u_model_view: c_int,
     u_pos_scale: c_int,
@@ -215,7 +215,7 @@ pub fn init() anyerror!void {
 
     c.C3D_RenderTargetSetOutput(target, c.GFX_TOP, c.GFX_LEFT, DISPLAY_TRANSFER_FLAGS);
     init_projection_transform();
-    render_pipeline = try init_pipeline(vertex.Layout);
+    render_pipeline = try init_pipeline();
     render_pipeline_initialized = true;
 
     initialized = true;
@@ -385,9 +385,8 @@ pub fn set_vsync(v: bool) void {
     vsync_enabled = v;
 }
 
-fn init_pipeline(layout: vertex.VertexLayout) !PipelineData {
+fn init_pipeline() !PipelineData {
     const code: [:0]align(4) const u8 = &shaders.basic_vert;
-    if (layout.stride == 0 or layout.attributes.len > MAX_VERTEX_ATTRS) return error.UnsupportedVertexLayout;
 
     const dvlb = c.DVLB_ParseFile(@ptrCast(@constCast(code.ptr)), @intCast(code.len));
     if (dvlb == null or dvlb[0].numDVLE == 0) return error.InvalidShader;
@@ -399,38 +398,16 @@ fn init_pipeline(layout: vertex.VertexLayout) !PipelineData {
 
     if (c.shaderProgramSetVsh(&program, &dvlb[0].DVLE[0]) != 0) return error.InvalidShader;
 
-    for (layout.attributes) |attr| {
-        if (attr.binding != 0) return error.UnsupportedVertexLayout;
-    }
-
-    const position_attr = find_attr(layout, .position) orelse return error.UnsupportedVertexLayout;
-    const uv_attr = find_attr(layout, .uv) orelse return error.UnsupportedVertexLayout;
-    const color_attr = find_attr(layout, .color) orelse return error.UnsupportedVertexLayout;
-    const pos_scale = position_scale(position_attr) orelse return error.UnsupportedVertexLayout;
-    const uv_attr_scale = uv_scale(uv_attr) orelse return error.UnsupportedVertexLayout;
-    const color_attr_scale = color_scale(color_attr) orelse return error.UnsupportedVertexLayout;
-    const buffer_layout = buffer_layout_from_attrs(layout.stride, position_attr, uv_attr, color_attr) orelse return error.UnsupportedVertexLayout;
-
     var attr_info: c.C3D_AttrInfo = undefined;
     c.AttrInfo_Init(&attr_info);
-    if (add_attr_loader(&attr_info, 0, position_attr, buffer_layout.position_loader_size) < 0) return error.UnsupportedVertexLayout;
-    if (add_attr_loader(&attr_info, 1, uv_attr, buffer_layout.uv_loader_size) < 0) return error.UnsupportedVertexLayout;
-    if (add_attr_loader(&attr_info, 2, color_attr, buffer_layout.color_loader_size) < 0) return error.UnsupportedVertexLayout;
+    if (c.AttrInfo_AddLoader(&attr_info, VERTEX_POSITION_REG, c.GPU_SHORT, 4) < 0) return error.UnsupportedVertexLayout;
+    if (c.AttrInfo_AddLoader(&attr_info, VERTEX_UV_REG, c.GPU_SHORT, 2) < 0) return error.UnsupportedVertexLayout;
+    if (c.AttrInfo_AddLoader(&attr_info, VERTEX_COLOR_REG, c.GPU_UNSIGNED_BYTE, 4) < 0) return error.UnsupportedVertexLayout;
 
     return .{
         .dvlb = dvlb,
         .program = program,
         .attr_info = attr_info,
-        .stride = layout.stride,
-        .buffer = .{
-            .offset = buffer_layout.base_offset,
-            .vertex_span = buffer_layout.vertex_span,
-            .attrib_count = buffer_layout.attribute_count,
-            .permutation = buffer_layout.permutation,
-        },
-        .pos_scale = pos_scale,
-        .uv_scale = uv_attr_scale,
-        .color_scale = color_attr_scale,
         .u_projection = c.shaderInstanceGetUniformLocation(program.vertexShader, "projection"),
         .u_model_view = c.shaderInstanceGetUniformLocation(program.vertexShader, "modelView"),
         .u_pos_scale = c.shaderInstanceGetUniformLocation(program.vertexShader, "posScale"),
@@ -504,7 +481,7 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize) void {
     const data = slot.data orelse return;
     if (count == 0 or slot.len == 0) return;
 
-    const needed = mesh_draw_bytes_needed(pl, count) orelse return;
+    const needed = mesh_draw_bytes_needed(count) orelse return;
     if (needed > slot.len) return;
 
     bind_vertex_state(pl);
@@ -513,8 +490,7 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize) void {
 
     const buf = c.C3D_GetBufInfo() orelse return;
     c.BufInfo_Init(buf);
-    const ptr = @as([*]const u8, data.ptr) + pl.buffer.offset;
-    const added = c.BufInfo_Add(buf, ptr, @intCast(pl.stride), pl.buffer.attrib_count, pl.buffer.permutation);
+    const added = c.BufInfo_Add(buf, data.ptr, @intCast(VERTEX_STRIDE), VERTEX_ATTR_COUNT, VERTEX_BUFFER_PERMUTATION);
     if (added < 0) {
         c.BufInfo_Init(buf);
         return;
@@ -688,16 +664,11 @@ fn mark_current_frame_mesh_slots_in_flight() void {
     }
 }
 
-fn mesh_draw_bytes_needed(pl: *const PipelineData, count: usize) ?usize {
+fn mesh_draw_bytes_needed(count: usize) ?usize {
     if (count == 0) return 0;
-
-    const tail_count = count - 1;
     const max = std.math.maxInt(usize);
-    if (pl.stride != 0 and tail_count > (max - pl.buffer.vertex_span) / pl.stride) return null;
-
-    const rel_end = tail_count * pl.stride + pl.buffer.vertex_span;
-    if (pl.buffer.offset > max - rel_end) return null;
-    return pl.buffer.offset + rel_end;
+    if (count > max / VERTEX_STRIDE) return null;
+    return count * VERTEX_STRIDE;
 }
 
 fn apply_render_state() void {
@@ -778,14 +749,14 @@ fn upload_draw_uniforms(pl: *PipelineData, model: *const Mat4) void {
 
     upload_matrix(pl.u_projection, &projection);
     upload_matrix(pl.u_model_view, &model_view_c3d);
-    upload_vec4(pl.u_pos_scale, pl.pos_scale);
+    upload_vec4(pl.u_pos_scale, POS_SCALE);
     upload_vec4(pl.u_uv_scale_offset, .{
-        pl.uv_scale[0],
-        pl.uv_scale[1],
+        UV_SCALE[0],
+        UV_SCALE[1],
         uv_offset[0],
         uv_offset[1],
     });
-    upload_vec4(pl.u_color_scale, pl.color_scale);
+    upload_vec4(pl.u_color_scale, COLOR_SCALE);
 }
 
 fn upload_matrix(location: c_int, matrix: *const c.C3D_Mtx) void {
@@ -1004,172 +975,6 @@ fn texture_slot(handle: Texture.Handle) ?*TextureData {
     if (idx == 0 or idx >= textures.buffer.len) return null;
     if (textures.buffer[idx]) |*tex| return tex;
     return null;
-}
-
-fn find_attr(layout: vertex.VertexLayout, usage: vertex.AttributeUsage) ?vertex.Attribute {
-    for (layout.attributes) |attr| {
-        if (attr.usage == usage) return attr;
-    }
-    return null;
-}
-
-const BufferLayout = struct {
-    base_offset: usize,
-    vertex_span: usize,
-    attribute_count: c_int,
-    permutation: u64,
-    position_loader_size: u8,
-    uv_loader_size: u8,
-    color_loader_size: u8,
-};
-
-fn buffer_layout_from_attrs(stride: usize, position_attr: vertex.Attribute, uv_attr: vertex.Attribute, color_attr: vertex.Attribute) ?BufferLayout {
-    var attrs = [_]vertex.Attribute{ position_attr, uv_attr, color_attr };
-    sort_attrs_by_offset(&attrs);
-
-    const base_offset = attrs[0].offset;
-    var current_rel: usize = 0;
-    var attribute_count: usize = 0;
-    var permutation: u64 = 0;
-    var position_loader_size: u8 = 0;
-    var uv_loader_size: u8 = 0;
-    var color_loader_size: u8 = 0;
-
-    for (attrs, 0..) |attr, i| {
-        if (!attr_fits(stride, attr)) return null;
-        if (attr.offset < base_offset) return null;
-        const rel_offset = attr.offset - base_offset;
-        if (rel_offset != current_rel) return null;
-
-        const next_offset = if (i + 1 < attrs.len) attrs[i + 1].offset else stride;
-        if (next_offset < attr.offset) return null;
-        const available_bytes = next_offset - attr.offset;
-        const loader_size = attribute_loader_size(attr, available_bytes) orelse return null;
-        const loaded_bytes = attribute_size_bytes_with_count(attr.format, loader_size) orelse return null;
-        if (loaded_bytes > available_bytes) return null;
-        if (i + 1 < attrs.len and loaded_bytes != available_bytes) return null;
-
-        permutation |= attribute_loader_id(attr.usage) << @as(u6, @intCast(attribute_count * 4));
-        attribute_count += 1;
-        switch (attr.usage) {
-            .position => position_loader_size = loader_size,
-            .uv => uv_loader_size = loader_size,
-            .color => color_loader_size = loader_size,
-            .normal => return null,
-        }
-        current_rel = rel_offset + loaded_bytes;
-    }
-
-    if (stride < current_rel) return null;
-    if (position_loader_size == 0 or uv_loader_size == 0 or color_loader_size == 0) return null;
-
-    return .{
-        .base_offset = base_offset,
-        .vertex_span = current_rel,
-        .attribute_count = @intCast(attribute_count),
-        .permutation = permutation,
-        .position_loader_size = position_loader_size,
-        .uv_loader_size = uv_loader_size,
-        .color_loader_size = color_loader_size,
-    };
-}
-
-fn sort_attrs_by_offset(attrs: *[3]vertex.Attribute) void {
-    var i: usize = 1;
-    while (i < attrs.len) : (i += 1) {
-        var j = i;
-        while (j > 0 and attrs[j - 1].offset > attrs[j].offset) : (j -= 1) {
-            const tmp = attrs[j - 1];
-            attrs[j - 1] = attrs[j];
-            attrs[j] = tmp;
-        }
-    }
-}
-
-fn attribute_loader_id(usage: vertex.AttributeUsage) u64 {
-    return switch (usage) {
-        .position => 0,
-        .uv => 1,
-        .color => 2,
-        .normal => unreachable,
-    };
-}
-
-fn attr_fits(stride: usize, attr: vertex.Attribute) bool {
-    const size = attribute_size_bytes(attr.format);
-    return attr.offset <= stride and size <= stride - attr.offset;
-}
-
-fn attribute_loader_size(attr: vertex.Attribute, available_bytes: usize) ?u8 {
-    if (attr.usage == .position and attr.size == 3 and attribute_component_size_bytes(attr.format) == 2 and available_bytes >= 8) {
-        return 4;
-    }
-    if (attr.size == 0 or attr.size > 4) return null;
-    return @intCast(attr.size);
-}
-
-fn attribute_size_bytes(format: vertex.AttributeFormat) usize {
-    return switch (format) {
-        .f32x2 => 8,
-        .f32x3 => 12,
-        .unorm8x2 => 2,
-        .unorm8x4 => 4,
-        .unorm16x2, .snorm16x2 => 4,
-        .unorm16x3, .snorm16x3 => 6,
-    };
-}
-
-fn attribute_size_bytes_with_count(format: vertex.AttributeFormat, count: u8) ?usize {
-    if (count == 0 or count > 4) return null;
-    return attribute_component_size_bytes(format) * @as(usize, count);
-}
-
-fn attribute_component_size_bytes(format: vertex.AttributeFormat) usize {
-    return switch (format) {
-        .f32x2, .f32x3 => 4,
-        .unorm8x2, .unorm8x4 => 1,
-        .unorm16x2, .unorm16x3, .snorm16x2, .snorm16x3 => 2,
-    };
-}
-
-fn gpu_format(format: vertex.AttributeFormat) c.GPU_FORMATS {
-    return switch (format) {
-        .f32x2, .f32x3 => c.GPU_FLOAT,
-        .unorm8x2, .unorm8x4 => c.GPU_UNSIGNED_BYTE,
-        .unorm16x2, .unorm16x3, .snorm16x2, .snorm16x3 => c.GPU_SHORT,
-    };
-}
-
-fn add_attr_loader(info: *c.C3D_AttrInfo, reg_id: c_int, attr: vertex.Attribute, loader_size: u8) c_int {
-    return c.AttrInfo_AddLoader(info, reg_id, gpu_format(attr.format), loader_size);
-}
-
-fn position_scale(attr: vertex.Attribute) ?[4]f32 {
-    if (attr.size != 3) return null;
-    return switch (attr.format) {
-        .f32x3 => .{ 1.0, 1.0, 1.0, 1.0 },
-        .snorm16x3 => .{ snorm16_scale(), snorm16_scale(), snorm16_scale(), 1.0 },
-        else => null,
-    };
-}
-
-fn uv_scale(attr: vertex.Attribute) ?[2]f32 {
-    if (attr.size != 2) return null;
-    return switch (attr.format) {
-        .f32x2 => .{ 1.0, 1.0 },
-        .unorm8x2 => .{ unorm8_scale(), unorm8_scale() },
-        .snorm16x2 => .{ snorm16_scale(), snorm16_scale() },
-        else => null,
-    };
-}
-
-fn color_scale(attr: vertex.Attribute) ?[4]f32 {
-    if (attr.size != 4) return null;
-    return switch (attr.format) {
-        .unorm8x4 => .{ unorm8_scale(), unorm8_scale(), unorm8_scale(), unorm8_scale() },
-        .f32x3 => .{ 1.0, 1.0, 1.0, 1.0 },
-        else => null,
-    };
 }
 
 fn unorm8_scale() f32 {
