@@ -16,44 +16,31 @@ const platform_paths = switch (options.config.platform) {
     else => unreachable,
 };
 
-const c = std.c;
-
-const CDirent = extern struct {
-    d_ino: c_int,
-    d_type: u8,
-    d_name: [256:0]u8,
-};
-
-const devkit = struct {
-    extern "c" fn open(path: [*:0]const u8, flags: c_int, ...) c_int;
-    extern "c" fn mkdir(path: [*:0]const u8, mode: c_int) c_int;
-    extern "c" fn readdir(dirp: *c.DIR) ?*CDirent;
-    extern "c" fn __errno() *c_int;
-};
+const c = @import("nintendo_c.zig").c;
 const max_path_bytes = 1024;
 
 const AT_FDCWD: c_int = -2;
-const O_RDONLY: c_int = 0;
-const O_WRONLY: c_int = 1;
-const O_RDWR: c_int = 2;
-const O_CREAT: c_int = 0x0200;
-const O_TRUNC: c_int = 0x0400;
-const O_EXCL: c_int = 0x0800;
-const O_BINARY: c_int = 0x10000;
-const O_CLOEXEC: c_int = 0x40000;
-const O_NOFOLLOW: c_int = 0x100000;
-const SEEK_SET: c_int = 0;
-const SEEK_CUR: c_int = 1;
-const SEEK_END: c_int = 2;
+const O_RDONLY: c_int = c.O_RDONLY;
+const O_WRONLY: c_int = c.O_WRONLY;
+const O_RDWR: c_int = c.O_RDWR;
+const O_CREAT: c_int = c.O_CREAT;
+const O_TRUNC: c_int = c.O_TRUNC;
+const O_EXCL: c_int = c.O_EXCL;
+const O_BINARY: c_int = c.O_BINARY;
+const O_CLOEXEC: c_int = c.O_CLOEXEC;
+const O_NOFOLLOW: c_int = c.O_NOFOLLOW;
+const SEEK_SET: c_int = c.SEEK_SET;
+const SEEK_CUR: c_int = c.SEEK_CUR;
+const SEEK_END: c_int = c.SEEK_END;
 
-const DT_FIFO: u8 = 1;
-const DT_CHR: u8 = 2;
-const DT_DIR: u8 = 4;
-const DT_BLK: u8 = 6;
-const DT_REG: u8 = 8;
-const DT_LNK: u8 = 10;
-const DT_SOCK: u8 = 12;
-const DT_WHT: u8 = 14;
+const DT_FIFO: u8 = c.DT_FIFO;
+const DT_CHR: u8 = c.DT_CHR;
+const DT_DIR: u8 = c.DT_DIR;
+const DT_BLK: u8 = c.DT_BLK;
+const DT_REG: u8 = c.DT_REG;
+const DT_LNK: u8 = c.DT_LNK;
+const DT_SOCK: u8 = c.DT_SOCK;
+const DT_WHT: u8 = c.DT_WHT;
 
 var read_fd: c_int = -1;
 var write_fd: c_int = -1;
@@ -185,7 +172,7 @@ fn dirCreateDir(
     var path_buffer: [max_path_bytes:0]u8 = undefined;
     const path = try rootedPathForDir(&path_buffer, dir, sub_path);
     const mode = permissionsMode(permissions, 0o777);
-    if (devkit.mkdir(path.ptr, mode) == 0) return;
+    if (c.mkdir(path.ptr, mode) == 0) return;
     return createDirError(errno());
 }
 
@@ -225,7 +212,7 @@ fn dirAccess(_: ?*anyopaque, dir: Dir, sub_path: []const u8, opts: Dir.AccessOpt
 
     var path_buffer: [max_path_bytes:0]u8 = undefined;
     const path = try rootedPathForDir(&path_buffer, dir, sub_path);
-    const fd = devkit.open(path.ptr, O_BINARY | O_RDONLY | O_CLOEXEC, @as(c_int, 0));
+    const fd = c.open(path.ptr, O_BINARY | O_RDONLY | O_CLOEXEC, @as(c.mode_t, 0));
     if (fd < 0) return accessError(errno());
     _ = c.close(fd);
 }
@@ -250,7 +237,7 @@ fn dirOpenFile(_: ?*anyopaque, dir: Dir, sub_path: []const u8, flags: Dir.OpenFi
     if (!flags.follow_symlinks) open_flags |= O_NOFOLLOW;
 
     const path = try rootedPathForDir(&path_buffer, dir, sub_path);
-    const fd = devkit.open(path.ptr, open_flags, @as(c_int, 0));
+    const fd = c.open(path.ptr, open_flags, @as(c.mode_t, 0));
     if (fd < 0) return openError(errno());
     errdefer _ = c.close(fd);
     return registerFile(fd, role);
@@ -267,7 +254,7 @@ fn dirCreateFile(_: ?*anyopaque, dir: Dir, sub_path: []const u8, flags: Dir.Crea
 
     const mode = permissionsMode(flags.permissions, 0o666);
     const path = try rootedPathForDir(&path_buffer, dir, sub_path);
-    const fd = devkit.open(path.ptr, open_flags, mode);
+    const fd = c.open(path.ptr, open_flags, mode);
     if (fd < 0) return openError(errno());
     errdefer _ = c.close(fd);
     return registerFile(fd, if (flags.read) .read_write else .write);
@@ -366,15 +353,15 @@ fn dirRead(_: ?*anyopaque, reader: *Dir.Reader, out: []Dir.Entry) Dir.Reader.Err
     var count: usize = 0;
     var name_end = reader.buffer.len;
     while (count < out.len) {
-        devkit.__errno().* = 0;
-        const entry = devkit.readdir(stream) orelse {
+        c.__errno().* = 0;
+        const entry = c.readdir(stream) orelse {
             if (errno() != 0) return dirReadError(errno());
             reader.state = .finished;
             return count;
         };
         header.pos = c.telldir(stream);
 
-        const name = std.mem.span(@as([*:0]const u8, @ptrCast(&entry.d_name)));
+        const name = std.mem.span(@as([*:0]const u8, @ptrCast(&entry.*.d_name)));
         if (std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) continue;
         if (name.len + 1 > name_end - header_end) {
             if (count == 0) return error.Unexpected;
@@ -386,8 +373,8 @@ fn dirRead(_: ?*anyopaque, reader: *Dir.Reader, out: []Dir.Entry) Dir.Reader.Err
         reader.buffer[name_end + name.len] = 0;
         out[count] = .{
             .name = reader.buffer[name_end .. name_end + name.len],
-            .kind = direntKind(entry.d_type),
-            .inode = @intCast(entry.d_ino),
+            .kind = direntKind(entry.*.d_type),
+            .inode = @intCast(entry.*.d_ino),
         };
         count += 1;
     }
@@ -667,8 +654,8 @@ fn createDirPathAt(dir: Dir, sub_path: []const u8, permissions: Dir.Permissions)
     return status;
 }
 
-fn createSingleDirPath(path: [*:0]const u8, mode: c_int) Dir.CreateDirPathError!Dir.CreatePathStatus {
-    if (devkit.mkdir(path, mode) == 0) return .created;
+fn createSingleDirPath(path: [*:0]const u8, mode: c.mode_t) Dir.CreateDirPathError!Dir.CreatePathStatus {
+    if (c.mkdir(path, mode) == 0) return .created;
     switch (errno()) {
         17 => return .existed,
         1 => return error.PermissionDenied,
@@ -740,7 +727,7 @@ fn fdFromDirHandle(dir: Dir) c_int {
     return @intCast(dir.handle);
 }
 
-fn permissionsMode(permissions: File.Permissions, default: c_int) c_int {
+fn permissionsMode(permissions: File.Permissions, default: c.mode_t) c.mode_t {
     if (@bitSizeOf(File.Permissions) == 0) return default;
     return @intCast(@intFromEnum(permissions));
 }
@@ -877,7 +864,7 @@ fn createFileAtomicDirError(err: anyerror) Dir.CreateFileAtomicError {
 }
 
 fn errno() c_int {
-    return devkit.__errno().*;
+    return c.__errno().*;
 }
 
 fn createDirError(code: c_int) Dir.CreateDirError {

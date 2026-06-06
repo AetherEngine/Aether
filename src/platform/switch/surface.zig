@@ -7,8 +7,7 @@
 
 const std = @import("std");
 const Self = @This();
-
-extern fn appletMainLoop() bool;
+const c = @import("../nintendo_c.zig").c;
 
 alloc: std.mem.Allocator,
 
@@ -17,7 +16,7 @@ pub fn init(_: *Self, _: u32, _: u32, _: [:0]const u8, _: bool, _: bool, _: bool
 pub fn deinit(_: *Self) void {}
 
 pub fn update(_: *Self) bool {
-    return appletMainLoop();
+    return c.appletMainLoop();
 }
 
 pub fn draw(_: *Self) void {}

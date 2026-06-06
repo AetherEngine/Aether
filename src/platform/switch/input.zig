@@ -3,104 +3,46 @@
 
 const std = @import("std");
 const core = @import("../../core/input/input.zig");
+const c = @import("../nintendo_c.zig").c;
 
-const Result = u32;
+const HID_NPAD_STYLE_STANDARD: u32 = c.HidNpadStyleTag_NpadFullKey |
+    c.HidNpadStyleTag_NpadHandheld |
+    c.HidNpadStyleTag_NpadJoyDual |
+    c.HidNpadStyleTag_NpadJoyLeft |
+    c.HidNpadStyleTag_NpadJoyRight;
 
-const HidAnalogStickState = extern struct {
-    x: i32,
-    y: i32,
-};
+const DEFAULT_PAD_MASK: u64 = (@as(u64, 1) << c.HidNpadIdType_No1) |
+    (@as(u64, 1) << c.HidNpadIdType_Handheld);
 
-const HidTouchState = extern struct {
-    delta_time: u64,
-    attributes: u32,
-    finger_id: u32,
-    x: u32,
-    y: u32,
-    diameter_x: u32,
-    diameter_y: u32,
-    rotation_angle: u32,
-    reserved: u32,
-};
+const BUTTON_A: u64 = c.HidNpadButton_A;
+const BUTTON_B: u64 = c.HidNpadButton_B;
+const BUTTON_X: u64 = c.HidNpadButton_X;
+const BUTTON_Y: u64 = c.HidNpadButton_Y;
+const BUTTON_STICK_L: u64 = c.HidNpadButton_StickL;
+const BUTTON_STICK_R: u64 = c.HidNpadButton_StickR;
+const BUTTON_L: u64 = c.HidNpadButton_L;
+const BUTTON_R: u64 = c.HidNpadButton_R;
+const BUTTON_ZL: u64 = c.HidNpadButton_ZL;
+const BUTTON_ZR: u64 = c.HidNpadButton_ZR;
+const BUTTON_PLUS: u64 = c.HidNpadButton_Plus;
+const BUTTON_MINUS: u64 = c.HidNpadButton_Minus;
+const BUTTON_LEFT: u64 = c.HidNpadButton_Left;
+const BUTTON_UP: u64 = c.HidNpadButton_Up;
+const BUTTON_RIGHT: u64 = c.HidNpadButton_Right;
+const BUTTON_DOWN: u64 = c.HidNpadButton_Down;
+const BUTTON_LEFT_SL: u64 = c.HidNpadButton_LeftSL;
+const BUTTON_LEFT_SR: u64 = c.HidNpadButton_LeftSR;
+const BUTTON_RIGHT_SL: u64 = c.HidNpadButton_RightSL;
+const BUTTON_RIGHT_SR: u64 = c.HidNpadButton_RightSR;
 
-const HidTouchScreenState = extern struct {
-    sampling_number: u64,
-    count: i32,
-    reserved: u32,
-    touches: [16]HidTouchState,
-};
-
-const PadState = extern struct {
-    id_mask: u8,
-    active_id_mask: u8,
-    read_handheld: bool,
-    active_handheld: bool,
-    style_set: u32,
-    attributes: u32,
-    buttons_cur: u64,
-    buttons_old: u64,
-    sticks: [2]HidAnalogStickState,
-    gc_triggers: [2]u32,
-};
-
-extern fn hidInitialize() Result;
-extern fn hidExit() void;
-extern fn hidInitializeTouchScreen() void;
-extern fn hidGetTouchScreenStates(states: [*]HidTouchScreenState, count: usize) usize;
-
-extern fn padConfigureInput(max_players: u32, style_set: u32) void;
-extern fn padInitializeWithMask(pad: *PadState, mask: u64) void;
-extern fn padUpdate(pad: *PadState) void;
-
-extern fn swkbdCreate(config: *anyopaque, max_dictwords: i32) Result;
-extern fn swkbdClose(config: *anyopaque) void;
-extern fn swkbdConfigMakePresetDefault(config: *anyopaque) void;
-extern fn swkbdConfigSetOkButtonText(config: *anyopaque, text: [*:0]const u8) void;
-extern fn swkbdConfigSetHeaderText(config: *anyopaque, text: [*:0]const u8) void;
-extern fn swkbdConfigSetGuideText(config: *anyopaque, text: [*:0]const u8) void;
-extern fn swkbdConfigSetInitialText(config: *anyopaque, text: [*:0]const u8) void;
-extern fn swkbdShow(config: *anyopaque, out_string: [*]u8, out_string_size: usize) Result;
-
-const HID_NPAD_STYLE_FULL_KEY: u32 = 1 << 0;
-const HID_NPAD_STYLE_HANDHELD: u32 = 1 << 1;
-const HID_NPAD_STYLE_JOY_DUAL: u32 = 1 << 2;
-const HID_NPAD_STYLE_JOY_LEFT: u32 = 1 << 3;
-const HID_NPAD_STYLE_JOY_RIGHT: u32 = 1 << 4;
-const HID_NPAD_STYLE_STANDARD: u32 = HID_NPAD_STYLE_FULL_KEY | HID_NPAD_STYLE_HANDHELD | HID_NPAD_STYLE_JOY_DUAL | HID_NPAD_STYLE_JOY_LEFT | HID_NPAD_STYLE_JOY_RIGHT;
-
-const HID_NPAD_ID_NO1: u64 = 1 << 0;
-const HID_NPAD_ID_HANDHELD: u64 = 1 << 32;
-const DEFAULT_PAD_MASK: u64 = HID_NPAD_ID_NO1 | HID_NPAD_ID_HANDHELD;
-
-const BUTTON_A: u64 = 1 << 0;
-const BUTTON_B: u64 = 1 << 1;
-const BUTTON_X: u64 = 1 << 2;
-const BUTTON_Y: u64 = 1 << 3;
-const BUTTON_STICK_L: u64 = 1 << 4;
-const BUTTON_STICK_R: u64 = 1 << 5;
-const BUTTON_L: u64 = 1 << 6;
-const BUTTON_R: u64 = 1 << 7;
-const BUTTON_ZL: u64 = 1 << 8;
-const BUTTON_ZR: u64 = 1 << 9;
-const BUTTON_PLUS: u64 = 1 << 10;
-const BUTTON_MINUS: u64 = 1 << 11;
-const BUTTON_LEFT: u64 = 1 << 12;
-const BUTTON_UP: u64 = 1 << 13;
-const BUTTON_RIGHT: u64 = 1 << 14;
-const BUTTON_DOWN: u64 = 1 << 15;
-const BUTTON_LEFT_SL: u64 = 1 << 24;
-const BUTTON_LEFT_SR: u64 = 1 << 25;
-const BUTTON_RIGHT_SL: u64 = 1 << 26;
-const BUTTON_RIGHT_SR: u64 = 1 << 27;
-
-const JOYSTICK_MAX: f32 = 32767.0;
+const JOYSTICK_MAX: f32 = @floatFromInt(c.JOYSTICK_MAX);
 const MAX_TEXT_BYTES: usize = 1024;
 const SWKBD_CONFIG_BYTES: usize = 0x600;
 
 const axis_count = @typeInfo(core.Axis).@"enum".fields.len;
 
 var initialized: bool = false;
-var pad: PadState = undefined;
+var pad: c.PadState = undefined;
 var prev_buttons: u64 = 0;
 var prev_axes: [axis_count]f32 = @splat(0.0);
 var prev_touch_down: bool = false;
@@ -108,7 +50,7 @@ var prev_touch_pos: core.Vec2 = .{};
 
 pub fn setup(_: std.mem.Allocator, _: std.Io) void {
     initialized = false;
-    pad = std.mem.zeroes(PadState);
+    pad = std.mem.zeroes(c.PadState);
     prev_buttons = 0;
     prev_axes = @splat(0.0);
     prev_touch_down = false;
@@ -116,21 +58,21 @@ pub fn setup(_: std.mem.Allocator, _: std.Io) void {
 }
 
 pub fn init() anyerror!void {
-    if (hidInitialize() != 0) return error.InputInitFailed;
-    hidInitializeTouchScreen();
-    padConfigureInput(1, HID_NPAD_STYLE_STANDARD);
-    padInitializeWithMask(&pad, DEFAULT_PAD_MASK);
+    if (c.hidInitialize() != 0) return error.InputInitFailed;
+    c.hidInitializeTouchScreen();
+    c.padConfigureInput(1, HID_NPAD_STYLE_STANDARD);
+    c.padInitializeWithMask(&pad, DEFAULT_PAD_MASK);
     initialized = true;
 }
 
 pub fn deinit() void {
     if (!initialized) return;
-    hidExit();
+    c.hidExit();
     initialized = false;
 }
 
 pub fn pump() void {
-    padUpdate(&pad);
+    c.padUpdate(&pad);
 
     diff_buttons(pad.buttons_cur);
     pump_axes(pad.buttons_cur);
@@ -153,21 +95,21 @@ pub fn begin_text_input_session(target: core.TextInputTarget, options: core.Text
     var target_buf: [128:0]u8 = @splat(0);
     const target_text = copy_z(&target_buf, target.id);
 
-    if (swkbdCreate(config, 0) != 0) {
+    if (c.swkbdCreate(config, 0) != 0) {
         core.write_text_session_buffer(initial_buf[0..initial_len], .cancelled);
         return;
     }
-    defer swkbdClose(config);
+    defer c.swkbdClose(config);
 
-    swkbdConfigMakePresetDefault(config);
-    swkbdConfigSetOkButtonText(config, "OK");
-    swkbdConfigSetHeaderText(config, target_text.ptr);
-    swkbdConfigSetGuideText(config, target_text.ptr);
-    swkbdConfigSetInitialText(config, initial.ptr);
+    c.swkbdConfigMakePresetDefault(config);
+    c.swkbdConfigSetOkButtonText(config, "OK");
+    c.swkbdConfigSetHeaderText(config, target_text.ptr);
+    c.swkbdConfigSetGuideText(config, target_text.ptr);
+    c.swkbdConfigSetInitialText(config, initial.ptr);
 
     var out_buf: [MAX_TEXT_BYTES:0]u8 = @splat(0);
     const out_size = output_buffer_size(options.max_bytes);
-    if (swkbdShow(config, out_buf[0..].ptr, out_size) == 0) {
+    if (c.swkbdShow(config, out_buf[0..].ptr, out_size) == 0) {
         const len = bounded_z_len(out_buf[0..out_size]);
         core.write_text_session_buffer(out_buf[0..len], .submitted);
     } else {
@@ -218,8 +160,8 @@ fn pump_axes(buttons: u64) void {
 }
 
 fn pump_touch() void {
-    var states: [1]HidTouchScreenState = undefined;
-    const state_count = hidGetTouchScreenStates(&states, states.len);
+    var states: [1]c.HidTouchScreenState = undefined;
+    const state_count = c.hidGetTouchScreenStates(&states, states.len);
     const touch_down = state_count > 0 and states[0].count > 0;
 
     if (touch_down) {
