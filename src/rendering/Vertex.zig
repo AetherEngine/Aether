@@ -1,15 +1,15 @@
 pub const Vertex = extern struct {
     pos: [3]i16,
     _pad: i16 = 0,
-    uv: [2]i16,
     color: u32,
+    uv: [2]i16,
 };
 
 comptime {
     if (@sizeOf(Vertex) != 16) @compileError("Rendering.Vertex must stay 16 bytes");
     if (@offsetOf(Vertex, "pos") != 0) @compileError("Rendering.Vertex.pos must stay at byte offset 0");
-    if (@offsetOf(Vertex, "uv") != 8) @compileError("Rendering.Vertex.uv must stay at byte offset 8");
-    if (@offsetOf(Vertex, "color") != 12) @compileError("Rendering.Vertex.color must stay at byte offset 12");
+    if (@offsetOf(Vertex, "color") != 8) @compileError("Rendering.Vertex.color must stay at byte offset 8");
+    if (@offsetOf(Vertex, "uv") != 12) @compileError("Rendering.Vertex.uv must stay at byte offset 12");
 }
 
 pub const AttributeUsage = enum {

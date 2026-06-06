@@ -15,6 +15,7 @@ const c = @cImport({
     @cInclude("3ds/gpu/enums.h");
     @cInclude("3ds/gpu/gpu.h");
     @cInclude("3ds/gpu/gx.h");
+    @cInclude("3ds/os.h");
     @cInclude("3ds/services/gspgpu.h");
     @cInclude("3ds/gfx.h");
     @cInclude("3ds/allocator/vram.h");
@@ -54,10 +55,14 @@ const C3D_CMD_BUFFER_SIZE: usize = 1024 * 1024;
 const MAX_TEXTURE_SIZE: u32 = 1024;
 const MIN_TEXTURE_SIZE: u32 = 8;
 const TEX_BPP: usize = 4;
+const CACHE_LINE_SIZE: usize = 32;
 const OS_FCRAM_VADDR: usize = 0x30000000;
 const OS_FCRAM_SIZE: usize = 0x10000000;
 const OS_OLD_FCRAM_VADDR: usize = 0x14000000;
 const OS_OLD_FCRAM_SIZE: usize = 0x08000000;
+const BUFFER_BASE_PADDR: u32 = 0x18000000;
+const SH_MODE_VSH: u32 = 0xA0000000;
+const FLOAT_UNIFORM_UPLOAD_F32: u32 = 0x80000000;
 
 const DISPLAY_TRANSFER_FLAGS: u32 = @intCast(
     c.GX_TRANSFER_FLIP_VERT(0) |
@@ -71,19 +76,21 @@ const DISPLAY_TRANSFER_FLAGS: u32 = @intCast(
 const VERTEX_SHADER_INDEX: usize = 0;
 const VERTEX_STRIDE: usize = @sizeOf(Rendering.Vertex);
 const VERTEX_ATTR_COUNT: c_int = 3;
-const VERTEX_BUFFER_PERMUTATION: u64 = 0x210; // buffer order pos,uv,color -> shader v0,v1,v2
+const VERTEX_BUFFER_PERMUTATION: u64 = 0x210; // buffer order pos,color,uv -> shader v0,v1,v2
 const VERTEX_POSITION_REG: c_int = 0;
-const VERTEX_UV_REG: c_int = 1;
-const VERTEX_COLOR_REG: c_int = 2;
+const VERTEX_COLOR_REG: c_int = 1;
+const VERTEX_UV_REG: c_int = 2;
 const POS_SCALE: [4]f32 = .{ snorm16_scale(), snorm16_scale(), snorm16_scale(), 1.0 };
 const UV_SCALE: [2]f32 = .{ snorm16_scale(), snorm16_scale() };
 const COLOR_SCALE: [4]f32 = .{ unorm8_scale(), unorm8_scale(), unorm8_scale(), unorm8_scale() };
 
+extern fn C3Di_UpdateContext() void;
+
 comptime {
     std.debug.assert(VERTEX_STRIDE == 16);
     std.debug.assert(@offsetOf(Rendering.Vertex, "pos") == 0);
-    std.debug.assert(@offsetOf(Rendering.Vertex, "uv") == 8);
-    std.debug.assert(@offsetOf(Rendering.Vertex, "color") == 12);
+    std.debug.assert(@offsetOf(Rendering.Vertex, "color") == 8);
+    std.debug.assert(@offsetOf(Rendering.Vertex, "uv") == 12);
 }
 
 const PipelineData = struct {
@@ -131,44 +138,13 @@ const TextureData = struct {
     width: u32,
     height: u32,
     tex: TexMirror,
-    staging: ?[]align(16) u8 = null,
-};
-
-const TexEnvMirror = extern struct {
-    src_rgb: u16,
-    src_alpha: u16,
-    op_all: u32,
-    func_rgb: u16,
-    func_alpha: u16,
-    color: u32,
-    scale_rgb: u16,
-    scale_alpha: u16,
-};
-
-comptime {
-    std.debug.assert(@sizeOf(TexEnvMirror) == 20);
-}
-
-const FrameBufMirror = extern struct {
-    color_buf: ?*anyopaque,
-    depth_buf: ?*anyopaque,
-    width: u16,
-    height: u16,
-    color_fmt: c.GPU_COLORBUF,
-    depth_fmt: c.GPU_DEPTHBUF,
-    block32: bool,
-    masks: u8,
-};
-
-const RenderTargetMirror = extern struct {
-    next: ?*c.C3D_RenderTarget,
-    prev: ?*c.C3D_RenderTarget,
-    frame_buf: FrameBufMirror,
+    staging: ?[]align(16) u32 = null,
 };
 
 var meshes = Util.CircularBuffer(MeshData, 2048).init();
 var deferred_mesh_frees = Util.CircularBuffer(DeferredMeshFree, MAX_DEFERRED_MESH_FREES + 1).init();
 var textures = Util.CircularBuffer(TextureData, 64).init();
+var sequential_indices: ?[]align(CACHE_LINE_SIZE) u16 = null;
 var render_pipeline: PipelineData = undefined;
 var render_pipeline_initialized = false;
 
@@ -221,7 +197,6 @@ pub fn init() anyerror!void {
     initialized = true;
     frame_started = false;
     apply_render_state();
-    init_texenvs();
 }
 
 pub fn deinit() void {
@@ -254,6 +229,7 @@ pub fn deinit() void {
         }
     }
     meshes.clear();
+    free_index_buffer();
 
     if (target) |t| {
         c.C3D_RenderTargetDelete(t);
@@ -349,17 +325,15 @@ pub fn start_frame() bool {
     release_completed_mesh_slots();
     free_deferred_mesh_slots();
 
-    c.C3D_FrameBufClear(target_frame_buf(t), c.C3D_CLEAR_ALL, clear_color, 0);
-
     if (!c.C3D_FrameDrawOn(t)) {
         c.C3D_FrameEnd(0);
         return false;
     }
 
     frame_started = true;
+    clear_current_framebuffer(c.C3D_CLEAR_ALL);
     c.C3D_SetViewport(0, 0, TARGET_WIDTH, TARGET_HEIGHT);
     apply_render_state();
-    init_texenvs();
     rebind_texture();
     return true;
 }
@@ -371,14 +345,14 @@ pub fn end_frame() void {
         return;
     }
     mark_current_frame_mesh_slots_in_flight();
+    finish_frame_direct();
     c.C3D_FrameEnd(0);
     frame_started = false;
 }
 
 pub fn clear_depth() void {
     if (!frame_started) return;
-    const t = target orelse return;
-    c.C3D_FrameBufClear(target_frame_buf(t), c.C3D_CLEAR_DEPTH, clear_color, 0);
+    clear_current_framebuffer(c.C3D_CLEAR_DEPTH);
 }
 
 pub fn set_vsync(v: bool) void {
@@ -401,8 +375,8 @@ fn init_pipeline() !PipelineData {
     var attr_info: c.C3D_AttrInfo = undefined;
     c.AttrInfo_Init(&attr_info);
     if (c.AttrInfo_AddLoader(&attr_info, VERTEX_POSITION_REG, c.GPU_SHORT, 4) < 0) return error.UnsupportedVertexLayout;
-    if (c.AttrInfo_AddLoader(&attr_info, VERTEX_UV_REG, c.GPU_SHORT, 2) < 0) return error.UnsupportedVertexLayout;
     if (c.AttrInfo_AddLoader(&attr_info, VERTEX_COLOR_REG, c.GPU_UNSIGNED_BYTE, 4) < 0) return error.UnsupportedVertexLayout;
+    if (c.AttrInfo_AddLoader(&attr_info, VERTEX_UV_REG, c.GPU_SHORT, 2) < 0) return error.UnsupportedVertexLayout;
 
     return .{
         .dvlb = dvlb,
@@ -464,7 +438,7 @@ pub fn update_mesh(handle: Mesh.Handle, data: []const u8) void {
     const dst = slot.data.?;
     @memcpy(dst[0..data.len], data);
     slot.len = data.len;
-    _ = c.GSPGPU_FlushDataCache(dst.ptr, @intCast(data.len));
+    flush_data_cache(dst.ptr, data.len);
 
     mesh.latest_slot = slot_idx;
     mesh.len = data.len;
@@ -484,20 +458,19 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize) void {
     const needed = mesh_draw_bytes_needed(count) orelse return;
     if (needed > slot.len) return;
 
-    bind_vertex_state(pl);
-    upload_draw_uniforms(pl, model);
+    bind_program(pl);
     rebind_texture();
 
-    const buf = c.C3D_GetBufInfo() orelse return;
-    c.BufInfo_Init(buf);
-    const added = c.BufInfo_Add(buf, data.ptr, @intCast(VERTEX_STRIDE), VERTEX_ATTR_COUNT, VERTEX_BUFFER_PERMUTATION);
-    if (added < 0) {
-        c.BufInfo_Init(buf);
-        return;
-    }
+    C3Di_UpdateContext();
+    upload_draw_uniforms(pl, model);
+    bind_texenv_direct();
+    bind_vertex_layout_direct(pl);
+    if (!bind_vertex_buffer_direct(data.ptr)) return;
 
     slot.used_this_frame = true;
-    c.C3D_DrawArrays(c.GPU_TRIANGLES, 0, @intCast(count));
+    if (!draw_elements_direct(count)) {
+        draw_arrays_direct(0, @intCast(count));
+    }
 }
 
 pub fn create_texture(width: u32, height: u32, data: []align(16) u8) anyerror!Texture.Handle {
@@ -582,7 +555,7 @@ fn ensure_mesh_slot_capacity(slot: *MeshSlot, len: usize) !void {
     }
 
     const cap = mesh_slot_capacity(len);
-    const new_data = try render_alloc.alignedAlloc(u8, .fromByteUnits(16), cap);
+    const new_data = try render_alloc.alignedAlloc(u8, .fromByteUnits(CACHE_LINE_SIZE), cap);
 
     if (!is_linear_fcram(new_data.ptr, new_data.len)) {
         render_alloc.free(new_data);
@@ -648,6 +621,7 @@ fn abandon_service_resources() void {
     bound_texture = 0;
     meshes.clear();
     textures.clear();
+    sequential_indices = null;
     deferred_mesh_frees.clear();
 }
 
@@ -671,6 +645,11 @@ fn mesh_draw_bytes_needed(count: usize) ?usize {
     return count * VERTEX_STRIDE;
 }
 
+fn clear_current_framebuffer(bits: c.C3D_ClearBits) void {
+    const fb = c.C3D_GetFrameBuf() orelse return;
+    c.C3D_FrameBufClear(fb, bits, clear_color, 0);
+}
+
 fn apply_render_state() void {
     set_alpha_blend(alpha_blend_enabled);
     set_depth_write(depth_write_enabled);
@@ -680,49 +659,169 @@ fn apply_render_state() void {
     }
 }
 
-fn init_texenvs() void {
-    texenv_modulate(0);
-    var i: c_int = 1;
-    while (i < 6) : (i += 1) texenv_replace_previous(i);
-}
-
-fn texenv_modulate(id: c_int) void {
-    const env = c.C3D_GetTexEnv(id) orelse return;
-    const mirror: *TexEnvMirror = @ptrCast(@alignCast(env));
-    const sources: u16 = @intCast(c.GPU_TEVSOURCES(c.GPU_TEXTURE0, c.GPU_PRIMARY_COLOR, 0));
-    mirror.* = .{
-        .src_rgb = sources,
-        .src_alpha = sources,
-        .op_all = 0,
-        .func_rgb = @intCast(c.GPU_MODULATE),
-        .func_alpha = @intCast(c.GPU_MODULATE),
-        .color = 0xffffffff,
-        .scale_rgb = @intCast(c.GPU_TEVSCALE_1),
-        .scale_alpha = @intCast(c.GPU_TEVSCALE_1),
-    };
-    c.C3D_DirtyTexEnv(env);
-}
-
-fn texenv_replace_previous(id: c_int) void {
-    const env = c.C3D_GetTexEnv(id) orelse return;
-    const mirror: *TexEnvMirror = @ptrCast(@alignCast(env));
-    const sources: u16 = @intCast(c.GPU_TEVSOURCES(c.GPU_PREVIOUS, 0, 0));
-    mirror.* = .{
-        .src_rgb = sources,
-        .src_alpha = sources,
-        .op_all = 0,
-        .func_rgb = @intCast(c.GPU_REPLACE),
-        .func_alpha = @intCast(c.GPU_REPLACE),
-        .color = 0xffffffff,
-        .scale_rgb = @intCast(c.GPU_TEVSCALE_1),
-        .scale_alpha = @intCast(c.GPU_TEVSCALE_1),
-    };
-    c.C3D_DirtyTexEnv(env);
-}
-
-fn bind_vertex_state(pl: *PipelineData) void {
+fn bind_program(pl: *PipelineData) void {
     c.C3D_BindProgram(&pl.program);
-    c.C3D_SetAttrInfo(&pl.attr_info);
+}
+
+fn bind_texenv_direct() void {
+    if (bound_texture == 0) {
+        bind_texenv_stage_direct(0, c.GPU_TEVSOURCES(c.GPU_PRIMARY_COLOR, 0, 0), c.GPU_REPLACE);
+    } else {
+        bind_texenv_stage_direct(0, c.GPU_TEVSOURCES(c.GPU_TEXTURE0, c.GPU_PRIMARY_COLOR, 0), c.GPU_MODULATE);
+    }
+
+    bind_texenv_stage_direct(1, c.GPU_TEVSOURCES(c.GPU_PREVIOUS, 0, 0), c.GPU_REPLACE);
+    bind_texenv_stage_direct(2, c.GPU_TEVSOURCES(c.GPU_PREVIOUS, 0, 0), c.GPU_REPLACE);
+    bind_texenv_stage_direct(3, c.GPU_TEVSOURCES(c.GPU_PREVIOUS, 0, 0), c.GPU_REPLACE);
+    bind_texenv_stage_direct(4, c.GPU_TEVSOURCES(c.GPU_PREVIOUS, 0, 0), c.GPU_REPLACE);
+    bind_texenv_stage_direct(5, c.GPU_TEVSOURCES(c.GPU_PREVIOUS, 0, 0), c.GPU_REPLACE);
+}
+
+fn bind_texenv_stage_direct(stage: c_int, source: u32, combiner: u32) void {
+    const source_both = source | (source << 16);
+    const combiner_both = combiner | (combiner << 16);
+    const regs = [_]u32{
+        source_both,
+        0,
+        combiner_both,
+        0xffffffff,
+        @as(u32, @intCast(c.GPU_TEVSCALE_1)) | (@as(u32, @intCast(c.GPU_TEVSCALE_1)) << 16),
+    };
+    gpu_cmd_add_incremental_writes(texenv_source_reg(stage), regs[0..]);
+}
+
+fn texenv_source_reg(stage: c_int) c_int {
+    return switch (stage) {
+        0 => c.GPUREG_TEXENV0_SOURCE,
+        1 => c.GPUREG_TEXENV1_SOURCE,
+        2 => c.GPUREG_TEXENV2_SOURCE,
+        3 => c.GPUREG_TEXENV3_SOURCE,
+        4 => c.GPUREG_TEXENV4_SOURCE,
+        5 => c.GPUREG_TEXENV5_SOURCE,
+        else => unreachable,
+    };
+}
+
+fn bind_vertex_layout_direct(pl: *const PipelineData) void {
+    gpu_cmd_add_write(c.GPUREG_ATTRIBBUFFERS_LOC, BUFFER_BASE_PADDR >> 3);
+    gpu_cmd_add_incremental_writes(c.GPUREG_ATTRIBBUFFERS_FORMAT_LOW, pl.attr_info.flags[0..]);
+    gpu_cmd_add_write(c.GPUREG_VERTEX_OFFSET, 0);
+    gpu_cmd_add_write(c.GPUREG_ATTRIBBUFFER0_CONFIG1, @intCast(VERTEX_BUFFER_PERMUTATION));
+    gpu_cmd_add_write(c.GPUREG_ATTRIBBUFFER0_CONFIG2, vertex_buffer_format());
+    gpu_cmd_add_write(c.GPUREG_VSH_ATTRIBUTES_PERMUTATION_LOW, @intCast(VERTEX_BUFFER_PERMUTATION));
+    gpu_cmd_add_write(c.GPUREG_VSH_ATTRIBUTES_PERMUTATION_HIGH, 0);
+    set_vsh_input_count_direct(VERTEX_ATTR_COUNT);
+}
+
+fn bind_vertex_buffer_direct(data: [*]align(16) const u8) bool {
+    const phys = c.osConvertVirtToPhys(data);
+    if (phys < BUFFER_BASE_PADDR) return false;
+    gpu_cmd_add_write(c.GPUREG_ATTRIBBUFFER0_OFFSET, phys - BUFFER_BASE_PADDR);
+    return true;
+}
+
+fn draw_elements_direct(count: usize) bool {
+    const indices = ensure_index_buffer(count) catch return false;
+    const phys = c.osConvertVirtToPhys(indices.ptr);
+    if (phys < BUFFER_BASE_PADDR) return false;
+
+    gpu_cmd_add_write(c.GPUREG_INDEXBUFFER_CONFIG, (phys - BUFFER_BASE_PADDR) | (1 << 31));
+    gpu_cmd_add_masked_write(c.GPUREG_PRIMITIVE_CONFIG, 2, @intCast(c.GPU_GEOMETRY_PRIM));
+    gpu_cmd_add_write(c.GPUREG_RESTART_PRIMITIVE, 1);
+    gpu_cmd_add_write(c.GPUREG_NUMVERTICES, @intCast(count));
+    gpu_cmd_add_write(c.GPUREG_VERTEX_OFFSET, 0);
+    gpu_cmd_add_masked_write(c.GPUREG_GEOSTAGE_CONFIG, 2, 0x100);
+    gpu_cmd_add_masked_write(c.GPUREG_GEOSTAGE_CONFIG2, 2, 0x100);
+    gpu_cmd_add_masked_write(c.GPUREG_START_DRAW_FUNC0, 1, 0);
+    gpu_cmd_add_write(c.GPUREG_DRAWELEMENTS, 1);
+    gpu_cmd_add_masked_write(c.GPUREG_START_DRAW_FUNC0, 1, 1);
+    gpu_cmd_add_masked_write(c.GPUREG_GEOSTAGE_CONFIG, 2, 0);
+    gpu_cmd_add_masked_write(c.GPUREG_GEOSTAGE_CONFIG2, 2, 0);
+    gpu_cmd_add_write(c.GPUREG_VTX_FUNC, 1);
+    gpu_cmd_add_masked_write(c.GPUREG_PRIMITIVE_CONFIG, 0x8, 0);
+    gpu_cmd_add_masked_write(c.GPUREG_PRIMITIVE_CONFIG, 0x8, 0);
+    return true;
+}
+
+fn draw_arrays_direct(first: u32, count: u32) void {
+    gpu_cmd_add_masked_write(c.GPUREG_PRIMITIVE_CONFIG, 2, @intCast(c.GPU_TRIANGLES));
+    gpu_cmd_add_write(c.GPUREG_RESTART_PRIMITIVE, 1);
+    gpu_cmd_add_write(c.GPUREG_INDEXBUFFER_CONFIG, 0x80000000);
+    gpu_cmd_add_write(c.GPUREG_NUMVERTICES, count);
+    gpu_cmd_add_write(c.GPUREG_VERTEX_OFFSET, first);
+    gpu_cmd_add_masked_write(c.GPUREG_GEOSTAGE_CONFIG2, 1, 1);
+    gpu_cmd_add_masked_write(c.GPUREG_START_DRAW_FUNC0, 1, 0);
+    gpu_cmd_add_write(c.GPUREG_DRAWARRAYS, 1);
+    gpu_cmd_add_masked_write(c.GPUREG_START_DRAW_FUNC0, 1, 1);
+    gpu_cmd_add_masked_write(c.GPUREG_GEOSTAGE_CONFIG2, 1, 0);
+    gpu_cmd_add_write(c.GPUREG_VTX_FUNC, 1);
+}
+
+fn ensure_index_buffer(count: usize) ![]align(CACHE_LINE_SIZE) u16 {
+    if (count == 0 or count > std.math.maxInt(u16) + 1) return error.UnsupportedIndexCount;
+    if (sequential_indices) |indices| {
+        if (indices.len >= count) return indices[0..count];
+        render_alloc.free(indices);
+        sequential_indices = null;
+    }
+
+    const indices = try render_alloc.alignedAlloc(u16, .fromByteUnits(CACHE_LINE_SIZE), count);
+    const bytes: [*]const u8 = @ptrCast(indices.ptr);
+    if (!is_linear_fcram(bytes, indices.len * @sizeOf(u16))) {
+        render_alloc.free(indices);
+        return error.IndexBufferNotLinear;
+    }
+
+    for (indices, 0..) |*idx, i| idx.* = @intCast(i);
+    flush_data_cache(bytes, indices.len * @sizeOf(u16));
+    sequential_indices = indices;
+    return indices;
+}
+
+fn free_index_buffer() void {
+    if (sequential_indices) |indices| {
+        render_alloc.free(indices);
+        sequential_indices = null;
+    }
+}
+
+fn finish_frame_direct() void {
+    gpu_cmd_add_write(c.GPUREG_FRAMEBUFFER_FLUSH, 1);
+    gpu_cmd_add_write(c.GPUREG_FRAMEBUFFER_INVALIDATE, 1);
+    gpu_cmd_add_write(c.GPUREG_EARLYDEPTH_CLEAR, 1);
+}
+
+fn vertex_buffer_format() u32 {
+    return (@as(u32, @intCast(VERTEX_STRIDE)) << 16) |
+        (@as(u32, @intCast(VERTEX_ATTR_COUNT)) << 28);
+}
+
+fn set_vsh_input_count_direct(count: c_int) void {
+    const value = @as(u32, @intCast(count - 1));
+    gpu_cmd_add_masked_write(c.GPUREG_VSH_INPUTBUFFER_CONFIG, 0xB, SH_MODE_VSH | value);
+    gpu_cmd_add_write(c.GPUREG_VSH_NUM_ATTR, value);
+}
+
+fn gpu_cmd_add_write(reg: c_int, value: u32) void {
+    gpu_cmd_add_masked_write(reg, 0xF, value);
+}
+
+fn gpu_cmd_add_masked_write(reg: c_int, mask: u32, value: u32) void {
+    var param = value;
+    c.GPUCMD_Add(gpu_cmd_header(false, mask, reg), &param, 1);
+}
+
+fn gpu_cmd_add_writes(reg: c_int, values: []const u32) void {
+    c.GPUCMD_Add(gpu_cmd_header(false, 0xF, reg), values.ptr, @intCast(values.len));
+}
+
+fn gpu_cmd_add_incremental_writes(reg: c_int, values: []const u32) void {
+    c.GPUCMD_Add(gpu_cmd_header(true, 0xF, reg), values.ptr, @intCast(values.len));
+}
+
+fn gpu_cmd_header(incremental: bool, mask: u32, reg: c_int) u32 {
+    const inc: u32 = if (incremental) 1 else 0;
+    return (inc << 31) | ((mask & 0xF) << 16) | (@as(u32, @intCast(reg)) & 0x3FF);
 }
 
 fn init_projection_transform() void {
@@ -761,16 +860,18 @@ fn upload_draw_uniforms(pl: *PipelineData, model: *const Mat4) void {
 
 fn upload_matrix(location: c_int, matrix: *const c.C3D_Mtx) void {
     const idx = uniform_location(location, 4) orelse return;
-    inline for (0..4) |i| {
-        c.C3D_FVUnif[VERTEX_SHADER_INDEX][idx + i] = matrix.r[i];
-        c.C3D_FVUnifDirty[VERTEX_SHADER_INDEX][idx + i] = true;
-    }
+    const words: [*]const u32 = @ptrCast(matrix);
+    gpu_cmd_add_write(c.GPUREG_VSH_FLOATUNIFORM_CONFIG, @as(u32, @intCast(idx)) | FLOAT_UNIFORM_UPLOAD_F32);
+    gpu_cmd_add_writes(c.GPUREG_VSH_FLOATUNIFORM_DATA, words[0..16]);
 }
 
 fn upload_vec4(location: c_int, values: [4]f32) void {
     const idx = uniform_location(location, 1) orelse return;
-    set_fvec(&c.C3D_FVUnif[VERTEX_SHADER_INDEX][idx], values[0], values[1], values[2], values[3]);
-    c.C3D_FVUnifDirty[VERTEX_SHADER_INDEX][idx] = true;
+    var vec: c.C3D_FVec = undefined;
+    set_fvec(&vec, values[0], values[1], values[2], values[3]);
+    const words: [*]const u32 = @ptrCast(&vec);
+    gpu_cmd_add_write(c.GPUREG_VSH_FLOATUNIFORM_CONFIG, @as(u32, @intCast(idx)) | FLOAT_UNIFORM_UPLOAD_F32);
+    gpu_cmd_add_writes(c.GPUREG_VSH_FLOATUNIFORM_DATA, words[0..4]);
 }
 
 fn uniform_location(location: c_int, count: usize) ?usize {
@@ -883,7 +984,7 @@ fn texture_param() u32 {
 
 fn upload_texture_data(tex: *TextureData, data: []align(16) const u8) !void {
     const size = texture_size(tex.width, tex.height);
-    const upload = try ensure_texture_staging(tex, size);
+    const upload = try ensure_texture_staging(tex, size / TEX_BPP);
 
     convert_texture_data(upload, data, tex.width, tex.height);
     flush_texture_source(upload);
@@ -891,15 +992,16 @@ fn upload_texture_data(tex: *TextureData, data: []align(16) const u8) !void {
     c.C3D_TexFlush(tex_ptr(tex));
 }
 
-fn ensure_texture_staging(tex: *TextureData, size: usize) ![]align(16) u8 {
+fn ensure_texture_staging(tex: *TextureData, len: usize) ![]align(16) u32 {
     if (tex.staging) |buf| {
-        if (buf.len >= size) return buf[0..size];
+        if (buf.len >= len) return buf[0..len];
         render_alloc.free(buf);
         tex.staging = null;
     }
 
-    const staging = try render_alloc.alignedAlloc(u8, .fromByteUnits(16), size);
-    if (!is_linear_fcram(staging.ptr, staging.len)) {
+    const staging = try render_alloc.alignedAlloc(u32, .fromByteUnits(CACHE_LINE_SIZE), len);
+    const bytes: [*]const u8 = @ptrCast(staging.ptr);
+    if (!is_linear_fcram(bytes, len * TEX_BPP)) {
         render_alloc.free(staging);
         std.debug.panic("3ds_gfx: texture staging must be allocated in linear FCRAM", .{});
     }
@@ -915,39 +1017,54 @@ fn free_texture_staging(tex: *TextureData) void {
     }
 }
 
-fn convert_texture_data(dst: []align(16) u8, src: []align(16) const u8, width: u32, height: u32) void {
+fn convert_texture_data(dst: []align(16) u32, src: []align(16) const u8, width: u32, height: u32) void {
+    const factors = twiddle_factors(width, height);
+    var y_bits: u32 = 0;
     for (0..height) |y| {
-        const sy = height - 1 - @as(u32, @intCast(y));
+        const yu: u32 = @intCast(y);
+        var x_bits: u32 = 0;
         for (0..width) |x| {
             const xu: u32 = @intCast(x);
-            const src_off = (@as(usize, sy) * width + xu) * TEX_BPP;
-            const dst_off = tiled_pixel_offset(xu, @intCast(y), width) * TEX_BPP;
-            dst[dst_off + 0] = src[src_off + 3];
-            dst[dst_off + 1] = src[src_off + 2];
-            dst[dst_off + 2] = src[src_off + 1];
-            dst[dst_off + 3] = src[src_off + 0];
+            const src_off = (@as(usize, yu) * width + xu) * TEX_BPP;
+            const dst_pixel = x_bits | (factors.mask_y - y_bits);
+            dst[@intCast(dst_pixel)] =
+                (@as(u32, src[src_off + 0]) << 24) |
+                (@as(u32, src[src_off + 1]) << 16) |
+                (@as(u32, src[src_off + 2]) << 8) |
+                @as(u32, src[src_off + 3]);
+            x_bits = (x_bits -% factors.mask_x) & factors.mask_x;
         }
+        y_bits = (y_bits -% factors.mask_y) & factors.mask_y;
     }
 }
 
-fn tiled_pixel_offset(x: u32, y: u32, width: u32) usize {
-    const tile_x = x & ~@as(u32, 7);
-    const tile_y = y & ~@as(u32, 7);
-    const tile_base = tile_y * width + tile_x * 8;
-    return @intCast(tile_base + morton8(x & 7, y & 7));
+const TwiddleFactors = struct {
+    mask_x: u32,
+    mask_y: u32,
+};
+
+fn twiddle_factors(width: u32, height: u32) TwiddleFactors {
+    var mask_x: u32 = 0b010101;
+    var mask_y: u32 = 0b101010;
+    var w = width >> 4;
+    var h = height >> 4;
+    var shift: u5 = 6;
+
+    while (w > 0) : (w >>= 1) {
+        mask_x += @as(u32, 1) << shift;
+        shift += 1;
+    }
+    while (h > 0) : (h >>= 1) {
+        mask_y += @as(u32, 1) << shift;
+        shift += 1;
+    }
+
+    return .{ .mask_x = mask_x, .mask_y = mask_y };
 }
 
-fn morton8(x: u32, y: u32) u32 {
-    return (x & 1) |
-        ((y & 1) << 1) |
-        ((x & 2) << 1) |
-        ((y & 2) << 2) |
-        ((x & 4) << 2) |
-        ((y & 4) << 3);
-}
-
-fn flush_texture_source(data: []align(16) u8) void {
-    _ = c.GSPGPU_FlushDataCache(data.ptr, @intCast(data.len));
+fn flush_texture_source(data: []align(16) u32) void {
+    const bytes: [*]const u8 = @ptrCast(data.ptr);
+    flush_data_cache(bytes, data.len * TEX_BPP);
 }
 
 fn texture_size(width: u32, height: u32) u32 {
@@ -958,9 +1075,13 @@ fn tex_ptr(tex: *TextureData) *c.C3D_Tex {
     return @ptrCast(&tex.tex);
 }
 
-fn target_frame_buf(t: *c.C3D_RenderTarget) *c.C3D_FrameBuf {
-    const mirror: *RenderTargetMirror = @ptrCast(@alignCast(t));
-    return @ptrCast(&mirror.frame_buf);
+fn flush_data_cache(ptr: [*]const u8, len: usize) void {
+    if (len == 0) return;
+
+    const start = @intFromPtr(ptr) & ~(CACHE_LINE_SIZE - 1);
+    const end = std.mem.alignForward(usize, @intFromPtr(ptr) + len, CACHE_LINE_SIZE);
+    const flush_ptr: *const anyopaque = @ptrFromInt(start);
+    _ = c.GSPGPU_FlushDataCache(flush_ptr, @intCast(end - start));
 }
 
 fn mesh_slot(handle: Mesh.Handle) ?*MeshData {
