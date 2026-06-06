@@ -144,8 +144,9 @@ pub const HeadlessOptions = struct {
     overrides: Config.Overrides = .{},
 };
 
-pub const ShaderPaths = struct {
-    slang: std.Build.LazyPath,
+const ShaderStagePaths = struct {
+    vert: std.Build.LazyPath,
+    frag: std.Build.LazyPath,
 };
 
 const user_root_import_name = "aether_user_root";
@@ -347,6 +348,8 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
         add3dsCImportPaths(mod, devkitProPath(b));
     }
 
+    addInternalShaderModule(owner, b, mod, config);
+
     // --- user executable ---
     const user_mod = b.createModule(.{
         .root_source_file = opts.root_source_file,
@@ -530,10 +533,13 @@ fn slangcPath(owner: *std.Build) ?std.Build.LazyPath {
     return dep.path(exe_name);
 }
 
-fn addSlangStep(b: *std.Build, slangc: ?std.Build.LazyPath, args: []const []const u8, comptime output_name: []const u8, input: std.Build.LazyPath) ?std.Build.LazyPath {
-    const sc = slangc orelse return null;
+fn requireSlangcPath(owner: *std.Build) std.Build.LazyPath {
+    return slangcPath(owner) orelse @panic("slangc dependency unavailable; run zig build --fetch");
+}
+
+fn addSlangStep(b: *std.Build, slangc: std.Build.LazyPath, args: []const []const u8, comptime output_name: []const u8, input: std.Build.LazyPath) std.Build.LazyPath {
     const run = std.Build.Step.Run.create(b, "slangc " ++ output_name);
-    run.addFileArg(sc);
+    run.addFileArg(slangc);
     run.addArgs(args);
     run.addArg("-o");
     const output = run.addOutputFileArg(output_name);
@@ -553,6 +559,94 @@ fn addPicassoStep(b: *std.Build, picasso: []const u8, comptime output_name: []co
     const output = run.addOutputFileArg(output_name);
     run.addFileArg(input);
     return output;
+}
+
+fn addInternalShaderModule(owner: *std.Build, b: *std.Build, mod: *std.Build.Module, config: Config) void {
+    const stages = internalShaderStages(owner, b, config) orelse return;
+
+    const files = b.addWriteFiles();
+    _ = files.addCopyFile(stages.vert, "basic.vert");
+    _ = files.addCopyFile(stages.frag, "basic.frag");
+    const root = files.add("aether_shaders.zig",
+        \\pub const basic_vert align(@alignOf(u32)) = @embedFile("basic.vert").*;
+        \\pub const basic_frag align(@alignOf(u32)) = @embedFile("basic.frag").*;
+        \\
+    );
+
+    mod.addImport("aether_shaders", b.createModule(.{
+        .root_source_file = root,
+    }));
+}
+
+fn internalShaderStages(owner: *std.Build, b: *std.Build, config: Config) ?ShaderStagePaths {
+    if (config.platform == .nintendo_3ds and config.gfx == .default) {
+        const picasso = b.pathJoin(&.{ devkitProPath(b), "tools/bin/picasso" });
+        const vert = addPicassoStep(
+            b,
+            picasso,
+            "basic.shbin",
+            owner.path("src/platform/3ds/shaders/basic.v.pica"),
+        );
+        const files = b.addWriteFiles();
+        const frag = files.add("basic.frag.stub", "");
+        return .{ .vert = vert, .frag = frag };
+    }
+
+    if (config.platform == .nintendo_switch and config.gfx == .default) {
+        const uam = b.pathJoin(&.{ devkitProPath(b), "tools/bin/uam" });
+        return .{
+            .vert = addUamStep(
+                b,
+                uam,
+                "vert",
+                "basic.vert.dksh",
+                owner.path("src/platform/switch/shaders/basic.vert.glsl"),
+            ),
+            .frag = addUamStep(
+                b,
+                uam,
+                "frag",
+                "basic.frag.dksh",
+                owner.path("src/platform/switch/shaders/basic.frag.glsl"),
+            ),
+        };
+    }
+
+    switch (config.gfx) {
+        .vulkan => {
+            const slangc = requireSlangcPath(owner);
+            const source = owner.path("src/rendering/shaders/basic.slang");
+            return .{
+                .vert = addSlangStep(b, slangc, &.{
+                    "-target",  "spirv",  "-emit-spirv-directly", "-matrix-layout-column-major",
+                    "-DVULKAN", "-entry", "vertexMain",           "-stage",
+                    "vertex",
+                }, "basic.vert.spv", source),
+                .frag = addSlangStep(b, slangc, &.{
+                    "-target",  "spirv",  "-emit-spirv-directly", "-matrix-layout-column-major",
+                    "-DVULKAN", "-entry", "fragmentMain",         "-stage",
+                    "fragment",
+                }, "basic.frag.spv", source),
+            };
+        },
+        .opengl => {
+            const slangc = requireSlangcPath(owner);
+            const source = owner.path("src/rendering/shaders/basic.slang");
+            return .{
+                .vert = addSlangStep(b, slangc, &.{
+                    "-target",    "glsl",     "-matrix-layout-column-major",
+                    "-profile",   "glsl_450", "-entry",
+                    "vertexMain", "-stage",   "vertex",
+                }, "basic.vert.glsl", source),
+                .frag = addSlangStep(b, slangc, &.{
+                    "-target",      "glsl",     "-matrix-layout-column-major",
+                    "-profile",     "glsl_450", "-entry",
+                    "fragmentMain", "-stage",   "fragment",
+                }, "basic.frag.glsl", source),
+            };
+        },
+        .default, .headless => return null,
+    }
 }
 
 pub const ExportOptions = struct {
@@ -1278,150 +1372,6 @@ fn switchNroPipeline(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOp
     }
 }
 
-/// Registers a shader pair for the game executable. Slang sources are
-/// compiled to SPIR-V (Vulkan) or GLSL (OpenGL) via slangc. On
-/// shaderless platforms (PSP), empty stubs are provided.
-///
-/// When called from Aether's own build, use `addShader(b, b, ...)`.
-/// From a downstream project:
-///
-///     Aether.addShader(ae_dep.builder, b, exe, config, "basic", .{ ... });
-///
-pub fn addShader(owner: *std.Build, b: *std.Build, exe: *std.Build.Step.Compile, config: Config, comptime name: []const u8, paths: ShaderPaths) void {
-    const root_module = userRootModule(exe);
-
-    if (config.platform == .nintendo_3ds and config.gfx == .default) {
-        const picasso = b.pathJoin(&.{ devkitProPath(b), "tools/bin/picasso" });
-        const sources = b.addWriteFiles();
-        const vert_src = sources.add(name ++ "_3ds.v.pica",
-            \\.fvec projection[4], modelView[4]
-            \\.fvec posScale, uvScaleOffset, colorScale
-            \\
-            \\.constf myconst(0.0, 1.0, 0.0, 0.0)
-            \\.alias zeros myconst.xxxx
-            \\.alias ones myconst.yyyy
-            \\
-            \\.out outpos position
-            \\.out outtc0 texcoord0
-            \\.out outclr color
-            \\
-            \\.alias inpos v0
-            \\.alias inuv v1
-            \\.alias inclr v2
-            \\
-            \\.proc main
-            \\    mul r0.xyz, posScale, inpos
-            \\    mov r0.w, ones
-            \\
-            \\    dp4 r1.x, modelView[0], r0
-            \\    dp4 r1.y, modelView[1], r0
-            \\    dp4 r1.z, modelView[2], r0
-            \\    dp4 r1.w, modelView[3], r0
-            \\
-            \\    dp4 outpos.x, projection[0], r1
-            \\    dp4 outpos.y, projection[1], r1
-            \\    dp4 outpos.z, projection[2], r1
-            \\    dp4 outpos.w, projection[3], r1
-            \\
-            \\    mul outtc0.xy, uvScaleOffset.xy, inuv.xy
-            \\    add outtc0.xy, uvScaleOffset.zw, outtc0.xy
-            \\    mov outtc0.zw, zeros
-            \\    mul outclr, colorScale, inclr
-            \\    end
-            \\.end
-            \\
-        );
-        const vert = addPicassoStep(b, picasso, name ++ ".shbin", vert_src);
-        const empty = b.addWriteFiles();
-        const frag = empty.add(name ++ "_3ds_frag_stub", "");
-        root_module.addAnonymousImport(name ++ "_vert", .{ .root_source_file = vert });
-        root_module.addAnonymousImport(name ++ "_frag", .{ .root_source_file = frag });
-        return;
-    }
-
-    if (config.platform == .nintendo_switch and config.gfx == .default) {
-        const uam = b.pathJoin(&.{ devkitProPath(b), "tools/bin/uam" });
-        const sources = b.addWriteFiles();
-        const vert_src = sources.add(name ++ "_switch.vert.glsl",
-            \\#version 460
-            \\
-            \\layout (location = 0) in vec3 inPosition;
-            \\layout (location = 1) in vec4 inColor;
-            \\
-            \\layout (location = 0) out vec4 outColor;
-            \\
-            \\void main()
-            \\{
-            \\    gl_Position = vec4(inPosition, 1.0);
-            \\    outColor = inColor;
-            \\}
-            \\
-        );
-        const frag_src = sources.add(name ++ "_switch.frag.glsl",
-            \\#version 460
-            \\
-            \\layout (location = 0) in vec4 inColor;
-            \\layout (location = 0) out vec4 outColor;
-            \\
-            \\void main()
-            \\{
-            \\    outColor = inColor;
-            \\}
-            \\
-        );
-
-        const vert = addUamStep(b, uam, "vert", name ++ ".vert.dksh", vert_src);
-        const frag = addUamStep(b, uam, "frag", name ++ ".frag.dksh", frag_src);
-        root_module.addAnonymousImport(name ++ "_vert", .{ .root_source_file = vert });
-        root_module.addAnonymousImport(name ++ "_frag", .{ .root_source_file = frag });
-        return;
-    }
-
-    switch (config.gfx) {
-        .vulkan => {
-            const slangc = slangcPath(owner);
-            const vert = addSlangStep(b, slangc, &.{
-                "-target",  "spirv",  "-emit-spirv-directly", "-matrix-layout-column-major",
-                "-DVULKAN", "-entry", "vertexMain",           "-stage",
-                "vertex",
-            }, name ++ ".vert.spv", paths.slang);
-            const frag = addSlangStep(b, slangc, &.{
-                "-target",  "spirv",  "-emit-spirv-directly", "-matrix-layout-column-major",
-                "-DVULKAN", "-entry", "fragmentMain",         "-stage",
-                "fragment",
-            }, name ++ ".frag.spv", paths.slang);
-            if (vert) |v| root_module.addAnonymousImport(name ++ "_vert", .{ .root_source_file = v });
-            if (frag) |f| root_module.addAnonymousImport(name ++ "_frag", .{ .root_source_file = f });
-        },
-        .opengl => {
-            const slangc = slangcPath(owner);
-            const vert = addSlangStep(b, slangc, &.{
-                "-target",    "glsl",     "-matrix-layout-column-major",
-                "-profile",   "glsl_450", "-entry",
-                "vertexMain", "-stage",   "vertex",
-            }, name ++ ".vert.glsl", paths.slang);
-            const frag = addSlangStep(b, slangc, &.{
-                "-target",      "glsl",     "-matrix-layout-column-major",
-                "-profile",     "glsl_450", "-entry",
-                "fragmentMain", "-stage",   "fragment",
-            }, name ++ ".frag.glsl", paths.slang);
-            if (vert) |v| root_module.addAnonymousImport(name ++ "_vert", .{ .root_source_file = v });
-            if (frag) |f| root_module.addAnonymousImport(name ++ "_frag", .{ .root_source_file = f });
-        },
-        .default, .headless => {
-            // Provide empty stubs so @embedFile(name ++ "_vert") still compiles.
-            const empty = b.addWriteFiles();
-            const stub = empty.add(name ++ "_stub", "");
-            root_module.addAnonymousImport(name ++ "_vert", .{
-                .root_source_file = stub,
-            });
-            root_module.addAnonymousImport(name ++ "_frag", .{
-                .root_source_file = stub,
-            });
-        },
-    }
-}
-
 // --- Aether's own build (test app + engine tests) ---
 
 pub fn build(b: *std.Build) void {
@@ -1449,10 +1399,6 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .overrides = overrides,
-    });
-
-    addShader(b, b, exe, config, "basic", .{
-        .slang = b.path("test/shaders/basic.slang"),
     });
 
     const nintendo_romfs = b.addWriteFiles();

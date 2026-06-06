@@ -7,6 +7,7 @@ const Rendering = @import("../../rendering/rendering.zig");
 const Pipeline = Rendering.Pipeline;
 const Mesh = Rendering.mesh;
 const Texture = Rendering.Texture;
+const shaders = @import("aether_shaders");
 
 const c = @cImport({
     @cDefine("wint_t", "unsigned int");
@@ -374,10 +375,8 @@ pub fn set_vsync(v: bool) void {
     vsync_enabled = v;
 }
 
-pub fn create_pipeline(layout: Pipeline.VertexLayout, v_shader: ?[:0]align(4) const u8, f_shader: ?[:0]align(4) const u8) anyerror!Pipeline.Handle {
-    _ = f_shader;
-
-    const code = v_shader orelse return error.InvalidShader;
+pub fn create_pipeline(layout: Pipeline.VertexLayout) anyerror!Pipeline.Handle {
+    const code: [:0]align(4) const u8 = &shaders.basic_vert;
     if (layout.stride == 0 or layout.attributes.len > MAX_VERTEX_ATTRS) return error.UnsupportedVertexLayout;
 
     const dvlb = c.DVLB_ParseFile(@ptrCast(@constCast(code.ptr)), @intCast(code.len));

@@ -12,6 +12,7 @@ const Mesh = Rendering.mesh;
 const Pipeline = Rendering.Pipeline;
 const Texture = Rendering.Texture;
 const GLFWSurface = @import("../surface.zig");
+const shaders = @import("aether_shaders");
 
 var render_alloc: std.mem.Allocator = undefined;
 var render_io: std.Io = undefined;
@@ -160,11 +161,7 @@ pub fn set_view_matrix(mat: *const Mat4) void {
     shader.update_ubo();
 }
 
-pub fn create_pipeline(layout: Pipeline.VertexLayout, v_shader: ?[:0]align(4) const u8, f_shader: ?[:0]align(4) const u8) anyerror!Pipeline.Handle {
-    if (v_shader == null or f_shader == null) {
-        return error.InvalidShader;
-    }
-
+pub fn create_pipeline(layout: Pipeline.VertexLayout) anyerror!Pipeline.Handle {
     var vao: gl.uint = 0;
     gl.CreateVertexArrays(1, @ptrCast(&vao));
     for (layout.attributes) |a| {
@@ -182,7 +179,9 @@ pub fn create_pipeline(layout: Pipeline.VertexLayout, v_shader: ?[:0]align(4) co
         gl.VertexArrayAttribBinding(vao, a.location, a.binding);
     }
 
-    const program = try shader.Shader.init(v_shader.?, f_shader.?);
+    const v_shader: [:0]align(4) const u8 = &shaders.basic_vert;
+    const f_shader: [:0]align(4) const u8 = &shaders.basic_frag;
+    const program = try shader.Shader.init(v_shader, f_shader);
 
     const pipeline = pipelines.add_element(.{
         .layout = layout,

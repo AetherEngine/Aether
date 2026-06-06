@@ -51,6 +51,7 @@ SamplerState g_sampler;
 Texture2D g_textures[];
 
 float4x4 getModel() { return pc.model; }
+float2 getUvOffset() { return pc.uvOffset; }
 
 #else
 
@@ -68,6 +69,7 @@ ConstantBuffer<PerObject> perObject;
 Sampler2D u_combinedTexture;
 
 float4x4 getModel() { return perObject.model; }
+float2 getUvOffset() { return camera.uvOffset; }
 
 #endif
 
@@ -77,11 +79,7 @@ VertexOutput vertexMain(VertexInput input) {
     float4 viewPos = mul(camera.view, mul(getModel(), float4(input.position, 1.0)));
     output.position = mul(camera.proj, viewPos);
     output.viewDepth = -viewPos.z;
-#ifdef VULKAN
-    output.uv = input.uv + pc.uvOffset;
-#else
-    output.uv = input.uv + camera.uvOffset;
-#endif
+    output.uv = input.uv + getUvOffset();
     output.color = input.color;
     return output;
 }
@@ -106,6 +104,9 @@ float4 fragmentMain(VertexOutput input) : SV_Target {
     }
     if (pc.alphaBlendEnabled == 0) {
         color.a = 1.0;
+    } else {
+        if (color.a <= 0.1)
+            discard;
     }
 #else
     if (camera.fogEnabled != 0) {
@@ -114,6 +115,9 @@ float4 fragmentMain(VertexOutput input) : SV_Target {
     }
     if (camera.alphaBlendEnabled == 0) {
         color.a = 1.0;
+    } else {
+        if (color.a <= 0.1)
+            discard;
     }
 #endif
     return color;

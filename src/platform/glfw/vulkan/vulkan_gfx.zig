@@ -18,6 +18,7 @@ const Rendering = @import("../../../rendering/rendering.zig");
 const Pipeline = Rendering.Pipeline;
 const Mesh = Rendering.mesh;
 const Texture = Rendering.Texture;
+const shaders = @import("aether_shaders");
 
 const Context = @import("context.zig");
 const Swapchain = @import("swapchain.zig");
@@ -751,8 +752,9 @@ fn flush_camera_if_dirty() void {
     camera_dirty = false;
 }
 
-pub fn create_pipeline(layout: Pipeline.VertexLayout, vs: ?[:0]align(4) const u8, fs: ?[:0]align(4) const u8) anyerror!Pipeline.Handle {
-    if (vs == null or fs == null) return error.InvalidShader;
+pub fn create_pipeline(layout: Pipeline.VertexLayout) anyerror!Pipeline.Handle {
+    const vs: [:0]align(4) const u8 = &shaders.basic_vert;
+    const fs: [:0]align(4) const u8 = &shaders.basic_frag;
 
     const set_layouts = [_]vk.DescriptorSetLayout{ descriptor_set_layout, tex_set_layout };
 
@@ -770,13 +772,13 @@ pub fn create_pipeline(layout: Pipeline.VertexLayout, vs: ?[:0]align(4) const u8
     }, null);
 
     const vert = try context.logical_device.createShaderModule(&.{
-        .code_size = vs.?.len,
-        .p_code = @ptrCast(@alignCast(vs.?.ptr)),
+        .code_size = vs.len,
+        .p_code = @ptrCast(@alignCast(vs.ptr)),
     }, null);
 
     const frag = try context.logical_device.createShaderModule(&.{
-        .code_size = fs.?.len,
-        .p_code = @ptrCast(@alignCast(fs.?.ptr)),
+        .code_size = fs.len,
+        .p_code = @ptrCast(@alignCast(fs.ptr)),
     }, null);
 
     const pipeline_shade_stage_create_info = [_]vk.PipelineShaderStageCreateInfo{

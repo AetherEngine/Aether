@@ -294,9 +294,7 @@ const MyState = struct {
 
     fn init(ctx: *anyopaque, engine: *ae.Engine) anyerror!void {
         var self = ae.ctx_to_self(MyState, ctx);
-        const vert align(@alignOf(u32)) = @embedFile("basic_vert").*;
-        const frag align(@alignOf(u32)) = @embedFile("basic_frag").*;
-        pipeline = try Rendering.Pipeline.new(Vertex.Layout, &vert, &frag);
+        pipeline = try Rendering.Pipeline.new(Vertex.Layout);
 
         const render = engine.allocator(.render);
 
