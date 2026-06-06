@@ -213,6 +213,7 @@ pub fn main(init: std.process.Init) !void {
             .game = 2 * 1024 * 1024,
             .user = 8 * 1024 * 1024,
         },
+        .render_capacity = if (ae.platform == .nintendo_3ds) 12 * 1024 * 1024 else null,
         .resizable = true,
     }, &state.state());
     defer engine.deinit();

@@ -13,9 +13,36 @@ const options = @import("options");
 pub const Pool = memory.Pool;
 pub const MemoryConfig = memory.MemoryConfig;
 
-extern fn linearAlloc(size: usize) ?*anyopaque;
-extern fn linearFree(mem: ?*anyopaque) void;
-extern fn linearSpaceFree() u32;
+const LinearRenderMemory = if (options.config.platform == .nintendo_3ds) struct {
+    extern fn linearAlloc(size: usize) ?*anyopaque;
+    extern fn linearFree(mem: ?*anyopaque) void;
+    extern fn linearSpaceFree() u32;
+
+    fn alloc(size: usize) ?*anyopaque {
+        return linearAlloc(size);
+    }
+
+    fn free(mem: ?*anyopaque) void {
+        linearFree(mem);
+    }
+
+    fn spaceFree() u32 {
+        return linearSpaceFree();
+    }
+} else struct {
+    fn alloc(size: usize) ?*anyopaque {
+        _ = size;
+        return null;
+    }
+
+    fn free(mem: ?*anyopaque) void {
+        _ = mem;
+    }
+
+    fn spaceFree() u32 {
+        return 0;
+    }
+};
 
 const LINEAR_RENDER_RESERVE_BYTES: usize = 2 * 1024 * 1024;
 
@@ -86,7 +113,7 @@ pub const CategoryTracker = struct {
 const TRACKER_COUNT = @typeInfo(Pool).@"enum".fields.len;
 
 fn alloc_linear_bytes(len: usize) ![]align(16) u8 {
-    const mem = linearAlloc(len) orelse return error.OutOfMemory;
+    const mem = LinearRenderMemory.alloc(len) orelse return error.OutOfMemory;
     const aligned: *align(16) anyopaque = @alignCast(mem);
     const ptr: [*]align(16) u8 = @ptrCast(aligned);
     return ptr[0..len];
@@ -190,13 +217,14 @@ pub const Engine = struct {
     }
 
     fn use_external_render_pool(config: Config) bool {
-        return options.config.platform == .nintendo_3ds and config.render_capacity != null;
+        if (options.config.platform != .nintendo_3ds) return false;
+        return config.render_capacity != null;
     }
 
     fn init_linear_render_pool(self: *Engine, config: Config) !void {
         assert(config.render_capacity.? >= config.memory.render);
 
-        const available: usize = linearSpaceFree();
+        const available: usize = LinearRenderMemory.spaceFree();
         if (available <= LINEAR_RENDER_RESERVE_BYTES) return error.OutOfMemory;
 
         const capacity = @min(config.render_capacity.?, available - LINEAR_RENDER_RESERVE_BYTES);
@@ -213,7 +241,7 @@ pub const Engine = struct {
 
     fn deinit_linear_render_pool(self: *Engine) void {
         if (self.linear_render_mem) |mem| {
-            linearFree(mem.ptr);
+            LinearRenderMemory.free(mem.ptr);
             self.linear_render_mem = null;
         }
     }

@@ -946,7 +946,7 @@ pub fn update_mesh(handle: Mesh.Handle, data: []const u8) void {
     meshes.update_element(handle, mesh);
 }
 
-pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize, primitive: Mesh.Primitive) void {
+pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize) void {
     const mesh = meshes.get_element(handle) orelse return;
     const pl = pipelines.get_element(mesh.pipeline) orelse return;
     const data = mesh.data orelse return;
@@ -963,10 +963,7 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize, primitiv
 
     must(cmd.vertex_type(@as(u24, @bitCast(pl.vertex_type))));
     must(cmd.vertex_address(@intFromPtr(data)));
-    must(cmd.primitive(switch (primitive) {
-        .triangles => .triangles,
-        .lines => .lines,
-    }, @intCast(count)));
+    must(cmd.primitive(.triangles, @intCast(count)));
     advance_stall();
 }
 

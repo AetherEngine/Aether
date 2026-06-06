@@ -63,11 +63,9 @@ pub fn init() anyerror!void {
     shader.state.proj = Mat4.identity();
     shader.state.view = Mat4.identity();
     shader.update_ubo();
-
 }
 
 pub fn deinit() void {
-
     shader.deinit();
 
     gl.makeProcTableCurrent(null);
@@ -240,16 +238,13 @@ pub fn update_mesh(handle: Mesh.Handle, data: []const u8) void {
     gl.NamedBufferSubData(mesh.vbo, 0, @intCast(data.len), data.ptr);
 }
 
-pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize, primitive: Mesh.Primitive) void {
+pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize) void {
     const mesh = meshes.get_element(handle) orelse return;
     const pl = pipelines.get_element(mesh.pipeline) orelse return;
 
     shader.update_per_object(model);
     gl.VertexArrayVertexBuffer(pl.vao, 0, mesh.vbo, 0, @intCast(pl.layout.stride));
-    gl.DrawArrays(switch (primitive) {
-        .triangles => gl.TRIANGLES,
-        .lines => gl.LINES,
-    }, 0, @intCast(count));
+    gl.DrawArrays(gl.TRIANGLES, 0, @intCast(count));
 }
 
 pub fn create_texture(width: u32, height: u32, data: []align(16) u8) anyerror!Texture.Handle {

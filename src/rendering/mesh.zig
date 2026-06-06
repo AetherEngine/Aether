@@ -7,11 +7,6 @@ const gfx = Platform.gfx;
 
 pub const Handle = u32;
 
-pub const Primitive = enum {
-    triangles,
-    lines,
-};
-
 /// A generic mesh parameterised by vertex type `V`.
 ///
 /// Vertex data is stored in `vertices` (an unmanaged ArrayList backed by the
@@ -24,13 +19,12 @@ pub fn Mesh(comptime V: type) type {
 
         pub const Vertex = V;
 
-        handle:    Handle,
-        vertices:  std.ArrayList(Vertex),
-        primitive: Primitive = .triangles,
+        handle: Handle,
+        vertices: std.ArrayList(Vertex),
 
         pub fn new(alloc: std.mem.Allocator, pipeline: Pipeline.Handle) !Self {
             return .{
-                .handle   = try gfx.api.create_mesh(pipeline),
+                .handle = try gfx.api.create_mesh(pipeline),
                 .vertices = try std.ArrayList(V).initCapacity(alloc, 32),
             };
         }
@@ -57,7 +51,9 @@ pub fn Mesh(comptime V: type) type {
 
         pub fn draw(self: *Self, mat: *const Mat4) void {
             gfx.api.draw_mesh(
-                self.handle, mat, self.vertices.items.len, self.primitive,
+                self.handle,
+                mat,
+                self.vertices.items.len,
             );
         }
     };
