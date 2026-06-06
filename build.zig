@@ -194,6 +194,11 @@ fn addNintendoCImportPaths(owner: *std.Build, mod: *std.Build.Module, config: Co
         .nintendo_3ds => {
             // Keep newlib before libctru so libctru's include_next sys wrappers
             // resolve during Zig's C translation of Citro3D/libctru headers.
+            //
+            // Zig's 3DS C import can otherwise see newlib's fortified unistd
+            // wrappers and emit references to __ssp_real_* symbols. devkitARM is
+            // built without libssp, so keep fortify off for translated SDK calls.
+            mod.addCMacro("_FORTIFY_SOURCE", "0");
             mod.addIncludePath(.{ .cwd_relative = b.pathJoin(&.{ dkp, "devkitARM/arm-none-eabi/include" }) });
             mod.addIncludePath(.{ .cwd_relative = b.pathJoin(&.{ dkp, "libctru/include" }) });
         },
@@ -1158,6 +1163,7 @@ fn threedsxPipeline(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOpt
     link.addArgs(&.{
         "-mword-relocations",
         "-ffunction-sections",
+        "-D_FORTIFY_SOURCE=0",
         "-D__3DS__",
         "-DARM11",
         if (exe.root_module.optimize != .Debug or exe.root_module.optimize == .ReleaseSmall) "-O2" else if (exe.root_module.optimize == .ReleaseSmall) "-Os" else "-O0",

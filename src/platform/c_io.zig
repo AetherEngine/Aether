@@ -15,6 +15,14 @@ const platform_paths = switch (options.config.platform) {
     .nintendo_switch => @import("switch/paths.zig"),
     else => unreachable,
 };
+const platform_lifecycle = switch (options.config.platform) {
+    .nintendo_3ds => @import("3ds/surface.zig"),
+    else => struct {
+        pub fn is_system_closing() bool {
+            return false;
+        }
+    },
+};
 
 const c = @import("nintendo_c.zig").c;
 const max_path_bytes = 1024;
@@ -129,6 +137,11 @@ pub fn dataRoot(buffer: []u8, app_name: []const u8) error{NameTooLong}![]const u
 
 pub fn deinitAppDirs() void {
     for (&dir_slots) |*slot| slot.used = false;
+    if (platform_lifecycle.is_system_closing()) {
+        resources_mounted = false;
+        data_mounted = false;
+        return;
+    }
     if (resources_mounted) {
         platform_paths.unmountResources();
         resources_mounted = false;

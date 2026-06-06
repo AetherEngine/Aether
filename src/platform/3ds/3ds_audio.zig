@@ -5,6 +5,7 @@
 //! `update`; NDSP handles sample-rate conversion and channel mixing.
 
 const std = @import("std");
+const surface = @import("surface.zig");
 const Stream = @import("../../audio/stream.zig").Stream;
 const PcmFormat = @import("../../audio/stream.zig").PcmFormat;
 
@@ -111,6 +112,12 @@ pub fn init() anyerror!void {
 }
 
 pub fn deinit() void {
+    if (surface.is_system_closing()) {
+        slots = init_slots();
+        audio_data = null;
+        return;
+    }
+
     for (0..NUM_SLOTS) |i| {
         ndspChnWaveBufClear(@intCast(i));
         ndspChnReset(@intCast(i));

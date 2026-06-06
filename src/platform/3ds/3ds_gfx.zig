@@ -7,6 +7,7 @@ const Rendering = @import("../../rendering/rendering.zig");
 const vertex = Rendering.vertex;
 const Mesh = Rendering.mesh;
 const Texture = Rendering.Texture;
+const surface = @import("surface.zig");
 const shaders = @import("aether_shaders");
 
 const c = @cImport({
@@ -224,6 +225,11 @@ pub fn init() anyerror!void {
 }
 
 pub fn deinit() void {
+    if (surface.is_system_closing()) {
+        abandon_service_resources();
+        return;
+    }
+
     frame_started = false;
     if (initialized) c.C3D_FrameSync();
     release_completed_mesh_slots();
@@ -334,6 +340,8 @@ pub fn set_view_matrix(mat: *const Mat4) void {
 }
 
 pub fn start_frame() bool {
+    if (surface.is_system_closing()) return false;
+
     const t = target orelse return false;
     const flags: u8 = @intCast(if (vsync_enabled) c.C3D_FRAME_SYNCDRAW else c.C3D_FRAME_NONBLOCK);
 
@@ -358,6 +366,10 @@ pub fn start_frame() bool {
 
 pub fn end_frame() void {
     if (!frame_started) return;
+    if (surface.is_system_closing()) {
+        frame_started = false;
+        return;
+    }
     mark_current_frame_mesh_slots_in_flight();
     c.C3D_FrameEnd(0);
     frame_started = false;
@@ -441,6 +453,11 @@ pub fn create_mesh() anyerror!Mesh.Handle {
 }
 
 pub fn destroy_mesh(handle: Mesh.Handle) void {
+    if (surface.is_system_closing()) {
+        _ = meshes.remove_element(handle);
+        return;
+    }
+
     if (mesh_slot(handle)) |mesh| {
         free_mesh_slots(mesh);
     }
@@ -448,6 +465,8 @@ pub fn destroy_mesh(handle: Mesh.Handle) void {
 }
 
 pub fn update_mesh(handle: Mesh.Handle, data: []const u8) void {
+    if (surface.is_system_closing()) return;
+
     const mesh = mesh_slot(handle) orelse return;
     if (data.len > std.math.maxInt(u32)) {
         std.debug.panic("3ds_gfx: mesh vertex data is too large to flush", .{});
@@ -475,6 +494,8 @@ pub fn update_mesh(handle: Mesh.Handle, data: []const u8) void {
 }
 
 pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize) void {
+    if (surface.is_system_closing()) return;
+
     if (!render_pipeline_initialized) return;
     const mesh = mesh_slot(handle) orelse return;
     const pl = &render_pipeline;
@@ -526,6 +547,8 @@ pub fn create_texture(width: u32, height: u32, data: []align(16) u8) anyerror!Te
 }
 
 pub fn update_texture(handle: Texture.Handle, data: []align(16) u8) void {
+    if (surface.is_system_closing()) return;
+
     const tex = texture_slot(handle) orelse return;
     const size = texture_size(tex.width, tex.height);
     if (data.len < size) return;
@@ -537,11 +560,19 @@ pub fn update_texture(handle: Texture.Handle, data: []align(16) u8) void {
 }
 
 pub fn bind_texture(handle: Texture.Handle) void {
+    if (surface.is_system_closing()) return;
+
     bound_texture = handle;
     rebind_texture();
 }
 
 pub fn destroy_texture(handle: Texture.Handle) void {
+    if (surface.is_system_closing()) {
+        if (bound_texture == handle) bound_texture = 0;
+        _ = textures.remove_element(handle);
+        return;
+    }
+
     if (texture_slot(handle)) |tex| {
         c.C3D_TexDelete(tex_ptr(tex));
         free_texture_staging(tex);
@@ -631,6 +662,17 @@ fn release_completed_mesh_slots() void {
             }
         }
     }
+}
+
+fn abandon_service_resources() void {
+    frame_started = false;
+    initialized = false;
+    render_pipeline_initialized = false;
+    target = null;
+    bound_texture = 0;
+    meshes.clear();
+    textures.clear();
+    deferred_mesh_frees.clear();
 }
 
 fn mark_current_frame_mesh_slots_in_flight() void {

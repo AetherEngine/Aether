@@ -4,6 +4,7 @@
 
 const std = @import("std");
 const core = @import("../../core/input/input.zig");
+const surface = @import("surface.zig");
 
 const Result = c_int;
 
@@ -84,6 +85,10 @@ pub fn init() anyerror!void {
 
 pub fn deinit() void {
     if (!initialized) return;
+    if (surface.is_system_closing()) {
+        initialized = false;
+        return;
+    }
     hidExit();
     initialized = false;
 }
