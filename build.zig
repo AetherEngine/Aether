@@ -175,6 +175,14 @@ fn devkitProPath(b: *std.Build) []const u8 {
     return p;
 }
 
+fn add3dsCImportPaths(mod: *std.Build.Module, dkp: []const u8) void {
+    const b = mod.owner;
+    // Keep newlib before libctru so libctru's include_next sys wrappers
+    // resolve during Zig's C translation of Citro3D/libctru headers.
+    mod.addIncludePath(.{ .cwd_relative = b.pathJoin(&.{ dkp, "devkitARM/arm-none-eabi/include" }) });
+    mod.addIncludePath(.{ .cwd_relative = b.pathJoin(&.{ dkp, "libctru/include" }) });
+}
+
 /// Creates a `3dslink` command for pushing an installed `.3dsx` to a
 /// networked 3DS. Reuses Aether's devkitPro option/cache so downstream
 /// builds do not need to redeclare `-Ddevkitpro-path`.
@@ -324,6 +332,10 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
         }
     }
 
+    if (config.platform == .nintendo_3ds) {
+        add3dsCImportPaths(mod, devkitProPath(b));
+    }
+
     // --- user executable ---
     const user_mod = b.createModule(.{
         .root_source_file = opts.root_source_file,
@@ -429,6 +441,10 @@ pub fn addHeadless(owner: *std.Build, b: *std.Build, opts: HeadlessOptions) *std
 
     if (psp_dep) |pd| {
         mod.addImport("pspsdk", pd.module("pspsdk"));
+    }
+
+    if (config.platform == .nintendo_3ds) {
+        add3dsCImportPaths(mod, devkitProPath(b));
     }
 
     const user_mod = b.createModule(.{
@@ -1011,7 +1027,7 @@ fn threedsxPipeline(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOpt
 
     // Standard 3DS arch flags from devkitPro's template Makefile.
     const arch = [_][]const u8{
-        "-march=armv6k", "-mtune=mpcore", "-mfloat-abi=hard", "-mtp=soft",
+        "-march=armv6k",           "-mtune=mpcore", "-mfloat-abi=hard", "-mtp=soft",
         // Keep frame pointers so manual r11-based stack walk in panic handler
         // can produce useful unwind (otherwise gcc -O* uses r11 as temp and
         // chains are absent or clobbered, leading to data aborts in the walker).
@@ -1267,23 +1283,20 @@ pub fn addShader(owner: *std.Build, b: *std.Build, exe: *std.Build.Step.Compile,
         const picasso = b.pathJoin(&.{ devkitProPath(b), "tools/bin/picasso" });
         const sources = b.addWriteFiles();
         const vert_src = sources.add(name ++ "_3ds.v.pica",
-            \\.fvec projection[4], modelView[4], screenProjection[4]
+            \\.fvec projection[4], modelView[4]
             \\.fvec posScale, uvScaleOffset, colorScale
             \\
-            \\.constf myconst(0.0, 1.0, -1.0, 0.0)
-            \\.constf viewport(200.0, 120.0, 0.0, 0.0)
+            \\.constf myconst(0.0, 1.0, 0.0, 0.0)
             \\.alias zeros myconst.xxxx
             \\.alias ones myconst.yyyy
-            \\.alias negOnes myconst.zzzz
-            \\.alias halfViewport viewport.xyyy
             \\
             \\.out outpos position
             \\.out outtc0 texcoord0
             \\.out outclr color
             \\
             \\.alias inpos v0
-            \\.alias inclr v1
-            \\.alias inuv v2
+            \\.alias inuv v1
+            \\.alias inclr v2
             \\
             \\.proc main
             \\    mul r0.xyz, posScale, inpos
@@ -1294,23 +1307,10 @@ pub fn addShader(owner: *std.Build, b: *std.Build, exe: *std.Build.Step.Compile,
             \\    dp4 r1.z, modelView[2], r0
             \\    dp4 r1.w, modelView[3], r0
             \\
-            \\    dp4 r2.x, projection[0], r1
-            \\    dp4 r2.y, projection[1], r1
-            \\    dp4 r2.z, projection[2], r1
-            \\    dp4 r2.w, projection[3], r1
-            \\
-            \\    add r3.x, r2.x, r2.w
-            \\    mul r3.x, halfViewport.x, r3.x
-            \\    add r3.y, r2.y, r2.w
-            \\    mul r3.y, halfViewport.y, r3.y
-            \\    mul r3.z, negOnes.z, r2.z
-            \\    add r3.z, r2.w, r3.z
-            \\    mov r3.w, r2.w
-            \\
-            \\    dp4 outpos.x, screenProjection[0], r3
-            \\    dp4 outpos.y, screenProjection[1], r3
-            \\    dp4 outpos.z, screenProjection[2], r3
-            \\    dp4 outpos.w, screenProjection[3], r3
+            \\    dp4 outpos.x, projection[0], r1
+            \\    dp4 outpos.y, projection[1], r1
+            \\    dp4 outpos.z, projection[2], r1
+            \\    dp4 outpos.w, projection[3], r1
             \\
             \\    mul outtc0.xy, uvScaleOffset.xy, inuv.xy
             \\    add outtc0.xy, uvScaleOffset.zw, outtc0.xy

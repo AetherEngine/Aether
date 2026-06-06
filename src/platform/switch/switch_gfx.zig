@@ -515,7 +515,7 @@ pub fn update_mesh(handle: Mesh.Handle, data: []const u8) void {
     meshes.update_element(handle, mesh);
 }
 
-pub fn draw_mesh(handle: Mesh.Handle, _: *const Mat4, count: usize, primitive: Mesh.Primitive) void {
+pub fn draw_mesh(handle: Mesh.Handle, _: *const Mat4, count: usize) void {
     if (!initialized or command_buffer == null) return;
     const mesh = meshes.get_element(handle) orelse return;
     if (mesh.mem_block == null or mesh.size == 0 or count == 0) return;
@@ -534,10 +534,7 @@ pub fn draw_mesh(handle: Mesh.Handle, _: *const Mat4, count: usize, primitive: M
     }
     dkCmdBufBindVtxBuffers(command_buffer, 0, extents[0..].ptr, pl.vtx_buffer_count);
 
-    dkCmdBufDraw(command_buffer, switch (primitive) {
-        .triangles => DK_PRIMITIVE_TRIANGLES,
-        .lines => DK_PRIMITIVE_LINES,
-    }, @intCast(count), 1, 0, 0);
+    dkCmdBufDraw(command_buffer, DK_PRIMITIVE_TRIANGLES, @intCast(count), 1, 0, 0);
 }
 
 pub fn create_texture(_: u32, _: u32, _: []align(16) u8) anyerror!Texture.Handle {

@@ -1056,7 +1056,7 @@ pub fn update_mesh(handle: Mesh.Handle, data: []const u8) void {
     meshes.update_element(handle, m_data);
 }
 
-pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize, primitive: Mesh.Primitive) void {
+pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize) void {
     draw_state.mat = model.*;
 
     const m_data = meshes.get_element(handle) orelse return;
@@ -1071,10 +1071,7 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize, primitiv
     const dyn_offsets = [_]u32{current_camera_slot * camera_rings[swapchain.image_index].slot_stride};
     command_buffer.bindDescriptorSets(.graphics, p_data.layout, 0, &sets, &dyn_offsets);
 
-    command_buffer.setPrimitiveTopology(switch (primitive) {
-        .triangles => .triangle_list,
-        .lines => .line_list,
-    });
+    command_buffer.setPrimitiveTopology(.triangle_list);
 
     const offset = [_]vk.DeviceSize{0};
     const frame_buf = m_data.buffers[swapchain.image_index];

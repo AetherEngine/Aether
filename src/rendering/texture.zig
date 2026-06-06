@@ -50,16 +50,16 @@ pub fn load_from_data(alloc: std.mem.Allocator, width: u32, height: u32, pixels:
     };
 }
 
-/// 4x4 solid white default texture, initialized by `init_defaults`.
+/// 8x8 solid white default texture, initialized by `init_defaults`.
 pub var Default: Texture = undefined;
 
 pub fn init_defaults(alloc: std.mem.Allocator) !void {
     const pixels = comptime blk: {
-        var data: [4 * 4 * 4]u8 = undefined;
+        var data: [8 * 8 * 4]u8 = undefined;
         @memset(&data, 0xFF);
         break :blk data;
     };
-    Default = try load_from_data(alloc, 4, 4, &pixels);
+    Default = try load_from_data(alloc, 8, 8, &pixels);
 }
 
 /// Loads a PNG from `path` (resolved against `dir`) into GPU memory.
