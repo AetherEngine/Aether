@@ -117,7 +117,7 @@ fn resolve_nintendo(io: Io, app_name: []const u8) Error!Dirs {
     errdefer data.close(io);
 
     const resources = if (NintendoIo.mountResources())
-        Io.Dir.openDirAbsolute(io, "romfs:/", .{}) catch data
+        Io.Dir.cwd().openDir(io, "romfs:/", .{}) catch data
     else
         data;
 
