@@ -52,12 +52,205 @@ const Vertex = extern struct {
 
 const MyMesh = Rendering.Mesh(Vertex);
 
+const BATCH_A_TRIANGLES = 61;
+const BATCH_B_TRIANGLES = 78;
 const MAX_GRASS_VOICES = 4;
 const Vec3 = Math.Vec3;
 
+fn rgba(r: u8, g: u8, b: u8) u32 {
+    return @as(u32, r) |
+        (@as(u32, g) << 8) |
+        (@as(u32, b) << 16) |
+        (@as(u32, 0xFF) << 24);
+}
+
+const BatchAColors = [_]u32{
+    rgba(255, 62, 62),
+    rgba(255, 170, 54),
+    rgba(245, 235, 80),
+    rgba(76, 210, 130),
+    rgba(58, 190, 235),
+    rgba(145, 105, 255),
+};
+
+const BatchBColors = [_]u32{
+    rgba(48, 110, 255),
+    rgba(56, 205, 190),
+    rgba(225, 88, 180),
+    rgba(240, 150, 70),
+    rgba(210, 230, 80),
+    rgba(255, 255, 255),
+};
+
+fn snorm16(v: f32) i16 {
+    return @intFromFloat(std.math.clamp(v, -1.0, 1.0) * 32767.0);
+}
+
+fn vertex(x: f32, y: f32, color: u32, u: f32, v: f32) Vertex {
+    return .{
+        .pos = .{ snorm16(x), snorm16(y), 0 },
+        .color = color,
+        .uv = .{ snorm16(u), snorm16(v) },
+    };
+}
+
+fn appendTriangle(
+    alloc: std.mem.Allocator,
+    mesh: *MyMesh,
+    a: [2]f32,
+    b: [2]f32,
+    c: [2]f32,
+    ca: u32,
+    cb: u32,
+    cc: u32,
+) !void {
+    try mesh.append(alloc, &.{
+        vertex(a[0], a[1], ca, 0.5, 0.0),
+        vertex(b[0], b[1], cb, 0.0, 1.0),
+        vertex(c[0], c[1], cc, 1.0, 1.0),
+    });
+}
+
+fn orientedPoint(cx: f32, cy: f32, lx: f32, ly: f32, angle: f32) [2]f32 {
+    const c = @cos(angle);
+    const s = @sin(angle);
+    return .{
+        cx + lx * c - ly * s,
+        cy + lx * s + ly * c,
+    };
+}
+
+fn appendOrientedTriangle(
+    alloc: std.mem.Allocator,
+    mesh: *MyMesh,
+    cx: f32,
+    cy: f32,
+    sx: f32,
+    sy: f32,
+    angle: f32,
+    c0: u32,
+    c1: u32,
+    c2: u32,
+) !void {
+    try appendTriangle(
+        alloc,
+        mesh,
+        orientedPoint(cx, cy, 0.0, sy, angle),
+        orientedPoint(cx, cy, -sx, -sy, angle),
+        orientedPoint(cx, cy, sx, -sy, angle),
+        c0,
+        c1,
+        c2,
+    );
+}
+
+fn buildBatchA(alloc: std.mem.Allocator, mesh: *MyMesh) !void {
+    try mesh.vertices.ensureTotalCapacity(alloc, BATCH_A_TRIANGLES * 3);
+
+    try appendTriangle(alloc, mesh, .{ -0.44, -0.40 }, .{ 0.44, -0.40 }, .{ 0.0, 0.52 }, BatchAColors[0], BatchAColors[3], BatchAColors[5]);
+
+    const spoke_count = 36;
+    for (0..spoke_count) |i| {
+        const t = @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(spoke_count));
+        const angle = t * std.math.pi * 2.0;
+        const tip_radius = 0.78 + @sin(angle * 3.0) * 0.04;
+        const base_radius = 0.31 + @cos(angle * 2.0) * 0.035;
+        const half_width = 0.075 + @sin(angle * 5.0) * 0.012;
+        const tip = [2]f32{ @cos(angle) * tip_radius, @sin(angle) * tip_radius };
+        const left = [2]f32{ @cos(angle - half_width) * base_radius, @sin(angle - half_width) * base_radius };
+        const right = [2]f32{ @cos(angle + half_width) * base_radius, @sin(angle + half_width) * base_radius };
+
+        try appendTriangle(
+            alloc,
+            mesh,
+            tip,
+            left,
+            right,
+            BatchAColors[i % BatchAColors.len],
+            BatchAColors[(i + 2) % BatchAColors.len],
+            BatchAColors[(i + 4) % BatchAColors.len],
+        );
+    }
+
+    const marker_count = 24;
+    for (0..marker_count) |i| {
+        const t = @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(marker_count));
+        const angle = t * std.math.pi * 2.0;
+        const radius = 0.56 + if (i % 2 == 0) @as(f32, 0.045) else -0.025;
+        const size = 0.032 + @as(f32, @floatFromInt(i % 4)) * 0.006;
+        try appendOrientedTriangle(
+            alloc,
+            mesh,
+            @cos(angle) * radius,
+            @sin(angle) * radius,
+            size * 0.75,
+            size,
+            angle + std.math.pi * 0.5,
+            BatchAColors[(i + 1) % BatchAColors.len],
+            BatchAColors[(i + 3) % BatchAColors.len],
+            BatchAColors[(i + 5) % BatchAColors.len],
+        );
+    }
+}
+
+fn buildBatchB(alloc: std.mem.Allocator, mesh: *MyMesh) !void {
+    try mesh.vertices.ensureTotalCapacity(alloc, BATCH_B_TRIANGLES * 3);
+
+    const cols = 9;
+    const rows = 6;
+    for (0..rows) |row| {
+        for (0..cols) |col| {
+            const idx = row * cols + col;
+            const fx = @as(f32, @floatFromInt(col)) / @as(f32, @floatFromInt(cols - 1));
+            const fy = @as(f32, @floatFromInt(row)) / @as(f32, @floatFromInt(rows - 1));
+            const x = -0.88 + fx * 1.76;
+            const y = -0.67 + fy * 1.34;
+            const size = 0.04 + @as(f32, @floatFromInt((idx + row) % 5)) * 0.008;
+            const angle = @as(f32, @floatFromInt(idx)) * 0.43 + @sin(fy * std.math.pi) * 0.35;
+
+            try appendOrientedTriangle(
+                alloc,
+                mesh,
+                x,
+                y,
+                size * (0.72 + fx * 0.35),
+                size,
+                angle,
+                BatchBColors[idx % BatchBColors.len],
+                BatchBColors[(idx + 2) % BatchBColors.len],
+                BatchBColors[(idx + 4) % BatchBColors.len],
+            );
+        }
+    }
+
+    const wave_count = 24;
+    for (0..wave_count) |i| {
+        const t = @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(wave_count - 1));
+        const x = -0.94 + t * 1.88;
+        const y = 0.78 + @sin(t * std.math.pi * 6.0) * 0.095;
+        const size = 0.035 + @as(f32, @floatFromInt(i % 3)) * 0.007;
+        const angle = t * std.math.pi * 4.0;
+
+        try appendOrientedTriangle(
+            alloc,
+            mesh,
+            x,
+            y,
+            size,
+            size * 1.6,
+            angle,
+            BatchBColors[(i + 5) % BatchBColors.len],
+            BatchBColors[(i + 1) % BatchBColors.len],
+            BatchBColors[(i + 3) % BatchBColors.len],
+        );
+    }
+}
+
 const MyState = struct {
-    mesh: MyMesh,
-    transform: Rendering.Transform,
+    batch_a: MyMesh,
+    batch_b: MyMesh,
+    batch_a_transform: Rendering.Transform,
+    batch_b_transform: Rendering.Transform,
     texture: Rendering.Texture,
     music_data: []const u8,
     music_reader: std.Io.Reader,
@@ -65,6 +258,7 @@ const MyState = struct {
     grass_readers: [MAX_GRASS_VOICES]std.Io.Reader,
     grass_tick: u32,
     grass_spawn: u32,
+    time: f32,
 
     fn load_wav(engine: *ae.Engine, path: []const u8) ![]u8 {
         var file = try engine.dirs.resources.openFile(engine.io, path, .{});
@@ -94,17 +288,17 @@ const MyState = struct {
 
         const render = engine.allocator(.render);
 
-        self.mesh = try MyMesh.new(render, pipeline);
-        self.transform = Rendering.Transform.new();
+        self.batch_a = try MyMesh.new(render, pipeline);
+        self.batch_b = try MyMesh.new(render, pipeline);
+        self.batch_a_transform = Rendering.Transform.new();
+        self.batch_b_transform = Rendering.Transform.new();
 
         self.texture = try Rendering.Texture.load(engine.io, engine.dirs.resources, render, "test.png");
 
-        try self.mesh.append(render, &.{
-            Vertex{ .pos = .{ -16383, -16383, 0 }, .color = 0xFF0000FF, .uv = .{ 0, 32767 } },
-            Vertex{ .pos = .{ 16383, -16383, 0 }, .color = 0xFF00FF00, .uv = .{ 32767, 32767 } },
-            Vertex{ .pos = .{ 0, 16383, 0 }, .color = 0xFFFF0000, .uv = .{ 16383, 0 } },
-        });
-        self.mesh.update();
+        try buildBatchA(render, &self.batch_a);
+        try buildBatchB(render, &self.batch_b);
+        self.batch_a.update();
+        self.batch_b.update();
 
         self.music_data = &.{};
         self.music_reader = .fixed(&.{});
@@ -112,6 +306,7 @@ const MyState = struct {
         self.grass_readers = @splat(.fixed(&.{}));
         self.grass_tick = 0;
         self.grass_spawn = 0;
+        self.time = 0.0;
 
         if (!Audio.enabled) return;
 
@@ -134,7 +329,8 @@ const MyState = struct {
         var self = ae.ctx_to_self(MyState, ctx);
         const render = engine.allocator(.render);
         self.texture.deinit(render);
-        self.mesh.deinit(render);
+        self.batch_b.deinit(render);
+        self.batch_a.deinit(render);
         Rendering.Pipeline.deinit(pipeline);
     }
 
@@ -170,7 +366,18 @@ const MyState = struct {
 
     fn update(ctx: *anyopaque, _: *ae.Engine, dt: f32, _: *const Util.BudgetContext) anyerror!void {
         var self = ae.ctx_to_self(MyState, ctx);
-        self.transform.rot.z += 60.0 * dt;
+        self.time += dt;
+
+        self.batch_a_transform.rot.z += 76.0 * dt;
+        self.batch_b_transform.rot.z -= 18.0 * dt;
+
+        const batch_a_pulse = 1.0 + @sin(self.time * 1.8) * 0.06;
+        const batch_b_x = 1.0 + @cos(self.time * 0.9) * 0.035;
+        const batch_b_y = 1.0 + @sin(self.time * 1.1) * 0.035;
+
+        self.batch_a_transform.scale = Vec3.new(batch_a_pulse, batch_a_pulse, 1.0);
+        self.batch_b_transform.scale = Vec3.new(batch_b_x, batch_b_y, 1.0);
+        self.batch_b_transform.pos = Vec3.new(@sin(self.time * 0.7) * 0.075, @cos(self.time * 0.5) * 0.04, 0.0);
     }
 
     fn draw(ctx: *anyopaque, _: *ae.Engine, _: f32, _: *const Util.BudgetContext) anyerror!void {
@@ -185,7 +392,8 @@ const MyState = struct {
 
         Rendering.Pipeline.bind(pipeline);
         self.texture.bind();
-        self.mesh.draw(&self.transform.get_matrix());
+        self.batch_b.draw(&self.batch_b_transform.get_matrix());
+        self.batch_a.draw(&self.batch_a_transform.get_matrix());
     }
 
     pub fn state(self: *MyState) State {
