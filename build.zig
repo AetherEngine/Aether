@@ -995,14 +995,33 @@ fn threedsxPipeline(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOpt
         \\
     );
 
+    // Small linker script fragment providing accurate .text bounds as
+    // link-time constants. This lets the panic unwinder in services.zig
+    // use real section start/end (via ADDR/SIZEOF) instead of any
+    // hardcoded/sketchy ranges for isLikelyReturnAddress text checks.
+    const syms_wf = b.addWriteFiles();
+    const text_syms_ld = syms_wf.add("aether_3ds_text_syms.ld",
+        \\/* Zig C backend (for 3DS ofmt=c) mangles extern names with zig_e_ prefix. */
+        \\/* Provide both for the isLikelyReturnAddress range checks + any debug. */
+        \\zig_e___text_start = ADDR(.text);
+        \\zig_e___text_end = ADDR(.text) + SIZEOF(.text);
+        \\__text_start = zig_e___text_start;
+        \\__text_end = zig_e___text_end;
+    );
+
     // Standard 3DS arch flags from devkitPro's template Makefile.
     const arch = [_][]const u8{
         "-march=armv6k", "-mtune=mpcore", "-mfloat-abi=hard", "-mtp=soft",
+        // Keep frame pointers so manual r11-based stack walk in panic handler
+        // can produce useful unwind (otherwise gcc -O* uses r11 as temp and
+        // chains are absent or clobbered, leading to data aborts in the walker).
+        "-fno-omit-frame-pointer",
     };
 
     // Single-shot compile + link via the gcc driver. 3dsx.specs pulls
     // in `_3dsx_crt0` (which calls our exported `main`) and the 3DSX
-    // linker script.
+    // linker script. We also supply a tiny -T fragment for accurate
+    // __text_* symbols (see text_syms_ld above).
     const link = b.addSystemCommand(&.{gcc});
     link.addArgs(&arch);
     link.addArgs(&.{
@@ -1013,6 +1032,10 @@ fn threedsxPipeline(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOpt
         if (exe.root_module.optimize != .Debug or exe.root_module.optimize == .ReleaseSmall) "-O2" else if (exe.root_module.optimize == .ReleaseSmall) "-Os" else "-O0",
         if (exe.root_module.optimize == .Debug or exe.root_module.optimize == .ReleaseSafe) "-g" else "-g0",
         "-specs=3dsx.specs",
+        "-T",
+    });
+    link.addFileArg(text_syms_ld);
+    link.addArgs(&.{
         "-Wl,--wrap=threadCreate",
         "-Wl,--no-warn-execstack",
     });
