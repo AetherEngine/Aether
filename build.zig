@@ -1,8 +1,8 @@
 const std = @import("std");
 const pspsdk = @import("pspsdk");
 
-const DEFAULT_3DS_HEAP_SIZE: u32 = 48 * 1024 * 1024;
-const DEFAULT_3DS_LINEAR_HEAP_SIZE: u32 = 32 * 1024 * 1024;
+const DEFAULT_3DS_HEAP_SIZE: u32 = 4 * 1024 * 1024;
+const DEFAULT_3DS_LINEAR_HEAP_SIZE: u32 = 60 * 1024 * 1024;
 
 pub const Platform = enum {
     windows,
@@ -52,9 +52,9 @@ pub const Config = struct {
     /// levels for the texture. Off by default since the extra VRAM cost
     /// only pays off for textures sampled at a wide range of distances.
     psp_mipmaps: bool = false,
-    /// 3DS: newlib/application heap reserved by libctru's startup shim.
+    /// 3DS: small regular heap reserved for libctru/newlib internals.
     nintendo_3ds_heap_size: u32 = DEFAULT_3DS_HEAP_SIZE,
-    /// 3DS: linear heap reserved by libctru's startup shim.
+    /// 3DS: linear heap used by Aether's process allocator and GPU uploads.
     nintendo_3ds_linear_heap_size: u32 = DEFAULT_3DS_LINEAR_HEAP_SIZE,
     /// When true, `Core.paths.resolve` returns CWD for both resources
     /// and data, bypassing the platform-specific layout (.app Resources
@@ -1427,8 +1427,8 @@ pub fn addShader(owner: *std.Build, b: *std.Build, exe: *std.Build.Step.Compile,
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const threeds_heap_mib = b.option(u32, "3ds-heap-mib", "3DS: application heap size in MiB (default: 48)");
-    const threeds_linear_heap_mib = b.option(u32, "3ds-linear-heap-mib", "3DS: linear heap size in MiB (default: 32)");
+    const threeds_heap_mib = b.option(u32, "3ds-heap-mib", "3DS: regular libctru/newlib heap size in MiB (default: 4)");
+    const threeds_linear_heap_mib = b.option(u32, "3ds-linear-heap-mib", "3DS: linear heap size in MiB (default: 60)");
 
     const overrides: Config.Overrides = .{
         .gfx = b.option(Gfx, "gfx", "Graphics backend override (default: auto-detect from target)"),

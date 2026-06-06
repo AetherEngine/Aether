@@ -10,9 +10,9 @@
 //! frames grow.
 //!
 //! libctru also exposes weak `__ctru_heap_size` and
-//! `__ctru_linear_heap_size` symbols. Leaving them at zero asks libctru to
-//! compute a conservative split, which is too small for Aether's explicit
-//! linear render pool. Export strong values from build config instead.
+//! `__ctru_linear_heap_size` symbols. Aether keeps the regular heap small
+//! and routes its process allocator through linear memory, so export strong
+//! values from build config instead of asking libctru for its default split.
 //!
 //! libctru also creates service threads internally. NDSP currently asks for
 //! a 4 KB stack, which can underflow in its sound-frame worker before Aether

@@ -1,5 +1,4 @@
 const std = @import("std");
-const builtin = @import("builtin");
 const assert = std.debug.assert;
 
 const Util = @import("util/util.zig");
@@ -12,42 +11,6 @@ const options = @import("options");
 
 pub const Pool = memory.Pool;
 pub const MemoryConfig = memory.MemoryConfig;
-
-const LinearRenderMemory = if (options.config.platform == .nintendo_3ds) struct {
-    extern fn linearAlloc(size: usize) ?*anyopaque;
-    extern fn linearFree(mem: ?*anyopaque) void;
-    extern fn linearSpaceFree() u32;
-
-    fn alloc(size: usize) ?*anyopaque {
-        return linearAlloc(size);
-    }
-
-    fn free(mem: ?*anyopaque) void {
-        linearFree(mem);
-    }
-
-    fn spaceFree() u32 {
-        return linearSpaceFree();
-    }
-} else struct {
-    fn alloc(size: usize) ?*anyopaque {
-        _ = size;
-        return null;
-    }
-
-    fn free(mem: ?*anyopaque) void {
-        _ = mem;
-    }
-
-    fn spaceFree() u32 {
-        return 0;
-    }
-};
-
-const LINEAR_RENDER_RESERVE_BYTES: usize = if (options.config.platform == .nintendo_3ds)
-    4 * 1024 * 1024
-else
-    2 * 1024 * 1024;
 
 // -- category tracker (wrapper allocator with per-category accounting) --------
 
@@ -115,20 +78,11 @@ pub const CategoryTracker = struct {
 
 const TRACKER_COUNT = @typeInfo(Pool).@"enum".fields.len;
 
-fn alloc_linear_bytes(len: usize) ![]align(16) u8 {
-    const mem = LinearRenderMemory.alloc(len) orelse return error.OutOfMemory;
-    const aligned: *align(16) anyopaque = @alignCast(mem);
-    const ptr: [*]align(16) u8 = @ptrCast(aligned);
-    return ptr[0..len];
-}
-
 // -- engine -------------------------------------------------------------------
 
 pub const Engine = struct {
     io: std.Io,
     pool: memory.PoolAlloc,
-    linear_render_pool: memory.PoolAlloc,
-    linear_render_mem: ?[]align(16) u8,
     trackers: [TRACKER_COUNT]CategoryTracker,
     running: bool,
     vsync: bool,
@@ -148,9 +102,6 @@ pub const Engine = struct {
         /// `title` so single-word titles just work; override when the
         /// title contains characters you don't want in a filesystem path.
         app_name: ?[]const u8 = null,
-        /// On 3DS, provide this to back the render category with linear
-        /// FCRAM so vertex buffers can be used as direct PICA sources.
-        render_capacity: ?usize = null,
     };
 
     /// Initializes the engine in place. `self` must live at a stable address
@@ -170,18 +121,12 @@ pub const Engine = struct {
         config: Config,
         state: *const Core.State,
     ) !void {
-        const external_render = use_external_render_pool(config);
-        const main_required = if (external_render)
-            config.memory.total() - config.memory.render
-        else
-            config.memory.total();
-        assert(main_required <= mem.len);
+        assert(config.memory.total() <= mem.len);
 
         self.io = sys_io;
         self.running = true;
         self.vsync = config.vsync;
         self.state = state.*;
-        self.linear_render_mem = null;
 
         self.pool = memory.PoolAlloc.init(mem, "main");
         const inner = self.pool.allocator();
@@ -208,12 +153,6 @@ pub const Engine = struct {
         };
         errdefer Platform.deinit();
 
-        if (external_render) {
-            try self.init_linear_render_pool(config);
-            Platform.gfx.rebind_backend_allocator(self.allocator(.render), self.io);
-        }
-        errdefer self.deinit_linear_render_pool();
-
         Rendering.Texture.init_defaults(self.allocator(.render)) catch |err| switch (err) {
             error.OutOfMemory => return error.DefaultTexturesOutOfMemory,
             else => return err,
@@ -230,58 +169,6 @@ pub const Engine = struct {
         Platform.deinit();
         logger.deinit(self.io);
         self.dirs.close(self.io);
-        self.deinit_linear_render_pool();
-    }
-
-    fn use_external_render_pool(config: Config) bool {
-        if (options.config.platform != .nintendo_3ds) return false;
-        return config.render_capacity != null;
-    }
-
-    fn init_linear_render_pool(self: *Engine, config: Config) !void {
-        assert(config.render_capacity.? >= config.memory.render);
-        const mib = 1024 * 1024;
-
-        const available: usize = LinearRenderMemory.spaceFree();
-        if (available <= LINEAR_RENDER_RESERVE_BYTES) {
-            std.debug.panic(
-                "LinLowMiB a={} q={} h={} l={}",
-                .{
-                    available / mib,
-                    config.render_capacity.? / mib,
-                    options.config.nintendo_3ds_heap_size / mib,
-                    options.config.nintendo_3ds_linear_heap_size / mib,
-                },
-            );
-        }
-
-        const capacity = @min(config.render_capacity.?, available - LINEAR_RENDER_RESERVE_BYTES);
-
-        const linear_mem = alloc_linear_bytes(capacity) catch |err| switch (err) {
-            error.OutOfMemory => std.debug.panic(
-                "LinAllocMiB a={} c={} q={} h={} l={}",
-                .{
-                    available / mib,
-                    capacity / mib,
-                    config.render_capacity.? / mib,
-                    options.config.nintendo_3ds_heap_size / mib,
-                    options.config.nintendo_3ds_linear_heap_size / mib,
-                },
-            ),
-        };
-        self.linear_render_mem = linear_mem;
-        self.linear_render_pool = memory.PoolAlloc.init(linear_mem, "render-linear");
-
-        const render_idx = @intFromEnum(Pool.render);
-        self.trackers[render_idx].inner = self.linear_render_pool.allocator();
-        self.trackers[render_idx].budget = @min(self.trackers[render_idx].budget, capacity);
-    }
-
-    fn deinit_linear_render_pool(self: *Engine) void {
-        if (self.linear_render_mem) |mem| {
-            LinearRenderMemory.free(mem.ptr);
-            self.linear_render_mem = null;
-        }
     }
 
     pub fn allocator(self: *Engine, p: Pool) std.mem.Allocator {
@@ -310,10 +197,7 @@ pub const Engine = struct {
     }
 
     pub fn set_budget(self: *Engine, p: Pool, new_budget: usize) void {
-        self.trackers[@intFromEnum(p)].budget = if (p == .render) blk: {
-            const mem = self.linear_render_mem orelse break :blk new_budget;
-            break :blk @min(new_budget, mem.len);
-        } else new_budget;
+        self.trackers[@intFromEnum(p)].budget = new_budget;
     }
 
     pub fn total_used(self: *const Engine) usize {
