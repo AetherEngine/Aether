@@ -193,7 +193,7 @@ fn addNintendoCImportPaths(owner: *std.Build, mod: *std.Build.Module, config: Co
     switch (config.platform) {
         .nintendo_3ds => {
             // Keep newlib before libctru so libctru's include_next sys wrappers
-            // resolve during Zig's C translation of Citro3D/libctru headers.
+            // resolve during Zig's C translation of SDK headers.
             //
             // Zig's 3DS C import can otherwise see newlib's fortified unistd
             // wrappers and emit references to __ssp_real_* symbols. devkitARM is
@@ -361,6 +361,9 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
 
     if (uses_nintendo_c_io) {
         addNintendoCImportPaths(owner, mod, config, devkitProPath(b));
+    }
+    if (config.platform == .nintendo_3ds and config.gfx == .default) {
+        add3dsMangoImport(owner, b, mod, target, opts.optimize);
     }
 
     addInternalShaderModule(owner, b, mod, config);
@@ -576,6 +579,56 @@ fn addPicassoStep(b: *std.Build, picasso: []const u8, comptime output_name: []co
     return output;
 }
 
+fn add3dsMangoImport(owner: *std.Build, b: *std.Build, mod: *std.Build.Module, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
+    const zsflt = owner.dependency("zsflt", .{}).module("zsflt");
+    const dkp = devkitProPath(owner);
+    const zitrus_mod = b.createModule(.{
+        .root_source_file = owner.path("src/platform/3ds/mango/zitrus.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "zsflt", .module = zsflt },
+        },
+    });
+    zitrus_mod.addImport("zitrus", zitrus_mod);
+    zitrus_mod.addIncludePath(owner.path("src/platform"));
+    zitrus_mod.addCMacro("_FORTIFY_SOURCE", "0");
+    zitrus_mod.addIncludePath(.{ .cwd_relative = b.pathJoin(&.{ dkp, "devkitARM/arm-none-eabi/include" }) });
+    zitrus_mod.addIncludePath(.{ .cwd_relative = b.pathJoin(&.{ dkp, "libctru/include" }) });
+    mod.addImport("zitrus", zitrus_mod);
+}
+
+fn addMangoPsmStep(owner: *std.Build, b: *std.Build, comptime output_name: []const u8, input: std.Build.LazyPath) std.Build.LazyPath {
+    const zsflt = owner.dependency("zsflt", .{}).module("zsflt");
+    const host_target = b.resolveTargetQuery(.{});
+    const zitrus_mod = b.createModule(.{
+        .root_source_file = owner.path("src/platform/3ds/mango/zitrus_tools.zig"),
+        .target = host_target,
+        .optimize = .Debug,
+        .imports = &.{
+            .{ .name = "zsflt", .module = zsflt },
+        },
+    });
+    zitrus_mod.addImport("zitrus", zitrus_mod);
+
+    const tool = b.addExecutable(.{
+        .name = "aether-psm-to-zpsh",
+        .root_module = b.createModule(.{
+            .root_source_file = owner.path("src/platform/3ds/mango/tools/psm_to_zpsh.zig"),
+            .target = host_target,
+            .optimize = .Debug,
+            .imports = &.{
+                .{ .name = "zitrus", .module = zitrus_mod },
+            },
+        }),
+    });
+
+    const run = b.addRunArtifact(tool);
+    run.setName("assemble 3ds mango shader");
+    run.addFileArg(input);
+    return run.addOutputFileArg(output_name);
+}
+
 fn addInternalShaderModule(owner: *std.Build, b: *std.Build, mod: *std.Build.Module, config: Config) void {
     const stages = internalShaderStages(owner, b, config) orelse return;
 
@@ -595,13 +648,7 @@ fn addInternalShaderModule(owner: *std.Build, b: *std.Build, mod: *std.Build.Mod
 
 fn internalShaderStages(owner: *std.Build, b: *std.Build, config: Config) ?ShaderStagePaths {
     if (config.platform == .nintendo_3ds and config.gfx == .default) {
-        const picasso = b.pathJoin(&.{ devkitProPath(b), "tools/bin/picasso" });
-        const vert = addPicassoStep(
-            b,
-            picasso,
-            "basic.shbin",
-            owner.path("src/platform/3ds/shaders/basic.v.pica"),
-        );
+        const vert = addMangoPsmStep(owner, b, "basic.psh", owner.path("src/platform/3ds/shaders/basic.psm"));
         const files = b.addWriteFiles();
         const frag = files.add("basic.frag.stub", "");
         return .{ .vert = vert, .frag = frag };
@@ -1205,7 +1252,7 @@ fn threedsxPipeline(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOpt
     link.addArg("none");
     link.addFileArg(crt_clean);
     link.addArg(b.fmt("-L{s}", .{ctru_lib}));
-    link.addArgs(&.{ "-lcitro3d", "-lctru", "-lm" });
+    link.addArgs(&.{ "-lctru", "-lm" });
     link.addArg("-o");
     const elf = link.addOutputFileArg(b.fmt("{s}.elf", .{exe.name}));
 

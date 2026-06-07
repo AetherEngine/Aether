@@ -86,6 +86,10 @@
             .hash = "sdl3-0.2.0-NmT1Q0mFJwBi9kZmArzh2rfJ_mFshydV0zPGULVlpACc",
             .lazy = true,
         },
+        .zsflt = .{
+            .url = "git+https://github.com/GasInfinity/zsflt.git#1929cbae9d41c7e1178e494e42aa7b349a68cd8a",
+            .hash = "zsflt-0.0.1-_pCibQ4wAABnfZskVOk2Y14F056VNJtuqVpAEzUNBGfl",
+        },
     },
     .paths = .{
         "build.zig",

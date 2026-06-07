@@ -1,4 +1,4 @@
-//! Citro3D graphics backend for Nintendo 3DS.
+//! Mango/libctru graphics backend for Nintendo 3DS.
 
 const std = @import("std");
 const Util = @import("../../util/util.zig");
@@ -8,6 +8,9 @@ const Mesh = Rendering.mesh;
 const Texture = Rendering.Texture;
 const surface = @import("surface.zig");
 const shaders = @import("aether_shaders");
+const zitrus = @import("zitrus");
+const mango = zitrus.mango;
+const pica = zitrus.hardware.pica;
 
 const c = @cImport({
     @cDefine("wint_t", "unsigned int");
@@ -19,22 +22,6 @@ const c = @cImport({
     @cInclude("3ds/services/gspgpu.h");
     @cInclude("3ds/gfx.h");
     @cInclude("3ds/allocator/vram.h");
-    @cInclude("3ds/gpu/shbin.h");
-    @cInclude("3ds/gpu/shaderProgram.h");
-    @cUndef("__3DS__");
-    @cUndef("_3DS");
-    @cInclude("c3d/types.h");
-    @cInclude("c3d/maths.h");
-    @cInclude("c3d/uniforms.h");
-    @cInclude("c3d/attribs.h");
-    @cInclude("c3d/buffers.h");
-    @cInclude("c3d/base.h");
-    @cInclude("c3d/texenv.h");
-    @cInclude("c3d/effect.h");
-    @cInclude("c3d/texture.h");
-    @cInclude("c3d/fog.h");
-    @cInclude("c3d/framebuffer.h");
-    @cInclude("c3d/renderqueue.h");
 });
 
 var render_alloc: std.mem.Allocator = undefined;
@@ -47,11 +34,10 @@ pub fn setup(alloc: std.mem.Allocator, io: std.Io) void {
 
 const SCREEN_WIDTH: u32 = 400;
 const SCREEN_HEIGHT: u32 = 240;
-const TARGET_WIDTH: c_int = 240;
-const TARGET_HEIGHT: c_int = 400;
+const TARGET_WIDTH: u16 = 240;
+const TARGET_HEIGHT: u16 = 400;
 const MESH_SLOT_COUNT: usize = 2;
 const MAX_DEFERRED_MESH_FREES: usize = 4096;
-const C3D_CMD_BUFFER_SIZE: usize = 1024 * 1024;
 const MAX_TEXTURE_SIZE: u32 = 1024;
 const MIN_TEXTURE_SIZE: u32 = 8;
 const TEX_BPP: usize = 4;
@@ -60,9 +46,6 @@ const OS_FCRAM_VADDR: usize = 0x30000000;
 const OS_FCRAM_SIZE: usize = 0x10000000;
 const OS_OLD_FCRAM_VADDR: usize = 0x14000000;
 const OS_OLD_FCRAM_SIZE: usize = 0x08000000;
-const BUFFER_BASE_PADDR: u32 = 0x18000000;
-const SH_MODE_VSH: u32 = 0xA0000000;
-const FLOAT_UNIFORM_UPLOAD_F32: u32 = 0x80000000;
 
 const DISPLAY_TRANSFER_FLAGS: u32 = @intCast(
     c.GX_TRANSFER_FLIP_VERT(0) |
@@ -73,18 +56,14 @@ const DISPLAY_TRANSFER_FLAGS: u32 = @intCast(
         c.GX_TRANSFER_SCALING(c.GX_TRANSFER_SCALE_NO),
 );
 
-const VERTEX_SHADER_INDEX: usize = 0;
+fn gx_buffer_dim(width: u16, height: u16) u32 {
+    return (@as(u32, height) << 16) | @as(u32, width);
+}
+
 const VERTEX_STRIDE: usize = @sizeOf(Rendering.Vertex);
-const VERTEX_ATTR_COUNT: c_int = 3;
-const VERTEX_BUFFER_PERMUTATION: u64 = 0x210; // buffer order pos,color,uv -> shader v0,v1,v2
-const VERTEX_POSITION_REG: c_int = 0;
-const VERTEX_COLOR_REG: c_int = 1;
-const VERTEX_UV_REG: c_int = 2;
 const POS_SCALE: [4]f32 = .{ snorm16_scale(), snorm16_scale(), snorm16_scale(), 1.0 };
 const UV_SCALE: [2]f32 = .{ snorm16_scale(), snorm16_scale() };
 const COLOR_SCALE: [4]f32 = .{ unorm8_scale(), unorm8_scale(), unorm8_scale(), unorm8_scale() };
-
-extern fn C3Di_UpdateContext() void;
 
 comptime {
     std.debug.assert(VERTEX_STRIDE == 16);
@@ -94,14 +73,19 @@ comptime {
 }
 
 const PipelineData = struct {
-    dvlb: [*c]c.DVLB_s,
-    program: c.shaderProgram_s,
-    attr_info: c.C3D_AttrInfo,
-    u_projection: c_int,
-    u_model_view: c_int,
-    u_pos_scale: c_int,
-    u_uv_scale_offset: c_int,
-    u_color_scale: c_int,
+    shader: mango.Shader,
+    vertex_input: mango.VertexInputLayout,
+    sampler: mango.Sampler,
+};
+
+const RenderTargetData = struct {
+    color_memory: mango.DeviceMemory,
+    depth_memory: mango.DeviceMemory,
+    color_image: mango.Image,
+    depth_image: mango.Image,
+    color_view: mango.ImageView,
+    depth_view: mango.ImageView,
+    color_pixels: []u8,
 };
 
 const MeshData = struct {
@@ -111,92 +95,97 @@ const MeshData = struct {
 };
 
 const MeshSlot = struct {
-    data: ?[]align(16) u8 = null,
+    memory: mango.DeviceMemory = .null,
+    buffer: mango.Buffer = .null,
+    mapped: []u8 = &.{},
     len: usize = 0,
+    capacity: usize = 0,
     in_flight: bool = false,
     used_this_frame: bool = false,
 };
 
 const DeferredMeshFree = struct {
-    data: []align(16) u8,
+    memory: mango.DeviceMemory,
+    buffer: mango.Buffer,
 };
-
-const TexMirror = extern struct {
-    data: ?*anyopaque,
-    fmt_size: u32,
-    dim: u32,
-    param: u32,
-    border: u32,
-    lod_param: u32,
-};
-
-comptime {
-    std.debug.assert(@sizeOf(TexMirror) == 24);
-}
 
 const TextureData = struct {
     width: u32,
     height: u32,
-    tex: TexMirror,
-    staging: ?[]align(16) u32 = null,
+    memory: mango.DeviceMemory,
+    image: mango.Image,
+    view: mango.ImageView,
+};
+
+const FogState = struct {
+    enabled: bool = false,
+    start: f32 = 0.0,
+    end: f32 = 1.0,
+    color: [4]u8 = .{ 0, 0, 0, 255 },
+    table: [128]u32 = @splat(0),
 };
 
 var meshes = Util.CircularBuffer(MeshData, 2048).init();
 var deferred_mesh_frees = Util.CircularBuffer(DeferredMeshFree, MAX_DEFERRED_MESH_FREES + 1).init();
 var textures = Util.CircularBuffer(TextureData, 64).init();
-var sequential_indices: ?[]align(CACHE_LINE_SIZE) u16 = null;
-var render_pipeline: PipelineData = undefined;
-var render_pipeline_initialized = false;
 
-var target: ?*c.C3D_RenderTarget = null;
-var projection_transform: c.C3D_Mtx = undefined;
-var fog_lut: c.C3D_FogLut = undefined;
+var device: mango.Device = .null;
+var submit_queue: mango.Queue = .null;
+var fill_queue: mango.Queue = .null;
+var command_pool: mango.CommandPool = .null;
+var command_buffer: mango.CommandBuffer = .null;
+var render_pipeline: PipelineData = undefined;
+var render_target: RenderTargetData = undefined;
+var render_pipeline_initialized = false;
+var render_target_initialized = false;
+var command_resources_initialized = false;
+
+var projection_transform: Mat4 = Mat4.identity();
 var initialized = false;
 var frame_started = false;
 var vsync_enabled = true;
-var clear_color: u32 = 0x000000ff;
+var clear_color: [4]u8 = .{ 0, 0, 0, 255 };
 var alpha_blend_enabled = true;
 var depth_write_enabled = true;
 var cull_face_enabled = true;
-var fog_enabled = false;
+var fog_state: FogState = .{};
 var uv_offset: [2]f32 = .{ 0.0, 0.0 };
 var proj_matrix: Mat4 = Mat4.identity();
 var view_matrix: Mat4 = Mat4.identity();
+var default_texture: Texture.Handle = 0;
 var bound_texture: Texture.Handle = 0;
 
 pub fn init() anyerror!void {
-    _ = render_alloc;
     _ = render_io;
 
     c.gfxInitDefault();
-    if (!c.C3D_Init(C3D_CMD_BUFFER_SIZE)) {
-        c.gfxExit();
-        return error.C3DInitFailed;
-    }
+    errdefer c.gfxExit();
+
+    device = try mango.createAetherCtruBackedDevice(.{ .linear_gpa = render_alloc }, render_alloc);
     errdefer {
-        c.C3D_Fini();
-        c.gfxExit();
+        device.destroy();
+        device = .null;
     }
 
-    target = c.C3D_RenderTargetCreate(
-        TARGET_WIDTH,
-        TARGET_HEIGHT,
-        c.GPU_RB_RGBA8,
-        c.C3D_DEPTHTYPE{ .__e = c.GPU_RB_DEPTH24_STENCIL8 },
-    ) orelse return error.C3DRenderTargetCreateFailed;
-    errdefer {
-        c.C3D_RenderTargetDelete(target);
-        target = null;
-    }
+    submit_queue = device.getQueue(.submit);
+    fill_queue = device.getQueue(.fill);
 
-    c.C3D_RenderTargetSetOutput(target, c.GFX_TOP, c.GFX_LEFT, DISPLAY_TRANSFER_FLAGS);
-    init_projection_transform();
+    try init_command_resources();
+    errdefer deinit_command_resources();
+
+    try init_render_target();
+    errdefer deinit_render_target();
+
     render_pipeline = try init_pipeline();
     render_pipeline_initialized = true;
+    errdefer {
+        deinit_pipeline(&render_pipeline);
+        render_pipeline_initialized = false;
+    }
 
+    init_projection_transform();
     initialized = true;
     frame_started = false;
-    apply_render_state();
 }
 
 pub fn deinit() void {
@@ -206,15 +195,12 @@ pub fn deinit() void {
     }
 
     frame_started = false;
-    if (initialized) c.C3D_FrameSync();
+    if (initialized and device != .null) device.waitIdle();
     release_completed_mesh_slots();
     free_deferred_mesh_slots();
 
     for (1..textures.buffer.len) |i| {
-        if (textures.buffer[i]) |*tex| {
-            c.C3D_TexDelete(tex_ptr(tex));
-            free_texture_staging(tex);
-        }
+        if (textures.buffer[i]) |*tex| free_texture(tex);
     }
     textures.clear();
 
@@ -224,83 +210,56 @@ pub fn deinit() void {
     }
 
     for (1..meshes.buffer.len) |i| {
-        if (meshes.buffer[i]) |*mesh| {
-            free_mesh_slots(mesh);
-        }
+        if (meshes.buffer[i]) |*mesh| free_mesh_slots(mesh);
     }
     meshes.clear();
-    free_index_buffer();
 
-    if (target) |t| {
-        c.C3D_RenderTargetDelete(t);
-        target = null;
+    deinit_render_target();
+    deinit_command_resources();
+
+    if (device != .null) {
+        device.destroy();
+        device = .null;
     }
 
     if (initialized) {
-        c.C3D_Fini();
         c.gfxExit();
         initialized = false;
     }
 }
 
 pub fn set_clear_color(r: f32, g: f32, b: f32, a: f32) void {
-    clear_color = pack_color_rgba(r, g, b, a);
+    clear_color = .{
+        float_to_u8(r),
+        float_to_u8(g),
+        float_to_u8(b),
+        float_to_u8(a),
+    };
 }
 
 pub fn set_alpha_blend(enabled: bool) void {
     alpha_blend_enabled = enabled;
-    if (!initialized) return;
-
-    if (enabled) {
-        c.C3D_AlphaBlend(
-            c.GPU_BLEND_ADD,
-            c.GPU_BLEND_ADD,
-            c.GPU_SRC_ALPHA,
-            c.GPU_ONE_MINUS_SRC_ALPHA,
-            c.GPU_ONE,
-            c.GPU_ONE_MINUS_SRC_ALPHA,
-        );
-    } else {
-        c.C3D_AlphaBlend(
-            c.GPU_BLEND_ADD,
-            c.GPU_BLEND_ADD,
-            c.GPU_ONE,
-            c.GPU_ZERO,
-            c.GPU_ONE,
-            c.GPU_ZERO,
-        );
-    }
+    if (frame_started) apply_dynamic_state();
 }
 
 pub fn set_depth_write(enabled: bool) void {
     depth_write_enabled = enabled;
-    if (!initialized) return;
-    c.C3D_DepthTest(true, c.GPU_GEQUAL, if (enabled) c.GPU_WRITE_ALL else c.GPU_WRITE_COLOR);
+    if (frame_started) apply_dynamic_state();
 }
 
 pub fn set_fog(enabled: bool, start: f32, end: f32, r: f32, g: f32, b: f32) void {
-    fog_enabled = enabled;
-    if (!initialized) return;
-
-    if (!enabled) {
-        c.C3D_FogGasMode(c.GPU_NO_FOG, c.GPU_PLAIN_DENSITY, false);
-        return;
-    }
-
-    const safe_end = if (end <= start) start + 0.001 else end;
-    const density = 1.0 / @max(0.001, safe_end - start);
-    c.FogLut_Exp(&fog_lut, density, 1.0, start, safe_end);
-    c.C3D_FogGasMode(c.GPU_FOG, c.GPU_PLAIN_DENSITY, false);
-    c.C3D_FogColor(pack_color_rgba(r, g, b, 1.0));
-    c.C3D_FogLutBind(&fog_lut);
+    fog_state.enabled = enabled;
+    fog_state.start = start;
+    fog_state.end = end;
+    fog_state.color = .{ float_to_u8(r), float_to_u8(g), float_to_u8(b), 255 };
+    rebuild_fog_table();
 }
 
 pub fn set_clip_planes(_: bool) void {}
 
 pub fn set_culling(enabled: bool) void {
     cull_face_enabled = enabled;
-    if (!initialized) return;
-    c.C3D_CullFace(if (enabled) c.GPU_CULL_BACK_CCW else c.GPU_CULL_NONE);
+    if (frame_started) apply_dynamic_state();
 }
 
 pub fn set_uv_offset(u: f32, v: f32) void {
@@ -317,24 +276,20 @@ pub fn set_view_matrix(mat: *const Mat4) void {
 
 pub fn start_frame() bool {
     if (surface.is_system_closing()) return false;
+    if (!initialized or frame_started) return false;
 
-    const t = target orelse return false;
-    const flags: u8 = @intCast(if (vsync_enabled) c.C3D_FRAME_SYNCDRAW else c.C3D_FRAME_NONBLOCK);
-
-    if (!c.C3D_FrameBegin(flags)) return false;
     release_completed_mesh_slots();
     free_deferred_mesh_slots();
 
-    if (!c.C3D_FrameDrawOn(t)) {
-        c.C3D_FrameEnd(0);
-        return false;
-    }
-
     frame_started = true;
-    clear_current_framebuffer(c.C3D_CLEAR_ALL);
-    c.C3D_SetViewport(0, 0, TARGET_WIDTH, TARGET_HEIGHT);
-    apply_render_state();
-    rebind_texture();
+    clear_frame_targets() catch {
+        frame_started = false;
+        return false;
+    };
+    begin_command_buffer() catch {
+        frame_started = false;
+        return false;
+    };
     return true;
 }
 
@@ -344,55 +299,35 @@ pub fn end_frame() void {
         frame_started = false;
         return;
     }
+
     mark_current_frame_mesh_slots_in_flight();
-    finish_frame_direct();
-    c.C3D_FrameEnd(0);
+    finish_command_buffer() catch {
+        frame_started = false;
+        return;
+    };
+    present_render_target();
     frame_started = false;
 }
 
 pub fn clear_depth() void {
     if (!frame_started) return;
-    clear_current_framebuffer(c.C3D_CLEAR_DEPTH);
+
+    finish_command_buffer() catch {
+        frame_started = false;
+        return;
+    };
+    clear_depth_target() catch {
+        frame_started = false;
+        return;
+    };
+    begin_command_buffer() catch {
+        frame_started = false;
+        return;
+    };
 }
 
 pub fn set_vsync(v: bool) void {
     vsync_enabled = v;
-}
-
-fn init_pipeline() !PipelineData {
-    const code: [:0]align(4) const u8 = &shaders.basic_vert;
-
-    const dvlb = c.DVLB_ParseFile(@ptrCast(@constCast(code.ptr)), @intCast(code.len));
-    if (dvlb == null or dvlb[0].numDVLE == 0) return error.InvalidShader;
-    errdefer c.DVLB_Free(dvlb);
-
-    var program: c.shaderProgram_s = undefined;
-    if (c.shaderProgramInit(&program) != 0) return error.InvalidShader;
-    errdefer _ = c.shaderProgramFree(&program);
-
-    if (c.shaderProgramSetVsh(&program, &dvlb[0].DVLE[0]) != 0) return error.InvalidShader;
-
-    var attr_info: c.C3D_AttrInfo = undefined;
-    c.AttrInfo_Init(&attr_info);
-    if (c.AttrInfo_AddLoader(&attr_info, VERTEX_POSITION_REG, c.GPU_SHORT, 4) < 0) return error.UnsupportedVertexLayout;
-    if (c.AttrInfo_AddLoader(&attr_info, VERTEX_COLOR_REG, c.GPU_UNSIGNED_BYTE, 4) < 0) return error.UnsupportedVertexLayout;
-    if (c.AttrInfo_AddLoader(&attr_info, VERTEX_UV_REG, c.GPU_SHORT, 2) < 0) return error.UnsupportedVertexLayout;
-
-    return .{
-        .dvlb = dvlb,
-        .program = program,
-        .attr_info = attr_info,
-        .u_projection = c.shaderInstanceGetUniformLocation(program.vertexShader, "projection"),
-        .u_model_view = c.shaderInstanceGetUniformLocation(program.vertexShader, "modelView"),
-        .u_pos_scale = c.shaderInstanceGetUniformLocation(program.vertexShader, "posScale"),
-        .u_uv_scale_offset = c.shaderInstanceGetUniformLocation(program.vertexShader, "uvScaleOffset"),
-        .u_color_scale = c.shaderInstanceGetUniformLocation(program.vertexShader, "colorScale"),
-    };
-}
-
-fn deinit_pipeline(pl: *PipelineData) void {
-    _ = c.shaderProgramFree(&pl.program);
-    c.DVLB_Free(pl.dvlb);
 }
 
 pub fn create_mesh() anyerror!Mesh.Handle {
@@ -435,10 +370,9 @@ pub fn update_mesh(handle: Mesh.Handle, data: []const u8) void {
     ensure_mesh_slot_capacity(slot, data.len) catch
         std.debug.panic("3ds_gfx: out of linear memory for mesh upload", .{});
 
-    const dst = slot.data.?;
-    @memcpy(dst[0..data.len], data);
+    @memcpy(slot.mapped[0..data.len], data);
     slot.len = data.len;
-    flush_data_cache(dst.ptr, data.len);
+    flush_memory(slot.memory, data.len) catch {};
 
     mesh.latest_slot = slot_idx;
     mesh.len = data.len;
@@ -446,53 +380,36 @@ pub fn update_mesh(handle: Mesh.Handle, data: []const u8) void {
 
 pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize) void {
     if (surface.is_system_closing()) return;
+    if (!frame_started or !render_pipeline_initialized) return;
 
-    if (!render_pipeline_initialized) return;
     const mesh = mesh_slot(handle) orelse return;
-    const pl = &render_pipeline;
     const slot_idx = mesh.latest_slot orelse return;
     const slot = &mesh.slots[slot_idx];
-    const data = slot.data orelse return;
-    if (count == 0 or slot.len == 0) return;
+    if (count == 0 or slot.len == 0 or slot.buffer == .null) return;
 
     const needed = mesh_draw_bytes_needed(count) orelse return;
     if (needed > slot.len) return;
 
-    bind_program(pl);
-    rebind_texture();
-
-    C3Di_UpdateContext();
-    upload_draw_uniforms(pl, model);
-    bind_texenv_direct();
-    bind_vertex_layout_direct(pl);
-    if (!bind_vertex_buffer_direct(data.ptr)) return;
+    upload_draw_uniforms(model);
+    bind_current_texture();
+    command_buffer.setAetherFog(fog_state.enabled, fog_state.color, if (fog_state.enabled) &fog_state.table else &.{});
+    command_buffer.bindVertexBuffersSlice(0, &.{slot.buffer}, &.{0});
 
     slot.used_this_frame = true;
-    if (!draw_elements_direct(count)) {
-        draw_arrays_direct(0, @intCast(count));
-    }
+    command_buffer.draw(@intCast(@min(count, std.math.maxInt(u32))), 0);
 }
 
 pub fn create_texture(width: u32, height: u32, data: []align(16) u8) anyerror!Texture.Handle {
     try validate_texture(width, height, data);
 
-    const size = texture_size(width, height);
-    if (c.vramSpaceFree() < size) return error.OutOfTextureMemory;
+    var tex = try create_texture_resources(width, height);
+    errdefer free_texture(&tex);
 
-    const mem = c.vramAlloc(size) orelse return error.OutOfTextureMemory;
-    errdefer c.vramFree(mem);
+    try upload_texture_data(&tex, data[0..texture_size(width, height)]);
 
-    var tex = TextureData{
-        .width = width,
-        .height = height,
-        .tex = init_tex_mirror(width, height, mem, size),
-    };
-    errdefer free_texture_staging(&tex);
-
-    try upload_texture_data(&tex, data[0..size]);
-
-    const handle = textures.add_element(tex) orelse return error.OutOfTextures;
-    return @intCast(handle);
+    const handle: Texture.Handle = @intCast(textures.add_element(tex) orelse return error.OutOfTextures);
+    if (default_texture == 0) default_texture = handle;
+    return handle;
 }
 
 pub fn update_texture(handle: Texture.Handle, data: []align(16) u8) void {
@@ -510,30 +427,367 @@ pub fn update_texture(handle: Texture.Handle, data: []align(16) u8) void {
 
 pub fn bind_texture(handle: Texture.Handle) void {
     if (surface.is_system_closing()) return;
-
     bound_texture = handle;
-    rebind_texture();
+    if (frame_started) bind_current_texture();
 }
 
 pub fn destroy_texture(handle: Texture.Handle) void {
     if (surface.is_system_closing()) {
         if (bound_texture == handle) bound_texture = 0;
+        if (default_texture == handle) default_texture = 0;
         _ = textures.remove_element(handle);
         return;
     }
 
-    if (texture_slot(handle)) |tex| {
-        c.C3D_TexDelete(tex_ptr(tex));
-        free_texture_staging(tex);
-    }
-    if (bound_texture == handle) {
-        bound_texture = 0;
-        if (initialized) c.C3D_TexBind(0, null);
-    }
+    if (texture_slot(handle)) |tex| free_texture(tex);
+    if (bound_texture == handle) bound_texture = 0;
+    if (default_texture == handle) default_texture = 0;
     _ = textures.remove_element(handle);
 }
 
 pub fn force_texture_resident(_: Texture.Handle) void {}
+
+fn init_command_resources() !void {
+    command_pool = try device.createCommandPool(.no_preheat, null);
+    errdefer {
+        device.destroyCommandPool(command_pool, null);
+        command_pool = .null;
+    }
+
+    var buffers: [1]mango.CommandBuffer = undefined;
+    try device.allocateCommandBuffers(.{
+        .pool = command_pool,
+        .command_buffer_count = buffers.len,
+    }, &buffers);
+    command_buffer = buffers[0];
+    command_resources_initialized = true;
+}
+
+fn deinit_command_resources() void {
+    if (!command_resources_initialized or device == .null) return;
+    if (command_buffer != .null) {
+        device.freeCommandBuffers(command_pool, &.{command_buffer});
+        command_buffer = .null;
+    }
+    if (command_pool != .null) {
+        device.destroyCommandPool(command_pool, null);
+        command_pool = .null;
+    }
+    command_resources_initialized = false;
+}
+
+fn init_render_target() !void {
+    const color_size = mango.Format.a8b8g8r8_unorm.scale(@as(usize, TARGET_WIDTH) * TARGET_HEIGHT);
+    const depth_size = mango.Format.d24_unorm_s8_uint.scale(@as(usize, TARGET_WIDTH) * TARGET_HEIGHT);
+
+    const color_memory = try device.allocateMemory(.{
+        .memory_type = .vram_a,
+        .allocation_size = .size(@intCast(color_size)),
+    }, null);
+    errdefer device.freeMemory(color_memory, null);
+
+    const depth_memory = try device.allocateMemory(.{
+        .memory_type = .vram_b,
+        .allocation_size = .size(@intCast(depth_size)),
+    }, null);
+    errdefer device.freeMemory(depth_memory, null);
+
+    const color_image = try device.createImage(.{
+        .flags = .{},
+        .type = .@"2d",
+        .tiling = .optimal,
+        .usage = .{ .transfer_src = true, .color_attachment = true },
+        .extent = .{ .width = TARGET_WIDTH, .height = TARGET_HEIGHT },
+        .format = .a8b8g8r8_unorm,
+        .mip_levels = .@"1",
+        .array_layers = .@"1",
+    }, null);
+    errdefer device.destroyImage(color_image, null);
+    try device.bindImageMemory(color_image, color_memory, .size(0));
+
+    const depth_image = try device.createImage(.{
+        .flags = .{},
+        .type = .@"2d",
+        .tiling = .optimal,
+        .usage = .{ .depth_stencil_attachment = true },
+        .extent = .{ .width = TARGET_WIDTH, .height = TARGET_HEIGHT },
+        .format = .d24_unorm_s8_uint,
+        .mip_levels = .@"1",
+        .array_layers = .@"1",
+    }, null);
+    errdefer device.destroyImage(depth_image, null);
+    try device.bindImageMemory(depth_image, depth_memory, .size(0));
+
+    const color_view = try device.createImageView(.{
+        .type = .@"2d",
+        .format = .a8b8g8r8_unorm,
+        .image = color_image,
+        .subresource_range = .full,
+    }, null);
+    errdefer device.destroyImageView(color_view, null);
+
+    const depth_view = try device.createImageView(.{
+        .type = .@"2d",
+        .format = .d24_unorm_s8_uint,
+        .image = depth_image,
+        .subresource_range = .full,
+    }, null);
+    errdefer device.destroyImageView(depth_view, null);
+
+    const color_pixels = try device.mapMemory(color_memory, .size(0), .whole);
+
+    render_target = .{
+        .color_memory = color_memory,
+        .depth_memory = depth_memory,
+        .color_image = color_image,
+        .depth_image = depth_image,
+        .color_view = color_view,
+        .depth_view = depth_view,
+        .color_pixels = color_pixels,
+    };
+    render_target_initialized = true;
+}
+
+fn deinit_render_target() void {
+    if (!render_target_initialized or device == .null) return;
+    device.unmapMemory(render_target.color_memory);
+    device.destroyImageView(render_target.depth_view, null);
+    device.destroyImageView(render_target.color_view, null);
+    device.destroyImage(render_target.depth_image, null);
+    device.destroyImage(render_target.color_image, null);
+    device.freeMemory(render_target.depth_memory, null);
+    device.freeMemory(render_target.color_memory, null);
+    render_target_initialized = false;
+}
+
+fn init_pipeline() !PipelineData {
+    const code: []const u8 = &shaders.basic_vert;
+    const shader = try device.createShader(.init(.psh, code, "main"), null);
+    errdefer device.destroyShader(shader, null);
+
+    const bindings = [_]mango.VertexInputBindingDescription{
+        .{ .stride = VERTEX_STRIDE },
+    };
+    const attributes = [_]mango.VertexInputAttributeDescription{
+        .{ .location = .v0, .binding = .@"0", .format = .r16g16b16a16_sscaled, .offset = 0 },
+        .{ .location = .v1, .binding = .@"0", .format = .r8g8b8a8_uscaled, .offset = 8 },
+        .{ .location = .v2, .binding = .@"0", .format = .r16g16_sscaled, .offset = 12 },
+    };
+    const vertex_input = try device.createVertexInputLayout(.init(&bindings, &attributes, &.{}), null);
+    errdefer device.destroyVertexInputLayout(vertex_input, null);
+
+    const sampler = try device.createSampler(.{
+        .mag_filter = .nearest,
+        .min_filter = .nearest,
+        .mip_filter = .nearest,
+        .address_mode_u = .repeat,
+        .address_mode_v = .repeat,
+        .lod_bias = 0.0,
+        .min_lod = 0,
+        .max_lod = 0,
+        .border_color = .{ 0, 0, 0, 0 },
+    }, null);
+
+    return .{
+        .shader = shader,
+        .vertex_input = vertex_input,
+        .sampler = sampler,
+    };
+}
+
+fn deinit_pipeline(pl: *PipelineData) void {
+    device.destroySampler(pl.sampler, null);
+    device.destroyVertexInputLayout(pl.vertex_input, null);
+    device.destroyShader(pl.shader, null);
+}
+
+fn clear_frame_targets() !void {
+    try fill_queue.clearColorImage(.{
+        .image = render_target.color_image,
+        .color = clear_color,
+        .subresource_range = .full,
+    });
+    try clear_depth_target();
+}
+
+fn clear_depth_target() !void {
+    try fill_queue.clearDepthStencilImage(.{
+        .image = render_target.depth_image,
+        .depth = 0.0,
+        .stencil = 0,
+        .subresource_range = .full,
+    });
+}
+
+fn begin_command_buffer() !void {
+    try command_buffer.begin();
+    command_buffer.bindShaders(&.{.vertex}, &.{render_pipeline.shader});
+    command_buffer.setVertexInput(render_pipeline.vertex_input);
+    command_buffer.setLightingEnable(false);
+    command_buffer.setLightEnvironmentEnable(.{});
+    command_buffer.setLogicOpEnable(false);
+    command_buffer.setAlphaTestEnable(false);
+    command_buffer.setStencilTestEnable(false);
+    command_buffer.setDepthTestEnable(true);
+    command_buffer.setDepthMode(.z_buffer);
+    command_buffer.setDepthCompareOp(.ge);
+    command_buffer.setPrimitiveTopology(.triangle_list);
+    command_buffer.setFrontFace(.ccw);
+    command_buffer.setColorWriteMask(.rgba);
+    command_buffer.setViewport(.{
+        .rect = .{ .offset = .{ .x = 0, .y = 0 }, .extent = .{ .width = TARGET_WIDTH, .height = TARGET_HEIGHT } },
+        .min_depth = 0.0,
+        .max_depth = 1.0,
+    });
+    command_buffer.setScissor(.inside(.{
+        .offset = .{ .x = 0, .y = 0 },
+        .extent = .{ .width = TARGET_WIDTH, .height = TARGET_HEIGHT },
+    }));
+    apply_dynamic_state();
+    bind_current_texture();
+    command_buffer.beginRendering(.{
+        .color_attachment = render_target.color_view,
+        .depth_stencil_attachment = render_target.depth_view,
+    });
+}
+
+fn finish_command_buffer() !void {
+    command_buffer.endRendering();
+    try command_buffer.end();
+    try submit_queue.submit(.{ .command_buffer = command_buffer });
+    device.waitIdle();
+}
+
+fn present_render_target() void {
+    var fb_width: u16 = 0;
+    var fb_height: u16 = 0;
+    const framebuffer = c.gfxGetFramebuffer(c.GFX_TOP, c.GFX_LEFT, &fb_width, &fb_height) orelse return;
+
+    _ = c.GX_DisplayTransfer(
+        @ptrCast(@alignCast(render_target.color_pixels.ptr)),
+        gx_buffer_dim(TARGET_WIDTH, TARGET_HEIGHT),
+        @ptrCast(@alignCast(framebuffer)),
+        gx_buffer_dim(TARGET_WIDTH, TARGET_HEIGHT),
+        DISPLAY_TRANSFER_FLAGS,
+    );
+    c.gspWaitForEvent(c.GSPGPU_EVENT_PPF, false);
+    if (vsync_enabled) c.gspWaitForEvent(c.GSPGPU_EVENT_VBlank0, true);
+    c.gfxSwapBuffers();
+}
+
+fn apply_dynamic_state() void {
+    command_buffer.setDepthWriteEnable(depth_write_enabled);
+    command_buffer.setCullMode(if (cull_face_enabled) .back else .none);
+    command_buffer.setBlendEquation(if (alpha_blend_enabled) .{
+        .src_color_factor = .src_alpha,
+        .dst_color_factor = .one_minus_src_alpha,
+        .color_op = .add,
+        .src_alpha_factor = .one,
+        .dst_alpha_factor = .one_minus_src_alpha,
+        .alpha_op = .add,
+    } else .{
+        .src_color_factor = .one,
+        .dst_color_factor = .zero,
+        .color_op = .add,
+        .src_alpha_factor = .one,
+        .dst_alpha_factor = .zero,
+        .alpha_op = .add,
+    });
+}
+
+fn bind_current_texture() void {
+    if (!frame_started) return;
+
+    const effective_texture = if (bound_texture != 0) bound_texture else default_texture;
+    if (effective_texture == 0) {
+        command_buffer.bindCombinedImageSamplers(0, &.{mango.CombinedImageSampler.none});
+        bind_texenv(false);
+        return;
+    }
+
+    const tex = texture_slot(effective_texture) orelse {
+        command_buffer.bindCombinedImageSamplers(0, &.{mango.CombinedImageSampler.none});
+        bind_texenv(false);
+        return;
+    };
+
+    command_buffer.bindCombinedImageSamplers(0, &.{.{
+        .image = tex.view,
+        .sampler = render_pipeline.sampler,
+    }});
+    bind_texenv(true);
+}
+
+fn bind_texenv(textured: bool) void {
+    const first: mango.TextureCombinerUnit = if (textured) .{
+        .color_src = .{ .texture_0, .primary_color, .primary_color },
+        .alpha_src = .{ .texture_0, .primary_color, .primary_color },
+        .color_factor = @splat(.src_color),
+        .alpha_factor = @splat(.src_alpha),
+        .color_op = .modulate,
+        .alpha_op = .modulate,
+        .color_scale = .@"1x",
+        .alpha_scale = .@"1x",
+        .constant = @splat(0xFF),
+    } else .{
+        .color_src = @splat(.primary_color),
+        .alpha_src = @splat(.primary_color),
+        .color_factor = @splat(.src_color),
+        .alpha_factor = @splat(.src_alpha),
+        .color_op = .replace,
+        .alpha_op = .replace,
+        .color_scale = .@"1x",
+        .alpha_scale = .@"1x",
+        .constant = @splat(0xFF),
+    };
+
+    command_buffer.setTextureCombiners(&.{first}, &.{});
+}
+
+fn upload_draw_uniforms(model: *const Mat4) void {
+    var projection_rows = mat4_to_uniform_rows(Mat4.mul(proj_matrix, projection_transform));
+    var model_view_rows = mat4_to_uniform_rows(Mat4.mul(model.*, view_matrix));
+    var uniforms: [11][4]f32 = undefined;
+    @memcpy(uniforms[0..4], projection_rows[0..4]);
+    @memcpy(uniforms[4..8], model_view_rows[0..4]);
+    uniforms[8] = POS_SCALE;
+    uniforms[9] = .{ UV_SCALE[0], UV_SCALE[1], uv_offset[0], uv_offset[1] };
+    uniforms[10] = COLOR_SCALE;
+    command_buffer.bindFloatUniforms(.vertex, 0, &uniforms);
+}
+
+fn mat4_to_uniform_rows(mat: Mat4) [4][4]f32 {
+    var out: [4][4]f32 = undefined;
+    inline for (0..4) |row| {
+        out[row] = .{ mat.data[0][row], mat.data[1][row], mat.data[2][row], mat.data[3][row] };
+    }
+    return out;
+}
+
+fn init_projection_transform() void {
+    projection_transform = Mat4.mul(ortho_tilt(0.0, @floatFromInt(SCREEN_WIDTH), 0.0, @floatFromInt(SCREEN_HEIGHT), 0.0, 1.0), logical_viewport_transform());
+}
+
+fn logical_viewport_transform() Mat4 {
+    return .{ .data = .{
+        .{ @as(f32, @floatFromInt(SCREEN_WIDTH)) * 0.5, 0.0, 0.0, @as(f32, @floatFromInt(SCREEN_WIDTH)) * 0.5 },
+        .{ 0.0, @as(f32, @floatFromInt(SCREEN_HEIGHT)) * 0.5, 0.0, @as(f32, @floatFromInt(SCREEN_HEIGHT)) * 0.5 },
+        .{ 0.0, 0.0, -1.0, 1.0 },
+        .{ 0.0, 0.0, 0.0, 1.0 },
+    } };
+}
+
+fn ortho_tilt(left: f32, right: f32, bottom: f32, top: f32, near: f32, far: f32) Mat4 {
+    const rl = right - left;
+    const tb = top - bottom;
+    const fnv = far - near;
+    return .{ .data = .{
+        .{ 0.0, 2.0 / tb, 0.0, -((top + bottom) / tb) },
+        .{ -2.0 / rl, 0.0, 0.0, (right + left) / rl },
+        .{ 0.0, 0.0, 1.0 / fnv, 0.5 * ((near + far) / (near - far)) - 0.5 },
+        .{ 0.0, 0.0, 0.0, 1.0 },
+    } };
+}
 
 fn select_upload_slot(mesh: *const MeshData) ?usize {
     if (mesh.latest_slot) |idx| {
@@ -550,25 +804,36 @@ fn select_upload_slot(mesh: *const MeshData) ?usize {
 }
 
 fn ensure_mesh_slot_capacity(slot: *MeshSlot, len: usize) !void {
-    if (slot.data) |buf| {
-        if (buf.len >= len) return;
-    }
+    if (slot.capacity >= len and slot.buffer != .null) return;
 
-    const cap = mesh_slot_capacity(len);
-    const new_data = try render_alloc.alignedAlloc(u8, .fromByteUnits(CACHE_LINE_SIZE), cap);
+    free_mesh_slot(slot);
 
-    if (!is_linear_fcram(new_data.ptr, new_data.len)) {
-        render_alloc.free(new_data);
+    const cap = std.mem.alignForward(usize, @max(len, 256), CACHE_LINE_SIZE);
+    const memory = try device.allocateMemory(.{
+        .memory_type = .fcram_cached,
+        .allocation_size = .size(@intCast(cap)),
+    }, null);
+    errdefer device.freeMemory(memory, null);
+
+    const buffer = try device.createBuffer(.{
+        .size = .size(@intCast(cap)),
+        .usage = .{ .vertex_buffer = true },
+    }, null);
+    errdefer device.destroyBuffer(buffer, null);
+
+    try device.bindBufferMemory(buffer, memory, .size(0));
+    const mapped = try device.mapMemory(memory, .size(0), .whole);
+    if (!is_linear_fcram(mapped.ptr, mapped.len)) {
         std.debug.panic("3ds_gfx: mesh upload slots must be allocated in linear FCRAM", .{});
     }
 
-    if (slot.data) |old| render_alloc.free(old);
-    slot.data = new_data;
-    slot.len = 0;
-}
-
-fn mesh_slot_capacity(len: usize) usize {
-    return @max(len, 256);
+    slot.* = .{
+        .memory = memory,
+        .buffer = buffer,
+        .mapped = mapped,
+        .capacity = cap,
+        .len = 0,
+    };
 }
 
 fn free_mesh_slots(mesh: *MeshData) void {
@@ -578,25 +843,33 @@ fn free_mesh_slots(mesh: *MeshData) void {
 }
 
 fn free_mesh_slot(slot: *MeshSlot) void {
-    if (slot.data) |data| {
+    if (slot.buffer != .null or slot.memory != .null) {
         if (slot.in_flight or slot.used_this_frame) {
-            defer_mesh_free(data);
+            defer_mesh_free(.{ .memory = slot.memory, .buffer = slot.buffer });
         } else {
-            render_alloc.free(data);
+            destroy_mesh_resources(slot.memory, slot.buffer);
         }
     }
     slot.* = .{};
 }
 
-fn defer_mesh_free(data: []align(16) u8) void {
-    if (deferred_mesh_frees.add_element(.{ .data = data }) != null) return;
+fn destroy_mesh_resources(memory: mango.DeviceMemory, buffer: mango.Buffer) void {
+    if (buffer != .null) device.destroyBuffer(buffer, null);
+    if (memory != .null) {
+        device.unmapMemory(memory);
+        device.freeMemory(memory, null);
+    }
+}
+
+fn defer_mesh_free(free: DeferredMeshFree) void {
+    if (deferred_mesh_frees.add_element(free) != null) return;
     std.debug.panic("3ds_gfx: deferred mesh free queue exhausted", .{});
 }
 
 fn free_deferred_mesh_slots() void {
     for (1..deferred_mesh_frees.buffer.len) |i| {
         if (deferred_mesh_frees.buffer[i]) |free| {
-            render_alloc.free(free.data);
+            destroy_mesh_resources(free.memory, free.buffer);
         }
     }
     deferred_mesh_frees.clear();
@@ -617,11 +890,15 @@ fn abandon_service_resources() void {
     frame_started = false;
     initialized = false;
     render_pipeline_initialized = false;
-    target = null;
+    render_target_initialized = false;
+    command_resources_initialized = false;
+    device = .null;
+    submit_queue = .null;
+    fill_queue = .null;
+    default_texture = 0;
     bound_texture = 0;
     meshes.clear();
     textures.clear();
-    sequential_indices = null;
     deferred_mesh_frees.clear();
 }
 
@@ -640,297 +917,58 @@ fn mark_current_frame_mesh_slots_in_flight() void {
 
 fn mesh_draw_bytes_needed(count: usize) ?usize {
     if (count == 0) return 0;
-    const max = std.math.maxInt(usize);
-    if (count > max / VERTEX_STRIDE) return null;
+    if (count > std.math.maxInt(usize) / VERTEX_STRIDE) return null;
     return count * VERTEX_STRIDE;
 }
 
-fn clear_current_framebuffer(bits: c.C3D_ClearBits) void {
-    const fb = c.C3D_GetFrameBuf() orelse return;
-    c.C3D_FrameBufClear(fb, bits, clear_color, 0);
-}
+fn create_texture_resources(width: u32, height: u32) !TextureData {
+    const size = texture_size(width, height);
+    // 3DSX launchers can map VRAM read-only for the CPU. Keep CPU-authored
+    // texture storage in linear FCRAM, which PICA can still sample by physical address.
+    const memory = try device.allocateMemory(.{
+        .memory_type = .fcram_cached,
+        .allocation_size = .size(size),
+    }, null);
+    errdefer device.freeMemory(memory, null);
 
-fn apply_render_state() void {
-    set_alpha_blend(alpha_blend_enabled);
-    set_depth_write(depth_write_enabled);
-    set_culling(cull_face_enabled);
-    if (!fog_enabled) {
-        c.C3D_FogGasMode(c.GPU_NO_FOG, c.GPU_PLAIN_DENSITY, false);
-    }
-}
+    const image = try device.createImage(.{
+        .flags = .{},
+        .type = .@"2d",
+        .tiling = .optimal,
+        .usage = .{ .sampled = true, .transfer_dst = true },
+        .extent = .{ .width = @intCast(width), .height = @intCast(height) },
+        .format = .a8b8g8r8_unorm,
+        .mip_levels = .@"1",
+        .array_layers = .@"1",
+    }, null);
+    errdefer device.destroyImage(image, null);
+    try device.bindImageMemory(image, memory, .size(0));
 
-fn bind_program(pl: *PipelineData) void {
-    c.C3D_BindProgram(&pl.program);
-}
+    const view = try device.createImageView(.{
+        .type = .@"2d",
+        .format = .a8b8g8r8_unorm,
+        .image = image,
+        .subresource_range = .full,
+    }, null);
 
-fn bind_texenv_direct() void {
-    if (bound_texture == 0) {
-        bind_texenv_stage_direct(0, c.GPU_TEVSOURCES(c.GPU_PRIMARY_COLOR, 0, 0), c.GPU_REPLACE);
-    } else {
-        bind_texenv_stage_direct(0, c.GPU_TEVSOURCES(c.GPU_TEXTURE0, c.GPU_PRIMARY_COLOR, 0), c.GPU_MODULATE);
-    }
-
-    bind_texenv_stage_direct(1, c.GPU_TEVSOURCES(c.GPU_PREVIOUS, 0, 0), c.GPU_REPLACE);
-    bind_texenv_stage_direct(2, c.GPU_TEVSOURCES(c.GPU_PREVIOUS, 0, 0), c.GPU_REPLACE);
-    bind_texenv_stage_direct(3, c.GPU_TEVSOURCES(c.GPU_PREVIOUS, 0, 0), c.GPU_REPLACE);
-    bind_texenv_stage_direct(4, c.GPU_TEVSOURCES(c.GPU_PREVIOUS, 0, 0), c.GPU_REPLACE);
-    bind_texenv_stage_direct(5, c.GPU_TEVSOURCES(c.GPU_PREVIOUS, 0, 0), c.GPU_REPLACE);
-}
-
-fn bind_texenv_stage_direct(stage: c_int, source: u32, combiner: u32) void {
-    const source_both = source | (source << 16);
-    const combiner_both = combiner | (combiner << 16);
-    const regs = [_]u32{
-        source_both,
-        0,
-        combiner_both,
-        0xffffffff,
-        @as(u32, @intCast(c.GPU_TEVSCALE_1)) | (@as(u32, @intCast(c.GPU_TEVSCALE_1)) << 16),
-    };
-    gpu_cmd_add_incremental_writes(texenv_source_reg(stage), regs[0..]);
-}
-
-fn texenv_source_reg(stage: c_int) c_int {
-    return switch (stage) {
-        0 => c.GPUREG_TEXENV0_SOURCE,
-        1 => c.GPUREG_TEXENV1_SOURCE,
-        2 => c.GPUREG_TEXENV2_SOURCE,
-        3 => c.GPUREG_TEXENV3_SOURCE,
-        4 => c.GPUREG_TEXENV4_SOURCE,
-        5 => c.GPUREG_TEXENV5_SOURCE,
-        else => unreachable,
+    return .{
+        .width = width,
+        .height = height,
+        .memory = memory,
+        .image = image,
+        .view = view,
     };
 }
 
-fn bind_vertex_layout_direct(pl: *const PipelineData) void {
-    gpu_cmd_add_write(c.GPUREG_ATTRIBBUFFERS_LOC, BUFFER_BASE_PADDR >> 3);
-    gpu_cmd_add_incremental_writes(c.GPUREG_ATTRIBBUFFERS_FORMAT_LOW, pl.attr_info.flags[0..]);
-    gpu_cmd_add_write(c.GPUREG_VERTEX_OFFSET, 0);
-    gpu_cmd_add_write(c.GPUREG_ATTRIBBUFFER0_CONFIG1, @intCast(VERTEX_BUFFER_PERMUTATION));
-    gpu_cmd_add_write(c.GPUREG_ATTRIBBUFFER0_CONFIG2, vertex_buffer_format());
-    gpu_cmd_add_write(c.GPUREG_VSH_ATTRIBUTES_PERMUTATION_LOW, @intCast(VERTEX_BUFFER_PERMUTATION));
-    gpu_cmd_add_write(c.GPUREG_VSH_ATTRIBUTES_PERMUTATION_HIGH, 0);
-    set_vsh_input_count_direct(VERTEX_ATTR_COUNT);
-}
-
-fn bind_vertex_buffer_direct(data: [*]align(16) const u8) bool {
-    const phys = c.osConvertVirtToPhys(data);
-    if (phys < BUFFER_BASE_PADDR) return false;
-    gpu_cmd_add_write(c.GPUREG_ATTRIBBUFFER0_OFFSET, phys - BUFFER_BASE_PADDR);
-    return true;
-}
-
-fn draw_elements_direct(count: usize) bool {
-    const indices = ensure_index_buffer(count) catch return false;
-    const phys = c.osConvertVirtToPhys(indices.ptr);
-    if (phys < BUFFER_BASE_PADDR) return false;
-
-    gpu_cmd_add_write(c.GPUREG_INDEXBUFFER_CONFIG, (phys - BUFFER_BASE_PADDR) | (1 << 31));
-    gpu_cmd_add_masked_write(c.GPUREG_PRIMITIVE_CONFIG, 2, @intCast(c.GPU_GEOMETRY_PRIM));
-    gpu_cmd_add_write(c.GPUREG_RESTART_PRIMITIVE, 1);
-    gpu_cmd_add_write(c.GPUREG_NUMVERTICES, @intCast(count));
-    gpu_cmd_add_write(c.GPUREG_VERTEX_OFFSET, 0);
-    gpu_cmd_add_masked_write(c.GPUREG_GEOSTAGE_CONFIG, 2, 0x100);
-    gpu_cmd_add_masked_write(c.GPUREG_GEOSTAGE_CONFIG2, 2, 0x100);
-    gpu_cmd_add_masked_write(c.GPUREG_START_DRAW_FUNC0, 1, 0);
-    gpu_cmd_add_write(c.GPUREG_DRAWELEMENTS, 1);
-    gpu_cmd_add_masked_write(c.GPUREG_START_DRAW_FUNC0, 1, 1);
-    gpu_cmd_add_masked_write(c.GPUREG_GEOSTAGE_CONFIG, 2, 0);
-    gpu_cmd_add_masked_write(c.GPUREG_GEOSTAGE_CONFIG2, 2, 0);
-    gpu_cmd_add_write(c.GPUREG_VTX_FUNC, 1);
-    gpu_cmd_add_masked_write(c.GPUREG_PRIMITIVE_CONFIG, 0x8, 0);
-    gpu_cmd_add_masked_write(c.GPUREG_PRIMITIVE_CONFIG, 0x8, 0);
-    return true;
-}
-
-fn draw_arrays_direct(first: u32, count: u32) void {
-    gpu_cmd_add_masked_write(c.GPUREG_PRIMITIVE_CONFIG, 2, @intCast(c.GPU_TRIANGLES));
-    gpu_cmd_add_write(c.GPUREG_RESTART_PRIMITIVE, 1);
-    gpu_cmd_add_write(c.GPUREG_INDEXBUFFER_CONFIG, 0x80000000);
-    gpu_cmd_add_write(c.GPUREG_NUMVERTICES, count);
-    gpu_cmd_add_write(c.GPUREG_VERTEX_OFFSET, first);
-    gpu_cmd_add_masked_write(c.GPUREG_GEOSTAGE_CONFIG2, 1, 1);
-    gpu_cmd_add_masked_write(c.GPUREG_START_DRAW_FUNC0, 1, 0);
-    gpu_cmd_add_write(c.GPUREG_DRAWARRAYS, 1);
-    gpu_cmd_add_masked_write(c.GPUREG_START_DRAW_FUNC0, 1, 1);
-    gpu_cmd_add_masked_write(c.GPUREG_GEOSTAGE_CONFIG2, 1, 0);
-    gpu_cmd_add_write(c.GPUREG_VTX_FUNC, 1);
-}
-
-fn ensure_index_buffer(count: usize) ![]align(CACHE_LINE_SIZE) u16 {
-    if (count == 0 or count > std.math.maxInt(u16) + 1) return error.UnsupportedIndexCount;
-    if (sequential_indices) |indices| {
-        if (indices.len >= count) return indices[0..count];
-        render_alloc.free(indices);
-        sequential_indices = null;
-    }
-
-    const indices = try render_alloc.alignedAlloc(u16, .fromByteUnits(CACHE_LINE_SIZE), count);
-    const bytes: [*]const u8 = @ptrCast(indices.ptr);
-    if (!is_linear_fcram(bytes, indices.len * @sizeOf(u16))) {
-        render_alloc.free(indices);
-        return error.IndexBufferNotLinear;
-    }
-
-    for (indices, 0..) |*idx, i| idx.* = @intCast(i);
-    flush_data_cache(bytes, indices.len * @sizeOf(u16));
-    sequential_indices = indices;
-    return indices;
-}
-
-fn free_index_buffer() void {
-    if (sequential_indices) |indices| {
-        render_alloc.free(indices);
-        sequential_indices = null;
-    }
-}
-
-fn finish_frame_direct() void {
-    gpu_cmd_add_write(c.GPUREG_FRAMEBUFFER_FLUSH, 1);
-    gpu_cmd_add_write(c.GPUREG_FRAMEBUFFER_INVALIDATE, 1);
-    gpu_cmd_add_write(c.GPUREG_EARLYDEPTH_CLEAR, 1);
-}
-
-fn vertex_buffer_format() u32 {
-    return (@as(u32, @intCast(VERTEX_STRIDE)) << 16) |
-        (@as(u32, @intCast(VERTEX_ATTR_COUNT)) << 28);
-}
-
-fn set_vsh_input_count_direct(count: c_int) void {
-    const value = @as(u32, @intCast(count - 1));
-    gpu_cmd_add_masked_write(c.GPUREG_VSH_INPUTBUFFER_CONFIG, 0xB, SH_MODE_VSH | value);
-    gpu_cmd_add_write(c.GPUREG_VSH_NUM_ATTR, value);
-}
-
-fn gpu_cmd_add_write(reg: c_int, value: u32) void {
-    gpu_cmd_add_masked_write(reg, 0xF, value);
-}
-
-fn gpu_cmd_add_masked_write(reg: c_int, mask: u32, value: u32) void {
-    var param = value;
-    c.GPUCMD_Add(gpu_cmd_header(false, mask, reg), &param, 1);
-}
-
-fn gpu_cmd_add_writes(reg: c_int, values: []const u32) void {
-    c.GPUCMD_Add(gpu_cmd_header(false, 0xF, reg), values.ptr, @intCast(values.len));
-}
-
-fn gpu_cmd_add_incremental_writes(reg: c_int, values: []const u32) void {
-    c.GPUCMD_Add(gpu_cmd_header(true, 0xF, reg), values.ptr, @intCast(values.len));
-}
-
-fn gpu_cmd_header(incremental: bool, mask: u32, reg: c_int) u32 {
-    const inc: u32 = if (incremental) 1 else 0;
-    return (inc << 31) | ((mask & 0xF) << 16) | (@as(u32, @intCast(reg)) & 0x3FF);
-}
-
-fn init_projection_transform() void {
-    var screen: c.C3D_Mtx = undefined;
-    c.Mtx_OrthoTilt(&screen, 0.0, @floatFromInt(SCREEN_WIDTH), 0.0, @floatFromInt(SCREEN_HEIGHT), 0.0, 1.0, true);
-    var viewport = logical_viewport_transform();
-    projection_transform = c3d_mtx_mul(&screen, &viewport);
-}
-
-fn logical_viewport_transform() c.C3D_Mtx {
-    var out: c.C3D_Mtx = undefined;
-    set_fvec(&out.r[0], @as(f32, @floatFromInt(SCREEN_WIDTH)) * 0.5, 0.0, 0.0, @as(f32, @floatFromInt(SCREEN_WIDTH)) * 0.5);
-    set_fvec(&out.r[1], 0.0, @as(f32, @floatFromInt(SCREEN_HEIGHT)) * 0.5, 0.0, @as(f32, @floatFromInt(SCREEN_HEIGHT)) * 0.5);
-    set_fvec(&out.r[2], 0.0, 0.0, -1.0, 1.0);
-    set_fvec(&out.r[3], 0.0, 0.0, 0.0, 1.0);
-    return out;
-}
-
-fn upload_draw_uniforms(pl: *PipelineData, model: *const Mat4) void {
-    var aether_projection = mat4_to_c3d_transposed(proj_matrix);
-    var projection = c3d_mtx_mul(&projection_transform, &aether_projection);
-    const model_view = Mat4.mul(model.*, view_matrix);
-    var model_view_c3d = mat4_to_c3d_transposed(model_view);
-
-    upload_matrix(pl.u_projection, &projection);
-    upload_matrix(pl.u_model_view, &model_view_c3d);
-    upload_vec4(pl.u_pos_scale, POS_SCALE);
-    upload_vec4(pl.u_uv_scale_offset, .{
-        UV_SCALE[0],
-        UV_SCALE[1],
-        uv_offset[0],
-        uv_offset[1],
-    });
-    upload_vec4(pl.u_color_scale, COLOR_SCALE);
-}
-
-fn upload_matrix(location: c_int, matrix: *const c.C3D_Mtx) void {
-    const idx = uniform_location(location, 4) orelse return;
-    const words: [*]const u32 = @ptrCast(matrix);
-    gpu_cmd_add_write(c.GPUREG_VSH_FLOATUNIFORM_CONFIG, @as(u32, @intCast(idx)) | FLOAT_UNIFORM_UPLOAD_F32);
-    gpu_cmd_add_writes(c.GPUREG_VSH_FLOATUNIFORM_DATA, words[0..16]);
-}
-
-fn upload_vec4(location: c_int, values: [4]f32) void {
-    const idx = uniform_location(location, 1) orelse return;
-    var vec: c.C3D_FVec = undefined;
-    set_fvec(&vec, values[0], values[1], values[2], values[3]);
-    const words: [*]const u32 = @ptrCast(&vec);
-    gpu_cmd_add_write(c.GPUREG_VSH_FLOATUNIFORM_CONFIG, @as(u32, @intCast(idx)) | FLOAT_UNIFORM_UPLOAD_F32);
-    gpu_cmd_add_writes(c.GPUREG_VSH_FLOATUNIFORM_DATA, words[0..4]);
-}
-
-fn uniform_location(location: c_int, count: usize) ?usize {
-    if (location < 0) return null;
-    const idx: usize = @intCast(location);
-    if (idx + count > c.C3D_FVUNIF_COUNT) return null;
-    return idx;
-}
-
-fn mat4_to_c3d_transposed(mat: Mat4) c.C3D_Mtx {
-    var out: c.C3D_Mtx = undefined;
-    inline for (0..4) |row| {
-        set_fvec(&out.r[row], mat.data[0][row], mat.data[1][row], mat.data[2][row], mat.data[3][row]);
-    }
-    return out;
-}
-
-fn c3d_mtx_mul(a: *const c.C3D_Mtx, b: *const c.C3D_Mtx) c.C3D_Mtx {
-    var out: c.C3D_Mtx = undefined;
-    inline for (0..4) |row| {
-        var values: [4]f32 = undefined;
-        inline for (0..4) |col| {
-            var sum: f32 = 0.0;
-            inline for (0..4) |k| {
-                sum += fvec_component(&a.r[row], k) * fvec_component(&b.r[k], col);
-            }
-            values[col] = sum;
-        }
-        set_fvec(&out.r[row], values[0], values[1], values[2], values[3]);
-    }
-    return out;
-}
-
-fn fvec_component(v: *const c.C3D_FVec, index: usize) f32 {
-    return switch (index) {
-        0 => v.unnamed_0.x,
-        1 => v.unnamed_0.y,
-        2 => v.unnamed_0.z,
-        3 => v.unnamed_0.w,
-        else => unreachable,
-    };
-}
-
-fn set_fvec(v: *c.C3D_FVec, x: f32, y: f32, z: f32, w: f32) void {
-    v.unnamed_0.x = x;
-    v.unnamed_0.y = y;
-    v.unnamed_0.z = z;
-    v.unnamed_0.w = w;
-}
-
-fn rebind_texture() void {
-    if (!initialized or bound_texture == 0) return;
-    const tex = texture_slot(bound_texture) orelse return;
-    c.C3D_TexBind(0, tex_ptr(tex));
+fn free_texture(tex: *TextureData) void {
+    device.destroyImageView(tex.view, null);
+    device.destroyImage(tex.image, null);
+    device.freeMemory(tex.memory, null);
 }
 
 fn validate_texture(width: u32, height: u32, data: []align(16) u8) !void {
     if (width < MIN_TEXTURE_SIZE or height < MIN_TEXTURE_SIZE) {
-        Util.engine_logger.err("3ds_gfx: texture {d}x{d} is too small; Citro3D requires at least {d}x{d}", .{
+        Util.engine_logger.err("3ds_gfx: texture {d}x{d} is too small; 3DS requires at least {d}x{d}", .{
             width,
             height,
             MIN_TEXTURE_SIZE,
@@ -939,7 +977,7 @@ fn validate_texture(width: u32, height: u32, data: []align(16) u8) !void {
         return error.TextureTooSmall;
     }
     if (width > MAX_TEXTURE_SIZE or height > MAX_TEXTURE_SIZE) {
-        Util.engine_logger.err("3ds_gfx: texture {d}x{d} is too large; Citro3D limit is {d}x{d}", .{
+        Util.engine_logger.err("3ds_gfx: texture {d}x{d} is too large; 3DS limit is {d}x{d}", .{
             width,
             height,
             MAX_TEXTURE_SIZE,
@@ -948,7 +986,7 @@ fn validate_texture(width: u32, height: u32, data: []align(16) u8) !void {
         return error.TextureTooLarge;
     }
     if (!std.math.isPowerOfTwo(width) or !std.math.isPowerOfTwo(height)) {
-        Util.engine_logger.err("3ds_gfx: texture {d}x{d} is unsupported; Citro3D requires power-of-two dimensions", .{ width, height });
+        Util.engine_logger.err("3ds_gfx: texture {d}x{d} is unsupported; 3DS textures require power-of-two dimensions", .{ width, height });
         return error.UnsupportedTextureSize;
     }
 
@@ -958,66 +996,18 @@ fn validate_texture(width: u32, height: u32, data: []align(16) u8) !void {
         Util.engine_logger.err("3ds_gfx: texture upload data must be allocated in linear FCRAM", .{});
         return error.TextureDataNotLinear;
     }
-    if (size > std.math.maxInt(u32)) return error.TextureTooLarge;
-}
-
-fn init_tex_mirror(width: u32, height: u32, data: ?*anyopaque, size: u32) TexMirror {
-    return .{
-        .data = data,
-        .fmt_size = (size << 4) | @as(u32, @intCast(c.GPU_RGBA8)),
-        .dim = (width << 16) | height,
-        .param = texture_param(),
-        .border = 0,
-        .lod_param = 0,
-    };
-}
-
-fn texture_param() u32 {
-    return @intCast(
-        c.GPU_TEXTURE_MODE(c.GPU_TEX_2D) |
-            c.GPU_TEXTURE_MAG_FILTER(c.GPU_NEAREST) |
-            c.GPU_TEXTURE_MIN_FILTER(c.GPU_NEAREST) |
-            c.GPU_TEXTURE_WRAP_S(c.GPU_REPEAT) |
-            c.GPU_TEXTURE_WRAP_T(c.GPU_REPEAT),
-    );
 }
 
 fn upload_texture_data(tex: *TextureData, data: []align(16) const u8) !void {
-    const size = texture_size(tex.width, tex.height);
-    const upload = try ensure_texture_staging(tex, size / TEX_BPP);
+    const mapped = try device.mapMemory(tex.memory, .size(0), .size(texture_size(tex.width, tex.height)));
+    defer device.unmapMemory(tex.memory);
 
-    convert_texture_data(upload, data, tex.width, tex.height);
-    flush_texture_source(upload);
-    c.C3D_TexLoadImage(tex_ptr(tex), upload.ptr, c.GPU_TEXFACE_2D, 0);
-    c.C3D_TexFlush(tex_ptr(tex));
+    convert_texture_data(mapped, data, tex.width, tex.height);
+    try flush_memory(tex.memory, mapped.len);
 }
 
-fn ensure_texture_staging(tex: *TextureData, len: usize) ![]align(16) u32 {
-    if (tex.staging) |buf| {
-        if (buf.len >= len) return buf[0..len];
-        render_alloc.free(buf);
-        tex.staging = null;
-    }
-
-    const staging = try render_alloc.alignedAlloc(u32, .fromByteUnits(CACHE_LINE_SIZE), len);
-    const bytes: [*]const u8 = @ptrCast(staging.ptr);
-    if (!is_linear_fcram(bytes, len * TEX_BPP)) {
-        render_alloc.free(staging);
-        std.debug.panic("3ds_gfx: texture staging must be allocated in linear FCRAM", .{});
-    }
-
-    tex.staging = staging;
-    return staging;
-}
-
-fn free_texture_staging(tex: *TextureData) void {
-    if (tex.staging) |staging| {
-        render_alloc.free(staging);
-        tex.staging = null;
-    }
-}
-
-fn convert_texture_data(dst: []align(16) u32, src: []align(16) const u8, width: u32, height: u32) void {
+fn convert_texture_data(dst: []u8, src: []align(16) const u8, width: u32, height: u32) void {
+    const words: []align(4) u32 = @ptrCast(@alignCast(dst));
     const factors = twiddle_factors(width, height);
     var y_bits: u32 = 0;
     for (0..height) |y| {
@@ -1027,7 +1017,7 @@ fn convert_texture_data(dst: []align(16) u32, src: []align(16) const u8, width: 
             const xu: u32 = @intCast(x);
             const src_off = (@as(usize, yu) * width + xu) * TEX_BPP;
             const dst_pixel = x_bits | (factors.mask_y - y_bits);
-            dst[@intCast(dst_pixel)] =
+            words[@intCast(dst_pixel)] =
                 (@as(u32, src[src_off + 0]) << 24) |
                 (@as(u32, src[src_off + 1]) << 16) |
                 (@as(u32, src[src_off + 2]) << 8) |
@@ -1062,26 +1052,37 @@ fn twiddle_factors(width: u32, height: u32) TwiddleFactors {
     return .{ .mask_x = mask_x, .mask_y = mask_y };
 }
 
-fn flush_texture_source(data: []align(16) u32) void {
-    const bytes: [*]const u8 = @ptrCast(data.ptr);
-    flush_data_cache(bytes, data.len * TEX_BPP);
-}
-
 fn texture_size(width: u32, height: u32) u32 {
     return @intCast(@as(usize, width) * height * TEX_BPP);
 }
 
-fn tex_ptr(tex: *TextureData) *c.C3D_Tex {
-    return @ptrCast(&tex.tex);
+fn rebuild_fog_table() void {
+    const safe_end = if (fog_state.end <= fog_state.start) fog_state.start + 0.001 else fog_state.end;
+    var values: [129]f32 = undefined;
+    for (&values, 0..) |*value, i| {
+        const t = @as(f32, @floatFromInt(i)) / 128.0;
+        const distance = fog_state.start + (safe_end - fog_state.start) * t;
+        const fog = std.math.clamp((distance - fog_state.start) / (safe_end - fog_state.start), 0.0, 1.0);
+        value.* = fog;
+    }
+
+    for (&fog_state.table, 0..) |*raw, i| {
+        const current = values[i];
+        const next = values[i + 1];
+        const lut_value = pica.Graphics.TextureCombiners.FogLutValue{
+            .value = .ofSaturating(current),
+            .next_difference = .ofSaturating(next - current),
+        };
+        raw.* = @bitCast(zitrus.hardware.LsbRegister(pica.Graphics.TextureCombiners.FogLutValue).init(lut_value));
+    }
 }
 
-fn flush_data_cache(ptr: [*]const u8, len: usize) void {
-    if (len == 0) return;
-
-    const start = @intFromPtr(ptr) & ~(CACHE_LINE_SIZE - 1);
-    const end = std.mem.alignForward(usize, @intFromPtr(ptr) + len, CACHE_LINE_SIZE);
-    const flush_ptr: *const anyopaque = @ptrFromInt(start);
-    _ = c.GSPGPU_FlushDataCache(flush_ptr, @intCast(end - start));
+fn flush_memory(memory: mango.DeviceMemory, len: usize) !void {
+    try device.flushMappedMemoryRanges(&.{.{
+        .memory = memory,
+        .offset = .size(0),
+        .size = .size(@intCast(len)),
+    }});
 }
 
 fn mesh_slot(handle: Mesh.Handle) ?*MeshData {
@@ -1106,6 +1107,10 @@ fn snorm16_scale() f32 {
     return 1.0 / 32767.0;
 }
 
+fn float_to_u8(v: f32) u8 {
+    return @intFromFloat(std.math.clamp(v, 0.0, 1.0) * 255.0);
+}
+
 fn is_linear_fcram(ptr: [*]const u8, len: usize) bool {
     const start = @intFromPtr(ptr);
     return in_range(start, len, OS_FCRAM_VADDR, OS_FCRAM_SIZE) or
@@ -1116,16 +1121,4 @@ fn in_range(start: usize, len: usize, base: usize, size: usize) bool {
     if (start < base) return false;
     const offset = start - base;
     return offset <= size and len <= size - offset;
-}
-
-fn float_to_u8(v: f32) u8 {
-    return @intFromFloat(@max(0.0, @min(1.0, v)) * 255.0);
-}
-
-fn pack_color_rgba(r: f32, g: f32, b: f32, a: f32) u32 {
-    const ri: u32 = float_to_u8(r);
-    const gi: u32 = float_to_u8(g);
-    const bi: u32 = float_to_u8(b);
-    const ai: u32 = float_to_u8(a);
-    return (ri << 24) | (gi << 16) | (bi << 8) | ai;
 }
