@@ -7,8 +7,9 @@
 //! L0 has one bit per block (1 = free, 0 = allocated).
 //! L1 has one bit per L0 word (1 = at least one free block in that group).
 //!
-//! Over-aligned requests (alignment > BLOCK_SIZE) are handled by constraining
-//! the starting block index to a multiple of (alignment / BLOCK_SIZE).
+//! Over-aligned requests (alignment > BLOCK_SIZE) are handled by aligning the
+//! actual data pointer for each candidate run, since the pool's data base is
+//! only guaranteed to be BLOCK_SIZE-aligned.
 //!
 //! alloc -- O(1) single-block via L1->L0 descent; O(n/32) multi-block scan
 //! free  -- O(1): set bits + update summary
@@ -40,6 +41,14 @@ inline fn div_ceil(a: usize, b: usize) usize {
 
 inline fn roundup(n: usize, a: usize) usize {
     return (n + a - 1) & ~(a - 1);
+}
+
+inline fn block_index_for_aligned_address(data: [*]u8, block_idx: u32, alignment: usize) u32 {
+    if (alignment <= BLOCK_SIZE) return block_idx;
+
+    const candidate_addr = @intFromPtr(data + @as(usize, block_idx) * BLOCK_SIZE);
+    const aligned_addr = std.mem.alignForward(usize, candidate_addr, alignment);
+    return block_idx + @as(u32, @intCast((aligned_addr - candidate_addr) / BLOCK_SIZE));
 }
 
 // -- public allocator ---------------------------------------------------------
@@ -301,13 +310,11 @@ pub const PoolAlloc = struct {
     }
 
     /// Find `blocks_needed` contiguous free blocks with alignment constraint.
-    /// `align_blocks` must be a power of 2 (1 for no constraint).
-    fn find_run(self: *PoolAlloc, blocks_needed: u32, align_blocks: u32) ?u32 {
-        if (blocks_needed == 1 and align_blocks <= 1) {
+    /// `alignment` must be a power of 2.
+    fn find_run(self: *PoolAlloc, blocks_needed: u32, alignment: usize) ?u32 {
+        if (blocks_needed == 1 and alignment <= BLOCK_SIZE) {
             return self.find_single();
         }
-
-        const align_mask = align_blocks - 1;
 
         // Scan L0 from hint, then wrap around if needed.
         var start_wi = self.hint;
@@ -331,7 +338,7 @@ pub const PoolAlloc = struct {
                     const word_base = wi * WORD_BITS;
                     if (run_len == 0) {
                         // Start a new run, aligned.
-                        run_start = (word_base + align_mask) & ~align_mask;
+                        run_start = block_index_for_aligned_address(self.data, word_base, alignment);
                         if (run_start >= word_base + WORD_BITS) {
                             // Alignment pushed past this word.
                             continue;
@@ -387,7 +394,7 @@ pub const PoolAlloc = struct {
                     // Count ones (free blocks).
                     const ones: u32 = @ctz(~remaining);
                     const candidate = word_base + bit_off;
-                    const aligned_start = (candidate + align_mask) & ~align_mask;
+                    const aligned_start = block_index_for_aligned_address(self.data, candidate, alignment);
 
                     if (aligned_start < candidate + ones) {
                         const effective = candidate + ones - aligned_start;
@@ -431,9 +438,8 @@ pub const PoolAlloc = struct {
 
         const blocks_needed: u32 = @intCast(div_ceil(n, BLOCK_SIZE));
         const align_bytes = alignment.toByteUnits();
-        const align_blocks: u32 = @intCast(@max(1, align_bytes / BLOCK_SIZE));
 
-        const block_idx = self.find_run(blocks_needed, align_blocks) orelse return null;
+        const block_idx = self.find_run(blocks_needed, align_bytes) orelse return null;
 
         self.clear_range(block_idx, blocks_needed);
         self.used += @as(usize, blocks_needed) * BLOCK_SIZE;
@@ -609,11 +615,12 @@ test "pool_alloc: resize shrink and grow" {
     var pa = PoolAlloc.init(buf[0..], "test");
     const ally = pa.allocator();
 
-    const a = try ally.alloc(u8, 64);
+    var a = try ally.alloc(u8, 64);
     const b = try ally.alloc(u8, 64);
 
     // Shrink: always succeeds (wastes the tail within the block)
     try testing.expect(ally.resize(a, 32));
+    a = a[0..32];
 
     // Grow with occupied next block: must fail
     try testing.expect(!ally.resize(a, 256));
@@ -621,6 +628,7 @@ test "pool_alloc: resize shrink and grow" {
     // Free the next block, now growth can absorb it
     ally.free(b);
     try testing.expect(ally.resize(a, 100));
+    a = a.ptr[0..100];
 
     ally.free(a);
     try testing.expectEqual(@as(usize, 0), pa.used);
@@ -673,6 +681,32 @@ test "pool_alloc: over-alignment" {
 
     // Free and verify cleanup
     ally.vtable.free(ally.ptr, raw[0..64], over_align, 0);
+    try testing.expectEqual(@as(usize, 0), pa.used);
+}
+
+test "pool_alloc: over-alignment respects misaligned data base" {
+    const page_size = 4096;
+    var backing: [page_size * 4]u8 align(BLOCK_SIZE) = undefined;
+
+    var pa = PoolAlloc.init(backing[0..], "test");
+    var found_misaligned_data = false;
+    var offset: usize = 0;
+    while (offset < page_size) : (offset += BLOCK_SIZE) {
+        pa = PoolAlloc.init(backing[offset..], "test");
+        if (@intFromPtr(pa.data) % page_size != 0) {
+            found_misaligned_data = true;
+            break;
+        }
+    }
+    try testing.expect(found_misaligned_data);
+
+    const ally = pa.allocator();
+    const page_align = comptime std.mem.Alignment.fromByteUnits(page_size);
+    const raw = ally.vtable.alloc(ally.ptr, 64, page_align, 0) orelse
+        return error.TestUnexpectedResult;
+
+    try testing.expectEqual(@as(usize, 0), @intFromPtr(raw) % page_size);
+    ally.vtable.free(ally.ptr, raw[0..64], page_align, 0);
     try testing.expectEqual(@as(usize, 0), pa.used);
 }
 
