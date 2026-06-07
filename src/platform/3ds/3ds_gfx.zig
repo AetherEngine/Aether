@@ -667,7 +667,7 @@ fn clear_frame_targets() !void {
 fn clear_depth_target() !void {
     try fill_queue.clearDepthStencilImage(.{
         .image = render_target.depth_image,
-        .depth = 0.0,
+        .depth = 1.0,
         .stencil = 0,
         .subresource_range = .full,
     });
@@ -684,7 +684,7 @@ fn begin_command_buffer() !void {
     command_buffer.setStencilTestEnable(false);
     command_buffer.setDepthTestEnable(true);
     command_buffer.setDepthMode(.z_buffer);
-    command_buffer.setDepthCompareOp(.ge);
+    command_buffer.setDepthCompareOp(.lt);
     command_buffer.setPrimitiveTopology(.triangle_list);
     command_buffer.setFrontFace(.ccw);
     command_buffer.setColorWriteMask(.rgba);
@@ -798,27 +798,30 @@ fn mat4_to_uniform_rows(mat: Mat4) [4][4]f32 {
 }
 
 fn init_projection_transform() void {
-    projection_transform = Mat4.mul(ortho_tilt(0.0, @floatFromInt(SCREEN_WIDTH), 0.0, @floatFromInt(SCREEN_HEIGHT), 0.0, 1.0), logical_viewport_transform());
+    projection_transform = Mat4.mul(logical_viewport_transform(), ortho_tilt(0.0, @floatFromInt(SCREEN_WIDTH), 0.0, @floatFromInt(SCREEN_HEIGHT), 0.0, 1.0));
 }
 
 fn logical_viewport_transform() Mat4 {
     return .{ .data = .{
-        .{ @as(f32, @floatFromInt(SCREEN_WIDTH)) * 0.5, 0.0, 0.0, @as(f32, @floatFromInt(SCREEN_WIDTH)) * 0.5 },
-        .{ 0.0, @as(f32, @floatFromInt(SCREEN_HEIGHT)) * 0.5, 0.0, @as(f32, @floatFromInt(SCREEN_HEIGHT)) * 0.5 },
-        .{ 0.0, 0.0, -1.0, 1.0 },
-        .{ 0.0, 0.0, 0.0, 1.0 },
+        .{ @as(f32, @floatFromInt(SCREEN_WIDTH)) * 0.5, 0.0, 0.0, 0.0 },
+        .{ 0.0, @as(f32, @floatFromInt(SCREEN_HEIGHT)) * 0.5, 0.0, 0.0 },
+        .{ 0.0, 0.0, -1.0, 0.0 },
+        .{ @as(f32, @floatFromInt(SCREEN_WIDTH)) * 0.5, @as(f32, @floatFromInt(SCREEN_HEIGHT)) * 0.5, 1.0, 1.0 },
     } };
 }
 
+// Aether Mat4 uses row-vector multiplication. This is Citro3D's
+// Mtx_OrthoTilt transposed into that convention; mat4_to_uniform_rows()
+// transposes it back for the PICA shader's matrix * vector dp4 sequence.
 fn ortho_tilt(left: f32, right: f32, bottom: f32, top: f32, near: f32, far: f32) Mat4 {
     const rl = right - left;
     const tb = top - bottom;
     const fnv = far - near;
     return .{ .data = .{
-        .{ 0.0, 2.0 / tb, 0.0, -((top + bottom) / tb) },
-        .{ -2.0 / rl, 0.0, 0.0, (right + left) / rl },
-        .{ 0.0, 0.0, 1.0 / fnv, 0.5 * ((near + far) / (near - far)) - 0.5 },
-        .{ 0.0, 0.0, 0.0, 1.0 },
+        .{ 0.0, -2.0 / rl, 0.0, 0.0 },
+        .{ 2.0 / tb, 0.0, 0.0, 0.0 },
+        .{ 0.0, 0.0, 1.0 / fnv, 0.0 },
+        .{ -((top + bottom) / tb), (right + left) / rl, 0.5 * ((near + far) / (near - far)) - 0.5, 1.0 },
     } };
 }
 
@@ -1125,10 +1128,12 @@ fn tiled_pixel_offset(width: u32, x: u32, y: u32) usize {
 }
 
 fn texture_upload_mode(width: u32, height: u32) TextureUploadMode {
-    // Mango's transfer path uses GX_DisplayTransfer and requires at least
-    // 64x16. Smaller images are still valid sampled images, so keep the CPU
-    // Morton path for defaults and tiny sprites.
-    return if (width >= 64 and height >= 16) .transfer_tiled else .cpu_tiled;
+    _ = width;
+    _ = height;
+    // The CPU Morton path matches the sampled texture layout. The GX transfer
+    // path is tempting for larger textures, but currently corrupts uploads
+    // while small CPU-tiled textures render correctly.
+    return .cpu_tiled;
 }
 
 fn texture_size(width: u32, height: u32) u32 {
