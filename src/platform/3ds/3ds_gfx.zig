@@ -32,10 +32,10 @@ pub fn setup(alloc: std.mem.Allocator, io: std.Io) void {
     render_io = io;
 }
 
-const SCREEN_WIDTH: u32 = 400;
+const SCREEN_WIDTH: u32 = 800;
 const SCREEN_HEIGHT: u32 = 240;
 const TARGET_WIDTH: u16 = 240;
-const TARGET_HEIGHT: u16 = 400;
+const TARGET_HEIGHT: u16 = 800;
 const MESH_SLOT_COUNT: usize = 2;
 const MAX_DEFERRED_MESH_FREES: usize = 4096;
 const MAX_TEXTURE_SIZE: u32 = 1024;
@@ -215,6 +215,7 @@ pub fn init() anyerror!void {
 
     c.gfxInitDefault();
     errdefer c.gfxExit();
+    c.gfxSetWide(true);
 
     device = try mango.createAetherCtruBackedDevice(.{ .linear_gpa = render_alloc }, render_alloc);
     errdefer {

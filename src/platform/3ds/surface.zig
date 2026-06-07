@@ -1,6 +1,6 @@
 //! 3DS surface stub.
 //!
-//! Top screen of an O3DS is 400x240; bottom touch screen is 320x240. The
+//! Top screen in wide mode is 800x240; bottom touch screen is 320x240. The
 //! real backend will likely advertise the top screen here and expose the
 //! bottom one separately.
 
