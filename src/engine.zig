@@ -263,17 +263,28 @@ pub const Engine = struct {
         var fps_window_end: i64 = saturatingAddI64(last_us, fps_window_us);
 
         while (self.running) {
-            const now_us = elapsedUsSince(run_start_ns, clock.now(self.io).toNanoseconds());
+            var now_us = elapsedUsSince(run_start_ns, clock.now(self.io).toNanoseconds());
             var frame_dt_us = saturatingSubI64(now_us, last_us);
             var synthetic_frame_dt = false;
 
             if (frame_dt_us <= 0) {
                 frame_dt_us = 0;
-                if (options.config.platform == .nintendo_3ds and self.vsync) {
-                    stale_time_frames +|= 1;
-                    if (stale_time_frames >= 2) {
-                        frame_dt_us = @intCast(US_PER_S / 60);
-                        synthetic_frame_dt = true;
+                if (options.config.platform == .nintendo_3ds) {
+                    if (self.vsync) {
+                        stale_time_frames +|= 1;
+                        if (stale_time_frames >= 2) {
+                            frame_dt_us = @intCast(US_PER_S / 60);
+                            synthetic_frame_dt = true;
+                        }
+                    } else {
+                        stale_time_frames = 0;
+                        try std.Io.sleep(self.io, .fromNanoseconds(std.time.ns_per_ms), clock);
+                        now_us = elapsedUsSince(run_start_ns, clock.now(self.io).toNanoseconds());
+                        frame_dt_us = @max(0, saturatingSubI64(now_us, last_us));
+                        if (frame_dt_us <= 0) {
+                            frame_dt_us = 1000;
+                            synthetic_frame_dt = true;
+                        }
                     }
                 }
             } else {
