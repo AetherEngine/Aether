@@ -85,6 +85,10 @@ fn snorm16(v: f32) i16 {
     return @intFromFloat(std.math.clamp(v, -1.0, 1.0) * 32767.0);
 }
 
+fn tenths(v: f32) i32 {
+    return @intFromFloat(v * 10.0);
+}
+
 fn vertex(x: f32, y: f32, color: u32, u: f32, v: f32) Vertex {
     return .{
         .pos = .{ snorm16(x), snorm16(y), 0 },
@@ -355,7 +359,11 @@ const MyState = struct {
                 .max_distance = 25.0,
             }) catch return;
 
-            Util.game_logger.info("grass at ({d:.1}, 0, {d:.1})  dist={d:.1}", .{ pos.x, pos.z, dist });
+            if (ae.platform == .nintendo_3ds) {
+                Util.game_logger.info("grass at x10={} z10={} dist10={}", .{ tenths(pos.x), tenths(pos.z), tenths(dist) });
+            } else {
+                Util.game_logger.info("grass at ({d:.1}, 0, {d:.1})  dist={d:.1}", .{ pos.x, pos.z, dist });
+            }
         }
     }
 

@@ -203,6 +203,9 @@ fn addNintendoCImportPaths(owner: *std.Build, mod: *std.Build.Module, config: Co
             mod.addIncludePath(.{ .cwd_relative = b.pathJoin(&.{ dkp, "libctru/include" }) });
         },
         .nintendo_switch => {
+            // Zig's Switch C import can otherwise see newlib's fortified
+            // wrappers and emit references to __ssp_real_* symbols.
+            mod.addCMacro("_FORTIFY_SOURCE", "0");
             mod.addIncludePath(.{ .cwd_relative = b.pathJoin(&.{ dkp, "devkitA64/aarch64-none-elf/include" }) });
             mod.addIncludePath(.{ .cwd_relative = b.pathJoin(&.{ dkp, "libnx/include" }) });
         },
@@ -1060,6 +1063,22 @@ fn patch3dsGeneratedC(b: *std.Build, exe: *std.Build.Step.Compile) std.Build.Laz
     return patch.captureStdOut(.{ .basename = b.fmt("{s}.3ds.c", .{exe.name}) });
 }
 
+fn cBackendOptimizeMode(exe: *std.Build.Step.Compile) std.builtin.OptimizeMode {
+    return exe.root_module.optimize orelse .Debug;
+}
+
+fn cBackendGccOptimizeArg(optimize: std.builtin.OptimizeMode) []const u8 {
+    return switch (optimize) {
+        .Debug => "-O0",
+        .ReleaseSafe, .ReleaseFast => "-O2",
+        .ReleaseSmall => "-Os",
+    };
+}
+
+fn cBackendGccDebugArg(optimize: std.builtin.OptimizeMode) []const u8 {
+    return if (optimize == .Debug or optimize == .ReleaseSafe) "-g" else "-g0";
+}
+
 /// Compiles the zig-emitted C with devkitARM, links against libctru, and
 /// packages the ELF (plus an SMDH and optional RomFS) into a `.3dsx`
 /// homebrew bundle. Mirrors `pspEbootPipeline` for the PSP toolchain.
@@ -1205,6 +1224,8 @@ fn threedsxPipeline(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOpt
     // in `_3dsx_crt0` (which calls our exported `main`) and the 3DSX
     // linker script. We also supply a tiny -T fragment for accurate
     // __text_* symbols (see text_syms_ld above).
+    const exe_optimize = cBackendOptimizeMode(exe);
+
     const link = b.addSystemCommand(&.{gcc});
     link.addArgs(&arch);
     link.addArgs(&.{
@@ -1213,8 +1234,8 @@ fn threedsxPipeline(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOpt
         "-D_FORTIFY_SOURCE=0",
         "-D__3DS__",
         "-DARM11",
-        if (exe.root_module.optimize != .Debug or exe.root_module.optimize == .ReleaseSmall) "-O2" else if (exe.root_module.optimize == .ReleaseSmall) "-Os" else "-O0",
-        if (exe.root_module.optimize == .Debug or exe.root_module.optimize == .ReleaseSafe) "-g" else "-g0",
+        cBackendGccOptimizeArg(exe_optimize),
+        cBackendGccDebugArg(exe_optimize),
         "-specs=3dsx.specs",
         "-T",
     });
@@ -1236,6 +1257,7 @@ fn threedsxPipeline(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOpt
         // warning to an error. Demote it and a couple of related
         // chatters; we don't author this C and there's nothing
         // actionable in the warnings.
+        "-fno-strict-aliasing",
         "-Wno-incompatible-pointer-types",
         "-Wno-int-conversion",
         "-Wno-builtin-declaration-mismatch",
@@ -1367,20 +1389,28 @@ fn switchNroPipeline(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOp
         "-march=armv8-a+crc+crypto", "-mtune=cortex-a57", "-mtp=soft", "-fPIE",
     };
 
+    const exe_optimize = cBackendOptimizeMode(exe);
+
     const link = b.addSystemCommand(&.{gcc});
     link.addArgs(&arch);
     link.addArgs(&.{
-        "-ffunction-sections", "-fdata-sections",
-        "-D__SWITCH__",        "-O2",
-        "-g",                  b.fmt("-specs={s}", .{libnx_specs}),
+        "-ffunction-sections",
+        "-fdata-sections",
+        "-D_FORTIFY_SOURCE=0",
+        "-D__SWITCH__",
+        cBackendGccOptimizeArg(exe_optimize),
+        cBackendGccDebugArg(exe_optimize),
+        b.fmt("-specs={s}", .{libnx_specs}),
         // Pin the C standard to C11 (zig.h targets `_Noreturn`, not
         // C23's `[[noreturn]]`).
         "-std=gnu11",
         // zig's -ofmt=c emitter has known pointer/int-conversion
         // mismatches that gcc 14+ promotes to errors. We don't author
         // the C, so demote them.
-                 "-Wno-incompatible-pointer-types",
-        "-Wno-int-conversion", "-Wno-builtin-declaration-mismatch",
+        "-fno-strict-aliasing",
+        "-Wno-incompatible-pointer-types",
+        "-Wno-int-conversion",
+        "-Wno-builtin-declaration-mismatch",
     });
     link.addArg(b.fmt("-I{s}", .{libnx_inc}));
     // zig's emitted C `#include "zig.h"`. The header lives in zig's
