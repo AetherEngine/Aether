@@ -417,6 +417,7 @@ fn processTransfer(item: Queue.TransferItem) !void {
             ) != 0) return error.Unexpected;
         },
     }
+    c.gspWaitForEvent(c.GSPGPU_EVENT_PPF, false);
 }
 
 fn gxBufferDim(width: u16, height: u16) u32 {

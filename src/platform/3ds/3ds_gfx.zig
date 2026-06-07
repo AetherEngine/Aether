@@ -725,8 +725,8 @@ fn present_render_target() void {
         DISPLAY_TRANSFER_FLAGS,
     );
     c.gspWaitForEvent(c.GSPGPU_EVENT_PPF, false);
-    if (vsync_enabled) c.gspWaitForEvent(c.GSPGPU_EVENT_VBlank0, true);
     c.gfxSwapBuffers();
+    if (vsync_enabled) c.gspWaitForEvent(c.GSPGPU_EVENT_VBlank0, true);
 }
 
 fn apply_dynamic_state() void {
@@ -1128,12 +1128,10 @@ fn tiled_pixel_offset(width: u32, x: u32, y: u32) usize {
 }
 
 fn texture_upload_mode(width: u32, height: u32) TextureUploadMode {
-    _ = width;
-    _ = height;
-    // The CPU Morton path matches the sampled texture layout. The GX transfer
-    // path is tempting for larger textures, but currently corrupts uploads
-    // while small CPU-tiled textures render correctly.
-    return .cpu_tiled;
+    // GX_DisplayTransfer needs at least 64x16 for linear<->tiled transfers.
+    // Smaller textures are still valid sampled images, so keep them on the
+    // CPU Morton path.
+    return if (width >= 64 and height >= 16) .transfer_tiled else .cpu_tiled;
 }
 
 fn texture_size(width: u32, height: u32) u32 {
