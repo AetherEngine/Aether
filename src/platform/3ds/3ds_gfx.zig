@@ -112,9 +112,64 @@ const DeferredMeshFree = struct {
 const TextureData = struct {
     width: u32,
     height: u32,
+    upload_mode: TextureUploadMode,
     memory: mango.DeviceMemory,
     image: mango.Image,
     view: mango.ImageView,
+};
+
+const TextureUploadMode = enum {
+    cpu_tiled,
+    transfer_tiled,
+};
+
+const texenv_primary: mango.TextureCombinerUnit = .{
+    .color_src = @splat(.primary_color),
+    .alpha_src = @splat(.primary_color),
+    .color_factor = @splat(.src_color),
+    .alpha_factor = @splat(.src_alpha),
+    .color_op = .replace,
+    .alpha_op = .replace,
+    .color_scale = .@"1x",
+    .alpha_scale = .@"1x",
+    .constant = @splat(0xFF),
+};
+
+const texenv_texture_modulate_primary: mango.TextureCombinerUnit = .{
+    .color_src = .{ .primary_color, .texture_0, .primary_color },
+    .alpha_src = .{ .primary_color, .texture_0, .primary_color },
+    .color_factor = @splat(.src_color),
+    .alpha_factor = @splat(.src_alpha),
+    .color_op = .modulate,
+    .alpha_op = .modulate,
+    .color_scale = .@"1x",
+    .alpha_scale = .@"1x",
+    .constant = @splat(0xFF),
+};
+
+const texenv_untextured = [_]mango.TextureCombinerUnit{
+    texenv_primary,
+    mango.TextureCombinerUnit.previous,
+    mango.TextureCombinerUnit.previous,
+    mango.TextureCombinerUnit.previous,
+    mango.TextureCombinerUnit.previous,
+    mango.TextureCombinerUnit.previous,
+};
+
+const texenv_textured = [_]mango.TextureCombinerUnit{
+    texenv_primary,
+    mango.TextureCombinerUnit.previous,
+    mango.TextureCombinerUnit.previous,
+    mango.TextureCombinerUnit.previous,
+    mango.TextureCombinerUnit.previous,
+    texenv_texture_modulate_primary,
+};
+
+const texenv_buffer_sources = [_]mango.TextureCombinerUnit.BufferSources{
+    .previous,
+    .previous,
+    .previous,
+    .previous,
 };
 
 const FogState = struct {
@@ -418,11 +473,9 @@ pub fn update_texture(handle: Texture.Handle, data: []align(16) u8) void {
     const tex = texture_slot(handle) orelse return;
     const size = texture_size(tex.width, tex.height);
     if (data.len < size) return;
-    if (!is_linear_fcram(data.ptr, size)) {
-        std.debug.panic("3ds_gfx: texture upload data must be allocated in linear FCRAM", .{});
-    }
 
     upload_texture_data(tex, data[0..size]) catch return;
+    if (frame_started and bound_texture == handle) bind_current_texture();
 }
 
 pub fn bind_texture(handle: Texture.Handle) void {
@@ -443,6 +496,7 @@ pub fn destroy_texture(handle: Texture.Handle) void {
     if (bound_texture == handle) bound_texture = 0;
     if (default_texture == handle) default_texture = 0;
     _ = textures.remove_element(handle);
+    if (frame_started) bind_current_texture();
 }
 
 pub fn force_texture_resident(_: Texture.Handle) void {}
@@ -719,29 +773,8 @@ fn bind_current_texture() void {
 }
 
 fn bind_texenv(textured: bool) void {
-    const first: mango.TextureCombinerUnit = if (textured) .{
-        .color_src = .{ .texture_0, .primary_color, .primary_color },
-        .alpha_src = .{ .texture_0, .primary_color, .primary_color },
-        .color_factor = @splat(.src_color),
-        .alpha_factor = @splat(.src_alpha),
-        .color_op = .modulate,
-        .alpha_op = .modulate,
-        .color_scale = .@"1x",
-        .alpha_scale = .@"1x",
-        .constant = @splat(0xFF),
-    } else .{
-        .color_src = @splat(.primary_color),
-        .alpha_src = @splat(.primary_color),
-        .color_factor = @splat(.src_color),
-        .alpha_factor = @splat(.src_alpha),
-        .color_op = .replace,
-        .alpha_op = .replace,
-        .color_scale = .@"1x",
-        .alpha_scale = .@"1x",
-        .constant = @splat(0xFF),
-    };
-
-    command_buffer.setTextureCombiners(&.{first}, &.{});
+    const stages = if (textured) &texenv_textured else &texenv_untextured;
+    command_buffer.setTextureCombiners(stages, &texenv_buffer_sources);
 }
 
 fn upload_draw_uniforms(model: *const Mat4) void {
@@ -923,8 +956,10 @@ fn mesh_draw_bytes_needed(count: usize) ?usize {
 
 fn create_texture_resources(width: u32, height: u32) !TextureData {
     const size = texture_size(width, height);
-    // 3DSX launchers can map VRAM read-only for the CPU. Keep CPU-authored
-    // texture storage in linear FCRAM, which PICA can still sample by physical address.
+    const upload_mode = texture_upload_mode(width, height);
+    // 3DSX launchers can map VRAM read-only for the CPU. Keep texture
+    // storage in linear FCRAM; PICA can still sample it by physical address,
+    // and the transfer queue can still write tiled output here.
     const memory = try device.allocateMemory(.{
         .memory_type = .fcram_cached,
         .allocation_size = .size(size),
@@ -954,6 +989,7 @@ fn create_texture_resources(width: u32, height: u32) !TextureData {
     return .{
         .width = width,
         .height = height,
+        .upload_mode = upload_mode,
         .memory = memory,
         .image = image,
         .view = view,
@@ -992,64 +1028,107 @@ fn validate_texture(width: u32, height: u32, data: []align(16) u8) !void {
 
     const size = texture_size(width, height);
     if (data.len < size) return error.InsufficientData;
-    if (!is_linear_fcram(data.ptr, size)) {
-        Util.engine_logger.err("3ds_gfx: texture upload data must be allocated in linear FCRAM", .{});
-        return error.TextureDataNotLinear;
-    }
 }
 
 fn upload_texture_data(tex: *TextureData, data: []align(16) const u8) !void {
-    const mapped = try device.mapMemory(tex.memory, .size(0), .size(texture_size(tex.width, tex.height)));
-    defer device.unmapMemory(tex.memory);
-
-    convert_texture_data(mapped, data, tex.width, tex.height);
-    try flush_memory(tex.memory, mapped.len);
+    switch (tex.upload_mode) {
+        .cpu_tiled => return upload_texture_data_cpu(tex, data),
+        .transfer_tiled => return upload_texture_data_transfer(tex, data),
+    }
 }
 
-fn convert_texture_data(dst: []u8, src: []align(16) const u8, width: u32, height: u32) void {
-    const words: []align(4) u32 = @ptrCast(@alignCast(dst));
-    const factors = twiddle_factors(width, height);
-    var y_bits: u32 = 0;
+fn upload_texture_data_cpu(tex: *TextureData, data: []align(16) const u8) !void {
+    const mapped = try device.mapMemory(tex.memory, .size(0), .whole);
+    defer device.unmapMemory(tex.memory);
+
+    @memset(mapped, 0);
+    convert_texture_data_tiled_abgr(mapped, data, tex.width, tex.height);
+    try flush_memory(tex.memory, mapped.len);
+    device.waitIdle();
+}
+
+fn upload_texture_data_transfer(tex: *TextureData, data: []align(16) const u8) !void {
+    const size = texture_size(tex.width, tex.height);
+
+    const staging_memory = try device.allocateMemory(.{
+        .memory_type = .fcram_cached,
+        .allocation_size = .size(size),
+    }, null);
+    defer device.freeMemory(staging_memory, null);
+
+    const staging_buffer = try device.createBuffer(.{
+        .size = .size(size),
+        .usage = .{ .transfer_src = true },
+    }, null);
+    defer device.destroyBuffer(staging_buffer, null);
+    try device.bindBufferMemory(staging_buffer, staging_memory, .size(0));
+
+    const mapped = try device.mapMemory(staging_memory, .size(0), .size(size));
+    defer device.unmapMemory(staging_memory);
+
+    convert_texture_data_linear_abgr(mapped, data, tex.width, tex.height);
+    try flush_memory(staging_memory, mapped.len);
+
+    try device.getQueue(.transfer).copyBufferToImage(.{
+        .src_buffer = staging_buffer,
+        .src_offset = .size(0),
+        .dst_image = tex.image,
+        .dst_subresource = .full,
+    });
+    device.waitIdle();
+}
+
+fn convert_texture_data_tiled_abgr(dst: []u8, src: []align(16) const u8, width: u32, height: u32) void {
     for (0..height) |y| {
         const yu: u32 = @intCast(y);
-        var x_bits: u32 = 0;
+        const dst_y = height - 1 - yu;
         for (0..width) |x| {
             const xu: u32 = @intCast(x);
             const src_off = (@as(usize, yu) * width + xu) * TEX_BPP;
-            const dst_pixel = x_bits | (factors.mask_y - y_bits);
-            words[@intCast(dst_pixel)] =
-                (@as(u32, src[src_off + 0]) << 24) |
-                (@as(u32, src[src_off + 1]) << 16) |
-                (@as(u32, src[src_off + 2]) << 8) |
-                @as(u32, src[src_off + 3]);
-            x_bits = (x_bits -% factors.mask_x) & factors.mask_x;
+            const dst_off = tiled_pixel_offset(width, xu, dst_y);
+            write_abgr8888(dst[dst_off..][0..TEX_BPP], src[src_off..][0..TEX_BPP]);
         }
-        y_bits = (y_bits -% factors.mask_y) & factors.mask_y;
     }
 }
 
-const TwiddleFactors = struct {
-    mask_x: u32,
-    mask_y: u32,
-};
-
-fn twiddle_factors(width: u32, height: u32) TwiddleFactors {
-    var mask_x: u32 = 0b010101;
-    var mask_y: u32 = 0b101010;
-    var w = width >> 4;
-    var h = height >> 4;
-    var shift: u5 = 6;
-
-    while (w > 0) : (w >>= 1) {
-        mask_x += @as(u32, 1) << shift;
-        shift += 1;
+fn convert_texture_data_linear_abgr(dst: []u8, src: []align(16) const u8, width: u32, height: u32) void {
+    for (0..height) |y| {
+        const yu: u32 = @intCast(y);
+        const src_y = height - 1 - yu;
+        for (0..width) |x| {
+            const xu: u32 = @intCast(x);
+            const src_off = (@as(usize, src_y) * width + xu) * TEX_BPP;
+            const dst_off = (@as(usize, yu) * width + xu) * TEX_BPP;
+            write_abgr8888(dst[dst_off..][0..TEX_BPP], src[src_off..][0..TEX_BPP]);
+        }
     }
-    while (h > 0) : (h >>= 1) {
-        mask_y += @as(u32, 1) << shift;
-        shift += 1;
-    }
+}
 
-    return .{ .mask_x = mask_x, .mask_y = mask_y };
+fn write_abgr8888(dst: []u8, src_rgba: []const u8) void {
+    dst[0] = src_rgba[3];
+    dst[1] = src_rgba[2];
+    dst[2] = src_rgba[1];
+    dst[3] = src_rgba[0];
+}
+
+fn tiled_pixel_offset(width: u32, x: u32, y: u32) usize {
+    const tile_size = 8;
+    const tile_pixels = tile_size * tile_size;
+    const tile_x = x / tile_size;
+    const tile_y = y / tile_size;
+    const tiles_per_row = width / tile_size;
+    const subtile_x: u3 = @intCast(x & (tile_size - 1));
+    const subtile_y: u3 = @intCast(y & (tile_size - 1));
+    const subtile = pica.morton.toIndex(u3, 2, .{ subtile_x, subtile_y });
+    const pixel = (tile_y * tiles_per_row + tile_x) * tile_pixels + subtile;
+    return @as(usize, pixel) * TEX_BPP;
+}
+
+fn texture_upload_mode(width: u32, height: u32) TextureUploadMode {
+    // Mango's transfer path uses GX_DisplayTransfer and requires at least
+    // 64x16. Smaller images are still valid sampled images, so keep the CPU
+    // Morton path for defaults and tiny sprites.
+    return if (width >= 64 and height >= 16) .transfer_tiled else .cpu_tiled;
 }
 
 fn texture_size(width: u32, height: u32) u32 {
