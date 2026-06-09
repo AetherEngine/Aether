@@ -28,6 +28,7 @@ pub const c = @cImport({
     switch (options.config.platform) {
         .nintendo_3ds => {
             @cInclude("3ds/types.h");
+            @cInclude("3ds/thread.h");
             @cInclude("3ds/allocator/linear.h");
             @cInclude("3ds/archive.h");
             @cInclude("3ds/romfs.h");

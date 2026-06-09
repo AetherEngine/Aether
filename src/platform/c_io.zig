@@ -26,6 +26,7 @@ const platform_lifecycle = switch (options.config.platform) {
 
 const c = @import("nintendo_c.zig").c;
 const max_path_bytes = 1024;
+const async_stack_size = 512 * 1024;
 
 const AT_FDCWD: c_int = -2;
 const O_RDONLY: c_int = c.O_RDONLY;
@@ -70,7 +71,14 @@ var dir_slots: [max_dynamic_dirs]DirSlot = [_]DirSlot{.{}} ** max_dynamic_dirs;
 const vtable: Io.VTable = blk: {
     var v = Io.failing.vtable.*;
     v.crashHandler = crashHandler;
-    v.async = Io.noAsync;
+    if (options.config.platform == .nintendo_3ds) {
+        v.async = threed_async.async;
+        v.concurrent = threed_async.concurrent;
+        v.await = threed_async.await;
+        v.cancel = threed_async.cancel;
+    } else {
+        v.async = Io.noAsync;
+    }
     v.groupAsync = Io.noGroupAsync;
     v.recancel = recancel;
     v.swapCancelProtection = swapCancelProtection;
@@ -166,6 +174,140 @@ fn swapCancelProtection(_: ?*anyopaque, new: Io.CancelProtection) Io.CancelProte
 }
 
 fn checkCancel(_: ?*anyopaque) Io.Cancelable!void {}
+
+const threed_async = if (options.config.platform == .nintendo_3ds) struct {
+    const AsyncFuture = struct {
+        thread: c.Thread,
+        result_len: usize,
+        result_offset: usize,
+        context_offset: usize,
+        start: *const fn (context: *const anyopaque, result: *anyopaque) void,
+
+        fn result(self: *AsyncFuture) []u8 {
+            const base: [*]u8 = @ptrCast(self);
+            return base[self.result_offset..][0..self.result_len];
+        }
+
+        fn context(self: *AsyncFuture) *const anyopaque {
+            const base: [*]u8 = @ptrCast(self);
+            return @ptrCast(base + self.context_offset);
+        }
+    };
+
+    fn allocFuture(
+        result_len: usize,
+        result_alignment: std.mem.Alignment,
+        context: []const u8,
+        context_alignment: std.mem.Alignment,
+        start: *const fn (context: *const anyopaque, result: *anyopaque) void,
+    ) ?*AsyncFuture {
+        const result_offset = result_alignment.forward(@sizeOf(AsyncFuture));
+        const context_offset = context_alignment.forward(result_offset + result_len);
+        const total = context_offset + context.len;
+
+        const raw = c.malloc(total) orelse return null;
+        const future: *AsyncFuture = @ptrCast(@alignCast(raw));
+        future.* = .{
+            .thread = null,
+            .result_len = result_len,
+            .result_offset = result_offset,
+            .context_offset = context_offset,
+            .start = start,
+        };
+
+        const base: [*]u8 = @ptrCast(future);
+        @memcpy(base[context_offset..][0..context.len], context);
+        return future;
+    }
+
+    fn freeFuture(future: *AsyncFuture) void {
+        c.free(future);
+    }
+
+    fn entry(raw: ?*anyopaque) callconv(.c) void {
+        const future: *AsyncFuture = @ptrCast(@alignCast(raw.?));
+        future.start(future.context(), future.result().ptr);
+    }
+
+    fn spawn(future: *AsyncFuture) bool {
+        future.thread = c.threadCreate(
+            entry,
+            future,
+            async_stack_size,
+            workerPriority(),
+            -2,
+            false,
+        ) orelse return false;
+        return true;
+    }
+
+    fn workerPriority() c_int {
+        var priority: c.s32 = 0x30;
+        if (c.threadGetCurrent()) |current| {
+            const handle = c.threadGetHandle(current);
+            _ = c.svcGetThreadPriority(&priority, handle);
+        }
+        return @min(priority + 1, 0x3f);
+    }
+
+    fn async(
+        _: ?*anyopaque,
+        result: []u8,
+        result_alignment: std.mem.Alignment,
+        context: []const u8,
+        context_alignment: std.mem.Alignment,
+        start: *const fn (context: *const anyopaque, result: *anyopaque) void,
+    ) ?*Io.AnyFuture {
+        const future = allocFuture(result.len, result_alignment, context, context_alignment, start) orelse {
+            start(context.ptr, result.ptr);
+            return null;
+        };
+        if (!spawn(future)) {
+            freeFuture(future);
+            start(context.ptr, result.ptr);
+            return null;
+        }
+        return @ptrCast(future);
+    }
+
+    fn concurrent(
+        _: ?*anyopaque,
+        result_len: usize,
+        result_alignment: std.mem.Alignment,
+        context: []const u8,
+        context_alignment: std.mem.Alignment,
+        start: *const fn (context: *const anyopaque, result: *anyopaque) void,
+    ) Io.ConcurrentError!*Io.AnyFuture {
+        const future = allocFuture(result_len, result_alignment, context, context_alignment, start) orelse
+            return error.ConcurrencyUnavailable;
+        errdefer freeFuture(future);
+        if (!spawn(future)) return error.ConcurrencyUnavailable;
+        return @ptrCast(future);
+    }
+
+    fn await(
+        _: ?*anyopaque,
+        any_future: *Io.AnyFuture,
+        result: []u8,
+        result_alignment: std.mem.Alignment,
+    ) void {
+        _ = result_alignment;
+        const future: *AsyncFuture = @ptrCast(@alignCast(any_future));
+        _ = c.threadJoin(future.thread, std.math.maxInt(u64));
+        c.threadFree(future.thread);
+        @memcpy(result, future.result());
+        freeFuture(future);
+    }
+
+    fn cancel(
+        userdata: ?*anyopaque,
+        any_future: *Io.AnyFuture,
+        result: []u8,
+        result_alignment: std.mem.Alignment,
+    ) void {
+        await(userdata, any_future, result, result_alignment);
+    }
+} else struct {};
 
 fn operate(_: ?*anyopaque, operation: Io.Operation) Io.Cancelable!Io.Operation.Result {
     return switch (operation) {
