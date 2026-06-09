@@ -34,6 +34,9 @@ pub fn update(_: *Self) bool {
 pub fn draw(_: *Self) void {}
 
 pub fn is_system_closing() bool {
+    if (!system_closing and aptShouldClose()) {
+        system_closing = true;
+    }
     return system_closing;
 }
 

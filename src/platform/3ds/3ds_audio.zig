@@ -151,6 +151,7 @@ pub fn max_voices() u32 {
 }
 
 pub fn play_slot(slot: u8, stream: Stream) anyerror!void {
+    if (surface.is_system_closing()) return error.SystemClosing;
     if (slot >= NUM_SLOTS) return error.InvalidArgs;
     if (!format_supported(stream.format)) return error.UnsupportedFormat;
 
@@ -162,12 +163,14 @@ pub fn play_slot(slot: u8, stream: Stream) anyerror!void {
 }
 
 pub fn stop_slot(slot: u8) void {
+    if (surface.is_system_closing()) return;
     if (slot >= NUM_SLOTS) return;
     ndspChnWaveBufClear(slot);
     slots[slot].state = .inactive;
 }
 
 pub fn set_slot_gain_pan(slot: u8, gain: f32, pan: f32) void {
+    if (surface.is_system_closing()) return;
     if (slot >= NUM_SLOTS) return;
     slots[slot].gain = gain;
     slots[slot].pan = pan;

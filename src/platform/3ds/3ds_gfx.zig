@@ -361,6 +361,10 @@ pub fn end_frame() void {
         frame_started = false;
         return;
     };
+    if (surface.is_system_closing()) {
+        frame_started = false;
+        return;
+    }
     present_render_target();
     frame_started = false;
 }
@@ -709,14 +713,18 @@ fn begin_command_buffer() !void {
 fn finish_command_buffer() !void {
     command_buffer.endRendering();
     try command_buffer.end();
+    if (surface.is_system_closing()) return;
     try submit_queue.submit(.{ .command_buffer = command_buffer });
+    if (surface.is_system_closing()) return;
     device.waitIdle();
 }
 
 fn present_render_target() void {
+    if (surface.is_system_closing()) return;
     var fb_width: u16 = 0;
     var fb_height: u16 = 0;
     const framebuffer = c.gfxGetFramebuffer(c.GFX_TOP, c.GFX_LEFT, &fb_width, &fb_height) orelse return;
+    if (surface.is_system_closing()) return;
 
     _ = c.GX_DisplayTransfer(
         @ptrCast(@alignCast(render_target.color_pixels.ptr)),
@@ -725,8 +733,11 @@ fn present_render_target() void {
         gx_buffer_dim(TARGET_WIDTH, TARGET_HEIGHT),
         DISPLAY_TRANSFER_FLAGS,
     );
+    if (surface.is_system_closing()) return;
     c.gspWaitForEvent(c.GSPGPU_EVENT_PPF, false);
+    if (surface.is_system_closing()) return;
     c.gfxSwapBuffers();
+    if (surface.is_system_closing()) return;
     if (vsync_enabled) c.gspWaitForEvent(c.GSPGPU_EVENT_VBlank0, true);
 }
 
