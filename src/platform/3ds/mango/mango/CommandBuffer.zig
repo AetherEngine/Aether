@@ -1029,7 +1029,7 @@ fn pushOperation(cmd: *CommandBuffer, node: *operation.Node) void {
 }
 
 fn ensureUnusedCapacity(cmd: *CommandBuffer, capacity: usize) !void {
-    const remaining = if (cmd.stream.first()) |que| (que.unusedCapacitySlice().len - cmd.stream.start) else 0;
+    const remaining = if (cmd.stream.first()) |que| que.unusedCapacitySlice().len else 0;
 
     if (remaining < capacity) {
         @branchHint(.unlikely);
