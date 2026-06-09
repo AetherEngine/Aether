@@ -10,7 +10,7 @@ configured: u8,
 
 pub fn compile(combiners: []const mango.TextureCombinerUnit, combiner_buffer_sources: []const mango.TextureCombinerUnit.BufferSources) TextureCombinerState {
     std.debug.assert(combiners.len > 0 and combiners.len <= 6);
-    std.debug.assert((combiner_buffer_sources.len == 0 and combiners.len == 1) or (combiner_buffer_sources.len == 4 and combiners.len > 4) or combiner_buffer_sources.len == (combiners.len - 1));
+    std.debug.assert(combiner_buffer_sources.len == expected_buffer_source_count(combiners.len));
 
     var combiner_state: TextureCombinerState = .{
         .config = std.mem.zeroes(PicaCombiners.Config),
@@ -35,6 +35,15 @@ pub fn compile(combiners: []const mango.TextureCombinerUnit, combiner_buffer_sou
 }
 
 const TextureCombinerState = @This();
+
+fn expected_buffer_source_count(combiner_count: usize) usize {
+    return switch (combiner_count) {
+        0 => 0,
+        1 => 0,
+        5, 6 => 4,
+        else => combiner_count - 1,
+    };
+}
 
 const std = @import("std");
 const zitrus = @import("zitrus");
