@@ -511,11 +511,13 @@ fn dirRead(_: ?*anyopaque, reader: *Dir.Reader, out: []Dir.Entry) Dir.Reader.Err
     const reent = if (use_direct_dirnext) c.__syscall_getreent() else {};
     var direct_name: [Dir.max_name_bytes + 1]u8 = @splat(0);
     var direct_stat: c.struct_stat = undefined;
-    var skipped: c_long = 0;
-    while (skipped < header.pos) : (skipped += 1) {
-        if (dirnext(reent, stream.*.dirData, &direct_name, &direct_stat) != 0) {
-            reader.state = .finished;
-            return 0;
+    if (use_direct_dirnext) {
+        var skipped: c_long = 0;
+        while (skipped < header.pos) : (skipped += 1) {
+            if (dirnext(reent, stream.*.dirData, &direct_name, &direct_stat) != 0) {
+                reader.state = .finished;
+                return 0;
+            }
         }
     }
 
