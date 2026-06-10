@@ -368,6 +368,7 @@ fn processSubmit(item: Queue.SubmitItem) !void {
                 if (gfx.len > 0) {
                     if (c.GSPGPU_FlushDataCache(gfx.head, gfx.len * @sizeOf(u32)) != 0) return error.Unexpected;
                     if (c.GX_ProcessCommandList(@ptrCast(@constCast(gfx.head)), gfx.len * @sizeOf(u32), c.GX_CMDLIST_FLUSH) != 0) return error.Unexpected;
+                    c.gspWaitForEvent(c.GSPGPU_EVENT_P3D, false);
                 }
             },
             .timestamp, .begin_query, .end_query => {},
@@ -382,6 +383,7 @@ fn processFill(item: Queue.FillItem) !void {
     const start: *u32 = @ptrCast(@alignCast(item.data.ptr));
     const end: *u32 = @ptrCast(@alignCast(item.data.ptr + item.data.len));
     if (c.GX_MemoryFill(start, value, end, control, null, 0, null, 0) != 0) return error.Unexpected;
+    // c.gspWaitForEvent(c.GSPGPU_EVENT_PSC0, false);
 }
 
 fn fillValueControl(value: Queue.FillValue) struct { u32, u16 } {

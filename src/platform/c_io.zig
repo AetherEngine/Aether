@@ -503,20 +503,46 @@ fn dirRead(_: ?*anyopaque, reader: *Dir.Reader, out: []Dir.Entry) Dir.Reader.Err
         _ = c.closedir(stream);
     };
 
-    c.seekdir(stream, header.pos);
+    const use_direct_dirnext = options.config.platform == .nintendo_3ds;
+    if (!use_direct_dirnext) c.seekdir(stream, header.pos);
+
+    const dir_dev = if (use_direct_dirnext) c.devoptab_list[@intCast(stream.*.dirData.*.device)] else null;
+    const dirnext = if (use_direct_dirnext) dir_dev.*.dirnext_r.? else {};
+    const reent = if (use_direct_dirnext) c.__syscall_getreent() else {};
+    var direct_name: [Dir.max_name_bytes + 1]u8 = @splat(0);
+    var direct_stat: c.struct_stat = undefined;
+    var skipped: c_long = 0;
+    while (skipped < header.pos) : (skipped += 1) {
+        if (dirnext(reent, stream.*.dirData, &direct_name, &direct_stat) != 0) {
+            reader.state = .finished;
+            return 0;
+        }
+    }
 
     var count: usize = 0;
     var name_end = reader.buffer.len;
     while (count < out.len) {
-        c.__errno().* = 0;
-        const entry = c.readdir(stream) orelse {
-            if (errno() != 0) return dirReadError(errno());
-            reader.state = .finished;
-            return count;
+        const name, const kind, const inode = if (use_direct_dirnext) direct: {
+            @memset(&direct_name, 0);
+            direct_stat = undefined;
+            if (dirnext(reent, stream.*.dirData, &direct_name, &direct_stat) != 0) {
+                reader.state = .finished;
+                return count;
+            }
+            header.pos += 1;
+            const name = std.mem.span(@as([*:0]const u8, @ptrCast(&direct_name)));
+            break :direct .{ name, statKind(direct_stat.st_mode), @as(File.INode, @intCast(direct_stat.st_ino)) };
+        } else libc: {
+            c.__errno().* = 0;
+            const entry = c.readdir(stream) orelse {
+                if (errno() != 0) return dirReadError(errno());
+                reader.state = .finished;
+                return count;
+            };
+            header.pos = c.telldir(stream);
+            const name = std.mem.span(@as([*:0]const u8, @ptrCast(&entry.*.d_name)));
+            break :libc .{ name, direntKind(entry.*.d_type), @as(File.INode, @intCast(entry.*.d_ino)) };
         };
-        header.pos = c.telldir(stream);
-
-        const name = std.mem.span(@as([*:0]const u8, @ptrCast(&entry.*.d_name)));
         if (std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) continue;
         if (name.len + 1 > name_end - header_end) {
             if (count == 0) return error.Unexpected;
@@ -528,8 +554,8 @@ fn dirRead(_: ?*anyopaque, reader: *Dir.Reader, out: []Dir.Entry) Dir.Reader.Err
         reader.buffer[name_end + name.len] = 0;
         out[count] = .{
             .name = reader.buffer[name_end .. name_end + name.len],
-            .kind = direntKind(entry.*.d_type),
-            .inode = @intCast(entry.*.d_ino),
+            .kind = kind,
+            .inode = inode,
         };
         count += 1;
     }
@@ -954,6 +980,17 @@ fn direntKind(kind: u8) File.Kind {
         DT_WHT => .whiteout,
         else => .unknown,
     };
+}
+
+fn statKind(mode: c.mode_t) File.Kind {
+    if (c.S_ISBLK(mode)) return .block_device;
+    if (c.S_ISCHR(mode)) return .character_device;
+    if (c.S_ISDIR(mode)) return .directory;
+    if (c.S_ISFIFO(mode)) return .named_pipe;
+    if (c.S_ISLNK(mode)) return .sym_link;
+    if (c.S_ISREG(mode)) return .file;
+    if (c.S_ISSOCK(mode)) return .unix_domain_socket;
+    return .unknown;
 }
 
 fn seekToOffset(fd: c_int, offset: u64) File.SeekError!void {

@@ -11,6 +11,7 @@ const shaders = @import("aether_shaders");
 const zitrus = @import("zitrus");
 const mango = zitrus.mango;
 const pica = zitrus.hardware.pica;
+const log = std.log.scoped(.gfx);
 
 const c = @cImport({
     @cDefine("wint_t", "unsigned int");
@@ -36,7 +37,6 @@ const SCREEN_WIDTH: u32 = 800;
 const SCREEN_HEIGHT: u32 = 240;
 const TARGET_WIDTH: u16 = 240;
 const TARGET_HEIGHT: u16 = 800;
-const MESH_SLOT_COUNT: usize = 2;
 const MAX_DEFERRED_MESH_FREES: usize = 4096;
 const MAX_TEXTURE_SIZE: u32 = 1024;
 const MIN_TEXTURE_SIZE: u32 = 8;
@@ -64,6 +64,8 @@ const VERTEX_STRIDE: usize = @sizeOf(Rendering.Vertex);
 const POS_SCALE: [4]f32 = .{ snorm16_scale(), snorm16_scale(), snorm16_scale(), 1.0 };
 const UV_SCALE: [2]f32 = .{ snorm16_scale(), snorm16_scale() };
 const COLOR_SCALE: [4]f32 = .{ unorm8_scale(), unorm8_scale(), unorm8_scale(), unorm8_scale() };
+const ALPHA_TEST_REFERENCE: u8 = 25;
+const FOG_LUT_NEAR: f32 = 0.01;
 
 comptime {
     std.debug.assert(VERTEX_STRIDE == 16);
@@ -89,19 +91,11 @@ const RenderTargetData = struct {
 };
 
 const MeshData = struct {
-    slots: [MESH_SLOT_COUNT]MeshSlot = .{ .{}, .{} },
-    latest_slot: ?usize = null,
-    len: usize,
-};
-
-const MeshSlot = struct {
     memory: mango.DeviceMemory = .null,
     buffer: mango.Buffer = .null,
     mapped: []u8 = &.{},
     len: usize = 0,
     capacity: usize = 0,
-    in_flight: bool = false,
-    used_this_frame: bool = false,
 };
 
 const DeferredMeshFree = struct {
@@ -198,6 +192,10 @@ var command_resources_initialized = false;
 var projection_transform: Mat4 = Mat4.identity();
 var initialized = false;
 var frame_started = false;
+var trace_frames_remaining: u8 = 0;
+var trace_frame_active = false;
+var trace_frame_index: u8 = 0;
+var trace_submit_index: u8 = 0;
 var vsync_enabled = true;
 var clear_color: [4]u8 = .{ 0, 0, 0, 255 };
 var alpha_blend_enabled = true;
@@ -209,6 +207,7 @@ var proj_matrix: Mat4 = Mat4.identity();
 var view_matrix: Mat4 = Mat4.identity();
 var default_texture: Texture.Handle = 0;
 var bound_texture: Texture.Handle = 0;
+var bound_mesh: Mesh.Handle = 0;
 
 pub fn init() anyerror!void {
     _ = render_io;
@@ -252,8 +251,7 @@ pub fn deinit() void {
 
     frame_started = false;
     if (initialized and device != .null) device.waitIdle();
-    release_completed_mesh_slots();
-    free_deferred_mesh_slots();
+    free_deferred_mesh_resources();
 
     for (1..textures.buffer.len) |i| {
         if (textures.buffer[i]) |*tex| free_texture(tex);
@@ -266,7 +264,7 @@ pub fn deinit() void {
     }
 
     for (1..meshes.buffer.len) |i| {
-        if (meshes.buffer[i]) |*mesh| free_mesh_slots(mesh);
+        if (meshes.buffer[i]) |*mesh| free_mesh(mesh);
     }
     meshes.clear();
 
@@ -285,48 +283,66 @@ pub fn deinit() void {
 }
 
 pub fn set_clear_color(r: f32, g: f32, b: f32, a: f32) void {
-    clear_color = .{
+    const next = [4]u8{
         float_to_u8(r),
         float_to_u8(g),
         float_to_u8(b),
         float_to_u8(a),
     };
+    if (std.mem.eql(u8, &clear_color, &next)) return;
+    clear_color = next;
 }
 
 pub fn set_alpha_blend(enabled: bool) void {
+    if (alpha_blend_enabled == enabled) return;
     alpha_blend_enabled = enabled;
     if (frame_started) apply_dynamic_state();
 }
 
 pub fn set_depth_write(enabled: bool) void {
+    if (depth_write_enabled == enabled) return;
     depth_write_enabled = enabled;
     if (frame_started) apply_dynamic_state();
 }
 
 pub fn set_fog(enabled: bool, start: f32, end: f32, r: f32, g: f32, b: f32) void {
+    const color = [4]u8{ float_to_u8(r), float_to_u8(g), float_to_u8(b), 255 };
+    if (fog_state.enabled == enabled and float_bits_equal(fog_state.start, start) and float_bits_equal(fog_state.end, end) and std.mem.eql(u8, &fog_state.color, &color)) return;
+
     fog_state.enabled = enabled;
     fog_state.start = start;
     fog_state.end = end;
-    fog_state.color = .{ float_to_u8(r), float_to_u8(g), float_to_u8(b), 255 };
+    fog_state.color = color;
     rebuild_fog_table();
+    if (frame_started) apply_fog_state();
 }
 
 pub fn set_clip_planes(_: bool) void {}
 
 pub fn set_culling(enabled: bool) void {
+    if (cull_face_enabled == enabled) return;
     cull_face_enabled = enabled;
     if (frame_started) apply_dynamic_state();
 }
 
 pub fn set_uv_offset(u: f32, v: f32) void {
+    if (float_bits_equal(uv_offset[0], u) and float_bits_equal(uv_offset[1], v)) return;
     uv_offset = .{ u, v };
+    if (frame_started) upload_frame_uniforms();
+}
+
+pub fn trace_next_frames(count: u8) void {
+    trace_frames_remaining = count;
 }
 
 pub fn set_proj_matrix(mat: *const Mat4) void {
+    if (mat4_bits_equal(&proj_matrix, mat)) return;
     proj_matrix = mat.*;
+    if (frame_started) upload_frame_uniforms();
 }
 
 pub fn set_view_matrix(mat: *const Mat4) void {
+    if (mat4_bits_equal(&view_matrix, mat)) return;
     view_matrix = mat.*;
 }
 
@@ -334,39 +350,62 @@ pub fn start_frame() bool {
     if (surface.is_system_closing()) return false;
     if (!initialized or frame_started) return false;
 
-    release_completed_mesh_slots();
-    free_deferred_mesh_slots();
+    trace_frame_active = trace_frames_remaining > 0;
+    if (trace_frame_active) {
+        trace_frame_index += 1;
+        trace_submit_index = 0;
+        log.info("trace: 3ds frame {d} start_frame begin", .{trace_frame_index});
+    }
+
+    free_deferred_mesh_resources();
 
     frame_started = true;
     clear_frame_targets() catch {
+        if (trace_frame_active) log.info("trace: 3ds frame {d} clear targets failed", .{trace_frame_index});
         frame_started = false;
+        trace_frame_active = false;
         return false;
     };
+    if (trace_frame_active) log.info("trace: 3ds frame {d} clear targets done", .{trace_frame_index});
     begin_command_buffer() catch {
+        if (trace_frame_active) log.info("trace: 3ds frame {d} begin command buffer failed", .{trace_frame_index});
         frame_started = false;
+        trace_frame_active = false;
         return false;
     };
+    if (trace_frame_active) log.info("trace: 3ds frame {d} start_frame end", .{trace_frame_index});
     return true;
 }
 
 pub fn end_frame() void {
     if (!frame_started) return;
+    if (trace_frame_active) log.info("trace: 3ds frame {d} end_frame begin", .{trace_frame_index});
     if (surface.is_system_closing()) {
         frame_started = false;
+        trace_frame_active = false;
         return;
     }
 
-    mark_current_frame_mesh_slots_in_flight();
     finish_command_buffer() catch {
+        if (trace_frame_active) log.info("trace: 3ds frame {d} finish command buffer failed", .{trace_frame_index});
         frame_started = false;
+        trace_frame_active = false;
         return;
     };
+    if (trace_frame_active) log.info("trace: 3ds frame {d} command buffer finished", .{trace_frame_index});
     if (surface.is_system_closing()) {
         frame_started = false;
+        trace_frame_active = false;
         return;
     }
+    if (trace_frame_active) log.info("trace: 3ds frame {d} present begin", .{trace_frame_index});
     present_render_target();
+    if (trace_frame_active) {
+        log.info("trace: 3ds frame {d} present end", .{trace_frame_index});
+        trace_frames_remaining -= 1;
+    }
     frame_started = false;
+    trace_frame_active = false;
 }
 
 pub fn clear_depth() void {
@@ -391,9 +430,7 @@ pub fn set_vsync(v: bool) void {
 }
 
 pub fn create_mesh() anyerror!Mesh.Handle {
-    const handle = meshes.add_element(.{
-        .len = 0,
-    }) orelse return error.OutOfMeshes;
+    const handle = meshes.add_element(.{}) orelse return error.OutOfMeshes;
 
     return @intCast(handle);
 }
@@ -404,9 +441,8 @@ pub fn destroy_mesh(handle: Mesh.Handle) void {
         return;
     }
 
-    if (mesh_slot(handle)) |mesh| {
-        free_mesh_slots(mesh);
-    }
+    if (mesh_slot(handle)) |mesh| free_mesh(mesh);
+    if (bound_mesh == handle) bound_mesh = 0;
     _ = meshes.remove_element(handle);
 }
 
@@ -419,23 +455,25 @@ pub fn update_mesh(handle: Mesh.Handle, data: []const u8) void {
     }
 
     if (data.len == 0) {
-        mesh.latest_slot = null;
         mesh.len = 0;
         return;
     }
 
-    const slot_idx = select_upload_slot(mesh) orelse
-        std.debug.panic("3ds_gfx: update_mesh called while both 3DS mesh upload slots are in use", .{});
-    const slot = &mesh.slots[slot_idx];
-    ensure_mesh_slot_capacity(slot, data.len) catch
+    if (is_linear_fcram(data.ptr, data.len)) {
+        bind_mesh_to_linear_slice(mesh, data) catch
+            std.debug.panic("3ds_gfx: out of memory for mesh buffer handle", .{});
+        flush_linear_memory(data.ptr, data.len) catch {};
+        if (frame_started and bound_mesh == handle) bound_mesh = 0;
+        return;
+    }
+
+    ensure_mesh_capacity(mesh, data.len) catch
         std.debug.panic("3ds_gfx: out of linear memory for mesh upload", .{});
 
-    @memcpy(slot.mapped[0..data.len], data);
-    slot.len = data.len;
-    flush_memory(slot.memory, data.len) catch {};
-
-    mesh.latest_slot = slot_idx;
+    @memcpy(mesh.mapped[0..data.len], data);
     mesh.len = data.len;
+    flush_memory(mesh.memory, data.len) catch {};
+    if (frame_started and bound_mesh == handle) bound_mesh = 0;
 }
 
 pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize) void {
@@ -443,19 +481,18 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize) void {
     if (!frame_started or !render_pipeline_initialized) return;
 
     const mesh = mesh_slot(handle) orelse return;
-    const slot_idx = mesh.latest_slot orelse return;
-    const slot = &mesh.slots[slot_idx];
-    if (count == 0 or slot.len == 0 or slot.buffer == .null) return;
+    if (count == 0 or mesh.len == 0 or mesh.buffer == .null) return;
 
     const needed = mesh_draw_bytes_needed(count) orelse return;
-    if (needed > slot.len) return;
+    if (needed > mesh.len) return;
 
     upload_draw_uniforms(model);
-    bind_current_texture();
-    command_buffer.setAetherFog(fog_state.enabled, fog_state.color, if (fog_state.enabled) &fog_state.table else &.{});
-    command_buffer.bindVertexBuffersSlice(0, &.{slot.buffer}, &.{0});
 
-    slot.used_this_frame = true;
+    if (bound_mesh != handle) {
+        command_buffer.bindVertexBuffersSlice(0, &.{mesh.buffer}, &.{0});
+        bound_mesh = handle;
+    }
+
     command_buffer.draw(@intCast(@min(count, std.math.maxInt(u32))), 0);
 }
 
@@ -485,6 +522,7 @@ pub fn update_texture(handle: Texture.Handle, data: []align(16) u8) void {
 
 pub fn bind_texture(handle: Texture.Handle) void {
     if (surface.is_system_closing()) return;
+    if (bound_texture == handle) return;
     bound_texture = handle;
     if (frame_started) bind_current_texture();
 }
@@ -676,16 +714,20 @@ fn clear_depth_target() !void {
         .stencil = 0,
         .subresource_range = .full,
     });
+    // device.waitIdle();
 }
 
 fn begin_command_buffer() !void {
+    bound_mesh = 0;
+
     try command_buffer.begin();
     command_buffer.bindShaders(&.{.vertex}, &.{render_pipeline.shader});
     command_buffer.setVertexInput(render_pipeline.vertex_input);
     command_buffer.setLightingEnable(false);
     command_buffer.setLightEnvironmentEnable(.{});
     command_buffer.setLogicOpEnable(false);
-    command_buffer.setAlphaTestEnable(false);
+    command_buffer.setAlphaTestCompareOp(.gt);
+    command_buffer.setAlphaTestReference(ALPHA_TEST_REFERENCE);
     command_buffer.setStencilTestEnable(false);
     command_buffer.setDepthTestEnable(true);
     command_buffer.setDepthMode(.z_buffer);
@@ -704,6 +746,8 @@ fn begin_command_buffer() !void {
     }));
     apply_dynamic_state();
     bind_current_texture();
+    apply_fog_state();
+    upload_frame_uniforms();
     command_buffer.beginRendering(.{
         .color_attachment = render_target.color_view,
         .depth_stencil_attachment = render_target.depth_view,
@@ -711,12 +755,17 @@ fn begin_command_buffer() !void {
 }
 
 fn finish_command_buffer() !void {
+    if (trace_frame_active) {
+        trace_submit_index += 1;
+        log.info("trace: 3ds frame {d} submit {d} begin", .{ trace_frame_index, trace_submit_index });
+    }
     command_buffer.endRendering();
+    if (trace_frame_active) log.info("trace: 3ds frame {d} submit {d} end rendering done", .{ trace_frame_index, trace_submit_index });
     try command_buffer.end();
+    if (trace_frame_active) log.info("trace: 3ds frame {d} submit {d} command buffer end done", .{ trace_frame_index, trace_submit_index });
     if (surface.is_system_closing()) return;
     try submit_queue.submit(.{ .command_buffer = command_buffer });
-    if (surface.is_system_closing()) return;
-    device.waitIdle();
+    if (trace_frame_active) log.info("trace: 3ds frame {d} submit {d} queued", .{ trace_frame_index, trace_submit_index });
 }
 
 fn present_render_target() void {
@@ -734,16 +783,25 @@ fn present_render_target() void {
         DISPLAY_TRANSFER_FLAGS,
     );
     if (surface.is_system_closing()) return;
+    if (trace_frame_active) log.info("trace: 3ds frame {d} present wait ppf begin", .{trace_frame_index});
     c.gspWaitForEvent(c.GSPGPU_EVENT_PPF, false);
+    if (trace_frame_active) log.info("trace: 3ds frame {d} present wait ppf end", .{trace_frame_index});
     if (surface.is_system_closing()) return;
     c.gfxSwapBuffers();
+    if (trace_frame_active) log.info("trace: 3ds frame {d} swap buffers done", .{trace_frame_index});
     if (surface.is_system_closing()) return;
-    if (vsync_enabled) c.gspWaitForEvent(c.GSPGPU_EVENT_VBlank0, true);
+    if (trace_frame_active and vsync_enabled) log.info("trace: 3ds frame {d} wait vblank begin", .{trace_frame_index});
+    // PPF can cross VBlank. Waiting for the "next" VBlank here would discard
+    // that event and force an extra display interval, effectively capping at
+    // 30 FPS when the frame finishes near the refresh boundary.
+    if (vsync_enabled) c.gspWaitForEvent(c.GSPGPU_EVENT_VBlank0, false);
+    if (trace_frame_active and vsync_enabled) log.info("trace: 3ds frame {d} wait vblank end", .{trace_frame_index});
 }
 
 fn apply_dynamic_state() void {
     command_buffer.setDepthWriteEnable(depth_write_enabled);
     command_buffer.setCullMode(if (cull_face_enabled) .back else .none);
+    command_buffer.setAlphaTestEnable(alpha_blend_enabled);
     command_buffer.setBlendEquation(if (alpha_blend_enabled) .{
         .src_color_factor = .src_alpha,
         .dst_color_factor = .one_minus_src_alpha,
@@ -789,16 +847,25 @@ fn bind_texenv(textured: bool) void {
     command_buffer.setTextureCombiners(stages, &texenv_buffer_sources);
 }
 
+fn apply_fog_state() void {
+    command_buffer.setAetherFog(fog_state.enabled, fog_state.color, if (fog_state.enabled) &fog_state.table else &.{});
+}
+
+fn upload_frame_uniforms() void {
+    const projection_rows = mat4_to_uniform_rows(Mat4.mul(proj_matrix, projection_transform));
+    const constants = [3][4]f32{
+        POS_SCALE,
+        .{ UV_SCALE[0], UV_SCALE[1], uv_offset[0], uv_offset[1] },
+        COLOR_SCALE,
+    };
+
+    command_buffer.bindFloatUniforms(.vertex, 0, &projection_rows);
+    command_buffer.bindFloatUniforms(.vertex, 8, &constants);
+}
+
 fn upload_draw_uniforms(model: *const Mat4) void {
-    var projection_rows = mat4_to_uniform_rows(Mat4.mul(proj_matrix, projection_transform));
-    var model_view_rows = mat4_to_uniform_rows(Mat4.mul(model.*, view_matrix));
-    var uniforms: [11][4]f32 = undefined;
-    @memcpy(uniforms[0..4], projection_rows[0..4]);
-    @memcpy(uniforms[4..8], model_view_rows[0..4]);
-    uniforms[8] = POS_SCALE;
-    uniforms[9] = .{ UV_SCALE[0], UV_SCALE[1], uv_offset[0], uv_offset[1] };
-    uniforms[10] = COLOR_SCALE;
-    command_buffer.bindFloatUniforms(.vertex, 0, &uniforms);
+    const model_view_rows = mat4_to_uniform_rows(Mat4.mul(model.*, view_matrix));
+    command_buffer.bindFloatUniforms(.vertex, 4, &model_view_rows);
 }
 
 fn mat4_to_uniform_rows(mat: Mat4) [4][4]f32 {
@@ -807,6 +874,14 @@ fn mat4_to_uniform_rows(mat: Mat4) [4][4]f32 {
         out[row] = .{ mat.data[0][row], mat.data[1][row], mat.data[2][row], mat.data[3][row] };
     }
     return out;
+}
+
+fn mat4_bits_equal(a: *const Mat4, b: *const Mat4) bool {
+    return std.mem.eql(u8, std.mem.asBytes(a), std.mem.asBytes(b));
+}
+
+fn float_bits_equal(a: f32, b: f32) bool {
+    return @as(u32, @bitCast(a)) == @as(u32, @bitCast(b));
 }
 
 fn init_projection_transform() void {
@@ -837,24 +912,10 @@ fn ortho_tilt(left: f32, right: f32, bottom: f32, top: f32, near: f32, far: f32)
     } };
 }
 
-fn select_upload_slot(mesh: *const MeshData) ?usize {
-    if (mesh.latest_slot) |idx| {
-        const slot = mesh.slots[idx];
-        if (!slot.in_flight and !slot.used_this_frame) return idx;
-    }
+fn ensure_mesh_capacity(mesh: *MeshData, len: usize) !void {
+    if (mesh.memory != .null and mesh.capacity >= len and mesh.buffer != .null) return;
 
-    for (0..MESH_SLOT_COUNT) |idx| {
-        const slot = mesh.slots[idx];
-        if (!slot.in_flight and !slot.used_this_frame) return idx;
-    }
-
-    return null;
-}
-
-fn ensure_mesh_slot_capacity(slot: *MeshSlot, len: usize) !void {
-    if (slot.capacity >= len and slot.buffer != .null) return;
-
-    free_mesh_slot(slot);
+    free_mesh(mesh);
 
     const cap = std.mem.alignForward(usize, @max(len, 256), CACHE_LINE_SIZE);
     const memory = try device.allocateMemory(.{
@@ -872,10 +933,10 @@ fn ensure_mesh_slot_capacity(slot: *MeshSlot, len: usize) !void {
     try device.bindBufferMemory(buffer, memory, .size(0));
     const mapped = try device.mapMemory(memory, .size(0), .whole);
     if (!is_linear_fcram(mapped.ptr, mapped.len)) {
-        std.debug.panic("3ds_gfx: mesh upload slots must be allocated in linear FCRAM", .{});
+        std.debug.panic("3ds_gfx: mesh upload buffer must be allocated in linear FCRAM", .{});
     }
 
-    slot.* = .{
+    mesh.* = .{
         .memory = memory,
         .buffer = buffer,
         .mapped = mapped,
@@ -884,21 +945,38 @@ fn ensure_mesh_slot_capacity(slot: *MeshSlot, len: usize) !void {
     };
 }
 
-fn free_mesh_slots(mesh: *MeshData) void {
-    for (&mesh.slots) |*slot| free_mesh_slot(slot);
-    mesh.latest_slot = null;
-    mesh.len = 0;
+fn bind_mesh_to_linear_slice(mesh: *MeshData, data: []const u8) !void {
+    if (mesh.memory != .null) free_mesh(mesh);
+
+    const buffer = if (mesh.buffer != .null)
+        mesh.buffer
+    else
+        try create_external_vertex_buffer();
+
+    mango.updateAetherLinearVertexBuffer(buffer, data.ptr, data.len, @intCast(c.osConvertVirtToPhys(data.ptr)));
+
+    mesh.* = .{
+        .memory = .null,
+        .buffer = buffer,
+        .mapped = &.{},
+        .len = data.len,
+        .capacity = data.len,
+    };
 }
 
-fn free_mesh_slot(slot: *MeshSlot) void {
-    if (slot.buffer != .null or slot.memory != .null) {
-        if (slot.in_flight or slot.used_this_frame) {
-            defer_mesh_free(.{ .memory = slot.memory, .buffer = slot.buffer });
+fn create_external_vertex_buffer() !mango.Buffer {
+    return mango.createAetherLinearVertexBuffer(render_alloc);
+}
+
+fn free_mesh(mesh: *MeshData) void {
+    if (mesh.buffer != .null or mesh.memory != .null) {
+        if (frame_started) {
+            defer_mesh_free(.{ .memory = mesh.memory, .buffer = mesh.buffer });
         } else {
-            destroy_mesh_resources(slot.memory, slot.buffer);
+            destroy_mesh_resources(mesh.memory, mesh.buffer);
         }
     }
-    slot.* = .{};
+    mesh.* = .{};
 }
 
 fn destroy_mesh_resources(memory: mango.DeviceMemory, buffer: mango.Buffer) void {
@@ -914,24 +992,13 @@ fn defer_mesh_free(free: DeferredMeshFree) void {
     std.debug.panic("3ds_gfx: deferred mesh free queue exhausted", .{});
 }
 
-fn free_deferred_mesh_slots() void {
+fn free_deferred_mesh_resources() void {
     for (1..deferred_mesh_frees.buffer.len) |i| {
         if (deferred_mesh_frees.buffer[i]) |free| {
             destroy_mesh_resources(free.memory, free.buffer);
         }
     }
     deferred_mesh_frees.clear();
-}
-
-fn release_completed_mesh_slots() void {
-    for (1..meshes.buffer.len) |i| {
-        if (meshes.buffer[i]) |*mesh| {
-            for (&mesh.slots) |*slot| {
-                slot.in_flight = false;
-                slot.used_this_frame = false;
-            }
-        }
-    }
 }
 
 fn abandon_service_resources() void {
@@ -948,19 +1015,6 @@ fn abandon_service_resources() void {
     meshes.clear();
     textures.clear();
     deferred_mesh_frees.clear();
-}
-
-fn mark_current_frame_mesh_slots_in_flight() void {
-    for (1..meshes.buffer.len) |i| {
-        if (meshes.buffer[i]) |*mesh| {
-            for (&mesh.slots) |*slot| {
-                if (slot.used_this_frame) {
-                    slot.in_flight = true;
-                    slot.used_this_frame = false;
-                }
-            }
-        }
-    }
 }
 
 fn mesh_draw_bytes_needed(count: usize) ?usize {
@@ -1152,12 +1206,15 @@ fn texture_size(width: u32, height: u32) u32 {
 
 fn rebuild_fog_table() void {
     const safe_end = if (fog_state.end <= fog_state.start) fog_state.start + 0.001 else fog_state.end;
+    const lut_near = @min(FOG_LUT_NEAR, safe_end * 0.5);
+    const lut_far = @max(safe_end, lut_near + 0.001);
+
     var values: [129]f32 = undefined;
     for (&values, 0..) |*value, i| {
         const t = @as(f32, @floatFromInt(i)) / 128.0;
-        const distance = fog_state.start + (safe_end - fog_state.start) * t;
-        const fog = std.math.clamp((distance - fog_state.start) / (safe_end - fog_state.start), 0.0, 1.0);
-        value.* = fog;
+        const distance = fog_lut_calc_z(1.0 - t, lut_near, lut_far);
+        const factor = std.math.clamp((safe_end - distance) / (safe_end - fog_state.start), 0.0, 1.0);
+        value.* = factor;
     }
 
     for (&fog_state.table, 0..) |*raw, i| {
@@ -1171,12 +1228,21 @@ fn rebuild_fog_table() void {
     }
 }
 
+fn fog_lut_calc_z(depth: f32, near: f32, far: f32) f32 {
+    return far * near / (depth * (far - near) + near);
+}
+
 fn flush_memory(memory: mango.DeviceMemory, len: usize) !void {
     try device.flushMappedMemoryRanges(&.{.{
         .memory = memory,
         .offset = .size(0),
         .size = .size(@intCast(len)),
     }});
+}
+
+fn flush_linear_memory(ptr: [*]const u8, len: usize) !void {
+    if (len == 0) return;
+    if (c.GSPGPU_FlushDataCache(ptr, @intCast(len)) != 0) return error.Unexpected;
 }
 
 fn mesh_slot(handle: Mesh.Handle) ?*MeshData {
