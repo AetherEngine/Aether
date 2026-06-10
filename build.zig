@@ -1533,12 +1533,21 @@ fn switchNroPipeline(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOp
     const libnx_specs = b.pathJoin(&.{ dkp, "libnx/switch.specs" });
     const default_icon = b.pathJoin(&.{ dkp, "libnx/default_icon.jpg" });
 
+    const syms_wf = b.addWriteFiles();
+    const text_syms_ld = syms_wf.add("aether_switch_text_syms.ld",
+        \\/* Zig C backend (for Switch ofmt=c) mangles extern names with zig_e_ prefix. */
+        \\zig_e___text_start = ADDR(.text);
+        \\zig_e___text_end = ADDR(.text) + SIZEOF(.text);
+        \\__text_start = zig_e___text_start;
+        \\__text_end = zig_e___text_end;
+    );
+
     // Standard Switch arch flags from devkitPro's switch_rules /
     // example Makefiles. `-mtp=soft` matches what libnx is built
     // against; mismatching the TLS access mode crashes on the first
     // thread-local read.
     const arch = [_][]const u8{
-        "-march=armv8-a+crc+crypto", "-mtune=cortex-a57", "-mtp=soft", "-fPIE",
+        "-march=armv8-a+crc+crypto", "-mtune=cortex-a57", "-mtp=soft", "-fPIE", "-fno-omit-frame-pointer",
     };
 
     const exe_optimize = cBackendOptimizeMode(exe);
@@ -1553,8 +1562,12 @@ fn switchNroPipeline(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOp
         cBackendGccOptimizeArg(exe_optimize),
         cBackendGccDebugArg(exe_optimize),
         b.fmt("-specs={s}", .{libnx_specs}),
+        "-T",
         // Pin the C standard to C11 (zig.h targets `_Noreturn`, not
         // C23's `[[noreturn]]`).
+    });
+    link.addFileArg(text_syms_ld);
+    link.addArgs(&.{
         "-std=gnu11",
         // zig's -ofmt=c emitter has known pointer/int-conversion
         // mismatches that gcc 14+ promotes to errors. We don't author
