@@ -1,0 +1,149 @@
+const std = @import("std");
+const Mat4 = @import("../../math/math.zig").Mat4;
+const Util = @import("../../util/util.zig");
+
+const Rendering = @import("../../rendering/rendering.zig");
+const Mesh = Rendering.mesh;
+const Texture = Rendering.Texture;
+const shaders = @import("aether_shaders");
+
+const MAX_MESHES = 8192;
+
+extern "aether_host" fn aether_webgl_init(vert_ptr: [*]const u8, vert_len: usize, frag_ptr: [*]const u8, frag_len: usize) bool;
+extern "aether_host" fn aether_webgl_deinit() void;
+extern "aether_host" fn aether_webgl_set_clear_color(r: f32, g: f32, b: f32, a: f32) void;
+extern "aether_host" fn aether_webgl_set_alpha_blend(enabled: bool) void;
+extern "aether_host" fn aether_webgl_set_depth_write(enabled: bool) void;
+extern "aether_host" fn aether_webgl_set_culling(enabled: bool) void;
+extern "aether_host" fn aether_webgl_set_uv_offset(u: f32, v: f32) void;
+extern "aether_host" fn aether_webgl_set_fog(enabled: bool, start: f32, end: f32, r: f32, g: f32, b: f32) void;
+extern "aether_host" fn aether_webgl_set_proj_matrix(ptr: *const f32) void;
+extern "aether_host" fn aether_webgl_set_view_matrix(ptr: *const f32) void;
+extern "aether_host" fn aether_webgl_start_frame(width: u32, height: u32) bool;
+extern "aether_host" fn aether_webgl_end_frame() void;
+extern "aether_host" fn aether_webgl_clear_depth() void;
+extern "aether_host" fn aether_webgl_create_mesh() u32;
+extern "aether_host" fn aether_webgl_destroy_mesh(handle: u32) void;
+extern "aether_host" fn aether_webgl_update_mesh(handle: u32, ptr: [*]const u8, len: usize) void;
+extern "aether_host" fn aether_webgl_draw_mesh(handle: u32, model_ptr: *const f32, count: usize) void;
+extern "aether_host" fn aether_webgl_create_texture(width: u32, height: u32, ptr: [*]const u8, len: usize) u32;
+extern "aether_host" fn aether_webgl_update_texture(handle: u32, ptr: [*]const u8, len: usize) void;
+extern "aether_host" fn aether_webgl_bind_texture(handle: u32) void;
+extern "aether_host" fn aether_webgl_destroy_texture(handle: u32) void;
+extern "aether_host" fn aether_canvas_width() u32;
+extern "aether_host" fn aether_canvas_height() u32;
+
+var render_alloc: std.mem.Allocator = undefined;
+var render_io: std.Io = undefined;
+var meshes = Util.CircularBuffer(u32, MAX_MESHES).init();
+
+pub fn setup(alloc: std.mem.Allocator, io: std.Io) void {
+    render_alloc = alloc;
+    render_io = io;
+    _ = render_alloc;
+    _ = render_io;
+}
+
+pub fn init() anyerror!void {
+    if (!aether_webgl_init(&shaders.basic_vert, shaders.basic_vert.len, &shaders.basic_frag, shaders.basic_frag.len)) {
+        return error.WebGlInitFailed;
+    }
+}
+
+pub fn deinit() void {
+    aether_webgl_deinit();
+}
+
+pub fn set_clear_color(r: f32, g: f32, b: f32, a: f32) void {
+    aether_webgl_set_clear_color(r, g, b, a);
+}
+
+pub fn set_alpha_blend(enabled: bool) void {
+    aether_webgl_set_alpha_blend(enabled);
+}
+
+pub fn set_depth_write(enabled: bool) void {
+    aether_webgl_set_depth_write(enabled);
+}
+
+pub fn set_fog(enabled: bool, start: f32, end: f32, r: f32, g: f32, b: f32) void {
+    aether_webgl_set_fog(enabled, start, end, r, g, b);
+}
+
+pub fn set_clip_planes(_: bool) void {}
+
+pub fn set_culling(enabled: bool) void {
+    aether_webgl_set_culling(enabled);
+}
+
+pub fn set_uv_offset(u: f32, v: f32) void {
+    aether_webgl_set_uv_offset(u, v);
+}
+
+pub fn set_proj_matrix(mat: *const Mat4) void {
+    aether_webgl_set_proj_matrix(mat.ptr());
+}
+
+pub fn set_view_matrix(mat: *const Mat4) void {
+    aether_webgl_set_view_matrix(mat.ptr());
+}
+
+pub fn start_frame() bool {
+    const width = aether_canvas_width();
+    const height = aether_canvas_height();
+    if (width == 0 or height == 0) return false;
+    return aether_webgl_start_frame(width, height);
+}
+
+pub fn end_frame() void {
+    aether_webgl_end_frame();
+}
+
+pub fn clear_depth() void {
+    aether_webgl_clear_depth();
+}
+
+pub fn set_vsync(_: bool) void {}
+
+pub fn create_mesh() anyerror!Mesh.Handle {
+    const host_handle = aether_webgl_create_mesh();
+    if (host_handle == 0) return error.OutOfMeshes;
+    const idx = meshes.add_element(host_handle) orelse return error.OutOfMeshes;
+    return @intCast(idx);
+}
+
+pub fn destroy_mesh(handle: Mesh.Handle) void {
+    const host_handle = meshes.get_element(handle) orelse return;
+    aether_webgl_destroy_mesh(host_handle);
+    _ = meshes.remove_element(handle);
+}
+
+pub fn update_mesh(handle: Mesh.Handle, data: []const u8) void {
+    const host_handle = meshes.get_element(handle) orelse return;
+    aether_webgl_update_mesh(host_handle, data.ptr, data.len);
+}
+
+pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize) void {
+    const host_handle = meshes.get_element(handle) orelse return;
+    aether_webgl_draw_mesh(host_handle, model.ptr(), count);
+}
+
+pub fn create_texture(width: u32, height: u32, data: []align(16) u8) anyerror!Texture.Handle {
+    const handle = aether_webgl_create_texture(width, height, data.ptr, data.len);
+    if (handle == 0) return error.TextureCreateFailed;
+    return handle;
+}
+
+pub fn update_texture(handle: Texture.Handle, data: []align(16) u8) void {
+    aether_webgl_update_texture(handle, data.ptr, data.len);
+}
+
+pub fn bind_texture(handle: Texture.Handle) void {
+    aether_webgl_bind_texture(handle);
+}
+
+pub fn destroy_texture(handle: Texture.Handle) void {
+    aether_webgl_destroy_texture(handle);
+}
+
+pub fn force_texture_resident(_: Texture.Handle) void {}

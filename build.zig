@@ -8,6 +8,7 @@ pub const Platform = enum {
     windows,
     linux,
     macos,
+    wasm,
     psp,
     /// Nintendo 3DS. Builtin os tag is `.@"3ds"`, but the Zig options
     /// serializer can't emit `.@"3ds"` as an enum value literal, so the
@@ -25,6 +26,7 @@ pub const Gfx = enum {
     default,
     opengl,
     vulkan,
+    webgl,
     headless,
 };
 
@@ -88,6 +90,7 @@ pub const Config = struct {
                 .windows => .windows,
                 .macos => .macos,
                 .linux => .linux,
+                .wasi => .wasm,
                 .psp => .psp,
                 .@"3ds" => .nintendo_3ds,
                 else => |t| {
@@ -100,6 +103,7 @@ pub const Config = struct {
             .windows => .vulkan,
             .macos => .vulkan,
             .linux => .vulkan,
+            .wasi => .webgl,
             else => .default,
         };
 
@@ -190,6 +194,23 @@ fn devkitProPath(b: *std.Build) []const u8 {
     const p = opt orelse b.graph.environ_map.get("DEVKITPRO") orelse "/opt/devkitpro";
     devkitpro_path_cached = p;
     return p;
+}
+
+var spirv_cross_path_cached: ?[]const u8 = null;
+fn spirvCrossPath(b: *std.Build) []const u8 {
+    if (spirv_cross_path_cached) |p| return p;
+    const p = b.option([]const u8, "spirv-cross-path", "WASM/browser: spirv-cross executable path (default: spirv-cross)") orelse "spirv-cross";
+    spirv_cross_path_cached = p;
+    return p;
+}
+
+pub fn webTarget(b: *std.Build) std.Build.ResolvedTarget {
+    return b.resolveTargetQuery(.{
+        .cpu_arch = .wasm32,
+        .os_tag = .wasi,
+        .abi = .musl,
+        .cpu_features_add = std.Target.wasm.featureSet(&.{ .atomics, .bulk_memory }),
+    });
 }
 
 fn addNintendoCImportPaths(owner: *std.Build, mod: *std.Build.Module, config: Config, dkp: []const u8) void {
@@ -290,6 +311,10 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
     } else if (config.platform == .nintendo_3ds or config.platform == .nintendo_switch) {
         // Console SDK symbols are declared as backend-local externs and
         // resolved by the export pipeline's devkitPro link step.
+    } else if (config.platform == .wasm) {
+        // Browser builds use host imports for WebGL/Web Audio/input and WASI
+        // imports for files, clocks, stdio, random, and environment. They do
+        // not link desktop windowing/audio dependencies.
     } else {
         const zglfw = owner.dependency("zglfw", .{
             .target = target,
@@ -432,6 +457,13 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
         // freestanding libc/thread startup paths while still preserving the
         // exported shim in the emitted C.
         exe.entry = .disabled;
+    } else if (config.platform == .wasm) {
+        exe.entry = .disabled;
+        exe.rdynamic = true;
+        exe.wasi_exec_model = .reactor;
+        exe.shared_memory = true;
+        exe.initial_memory = 64 * 1024 * 1024;
+        exe.max_memory = 256 * 1024 * 1024;
     }
 
     return exe;
@@ -531,6 +563,13 @@ pub fn addHeadless(owner: *std.Build, b: *std.Build, opts: HeadlessOptions) *std
 
     if (uses_nintendo_c_io) {
         exe.entry = .disabled;
+    } else if (config.platform == .wasm) {
+        exe.entry = .disabled;
+        exe.rdynamic = true;
+        exe.wasi_exec_model = .reactor;
+        exe.shared_memory = true;
+        exe.initial_memory = 64 * 1024 * 1024;
+        exe.max_memory = 256 * 1024 * 1024;
     }
 
     return exe;
@@ -571,6 +610,15 @@ fn addSlangStep(b: *std.Build, slangc: std.Build.LazyPath, args: []const []const
     const output = run.addOutputFileArg(output_name);
     run.addFileArg(input);
     return output;
+}
+
+fn addSpirvCrossStep(b: *std.Build, spirv_cross: []const u8, args: []const []const u8, comptime output_name: []const u8, input: std.Build.LazyPath) std.Build.LazyPath {
+    const run = b.addSystemCommand(&.{spirv_cross});
+    run.setName("spirv-cross " ++ output_name);
+    run.addFileArg(input);
+    run.addArgs(args);
+    run.addArg("--output");
+    return run.addOutputFileArg(output_name);
 }
 
 fn addUamStep(b: *std.Build, uam: []const u8, stage: []const u8, comptime output_name: []const u8, input: std.Build.LazyPath) std.Build.LazyPath {
@@ -715,6 +763,35 @@ fn internalShaderStages(owner: *std.Build, b: *std.Build, config: Config) ?Shade
                 }, "basic.frag.glsl", source),
             };
         },
+        .webgl => {
+            const slangc = requireSlangcPath(owner);
+            const spirv_cross = spirvCrossPath(b);
+            const source = owner.path("src/rendering/shaders/basic.slang");
+            const vert_spv = addSlangStep(b, slangc, &.{
+                "-entry",   "vertexMain", "-stage",               "vertex",
+                "-profile", "glsl_330",   "-emit-spirv-via-glsl", "-matrix-layout-column-major",
+            }, "basic.vert.webgl.spv", source);
+            const frag_spv = addSlangStep(b, slangc, &.{
+                "-entry",   "fragmentMain", "-stage",               "fragment",
+                "-profile", "glsl_330",     "-emit-spirv-via-glsl", "-matrix-layout-column-major",
+            }, "basic.frag.webgl.spv", source);
+            return .{
+                .vert = addSpirvCrossStep(b, spirv_cross, &.{
+                    "--es",                        "--version",                   "300",
+                    "--rename-interface-variable", "out",                         "0",
+                    "v_uv",                        "--rename-interface-variable", "out",
+                    "1",                           "v_color",                     "--rename-interface-variable",
+                    "out",                         "2",                           "v_viewDepth",
+                }, "basic.vert.webgl.glsl", vert_spv),
+                .frag = addSpirvCrossStep(b, spirv_cross, &.{
+                    "--es",                        "--version",                   "300",
+                    "--rename-interface-variable", "in",                          "0",
+                    "v_uv",                        "--rename-interface-variable", "in",
+                    "1",                           "v_color",                     "--rename-interface-variable",
+                    "in",                          "2",                           "v_viewDepth",
+                }, "basic.frag.webgl.glsl", frag_spv),
+            };
+        },
         .default, .headless => return null,
     }
 }
@@ -745,6 +822,17 @@ pub const ExportOptions = struct {
     /// `Contents/Resources/<name>`. On desktop non-macOS they are copied
     /// alongside the exe in `zig-out/bin/`. Ignored on PSP and 3DS.
     resources: []const Resource = &.{},
+    /// WASM/browser: directory copied into the web artifact root and exposed
+    /// through `resources.manifest` for the JavaScript WASI preloader.
+    web_resources: ?std.Build.LazyPath = null,
+    /// WASM/browser: individual files copied into the web artifact root.
+    web_resource_files: []const Resource = &.{},
+    /// WASM/browser: newline-delimited resource paths relative to
+    /// `web_resources`.
+    web_resource_manifest: []const u8 = "",
+    /// WASM/browser: destination wasm filename. Defaults to the name expected
+    /// by the stock Aether web loader.
+    web_wasm_name: []const u8 = "Aether.wasm",
     /// 3DS: SMDH long description (the second line shown in the HOME
     /// menu detail panel). Falls back to "Built with Aether" when empty.
     smdh_long_description: []const u8 = "",
@@ -794,6 +882,9 @@ pub fn exportArtifact(owner: *std.Build, b: *std.Build, exe: *std.Build.Step.Com
         threedsxPipeline(b, exe, opts);
     } else if (config.platform == .nintendo_switch) {
         switchNroPipeline(b, exe, opts);
+    } else if (config.platform == .wasm) {
+        const install = addWebBundle(owner, b, exe, opts);
+        b.getInstallStep().dependOn(&install.step);
     } else if (config.platform == .macos) {
         macosAppBundle(b, exe, opts);
     } else {
@@ -803,6 +894,50 @@ pub fn exportArtifact(owner: *std.Build, b: *std.Build, exe: *std.Build.Step.Com
             b.getInstallStep().dependOn(&install_res.step);
         }
     }
+}
+
+pub fn addWebBundle(owner: *std.Build, b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOptions) *std.Build.Step.InstallDir {
+    const web = b.addWriteFiles();
+    _ = web.addCopyFile(exe.getEmittedBin(), opts.web_wasm_name);
+    _ = web.addCopyFile(owner.path("web/index.html"), "index.html");
+    _ = web.addCopyFile(owner.path("web/aether.js"), "aether.js");
+    _ = web.add("resources.manifest", opts.web_resource_manifest);
+    if (opts.web_resources) |resource_dir| {
+        _ = web.addCopyDirectory(resource_dir, "", .{});
+    }
+    for (opts.web_resource_files) |res| {
+        _ = web.addCopyFile(res.path, res.name);
+    }
+
+    return b.addInstallDirectory(.{
+        .source_dir = web.getDirectory(),
+        .install_dir = .prefix,
+        .install_subdir = "web",
+    });
+}
+
+pub fn addServeWebStep(
+    owner: *std.Build,
+    b: *std.Build,
+    name: []const u8,
+    web_install: *std.Build.Step.InstallDir,
+    host: []const u8,
+    port: u16,
+) *std.Build.Step.Run {
+    const serve_web_exe = b.addExecutable(.{
+        .name = name,
+        .root_module = b.createModule(.{
+            .root_source_file = owner.path("tools/serve_web.zig"),
+            .target = b.resolveTargetQuery(.{}),
+            .optimize = .Debug,
+        }),
+    });
+    const serve_web_cmd = b.addRunArtifact(serve_web_exe);
+    serve_web_cmd.step.dependOn(&web_install.step);
+    serve_web_cmd.addArg(b.getInstallPath(.prefix, "web"));
+    serve_web_cmd.addArg(host);
+    serve_web_cmd.addArg(b.fmt("{d}", .{port}));
+    return serve_web_cmd;
 }
 
 /// Builds a `<exe.name>.app` directory under zig-out/bin/ with:
@@ -1472,11 +1607,37 @@ fn switchNroPipeline(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOp
 
 // --- Aether's own build (test app + engine tests) ---
 
+fn makeResourceManifest(b: *std.Build, resource_dir_path: []const u8) []const u8 {
+    const io = b.graph.io;
+    const full_resource_dir_path = b.pathFromRoot(resource_dir_path);
+    var dir = std.Io.Dir.cwd().openDir(io, full_resource_dir_path, .{ .iterate = true }) catch |err| {
+        std.debug.panic("unable to open web resource directory '{s}': {s}", .{ resource_dir_path, @errorName(err) });
+    };
+    defer dir.close(io);
+
+    var walker = dir.walk(b.allocator) catch @panic("OOM");
+    defer walker.deinit();
+
+    var manifest: std.ArrayList(u8) = .empty;
+    while (walker.next(io) catch |err| {
+        std.debug.panic("unable to walk web resource directory '{s}': {s}", .{ resource_dir_path, @errorName(err) });
+    }) |entry| {
+        if (entry.kind != .file) continue;
+        if (std.mem.eql(u8, entry.path, "resources.manifest")) continue;
+        manifest.appendSlice(b.allocator, entry.path) catch @panic("OOM");
+        manifest.append(b.allocator, '\n') catch @panic("OOM");
+    }
+    return manifest.toOwnedSlice(b.allocator) catch @panic("OOM");
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const threeds_heap_mib = b.option(u32, "3ds-heap-mib", "3DS: regular libctru/newlib heap size in MiB (default: 4)");
     const threeds_linear_heap_mib = b.option(u32, "3ds-linear-heap-mib", "3DS: linear heap size in MiB (default: 60)");
+    const web_resources_path = b.option([]const u8, "web-resources", "WASM/browser: directory to copy into zig-out/web and preload via resources.manifest (default: test)") orelse "test";
+    const web_host = b.option([]const u8, "web-host", "serve-web: bind host (default: 127.0.0.1)") orelse "127.0.0.1";
+    const web_port = b.option(u16, "web-port", "serve-web: bind port (default: 8080)") orelse 8080;
 
     const overrides: Config.Overrides = .{
         .gfx = b.option(Gfx, "gfx", "Graphics backend override (default: auto-detect from target)"),
@@ -1523,6 +1684,31 @@ pub fn build(b: *std.Build) void {
         .romfs = if (config.platform == .nintendo_3ds) nintendo_romfs.getDirectory() else null,
         .switch_romfs = if (config.platform == .nintendo_switch) nintendo_romfs.getDirectory() else null,
     });
+
+    const web_target = webTarget(b);
+    const web_overrides: Config.Overrides = .{
+        .gfx = .webgl,
+        .use_cwd = true,
+    };
+    const web_exe = addGame(b, b, .{
+        .name = "Aether",
+        .root_source_file = b.path("test/web_main.zig"),
+        .target = web_target,
+        .optimize = optimize,
+        .overrides = web_overrides,
+    });
+    const web_install = addWebBundle(b, b, web_exe, .{
+        .web_resources = b.path(web_resources_path),
+        .web_resource_manifest = makeResourceManifest(b, web_resources_path),
+    });
+
+    const web_step = b.step("web", "Build the browser-playable WASM site in zig-out/web");
+    web_step.dependOn(&web_install.step);
+
+    const serve_web_cmd = addServeWebStep(b, b, "aether-serve-web", web_install, web_host, web_port);
+
+    const serve_web_step = b.step("serve-web", "Serve zig-out/web with WASM MIME and COOP/COEP headers");
+    serve_web_step.dependOn(&serve_web_cmd.step);
 
     const run_step = b.step("run", "Run the app");
     if (config.platform == .nintendo_3ds) {

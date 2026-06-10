@@ -249,7 +249,7 @@ fn buildBatchB(alloc: std.mem.Allocator, mesh: *MyMesh) !void {
     }
 }
 
-const MyState = struct {
+pub const MyState = struct {
     batch_a: MyMesh,
     batch_b: MyMesh,
     batch_a_transform: Rendering.Transform,
