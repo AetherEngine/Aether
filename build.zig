@@ -712,20 +712,32 @@ fn internalShaderStages(owner: *std.Build, b: *std.Build, config: Config) ?Shade
 
     if (config.platform == .nintendo_switch and config.gfx == .default) {
         const uam = b.pathJoin(&.{ devkitProPath(b), "tools/bin/uam" });
+        const slangc = requireSlangcPath(owner);
+        const source = owner.path("src/rendering/shaders/basic.slang");
+        const vert_glsl = addSlangStep(b, slangc, &.{
+            "-target",    "glsl",     "-matrix-layout-column-major",
+            "-profile",   "glsl_450", "-entry",
+            "vertexMain", "-stage",   "vertex",
+        }, "basic.vert.switch.glsl", source);
+        const frag_glsl = addSlangStep(b, slangc, &.{
+            "-target",      "glsl",     "-matrix-layout-column-major",
+            "-profile",     "glsl_450", "-entry",
+            "fragmentMain", "-stage",   "fragment",
+        }, "basic.frag.switch.glsl", source);
         return .{
             .vert = addUamStep(
                 b,
                 uam,
                 "vert",
                 "basic.vert.dksh",
-                owner.path("src/platform/switch/shaders/basic.vert.glsl"),
+                vert_glsl,
             ),
             .frag = addUamStep(
                 b,
                 uam,
                 "frag",
                 "basic.frag.dksh",
-                owner.path("src/platform/switch/shaders/basic.frag.glsl"),
+                frag_glsl,
             ),
         };
     }
