@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const options = @import("options");
 
 var log_buffer: [4096]u8 = @splat(0);
 var file_log: std.Io.File = undefined;
@@ -40,6 +41,10 @@ pub fn aether_log_fn(
 
     const prefix = scope_prefix ++ "[" ++ comptime level.asText() ++ "]: ";
 
-    if (file_logging) writer.print(prefix ++ format ++ "\n", args) catch {};
-    std.debug.print(prefix ++ format ++ "\n", args);
+    if (file_logging) {
+        writer.print(prefix ++ format ++ "\n", args) catch {};
+        if (options.config.flush_logs) writer.flush() catch {};
+    }
+    const echo_stderr = !(options.config.platform == .nintendo_3ds and options.config.flush_logs);
+    if (echo_stderr) std.debug.print(prefix ++ format ++ "\n", args);
 }

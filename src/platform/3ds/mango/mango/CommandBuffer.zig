@@ -394,6 +394,13 @@ const Flags = packed struct(u8) {
     _: u6 = 0,
 };
 
+const FogState = struct {
+    enabled: bool = false,
+    color: [4]u8 = .{ 0, 0, 0, 255 },
+    table: [128]u32 = @splat(0),
+    dirty: bool = true,
+};
+
 pool: *CommandPool,
 stream: Stream = .empty,
 
@@ -405,6 +412,7 @@ gfx_state: GraphicsState = .empty,
 rnd_state: RenderingState = .empty,
 current_error: ?Error = null,
 flags: Flags = .none,
+fog_state: FogState = .{},
 state: State = .initial,
 scope: Scope = .none,
 
@@ -450,6 +458,7 @@ pub fn reset(cmd: *CommandBuffer, flags: mango.CommandBufferResetFlags) void {
     cmd.rnd_state = .empty;
     cmd.current_error = null;
     cmd.flags = .none;
+    cmd.fog_state = .{};
     cmd.scope = .none;
     cmd.state = .initial;
 }
@@ -837,11 +846,15 @@ pub fn setVertexInput(cmd: *CommandBuffer, layout: mango.VertexInputLayout) void
 pub fn setAetherFog(cmd: *CommandBuffer, enabled: bool, color: [4]u8, table: []const u32) void {
     std.debug.assert(cmd.state == .recording);
     std.debug.assert(table.len == 0 or table.len == 128);
-    if (cmd.current_error) |_| return;
 
-    cmd.emitAetherFog(enabled, color, table) catch |err| {
-        cmd.current_error = err;
+    var next = FogState{
+        .enabled = enabled,
+        .color = color,
+        .dirty = true,
     };
+
+    if (enabled) @memcpy(&next.table, table[0..128]);
+    cmd.fog_state = next;
 }
 
 pub fn setLightingEnable(cmd: *CommandBuffer, enable: bool) void {
@@ -929,8 +942,9 @@ fn beforeDraw(cmd: *CommandBuffer, draw_count: usize) bool {
 fn emitDirty(cmd: *CommandBuffer, extra_cost: u32) !void {
     const gfx_dirty = cmd.gfx_state.anyDirty();
     const rnd_dirty = cmd.rnd_state.anyDirty();
+    const fog_dirty = cmd.fog_state.dirty;
 
-    if (!gfx_dirty and !rnd_dirty) return;
+    if (!gfx_dirty and !rnd_dirty and !fog_dirty) return;
 
     const max_graphics_emission_cost = if (gfx_dirty) cmd.gfx_state.maxEmitDirtyQueueLength() else 0;
     const max_rendering_emission_cost = if (rnd_dirty) cmd.rnd_state.maxEmitDirtyQueueLength() else 0;
@@ -954,25 +968,37 @@ fn emitDirty(cmd: *CommandBuffer, extra_cost: u32) !void {
     cmd.rnd_state.emitDirty(queue);
     const rnd_end = queue.end;
     std.debug.assert((rnd_end - rnd_start) <= max_rendering_emission_cost);
+
+    if (gfx_dirty or cmd.fog_state.dirty) {
+        try cmd.emitAetherFog();
+    }
 }
 
-fn emitAetherFog(cmd: *CommandBuffer, enabled: bool, color: [4]u8, table: []const u32) !void {
-    try cmd.ensureUnusedCapacity(if (enabled) 150 else 4);
+fn emitAetherFog(cmd: *CommandBuffer) !void {
+    const state = &cmd.fog_state;
+    try cmd.ensureUnusedCapacity(if (state.enabled) 256 else 4);
     const queue = cmd.stream.first().?;
 
     queue.addMasked(p3d, &p3d.texture_combiners.config, .{
-        .fog_mode = if (enabled) .fog else .disabled,
+        .fog_mode = if (state.enabled) .fog else .disabled,
         .shading_density_source = .plain,
         .combiner_color_buffer_src = .splat(.previous_buffer),
         .combiner_alpha_buffer_src = .splat(.previous_buffer),
         .z_flip = false,
     }, 0b0101);
 
-    if (!enabled) return;
+    if (!state.enabled) {
+        state.dirty = false;
+        return;
+    }
 
-    queue.add(p3d, &p3d.texture_combiners.fog_color, color);
-    queue.add(p3d, &p3d.texture_combiners.fog_lut_index, .init(0));
-    queue.addConsecutive(p3d, &p3d.texture_combiners.fog_lut_data[0], @ptrCast(table));
+    queue.add(p3d, &p3d.texture_combiners.fog_color, state.color);
+    for (0..16) |chunk| {
+        const start = chunk * 8;
+        queue.add(p3d, &p3d.texture_combiners.fog_lut_index, .init(@intCast(start)));
+        queue.addConsecutive(p3d, &p3d.texture_combiners.fog_lut_data[0], @ptrCast(state.table[start..][0..8]));
+    }
+    state.dirty = false;
 }
 
 /// Finalizes and pushes a graphics operation (if needed)

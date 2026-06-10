@@ -1618,6 +1618,31 @@ pub fn createAetherCtruBackedDevice(create_info: AetherCtruDeviceCreateInfo, gpa
     return (try backend.AetherCtru.create(create_info, gpa)).device.toHandle();
 }
 
+pub fn createAetherLinearVertexBuffer(gpa: std.mem.Allocator) !Buffer {
+    const buffer = try gpa.create(backend.Buffer);
+    buffer.* = .init(.{
+        .size = .size(0),
+        .usage = .{ .vertex_buffer = true },
+    });
+    return buffer.toHandle();
+}
+
+pub fn updateAetherLinearVertexBuffer(buffer: Buffer, ptr: [*]const u8, len: usize, physical: u32) void {
+    const virtual = @intFromPtr(ptr);
+    const byte_offset = virtual & 0xFFF;
+    std.debug.assert(byte_offset == (physical & 0xFFF));
+
+    backend.Buffer.fromHandleMutable(buffer).* = .{
+        .memory_info = .{
+            .virtual_page_shifted = @intCast(virtual >> 12),
+            .physical_page_shifted = @intCast(physical >> 12),
+            .byte_offset = @intCast(byte_offset),
+        },
+        .size = len,
+        .usage = .{ .vertex_buffer = true },
+    };
+}
+
 pub const Device = backend.Device.Handle;
 pub const Queue = backend.Queue.Handle;
 pub const DeviceMemory = backend.DeviceMemory.Handle;

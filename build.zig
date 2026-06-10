@@ -69,6 +69,9 @@ pub const Config = struct {
     ///   - Debug builds of unpackaged binaries on macOS, where resources
     ///     aren't inside a .app yet.
     use_cwd: bool = false,
+    /// Flush the file log after every message. Useful for diagnosing hard
+    /// hangs on consoles where normal shutdown never reaches logger.deinit.
+    flush_logs: bool = false,
 
     pub fn resolve(target: std.Build.ResolvedTarget, overrides: Overrides) Config {
         const plat: Platform = blk: {
@@ -111,6 +114,7 @@ pub const Config = struct {
             .nintendo_3ds_heap_size = overrides.nintendo_3ds_heap_size orelse DEFAULT_3DS_HEAP_SIZE,
             .nintendo_3ds_linear_heap_size = overrides.nintendo_3ds_linear_heap_size orelse DEFAULT_3DS_LINEAR_HEAP_SIZE,
             .use_cwd = overrides.use_cwd orelse false,
+            .flush_logs = overrides.flush_logs orelse false,
         };
     }
 
@@ -122,6 +126,7 @@ pub const Config = struct {
         nintendo_3ds_heap_size: ?u32 = null,
         nintendo_3ds_linear_heap_size: ?u32 = null,
         use_cwd: ?bool = null,
+        flush_logs: ?bool = null,
         /// Promotes an `aarch64-freestanding-none` target to the
         /// `nintendo_switch` platform. No effect when null/false.
         nintendo_switch: ?bool = null,
@@ -1481,6 +1486,7 @@ pub fn build(b: *std.Build) void {
         .nintendo_3ds_heap_size = if (threeds_heap_mib) |mib| mib * 1024 * 1024 else null,
         .nintendo_3ds_linear_heap_size = if (threeds_linear_heap_mib) |mib| mib * 1024 * 1024 else null,
         .use_cwd = b.option(bool, "use-cwd", "Force resources+data dirs to CWD (debug/CI convenience; default: false)"),
+        .flush_logs = b.option(bool, "flush-logs", "Flush aether.log after every log message (debugging hard hangs; default: false)"),
         .nintendo_switch = b.option(bool, "nintendo-switch", "Build for Nintendo Switch (requires -Dtarget=aarch64-freestanding-none and devkitA64/libnx)"),
     };
 
