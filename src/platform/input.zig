@@ -15,6 +15,8 @@ else if (builtin.os.tag == .@"3ds")
     @import("3ds/input.zig")
 else if (options.config.platform == .nintendo_switch)
     @import("switch/input.zig")
+else if (options.config.platform == .wasm)
+    @import("wasm/input.zig")
 else
     @import("glfw/input.zig");
 

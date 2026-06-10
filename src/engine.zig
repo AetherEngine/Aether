@@ -90,6 +90,26 @@ pub const Engine = struct {
     dirs: Core.paths.Dirs,
     debug_trace_loops: u8,
     debug_trace_loop_index: u32,
+    run_loop: RunLoop,
+
+    const RunLoop = struct {
+        run_start_ns: i96 = 0,
+        last_us: i64 = 0,
+        update_accum: i64 = 0,
+        tick_accum: i64 = 0,
+        fps_count: u32 = 0,
+        fps_window_end: i64 = std.time.us_per_s,
+        initialized: bool = false,
+
+        fn reset(self: *RunLoop, io: std.Io) void {
+            var clock = std.Io.Clock.boot;
+            self.* = .{
+                .run_start_ns = clock.now(io).toNanoseconds(),
+                .fps_window_end = std.time.us_per_s,
+                .initialized = true,
+            };
+        }
+    };
 
     pub const Config = struct {
         memory: MemoryConfig,
@@ -131,6 +151,7 @@ pub const Engine = struct {
         self.state = state.*;
         self.debug_trace_loops = 0;
         self.debug_trace_loop_index = 0;
+        self.run_loop = .{};
 
         self.pool = memory.PoolAlloc.init(mem, "main");
         const inner = self.pool.allocator();
@@ -246,10 +267,32 @@ pub const Engine = struct {
         Util.engine_logger.info("--------------------", .{});
     }
 
+    pub fn beginRun(self: *Engine) void {
+        self.run_loop.reset(self.io);
+    }
+
+    pub fn stepFrame(self: *Engine) !bool {
+        if (!self.run_loop.initialized) self.beginRun();
+        if (options.config.platform == .nintendo_3ds) {
+            @compileError("Engine.stepFrame is not implemented for the Nintendo 3DS fixed-vblank loop");
+        }
+        try self.stepFrameInternal(false);
+        return self.running;
+    }
+
     pub fn run(self: *Engine) !void {
         if (options.config.platform == .nintendo_3ds) {
             return self.runNintendo3ds();
         }
+
+        self.beginRun();
+        while (self.running) {
+            try self.stepFrameInternal(true);
+        }
+    }
+
+    fn stepFrameInternal(self: *Engine, allow_sleep: bool) !void {
+        if (options.config.platform == .nintendo_3ds) unreachable;
 
         const US_PER_S: u64 = std.time.us_per_s;
         const NS_PER_US: i64 = 1000;
@@ -262,197 +305,192 @@ pub const Engine = struct {
         const update_budget_ns: i64 = @as(i64, @intCast(UPDATE_US)) * NS_PER_US;
 
         var clock = std.Io.Clock.boot;
-        const run_start_ns = clock.now(self.io).toNanoseconds();
         const fps_window_us: i64 = @intCast(US_PER_S);
 
-        var last_us: i64 = 0;
-        var update_accum: i64 = 0;
-        var tick_accum: i64 = 0;
-
         const report_fps = options.config.gfx != .headless and !options.config.flush_logs;
-        var fps_count: u32 = 0;
-        var fps_window_end: i64 = saturatingAddI64(last_us, fps_window_us);
 
-        while (self.running) {
-            const trace_loop = self.debug_trace_loops > 0;
-            const trace_loop_index = self.debug_trace_loop_index + 1;
-            if (trace_loop) {
-                Util.engine_logger.info("trace: engine loop {d} begin update_us={d} tick_us={d}", .{
-                    trace_loop_index,
-                    UPDATE_US,
-                    TICK_US,
-                });
-            }
+        const trace_loop = self.debug_trace_loops > 0;
+        const trace_loop_index = self.debug_trace_loop_index + 1;
+        if (trace_loop) {
+            Util.engine_logger.info("trace: engine loop {d} begin update_us={d} tick_us={d}", .{
+                trace_loop_index,
+                UPDATE_US,
+                TICK_US,
+            });
+        }
 
-            var now_us = elapsedUsSince(run_start_ns, clock.now(self.io).toNanoseconds());
-            var frame_dt_us = saturatingSubI64(now_us, last_us);
+        var now_us = elapsedUsSince(self.run_loop.run_start_ns, clock.now(self.io).toNanoseconds());
+        var frame_dt_us = saturatingSubI64(now_us, self.run_loop.last_us);
 
-            if (frame_dt_us <= 0) {
+        if (frame_dt_us <= 0) {
+            if (allow_sleep) {
                 try std.Io.sleep(self.io, .fromNanoseconds(std.time.ns_per_ms), clock);
-                now_us = elapsedUsSince(run_start_ns, clock.now(self.io).toNanoseconds());
-                frame_dt_us = @max(0, saturatingSubI64(now_us, last_us));
-                if (frame_dt_us <= 0) {
-                    frame_dt_us = 1000;
-                }
             }
+            now_us = elapsedUsSince(self.run_loop.run_start_ns, clock.now(self.io).toNanoseconds());
+            frame_dt_us = @max(0, saturatingSubI64(now_us, self.run_loop.last_us));
+            if (frame_dt_us <= 0) {
+                frame_dt_us = 1000;
+            }
+        }
 
-            if (frame_dt_us > 500_000) frame_dt_us = 500_000;
-            last_us = now_us;
+        if (frame_dt_us > 500_000) frame_dt_us = 500_000;
+        self.run_loop.last_us = now_us;
 
-            update_accum = saturatingAddI64(update_accum, frame_dt_us);
-            tick_accum = saturatingAddI64(tick_accum, frame_dt_us);
+        self.run_loop.update_accum = saturatingAddI64(self.run_loop.update_accum, frame_dt_us);
+        self.run_loop.tick_accum = saturatingAddI64(self.run_loop.tick_accum, frame_dt_us);
+        if (trace_loop) {
+            Util.engine_logger.info("trace: engine loop {d} time now_us={d} frame_dt_us={d} last_us={d} update_accum={d} tick_accum={d}", .{
+                trace_loop_index,
+                now_us,
+                frame_dt_us,
+                self.run_loop.last_us,
+                self.run_loop.update_accum,
+                self.run_loop.tick_accum,
+            });
+            Util.engine_logger.info("trace: engine loop {d} platform begin", .{trace_loop_index});
+        }
+
+        const platform_start_ns = clock.now(self.io).toNanoseconds();
+        Platform.update(self);
+        const platform_done_ns = clock.now(self.io).toNanoseconds();
+        var pre_update_elapsed_ns = elapsedNsBetween(platform_start_ns, platform_done_ns);
+        if (trace_loop) {
+            Util.engine_logger.info("trace: engine loop {d} platform end running={}", .{ trace_loop_index, self.running });
+        }
+        if (!self.running) return;
+
+        // ---- fixed-rate TICK steps (e.g., 20 Hz logic) ----
+        var is_tick_frame = false;
+        var tick_cost_ns: i64 = 0;
+        const tick_us: i64 = @intCast(TICK_US);
+        var tick_steps: u32 = 0;
+        while (self.run_loop.tick_accum >= tick_us) {
+            @branchHint(.unpredictable);
+            is_tick_frame = true;
             if (trace_loop) {
-                Util.engine_logger.info("trace: engine loop {d} time now_us={d} frame_dt_us={d} last_us={d} update_accum={d} tick_accum={d}", .{
+                Util.engine_logger.info("trace: engine loop {d} tick {d} begin accum={d}", .{
                     trace_loop_index,
-                    now_us,
-                    frame_dt_us,
-                    last_us,
-                    update_accum,
-                    tick_accum,
-                });
-                Util.engine_logger.info("trace: engine loop {d} platform begin", .{trace_loop_index});
-            }
-
-            const platform_start_ns = clock.now(self.io).toNanoseconds();
-            Platform.update(self);
-            const platform_done_ns = clock.now(self.io).toNanoseconds();
-            var pre_update_elapsed_ns = elapsedNsBetween(platform_start_ns, platform_done_ns);
-            if (trace_loop) {
-                Util.engine_logger.info("trace: engine loop {d} platform end running={}", .{ trace_loop_index, self.running });
-            }
-            if (!self.running) break;
-
-            // ---- fixed-rate TICK steps (e.g., 20 Hz logic) ----
-            var is_tick_frame = false;
-            var tick_cost_ns: i64 = 0;
-            const tick_us: i64 = @intCast(TICK_US);
-            var tick_steps: u32 = 0;
-            while (tick_accum >= tick_us) {
-                @branchHint(.unpredictable);
-                is_tick_frame = true;
-                if (trace_loop) {
-                    Util.engine_logger.info("trace: engine loop {d} tick {d} begin accum={d}", .{
-                        trace_loop_index,
-                        tick_steps + 1,
-                        tick_accum,
-                    });
-                }
-                const tick_start_ns = clock.now(self.io).toNanoseconds();
-                try Core.state_machine.tick(self);
-                const tick_end_ns = clock.now(self.io).toNanoseconds();
-                tick_cost_ns = saturatingAddI64(tick_cost_ns, elapsedNsBetween(tick_start_ns, tick_end_ns));
-                tick_accum -= tick_us;
-                tick_steps += 1;
-                if (trace_loop) {
-                    Util.engine_logger.info("trace: engine loop {d} tick {d} end accum={d}", .{
-                        trace_loop_index,
-                        tick_steps,
-                        tick_accum,
-                    });
-                }
-            }
-
-            // ---- fixed-rate UPDATE steps (simulation & interpolation) ----
-            const UPDATE_DT_S: f32 = @as(f32, @floatFromInt(UPDATE_US)) / @as(f32, US_PER_S);
-            var update_steps: u32 = 0;
-            while (update_accum >= UPDATE_US) {
-                @branchHint(.unpredictable);
-
-                if (trace_loop) {
-                    Util.engine_logger.info("trace: engine loop {d} input begin update_accum={d}", .{
-                        trace_loop_index,
-                        update_accum,
-                    });
-                }
-                const input_start_ns = clock.now(self.io).toNanoseconds();
-                Platform.input.update();
-                Core.input.update();
-                const input_done_ns = clock.now(self.io).toNanoseconds();
-                const engine_elapsed_ns = saturatingAddI64(pre_update_elapsed_ns, elapsedNsBetween(input_start_ns, input_done_ns));
-                if (trace_loop) {
-                    Util.engine_logger.info("trace: engine loop {d} input end running={}", .{ trace_loop_index, self.running });
-                }
-                if (!self.running) break;
-
-                const budget = Util.BudgetContext{
-                    .phase_budget_ns = update_budget_ns,
-                    .engine_elapsed_ns = engine_elapsed_ns,
-                    .remaining_ns = update_budget_ns - engine_elapsed_ns,
-                    .is_tick_frame = is_tick_frame,
-                    .tick_cost_ns = tick_cost_ns,
-                    .safety_margin_ns = Util.BudgetContext.DEFAULT_SAFETY_MARGIN_NS,
-                };
-
-                if (trace_loop) {
-                    Util.engine_logger.info("trace: engine loop {d} update {d} begin dt_bits=0x{x}", .{
-                        trace_loop_index,
-                        update_steps + 1,
-                        @as(u32, @bitCast(UPDATE_DT_S)),
-                    });
-                }
-                try Core.state_machine.update(self, UPDATE_DT_S, &budget);
-                pre_update_elapsed_ns = 0;
-                update_accum -= UPDATE_US;
-                update_steps += 1;
-                if (trace_loop) {
-                    Util.engine_logger.info("trace: engine loop {d} update {d} end accum={d}", .{
-                        trace_loop_index,
-                        update_steps,
-                        update_accum,
-                    });
-                }
-            }
-
-            // ---- render ASAP (uncapped when vsync == false) ----
-            const frame_dt_s: f32 = @as(f32, @floatFromInt(frame_dt_us)) / @as(f32, US_PER_S);
-            if (trace_loop) {
-                Util.engine_logger.info("trace: engine loop {d} start_frame begin frame_dt_us={d}", .{
-                    trace_loop_index,
-                    frame_dt_us,
+                    tick_steps + 1,
+                    self.run_loop.tick_accum,
                 });
             }
-            const drew_frame = Platform.gfx.api.start_frame();
+            const tick_start_ns = clock.now(self.io).toNanoseconds();
+            try Core.state_machine.tick(self);
+            const tick_end_ns = clock.now(self.io).toNanoseconds();
+            tick_cost_ns = saturatingAddI64(tick_cost_ns, elapsedNsBetween(tick_start_ns, tick_end_ns));
+            self.run_loop.tick_accum -= tick_us;
+            tick_steps += 1;
             if (trace_loop) {
-                Util.engine_logger.info("trace: engine loop {d} start_frame end drew={}", .{ trace_loop_index, drew_frame });
+                Util.engine_logger.info("trace: engine loop {d} tick {d} end accum={d}", .{
+                    trace_loop_index,
+                    tick_steps,
+                    self.run_loop.tick_accum,
+                });
             }
-            if (drew_frame) {
-                const draw_start_ns = clock.now(self.io).toNanoseconds();
-                // Time until next update step is due
-                const slack_us: i64 = @as(i64, @intCast(UPDATE_US)) - @max(0, update_accum);
-                const draw_budget_ns: i64 = if (self.vsync)
-                    slack_us * NS_PER_US
-                else
-                    std.math.maxInt(i64);
+        }
 
-                const draw_budget = Util.BudgetContext{
-                    .phase_budget_ns = draw_budget_ns,
-                    .engine_elapsed_ns = 0,
-                    .remaining_ns = draw_budget_ns,
-                    .is_tick_frame = is_tick_frame,
-                    .tick_cost_ns = tick_cost_ns,
-                    .safety_margin_ns = Util.BudgetContext.DEFAULT_SAFETY_MARGIN_NS,
-                };
+        // ---- fixed-rate UPDATE steps (simulation & interpolation) ----
+        const UPDATE_DT_S: f32 = @as(f32, @floatFromInt(UPDATE_US)) / @as(f32, US_PER_S);
+        var update_steps: u32 = 0;
+        while (self.run_loop.update_accum >= UPDATE_US) {
+            @branchHint(.unpredictable);
 
-                if (trace_loop) {
-                    Util.engine_logger.info("trace: engine loop {d} draw begin", .{trace_loop_index});
-                }
-                try Core.state_machine.draw(self, frame_dt_s, &draw_budget);
-                if (trace_loop) {
-                    Util.engine_logger.info("trace: engine loop {d} draw end", .{trace_loop_index});
-                }
-                _ = draw_start_ns;
-                if (trace_loop) {
-                    Util.engine_logger.info("trace: engine loop {d} end_frame begin", .{trace_loop_index});
-                }
-                Platform.gfx.api.end_frame();
-                if (trace_loop) {
-                    Util.engine_logger.info("trace: engine loop {d} end_frame end", .{trace_loop_index});
-                }
-            } else {
-                @branchHint(.unlikely);
+            if (trace_loop) {
+                Util.engine_logger.info("trace: engine loop {d} input begin update_accum={d}", .{
+                    trace_loop_index,
+                    self.run_loop.update_accum,
+                });
+            }
+            const input_start_ns = clock.now(self.io).toNanoseconds();
+            Platform.input.update();
+            Core.input.update();
+            const input_done_ns = clock.now(self.io).toNanoseconds();
+            const engine_elapsed_ns = saturatingAddI64(pre_update_elapsed_ns, elapsedNsBetween(input_start_ns, input_done_ns));
+            if (trace_loop) {
+                Util.engine_logger.info("trace: engine loop {d} input end running={}", .{ trace_loop_index, self.running });
+            }
+            if (!self.running) return;
+
+            const budget = Util.BudgetContext{
+                .phase_budget_ns = update_budget_ns,
+                .engine_elapsed_ns = engine_elapsed_ns,
+                .remaining_ns = update_budget_ns - engine_elapsed_ns,
+                .is_tick_frame = is_tick_frame,
+                .tick_cost_ns = tick_cost_ns,
+                .safety_margin_ns = Util.BudgetContext.DEFAULT_SAFETY_MARGIN_NS,
+            };
+
+            if (trace_loop) {
+                Util.engine_logger.info("trace: engine loop {d} update {d} begin dt_bits=0x{x}", .{
+                    trace_loop_index,
+                    update_steps + 1,
+                    @as(u32, @bitCast(UPDATE_DT_S)),
+                });
+            }
+            try Core.state_machine.update(self, UPDATE_DT_S, &budget);
+            pre_update_elapsed_ns = 0;
+            self.run_loop.update_accum -= UPDATE_US;
+            update_steps += 1;
+            if (trace_loop) {
+                Util.engine_logger.info("trace: engine loop {d} update {d} end accum={d}", .{
+                    trace_loop_index,
+                    update_steps,
+                    self.run_loop.update_accum,
+                });
+            }
+        }
+
+        // ---- render ASAP (uncapped when vsync == false) ----
+        const frame_dt_s: f32 = @as(f32, @floatFromInt(frame_dt_us)) / @as(f32, US_PER_S);
+        if (trace_loop) {
+            Util.engine_logger.info("trace: engine loop {d} start_frame begin frame_dt_us={d}", .{
+                trace_loop_index,
+                frame_dt_us,
+            });
+        }
+        const drew_frame = Platform.gfx.api.start_frame();
+        if (trace_loop) {
+            Util.engine_logger.info("trace: engine loop {d} start_frame end drew={}", .{ trace_loop_index, drew_frame });
+        }
+        if (drew_frame) {
+            const draw_start_ns = clock.now(self.io).toNanoseconds();
+            // Time until next update step is due
+            const slack_us: i64 = @as(i64, @intCast(UPDATE_US)) - @max(0, self.run_loop.update_accum);
+            const draw_budget_ns: i64 = if (self.vsync)
+                slack_us * NS_PER_US
+            else
+                std.math.maxInt(i64);
+
+            const draw_budget = Util.BudgetContext{
+                .phase_budget_ns = draw_budget_ns,
+                .engine_elapsed_ns = 0,
+                .remaining_ns = draw_budget_ns,
+                .is_tick_frame = is_tick_frame,
+                .tick_cost_ns = tick_cost_ns,
+                .safety_margin_ns = Util.BudgetContext.DEFAULT_SAFETY_MARGIN_NS,
+            };
+
+            if (trace_loop) {
+                Util.engine_logger.info("trace: engine loop {d} draw begin", .{trace_loop_index});
+            }
+            try Core.state_machine.draw(self, frame_dt_s, &draw_budget);
+            if (trace_loop) {
+                Util.engine_logger.info("trace: engine loop {d} draw end", .{trace_loop_index});
+            }
+            _ = draw_start_ns;
+            if (trace_loop) {
+                Util.engine_logger.info("trace: engine loop {d} end_frame begin", .{trace_loop_index});
+            }
+            Platform.gfx.api.end_frame();
+            if (trace_loop) {
+                Util.engine_logger.info("trace: engine loop {d} end_frame end", .{trace_loop_index});
+            }
+        } else {
+            @branchHint(.unlikely);
+            if (allow_sleep) {
                 if (options.config.gfx == .headless) {
-                    const next_update = @as(i64, @intCast(UPDATE_US)) - update_accum;
-                    const next_tick = @as(i64, @intCast(TICK_US)) - tick_accum;
+                    const next_update = @as(i64, @intCast(UPDATE_US)) - self.run_loop.update_accum;
+                    const next_tick = @as(i64, @intCast(TICK_US)) - self.run_loop.tick_accum;
                     const sleep_us = @max(0, @min(next_update, next_tick));
                     if (sleep_us > 0) {
                         const sleep_ns = sleep_us * NS_PER_US;
@@ -462,25 +500,25 @@ pub const Engine = struct {
                     try std.Io.sleep(self.io, .fromNanoseconds(50 * std.time.ns_per_ms), clock);
                 }
             }
-            if (trace_loop) {
-                Util.engine_logger.info("trace: engine loop {d} end ticks={d} updates={d}", .{
-                    trace_loop_index,
-                    tick_steps,
-                    update_steps,
-                });
-                self.debug_trace_loop_index = trace_loop_index;
-                self.debug_trace_loops -= 1;
-            }
+        }
+        if (trace_loop) {
+            Util.engine_logger.info("trace: engine loop {d} end ticks={d} updates={d}", .{
+                trace_loop_index,
+                tick_steps,
+                update_steps,
+            });
+            self.debug_trace_loop_index = trace_loop_index;
+            self.debug_trace_loops -= 1;
+        }
 
-            // ---- FPS counting ----
-            if (report_fps) {
-                if (drew_frame) fps_count += 1;
-                const end_us = elapsedUsSince(run_start_ns, clock.now(self.io).toNanoseconds());
-                if (end_us >= fps_window_end) {
-                    Util.engine_logger.info("FPS: {}", .{fps_count});
-                    fps_count = 0;
-                    fps_window_end = saturatingAddI64(end_us, fps_window_us);
-                }
+        // ---- FPS counting ----
+        if (report_fps) {
+            if (drew_frame) self.run_loop.fps_count += 1;
+            const end_us = elapsedUsSince(self.run_loop.run_start_ns, clock.now(self.io).toNanoseconds());
+            if (end_us >= self.run_loop.fps_window_end) {
+                Util.engine_logger.info("FPS: {}", .{self.run_loop.fps_count});
+                self.run_loop.fps_count = 0;
+                self.run_loop.fps_window_end = saturatingAddI64(end_us, fps_window_us);
             }
         }
     }

@@ -4,10 +4,9 @@
 //! struct extends `std.Thread.SpawnConfig` with `name` and `priority` -- the
 //! two PSP-only knobs that motivated this layer.
 //!
-//! On PSP, `Config.allocator` is **required**: it owns the trampoline
+//! On PSP/3DS, `Config.allocator` is **required**: it owns the trampoline
 //! closure that lives until the thread function returns. On desktop the
-//! allocator is forwarded to `std.Thread.spawn` and only consulted on
-//! platforms that need to allocate a stack manually (e.g. WASI).
+//! allocator is forwarded to `std.Thread.spawn`.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -75,4 +74,3 @@ test "spawned thread sees its requested priority" {
     t.join();
     try std.testing.expectEqual(@as(i8, @intFromEnum(Priority.high)), seen.load(.seq_cst));
 }
-

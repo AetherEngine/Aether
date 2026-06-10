@@ -14,10 +14,13 @@ pub const Api = switch (options.config.gfx) {
         @import("3ds/3ds_gfx.zig")
     else if (options.config.platform == .nintendo_switch)
         @import("switch/switch_gfx.zig")
+    else if (options.config.platform == .wasm)
+        @import("wasm/webgl_gfx.zig")
     else
         @import("psp/psp_gfx_ge.zig"),
     .opengl => @import("glfw/opengl/opengl_gfx.zig"),
     .vulkan => @import("glfw/vulkan/vulkan_gfx.zig"),
+    .webgl => @import("wasm/webgl_gfx.zig"),
     .headless => @import("headless/headless_gfx.zig"),
 };
 
@@ -31,6 +34,8 @@ else if (builtin.os.tag == .@"3ds")
     @import("3ds/surface.zig")
 else if (options.config.platform == .nintendo_switch)
     @import("switch/surface.zig")
+else if (options.config.platform == .wasm)
+    @import("wasm/surface.zig")
 else
     @import("glfw/surface.zig");
 

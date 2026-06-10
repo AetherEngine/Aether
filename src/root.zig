@@ -29,5 +29,5 @@ pub const nintendo_3ds_heap_size: u32 = options.config.nintendo_3ds_heap_size;
 pub const nintendo_3ds_linear_heap_size: u32 = options.config.nintendo_3ds_linear_heap_size;
 
 comptime {
-    std.testing.refAllDecls(@This());
+    if (platform != .wasm) std.testing.refAllDecls(@This());
 }

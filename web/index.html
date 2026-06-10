@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Aether Web</title>
+  <style>
+    html, body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #111318;
+      color: #e8edf2;
+      font-family: system-ui, sans-serif;
+    }
+    canvas {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+      outline: none;
+      touch-action: none;
+    }
+    #status {
+      position: fixed;
+      left: 12px;
+      bottom: 10px;
+      padding: 6px 8px;
+      border-radius: 4px;
+      background: rgba(10, 12, 16, 0.72);
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="aether" tabindex="0"></canvas>
+  <div id="status">Loading</div>
+  <script type="module" src="./aether.js"></script>
+</body>
+</html>
