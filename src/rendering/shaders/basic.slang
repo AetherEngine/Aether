@@ -61,6 +61,7 @@ struct SwitchTransform {
     float4x4 model;
     float4x4 view;
     float4x4 proj;
+    uint alphaBlendEnabled;
 };
 
 [[vk::binding(0, 0)]]
@@ -135,7 +136,12 @@ float4 fragmentMain(VertexOutput input) : SV_Target {
             discard;
     }
 #elif defined(AETHER_SWITCH)
-    color.a = 1.0;
+    if (switchTransform.alphaBlendEnabled == 0) {
+        color.a = 1.0;
+    } else {
+        if (color.a <= 0.1)
+            discard;
+    }
 #else
     if (camera.fogEnabled != 0) {
         float factor = clamp((camera.fogEnd - input.viewDepth) / (camera.fogEnd - camera.fogStart), 0.0, 1.0);
