@@ -27,6 +27,9 @@ const MAX_TEXTURES = 256;
 const UNIFORM_SLOTS = 64;
 const UNIFORM_STRIDE: u32 = dk.alignForward(@intCast(@sizeOf(SwitchUniform)), dk.UniformBufferAlignment);
 const UNIFORM_FRAME_SIZE: u32 = UNIFORM_STRIDE * UNIFORM_SLOTS;
+const IMAGE_DESCRIPTOR_TABLES_PER_FRAME = 128;
+const IMAGE_DESCRIPTOR_TABLE_SIZE: u32 = dk.alignForward(MAX_TEXTURES * dk.ImageDescriptorSize, dk.ImageDescriptorAlignment);
+const IMAGE_DESCRIPTOR_FRAME_SIZE: u32 = IMAGE_DESCRIPTOR_TABLE_SIZE * IMAGE_DESCRIPTOR_TABLES_PER_FRAME;
 const ALL_FRAME_BITS: u8 = (1 << Swapchain.MAX_FRAMES) - 1;
 const DIAGNOSTIC_CLEAR_ONLY = false;
 
@@ -111,6 +114,10 @@ var uniform_gpu_addr: dk.DkGpuAddr = 0;
 var descriptor_mem: dk.DkMemBlock = null;
 var image_descriptor_gpu_addr: dk.DkGpuAddr = 0;
 var sampler_descriptor_gpu_addr: dk.DkGpuAddr = 0;
+var image_descriptors: [MAX_TEXTURES]dk.DkImageDescriptor = @splat(.{ .storage = @splat(0) });
+var image_descriptor_count: u32 = 1;
+var image_descriptors_dirty = true;
+var image_descriptor_table_indices: [Swapchain.MAX_FRAMES]u32 = @splat(0);
 
 var meshes = Util.CircularBuffer(MeshData, 8192).init();
 var texture_slots = Util.CircularBuffer(TextureData, MAX_TEXTURES).init();
@@ -261,7 +268,10 @@ pub fn start_frame() bool {
     upload_dirty_meshes_for_frame(swapchain.frame_index);
 
     swapchain.bindRenderTargetsAndClear(&clear_color);
-    dk.dkCmdBufBindImageDescriptorSet(swapchain.command_buffer, image_descriptor_gpu_addr, MAX_TEXTURES);
+    image_descriptor_table_indices[swapchain.frame_index] = 0;
+    publish_image_descriptors_for_frame(swapchain.frame_index);
+    image_descriptors_dirty = false;
+    bind_current_image_descriptor_set();
     dk.dkCmdBufBindSamplerDescriptorSet(swapchain.command_buffer, sampler_descriptor_gpu_addr, 1);
     bind_fixed_state();
     return true;
@@ -329,6 +339,8 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize) void {
     const frame = mesh.frames[frame_index];
     if (frame.mem_block == null or frame.size == 0 or count == 0) return;
 
+    ensure_image_descriptors_current();
+
     draw_state.mat = model.*;
     const pl = &render_pipeline;
     const shaders = [_]*const dk.DkShader{ &pl.vertex_shader, &pl.fragment_shader };
@@ -390,6 +402,9 @@ pub fn destroy_texture(handle: Texture.Handle) void {
     var tex = texture_slots.get_element(handle) orelse return;
     if (!tex.alive) return;
     destroy_texture_data(&tex, true);
+    image_descriptors[handle] = .{ .storage = @splat(0) };
+    if (image_descriptor_count == handle + 1) recompute_image_descriptor_count();
+    image_descriptors_dirty = true;
     tex.alive = false;
     texture_slots.update_element(handle, tex);
     retired_texture_slots.append(render_alloc, .{
@@ -406,12 +421,6 @@ pub fn destroy_texture(handle: Texture.Handle) void {
 }
 
 pub fn force_texture_resident(_: Texture.Handle) void {}
-
-pub fn retire_submitted_frame_for_resource_transition() void {
-    if (!initialized) return;
-    swapchain.retireGarbageFrame(&gc);
-    collect_retired_texture_slots();
-}
 
 fn init_pipeline(layout: vertex.VertexLayout) !PipelineData {
     const vertex_code: [:0]align(4) const u8 = &shader_data.basic_vert;
@@ -503,12 +512,16 @@ fn destroy_upload_command_buffer() void {
 }
 
 fn create_descriptor_memory() !void {
-    const image_bytes = MAX_TEXTURES * dk.ImageDescriptorSize;
+    const image_bytes = IMAGE_DESCRIPTOR_FRAME_SIZE * Swapchain.MAX_FRAMES;
     const sampler_offset = dk.alignForward(image_bytes, dk.ImageDescriptorAlignment);
     const total_size = sampler_offset + dk.SamplerDescriptorSize;
     descriptor_mem = try context.createMemBlock(total_size, dk.MemCpuUncached | dk.MemGpuCached);
     image_descriptor_gpu_addr = dk.dkMemBlockGetGpuAddr(descriptor_mem);
     sampler_descriptor_gpu_addr = image_descriptor_gpu_addr + sampler_offset;
+    image_descriptors = @splat(.{ .storage = @splat(0) });
+    image_descriptor_count = 1;
+    image_descriptors_dirty = true;
+    image_descriptor_table_indices = @splat(0);
 }
 
 fn destroy_descriptor_memory() void {
@@ -550,9 +563,44 @@ fn initialize_sampler_descriptor() !void {
     submit_upload_commands("sampler descriptor upload");
 }
 
+fn imageDescriptorGpuAddr(frame_index: usize) dk.DkGpuAddr {
+    return image_descriptor_gpu_addr +
+        @as(dk.DkGpuAddr, @intCast(frame_index)) * IMAGE_DESCRIPTOR_FRAME_SIZE +
+        @as(dk.DkGpuAddr, image_descriptor_table_indices[frame_index]) * IMAGE_DESCRIPTOR_TABLE_SIZE;
+}
+
+fn publish_image_descriptors_for_frame(frame_index: usize) void {
+    dk.dkCmdBufPushData(
+        swapchain.command_buffer,
+        imageDescriptorGpuAddr(frame_index),
+        &image_descriptors,
+        image_descriptor_count * dk.ImageDescriptorSize,
+    );
+    dk.dkCmdBufBarrier(swapchain.command_buffer, dk.BarrierFull, dk.InvalidateDescriptors);
+}
+
+fn bind_current_image_descriptor_set() void {
+    dk.dkCmdBufBindImageDescriptorSet(swapchain.command_buffer, imageDescriptorGpuAddr(swapchain.frame_index), image_descriptor_count);
+}
+
+fn ensure_image_descriptors_current() void {
+    if (!image_descriptors_dirty or !swapchain.recording) return;
+    const frame_index = swapchain.frame_index;
+    if (image_descriptor_table_indices[frame_index] + 1 < IMAGE_DESCRIPTOR_TABLES_PER_FRAME) {
+        image_descriptor_table_indices[frame_index] += 1;
+    } else {
+        Util.engine_logger.warn("Switch image descriptor table ring exhausted; reusing latest descriptor table", .{});
+    }
+    publish_image_descriptors_for_frame(swapchain.frame_index);
+    bind_current_image_descriptor_set();
+    image_descriptors_dirty = false;
+}
+
 fn create_fallback_texture() !void {
     var white align(16) = [_]u8{ 0xFF, 0xFF, 0xFF, 0xFF };
     current_texture = try create_texture(1, 1, &white);
+    image_descriptors[0] = image_descriptors[current_texture];
+    image_descriptors_dirty = true;
     draw_state.tex_id = 0;
 }
 
@@ -610,20 +658,17 @@ fn upload_texture_pixels(handle: Texture.Handle, tex: *TextureData, data: []cons
 
     var descriptor: dk.DkImageDescriptor = undefined;
     dk.dkImageDescriptorInitialize(&descriptor, &view, false, false);
-    dk.dkCmdBufPushData(
-        upload_command_buffer,
-        image_descriptor_gpu_addr + @as(dk.DkGpuAddr, handle) * dk.ImageDescriptorSize,
-        &descriptor,
-        @sizeOf(dk.DkImageDescriptor),
-    );
-    dk.dkCmdBufBarrier(upload_command_buffer, dk.BarrierFull, dk.InvalidateImage | dk.InvalidateDescriptors);
+    image_descriptors[handle] = descriptor;
+    image_descriptor_count = @max(image_descriptor_count, @as(u32, @intCast(handle + 1)));
+    image_descriptors_dirty = true;
+    dk.dkCmdBufBarrier(upload_command_buffer, dk.BarrierFull, dk.InvalidateImage);
     submit_upload_commands("texture upload");
 }
 
 fn destroy_texture_data(tex: *TextureData, deferred: bool) void {
     if (tex.mem_block) |mem| {
         if (deferred and initialized) {
-            gc.deferDestroyMemBlockAfterAllFrames(mem) catch {
+            gc.deferDestroyMemBlockAfterFrameMask(swapchain.pendingFrameMask(), mem) catch {
                 context.waitIdle("texture deferred destroy fallback");
                 dk.dkMemBlockDestroy(mem);
             };
@@ -672,7 +717,7 @@ fn upload_mesh_for_frame(mesh: *MeshData, frame_index: usize) !void {
     const needed: u32 = @intCast(mesh.pending_size);
     if (frame.mem_block == null or frame.capacity < needed) {
         if (frame.mem_block) |mem| {
-            gc.deferDestroyMemBlockForFrame(frame_index, mem) catch {
+            gc.deferDestroyMemBlockAfterFrameMask(swapchain.pendingFrameMask(), mem) catch {
                 context.waitIdle("mesh deferred destroy fallback");
                 dk.dkMemBlockDestroy(mem);
             };
@@ -696,10 +741,10 @@ fn destroy_mesh_data(mesh: *MeshData, deferred: bool) void {
         render_alloc.free(pending);
         mesh.pending = null;
     }
-    for (&mesh.frames, 0..) |*frame, frame_index| {
+    for (&mesh.frames) |*frame| {
         if (frame.mem_block) |mem| {
             if (deferred and initialized) {
-                gc.deferDestroyMemBlockForFrame(frame_index, mem) catch {
+                gc.deferDestroyMemBlockAfterFrameMask(swapchain.pendingFrameMask(), mem) catch {
                     context.waitIdle("mesh deferred destroy fallback");
                     dk.dkMemBlockDestroy(mem);
                 };
@@ -728,8 +773,21 @@ fn destroy_all_textures() void {
     }
     texture_slots.clear();
     retired_texture_slots.clearRetainingCapacity();
+    image_descriptors = @splat(.{ .storage = @splat(0) });
+    image_descriptor_count = 1;
+    image_descriptors_dirty = true;
     current_texture = 0;
     draw_state.tex_id = 0;
+}
+
+fn recompute_image_descriptor_count() void {
+    var count: u32 = 1;
+    for (texture_slots.buffer, 0..) |slot, index| {
+        if (slot) |tex| {
+            if (tex.alive) count = @max(count, @as(u32, @intCast(index + 1)));
+        }
+    }
+    image_descriptor_count = count;
 }
 
 fn bind_draw_uniform() void {
