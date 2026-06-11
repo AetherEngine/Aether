@@ -15,6 +15,7 @@ struct CameraState {
     float4x4 view;
     float4x4 proj;
 #ifndef VULKAN
+#ifndef AETHER_SWITCH
     uint fogEnabled;
     float fogStart;
     float fogEnd;
@@ -22,6 +23,7 @@ struct CameraState {
     float3 fogColor;
     uint alphaBlendEnabled;
     float2 uvOffset;
+#endif
 #endif
 };
 
@@ -53,6 +55,8 @@ Texture2D g_textures[];
 float4x4 getModel() { return pc.model; }
 float2 getUvOffset() { return pc.uvOffset; }
 
+#elif defined(AETHER_SWITCH)
+
 #else
 
 [[vk::binding(0, 0)]]
@@ -76,11 +80,18 @@ float2 getUvOffset() { return camera.uvOffset; }
 [shader("vertex")]
 VertexOutput vertexMain(VertexInput input) {
     VertexOutput output;
+#ifdef AETHER_SWITCH
+    output.position = float4(input.position.xy, 0.0, 1.0);
+    output.viewDepth = 0.0;
+    output.uv = input.uv;
+    output.color = input.color;
+#else
     float4 viewPos = mul(camera.view, mul(getModel(), float4(input.position, 1.0)));
     output.position = mul(camera.proj, viewPos);
     output.viewDepth = -viewPos.z;
     output.uv = input.uv + getUvOffset();
     output.color = input.color;
+#endif
     return output;
 }
 
@@ -94,6 +105,8 @@ float4 fragmentMain(VertexOutput input) : SV_Target {
         uint idx = NonUniformResourceIndex(pc.textureIndex);
         color = g_textures[idx].Sample(g_sampler, input.uv) * input.color;
     }
+#elif defined(AETHER_SWITCH)
+    float4 color = input.color;
 #else
     float4 color = u_combinedTexture.Sample(input.uv) * input.color;
 #endif
@@ -108,6 +121,8 @@ float4 fragmentMain(VertexOutput input) : SV_Target {
         if (color.a <= 0.1)
             discard;
     }
+#elif defined(AETHER_SWITCH)
+    color.a = 1.0;
 #else
     if (camera.fogEnabled != 0) {
         float factor = clamp((camera.fogEnd - input.viewDepth) / (camera.fogEnd - camera.fogStart), 0.0, 1.0);
