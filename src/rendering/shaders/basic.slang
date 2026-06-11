@@ -66,6 +66,9 @@ struct SwitchTransform {
 [[vk::binding(0, 0)]]
 ConstantBuffer<SwitchTransform> switchTransform;
 
+[[vk::binding(1, 0)]]
+Sampler2D switchTexture;
+
 #else
 
 [[vk::binding(0, 0)]]
@@ -116,7 +119,7 @@ float4 fragmentMain(VertexOutput input) : SV_Target {
         color = g_textures[idx].Sample(g_sampler, input.uv) * input.color;
     }
 #elif defined(AETHER_SWITCH)
-    float4 color = input.color;
+    float4 color = switchTexture.Sample(input.uv) * input.color;
 #else
     float4 color = u_combinedTexture.Sample(input.uv) * input.color;
 #endif
