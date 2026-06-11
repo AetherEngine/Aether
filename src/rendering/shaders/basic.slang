@@ -57,15 +57,21 @@ float2 getUvOffset() { return pc.uvOffset; }
 
 #elif defined(AETHER_SWITCH)
 
-struct SwitchTransform {
+struct SwitchUniform {
     float4x4 model;
     float4x4 view;
     float4x4 proj;
+    uint textureIndex;
+    uint fogEnabled;
+    float fogStart;
+    float fogEnd;
+    float3 fogColor;
     uint alphaBlendEnabled;
+    float2 uvOffset;
 };
 
 [[vk::binding(0, 0)]]
-ConstantBuffer<SwitchTransform> switchTransform;
+ConstantBuffer<SwitchUniform> switchState;
 
 [[vk::binding(1, 0)]]
 Sampler2D switchTexture;
@@ -94,10 +100,10 @@ float2 getUvOffset() { return camera.uvOffset; }
 VertexOutput vertexMain(VertexInput input) {
     VertexOutput output;
 #ifdef AETHER_SWITCH
-    float4 viewPos = mul(switchTransform.view, mul(switchTransform.model, float4(input.position, 1.0)));
-    output.position = mul(switchTransform.proj, viewPos);
+    float4 viewPos = mul(switchState.view, mul(switchState.model, float4(input.position, 1.0)));
+    output.position = mul(switchState.proj, viewPos);
     output.viewDepth = -viewPos.z;
-    output.uv = input.uv;
+    output.uv = input.uv + switchState.uvOffset;
     output.color = input.color;
 #else
     float4 viewPos = mul(camera.view, mul(getModel(), float4(input.position, 1.0)));
@@ -120,7 +126,12 @@ float4 fragmentMain(VertexOutput input) : SV_Target {
         color = g_textures[idx].Sample(g_sampler, input.uv) * input.color;
     }
 #elif defined(AETHER_SWITCH)
-    float4 color = switchTexture.Sample(input.uv) * input.color;
+    float4 color;
+    if (switchState.textureIndex == 0) {
+        color = input.color;
+    } else {
+        color = switchTexture.Sample(input.uv) * input.color;
+    }
 #else
     float4 color = u_combinedTexture.Sample(input.uv) * input.color;
 #endif
@@ -136,7 +147,11 @@ float4 fragmentMain(VertexOutput input) : SV_Target {
             discard;
     }
 #elif defined(AETHER_SWITCH)
-    if (switchTransform.alphaBlendEnabled == 0) {
+    if (switchState.fogEnabled != 0) {
+        float factor = clamp((switchState.fogEnd - input.viewDepth) / (switchState.fogEnd - switchState.fogStart), 0.0, 1.0);
+        color.rgb = lerp(switchState.fogColor, color.rgb, factor);
+    }
+    if (switchState.alphaBlendEnabled == 0) {
         color.a = 1.0;
     } else {
         if (color.a <= 0.1)
