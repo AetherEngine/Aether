@@ -180,9 +180,11 @@ extern fn dkCmdBufBindDepthStencilState(obj: DkCmdBuf, state: *const DkDepthSten
 extern fn dkCmdBufBindVtxAttribState(obj: DkCmdBuf, attribs: [*]const DkVtxAttribState, numAttribs: u32) void;
 extern fn dkCmdBufBindVtxBufferState(obj: DkCmdBuf, buffers: [*]const DkVtxBufferState, numBuffers: u32) void;
 extern fn dkCmdBufBindVtxBuffers(obj: DkCmdBuf, firstId: u32, buffers: [*]const DkBufExtents, numBuffers: u32) void;
+extern fn dkCmdBufBindUniformBuffers(obj: DkCmdBuf, stage: u32, firstId: u32, buffers: [*]const DkBufExtents, numBuffers: u32) void;
 extern fn dkCmdBufSetViewports(obj: DkCmdBuf, firstId: u32, viewports: [*]const DkViewport, numViewports: u32) void;
 extern fn dkCmdBufSetScissors(obj: DkCmdBuf, firstId: u32, scissors: [*]const DkScissor, numScissors: u32) void;
 extern fn dkCmdBufClearColor(obj: DkCmdBuf, targetId: u32, clearMask: u32, clearData: *const anyopaque) void;
+extern fn dkCmdBufPushConstants(obj: DkCmdBuf, uboAddr: DkGpuAddr, uboSize: u32, offset: u32, size: u32, data: *const anyopaque) void;
 extern fn dkCmdBufDraw(obj: DkCmdBuf, prim: u32, vertexCount: u32, instanceCount: u32, firstVertex: u32, firstInstance: u32) void;
 
 extern fn dkQueueCreate(maker: *const DkQueueMaker) DkQueue;
@@ -214,6 +216,7 @@ const MAX_VERTEX_BUFFERS = 16;
 
 const DK_MEMBLOCK_ALIGNMENT = 0x1000;
 const DK_SHADER_CODE_ALIGNMENT = 0x100;
+const DK_UNIFORM_BUF_ALIGNMENT = 0x100;
 
 const DK_MEM_CPU_UNCACHED = 1 << 0;
 const DK_MEM_GPU_CACHED = 2 << 2;
@@ -235,6 +238,7 @@ const DK_IMAGE_USAGE_PRESENT = 1 << 10;
 const DK_IMAGE_HW_COMPRESSION = 1 << 2;
 
 const DK_STAGE_GRAPHICS_MASK = (1 << 5) - 1;
+const DK_STAGE_VERTEX = 0;
 const DK_COLOR_MASK_RGBA = 0xF;
 
 const DK_PRIMITIVE_LINES = 1;
@@ -273,6 +277,14 @@ const MeshData = struct {
     size: u32 = 0,
 };
 
+const TransformUniform = extern struct {
+    model: [4][4]f32,
+    view: [4][4]f32,
+    proj: [4][4]f32,
+};
+
+const TRANSFORM_UNIFORM_SIZE: u32 = std.mem.alignForward(u32, @intCast(@sizeOf(TransformUniform)), DK_UNIFORM_BUF_ALIGNMENT);
+
 var render_alloc: std.mem.Allocator = undefined;
 var render_io: std.Io = undefined;
 
@@ -285,6 +297,8 @@ var command_mem: DkMemBlock = null;
 var command_buffer: DkCmdBuf = null;
 var code_mem: DkMemBlock = null;
 var code_offset: u32 = 0;
+var transform_mem: DkMemBlock = null;
+var transform_gpu_addr: DkGpuAddr = 0;
 
 var meshes = Util.CircularBuffer(MeshData, 8192).init();
 var render_pipeline: PipelineData = undefined;
@@ -294,6 +308,8 @@ var current_slot: c_int = -1;
 var initialized: bool = false;
 var clear_color: [4]f32 = .{ 0.0, 0.0, 0.0, 1.0 };
 var vsync_enabled: bool = true;
+var view_matrix: Mat4 = Mat4.identity();
+var proj_matrix: Mat4 = Mat4.identity();
 
 pub fn setup(alloc: std.mem.Allocator, io: std.Io) void {
     render_alloc = alloc;
@@ -323,6 +339,9 @@ pub fn init() anyerror!void {
 
     try create_code_memory();
     errdefer destroy_code_memory();
+
+    try create_transform_uniform();
+    errdefer destroy_transform_uniform();
 
     render_pipeline = try init_pipeline(vertex.Layout);
     render_pipeline_initialized = true;
@@ -357,6 +376,7 @@ pub fn deinit() void {
     }
 
     destroy_command_buffer();
+    destroy_transform_uniform();
     destroy_code_memory();
     destroy_framebuffers();
 
@@ -378,8 +398,12 @@ pub fn set_fog(_: bool, _: f32, _: f32, _: f32, _: f32, _: f32) void {}
 pub fn set_clip_planes(_: bool) void {}
 pub fn set_culling(_: bool) void {}
 pub fn set_uv_offset(_: f32, _: f32) void {}
-pub fn set_proj_matrix(_: *const Mat4) void {}
-pub fn set_view_matrix(_: *const Mat4) void {}
+pub fn set_proj_matrix(m: *const Mat4) void {
+    proj_matrix = m.*;
+}
+pub fn set_view_matrix(m: *const Mat4) void {
+    view_matrix = m.*;
+}
 
 pub fn start_frame() bool {
     if (!initialized or render_queue == null or swapchain == null or command_buffer == null) return false;
@@ -506,8 +530,8 @@ pub fn update_mesh(handle: Mesh.Handle, data: []const u8) void {
     meshes.update_element(handle, mesh);
 }
 
-pub fn draw_mesh(handle: Mesh.Handle, _: *const Mat4, count: usize) void {
-    if (!initialized or !render_pipeline_initialized or command_buffer == null) return;
+pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize) void {
+    if (!initialized or !render_pipeline_initialized or command_buffer == null or transform_mem == null) return;
     const mesh = meshes.get_element(handle) orelse return;
     if (mesh.mem_block == null or mesh.size == 0 or count == 0) return;
 
@@ -515,6 +539,16 @@ pub fn draw_mesh(handle: Mesh.Handle, _: *const Mat4, count: usize) void {
 
     const shaders = [_]*const DkShader{ &pl.vertex_shader, &pl.fragment_shader };
     dkCmdBufBindShaders(command_buffer, DK_STAGE_GRAPHICS_MASK, shaders[0..].ptr, shaders.len);
+
+    var transform = TransformUniform{
+        .model = model.data,
+        .view = view_matrix.data,
+        .proj = proj_matrix.data,
+    };
+    dkCmdBufPushConstants(command_buffer, transform_gpu_addr, TRANSFORM_UNIFORM_SIZE, 0, @sizeOf(TransformUniform), &transform);
+
+    const uniform_buffers = [_]DkBufExtents{.{ .addr = transform_gpu_addr, .size = TRANSFORM_UNIFORM_SIZE }};
+    dkCmdBufBindUniformBuffers(command_buffer, DK_STAGE_VERTEX, 0, uniform_buffers[0..].ptr, uniform_buffers.len);
     dkCmdBufBindVtxAttribState(command_buffer, pl.attribs[0..].ptr, pl.attrib_count);
     dkCmdBufBindVtxBufferState(command_buffer, pl.vtx_buffers[0..].ptr, pl.vtx_buffer_count);
 
@@ -601,6 +635,21 @@ fn destroy_code_memory() void {
         code_mem = null;
     }
     code_offset = 0;
+}
+
+fn create_transform_uniform() !void {
+    var maker = memBlockMaker(TRANSFORM_UNIFORM_SIZE, DK_MEM_CPU_UNCACHED | DK_MEM_GPU_CACHED);
+    transform_mem = dkMemBlockCreate(&maker);
+    if (transform_mem == null) return error.GfxInitFailed;
+    transform_gpu_addr = dkMemBlockGetGpuAddr(transform_mem);
+}
+
+fn destroy_transform_uniform() void {
+    if (transform_mem) |_| {
+        dkMemBlockDestroy(transform_mem);
+        transform_mem = null;
+    }
+    transform_gpu_addr = 0;
 }
 
 fn create_command_buffer() !void {

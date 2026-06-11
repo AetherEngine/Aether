@@ -57,6 +57,15 @@ float2 getUvOffset() { return pc.uvOffset; }
 
 #elif defined(AETHER_SWITCH)
 
+struct SwitchTransform {
+    float4x4 model;
+    float4x4 view;
+    float4x4 proj;
+};
+
+[[vk::binding(0, 0)]]
+ConstantBuffer<SwitchTransform> switchTransform;
+
 #else
 
 [[vk::binding(0, 0)]]
@@ -81,8 +90,9 @@ float2 getUvOffset() { return camera.uvOffset; }
 VertexOutput vertexMain(VertexInput input) {
     VertexOutput output;
 #ifdef AETHER_SWITCH
-    output.position = float4(input.position.xy, 0.0, 1.0);
-    output.viewDepth = 0.0;
+    float4 viewPos = mul(switchTransform.view, mul(switchTransform.model, float4(input.position, 1.0)));
+    output.position = mul(switchTransform.proj, viewPos);
+    output.viewDepth = -viewPos.z;
     output.uv = input.uv;
     output.color = input.color;
 #else
