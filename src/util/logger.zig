@@ -7,6 +7,17 @@ var file_log: std.Io.File = undefined;
 var file_writer: std.Io.File.Writer = undefined;
 var writer: *std.Io.Writer = undefined;
 var file_logging = false;
+var log_lock: std.atomic.Value(bool) = .init(false);
+
+fn lock() void {
+    while (log_lock.cmpxchgWeak(false, true, .acquire, .monotonic) != null) {
+        std.atomic.spinLoopHint();
+    }
+}
+
+fn unlock() void {
+    log_lock.store(false, .release);
+}
 
 /// PSP has no per-user data dir concept; the log sits at CWD (which is
 /// where the EBOOT lives) regardless of what `data_dir` points at. Every
@@ -37,6 +48,9 @@ pub fn aether_log_fn(
     comptime format: []const u8,
     args: anytype,
 ) void {
+    lock();
+    defer unlock();
+
     const scope_prefix = "(" ++ @tagName(scope) ++ ") ";
 
     const prefix = scope_prefix ++ "[" ++ comptime level.asText() ++ "]: ";

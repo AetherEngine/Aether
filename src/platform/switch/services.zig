@@ -12,6 +12,16 @@
 
 const process_init = @import("aether").CProcessInit;
 const std = @import("std");
+const c = @cImport({
+    @cUndef("_GNU_SOURCE");
+    @cUndef("_DEFAULT_SOURCE");
+    @cDefine("_POSIX_C_SOURCE", "200809L");
+    @cDefine("wint_t", "__WINT_TYPE__");
+    @cDefine("__SWITCH__", "1");
+    @cDefine("_FORTIFY_SOURCE", "0");
+    @cInclude("stdio.h");
+    @cInclude("switch/runtime/devices/console.h");
+});
 
 pub const os = struct {
     pub const PATH_MAX = 1024;
@@ -88,7 +98,11 @@ const FatalCpuContext = extern struct {
 extern fn fatalThrowWithContext(err: u32, policy: c_int, ctx: *FatalCpuContext) void;
 extern fn svcBreak(break_reason: u32, address: usize, size: usize) u32;
 extern fn svcOutputDebugString(str: [*]const u8, size: u64) u32;
-extern fn write(fd: c_int, buf: *const anyopaque, count: usize) c_int;
+extern fn svcSleepThread(nano: i64) void;
+extern fn appletMainLoop() bool;
+extern fn consoleInit(console: ?*anyopaque) ?*anyopaque;
+extern fn consoleUpdate(console: ?*anyopaque) void;
+extern fn consoleClear() void;
 
 // .text bounds provided by the Switch link step. The Zig C backend references
 // these as externs, so build.zig provides both raw and zig_e_ names.
@@ -102,6 +116,10 @@ comptime {
 
 var panic_stage: u8 = 0;
 var program_stack_top: usize = 0;
+
+export var __nx_exception_ignoredebug: u32 = 1;
+export var __nx_exception_stack: [32 * 1024]u8 align(16) = undefined;
+export const __nx_exception_stack_size: usize = __nx_exception_stack.len;
 
 fn entry(_: c_int, _: [*c][*c]u8) callconv(.c) c_int {
     if (program_stack_top == 0) {
@@ -198,6 +216,70 @@ fn collectStackAddresses(first_addr: usize, out: []usize, start_fp: ?usize, star
     return count;
 }
 
+fn showCrashScreen(title: []const u8, message: []const u8, pc: usize, stack: []const usize) void {
+    @setRuntimeSafety(false);
+
+    _ = consoleInit(null);
+    consoleClear();
+
+    consolePrint("\x1b[31;1m{s}\x1b[0m\n\n", .{title});
+    if (message.len != 0) {
+        consoleWrite(message);
+        if (message[message.len - 1] != '\n') consoleWrite("\n");
+        consoleWrite("\n");
+    }
+
+    const base = @intFromPtr(&__text_start);
+    const text_end = @intFromPtr(&__text_end);
+    consolePrint("Backtrace start addr = 0x{x}\n", .{base});
+    if (pc != 0) {
+        consolePrint("PC = 0x{x}", .{pc});
+        if (pc >= base and pc < text_end) consolePrint(" (+0x{x})", .{pc - base});
+        consoleWrite("\n");
+    }
+
+    const show = @min(stack.len, 24);
+    for (stack[0..show], 0..) |addr, i| {
+        consolePrint("BT{d} = 0x{x}", .{ i, addr });
+        if (addr >= base and addr < text_end) consolePrint(" (+0x{x})", .{addr - base});
+        consoleWrite("\n");
+    }
+    if (show == 0 and pc != 0) {
+        consolePrint("BT0 = 0x{x}", .{pc});
+        if (pc >= base and pc < text_end) consolePrint(" (+0x{x})", .{pc - base});
+        consoleWrite("\n");
+    }
+
+    consoleWrite("\nClose the app from HOME after recording this screen.\n");
+    consoleUpdate(null);
+    waitOnCrashScreen();
+}
+
+fn waitOnCrashScreen() void {
+    @setRuntimeSafety(false);
+
+    while (appletMainLoop()) {
+        consoleUpdate(null);
+        svcSleepThread(16 * 1000 * 1000);
+    }
+}
+
+fn consolePrint(comptime fmt: []const u8, args: anytype) void {
+    var buf: [256]u8 = undefined;
+    var fixed: std.Io.Writer = .fixed(&buf);
+    fixed.print(fmt, args) catch {};
+    consoleWrite(fixed.buffered());
+}
+
+fn consoleWrite(message: []const u8) void {
+    var rest = message;
+    while (rest.len != 0) {
+        const n = @min(rest.len, @as(usize, @intCast(std.math.maxInt(c_int))));
+        _ = c.printf("%.*s", @as(c_int, @intCast(n)), rest.ptr);
+        rest = rest[n..];
+    }
+}
+
 fn fatalMainError(err: anyerror, maybe_trace: ?*std.builtin.StackTrace, fallback_addr: usize) noreturn {
     @branchHint(.cold);
     @setRuntimeSafety(false);
@@ -251,6 +333,7 @@ fn fatalMainError(err: anyerror, maybe_trace: ?*std.builtin.StackTrace, fallback
     const text = fixed.buffered();
     debugString(text);
     debugString("\n");
+    showCrashScreen("Aether main error", text, main_pc, addrs[0..n]);
     fatalWithContext(main_pc, entry_fp, entry_lr, entry_sp, 0, 0, 0, 0, addrs[0..n], 0);
 }
 
@@ -305,6 +388,7 @@ pub fn panic(msg: []const u8, _: ?*std.builtin.StackTrace, first_trace_addr: ?us
     const text = fixed.buffered();
     debugString(text);
     debugString("\n");
+    showCrashScreen("Aether panic", text, first, addrs[0..n]);
     fatalWithContext(first, entry_fp, entry_lr, entry_sp, 0, 0, 0, 0, addrs[0..n], 0);
 }
 
@@ -350,6 +434,7 @@ fn exceptionHandler(dump: *ThreadExceptionDump) callconv(.c) noreturn {
     const text = fixed.buffered();
     debugString(text);
     debugString("\n");
+    showCrashScreen("Aether CPU exception", text, pc, addrs[0..n]);
 
     fatalWithContext(
         pc,
@@ -416,6 +501,7 @@ fn fatalWithContext(
 fn fatalDisplay(message: [:0]const u8) noreturn {
     debugString(message);
     debugString("\n");
+    showCrashScreen("Aether fatal error", message, 0, &.{});
     _ = svcBreak(BreakReason_Panic, @intFromPtr(message.ptr), message.len);
     while (true) {}
 }
@@ -423,5 +509,4 @@ fn fatalDisplay(message: [:0]const u8) noreturn {
 fn debugString(message: []const u8) void {
     if (message.len == 0) return;
     _ = svcOutputDebugString(message.ptr, @intCast(message.len));
-    _ = write(2, @ptrCast(message.ptr), message.len);
 }

@@ -20,6 +20,12 @@ const DkCmdBuf_T = opaque {};
 const DkQueue_T = opaque {};
 const DkSwapchain_T = opaque {};
 
+const Event = extern struct {
+    revent: u32,
+    wevent: u32,
+    autoclear: bool,
+};
+
 const DkDevice = ?*DkDevice_T;
 const DkMemBlock = ?*DkMemBlock_T;
 const DkCmdBuf = ?*DkCmdBuf_T;
@@ -28,10 +34,12 @@ const DkSwapchain = ?*DkSwapchain_T;
 const DkGpuAddr = u64;
 const DkResHandle = u32;
 const DkCmdList = usize;
+const DkResult = c_int;
+const DkDebugFunc = *const fn (?*anyopaque, [*:0]const u8, DkResult, [*:0]const u8) callconv(.c) void;
 
 const DkDeviceMaker = extern struct {
     userData: ?*anyopaque,
-    cbDebug: ?*const anyopaque,
+    cbDebug: ?DkDebugFunc,
     cbAlloc: ?*const anyopaque,
     cbFree: ?*const anyopaque,
     flags: u32,
@@ -102,6 +110,10 @@ const DkImageDescriptor = extern struct {
 
 const DkSamplerDescriptor = extern struct {
     storage: [8]u32,
+};
+
+const DkFence = extern struct {
+    storage: [8]u64,
 };
 
 const DkImageView = extern struct {
@@ -203,6 +215,9 @@ const DkSampler = extern struct {
 };
 
 extern fn nwindowGetDefault() ?*anyopaque;
+extern fn appletGetGpuErrorDetectedSystemEvent(out_event: *Event) u32;
+extern fn eventWait(event: *Event, timeout: u64) u32;
+extern fn eventClose(event: *Event) void;
 
 extern fn dkDeviceCreate(maker: *const DkDeviceMaker) DkDevice;
 extern fn dkDeviceDestroy(obj: DkDevice) void;
@@ -214,11 +229,14 @@ extern fn dkMemBlockGetGpuAddr(obj: DkMemBlock) DkGpuAddr;
 extern fn dkMemBlockGetSize(obj: DkMemBlock) u32;
 extern fn dkMemBlockFlushCpuCache(obj: DkMemBlock, offset: u32, size: u32) u32;
 
+extern fn dkFenceWait(obj: *DkFence, timeout_ns: i64) DkResult;
+
 extern fn dkCmdBufCreate(maker: *const DkCmdBufMaker) DkCmdBuf;
 extern fn dkCmdBufDestroy(obj: DkCmdBuf) void;
 extern fn dkCmdBufAddMemory(obj: DkCmdBuf, mem: DkMemBlock, offset: u32, size: u32) void;
 extern fn dkCmdBufFinishList(obj: DkCmdBuf) DkCmdList;
 extern fn dkCmdBufClear(obj: DkCmdBuf) void;
+extern fn dkCmdBufSignalFence(obj: DkCmdBuf, fence: *DkFence, flush: bool) void;
 extern fn dkCmdBufBindShaders(obj: DkCmdBuf, stageMask: u32, shaders: [*]const *const DkShader, numShaders: u32) void;
 extern fn dkCmdBufBindRenderTargets(obj: DkCmdBuf, colorTargets: [*]const *const DkImageView, numColorTargets: u32, depthTarget: ?*const DkImageView) void;
 extern fn dkCmdBufBindRasterizerState(obj: DkCmdBuf, state: *const DkRasterizerState) void;
@@ -243,7 +261,9 @@ extern fn dkCmdBufDraw(obj: DkCmdBuf, prim: u32, vertexCount: u32, instanceCount
 
 extern fn dkQueueCreate(maker: *const DkQueueMaker) DkQueue;
 extern fn dkQueueDestroy(obj: DkQueue) void;
+extern fn dkQueueIsInErrorState(obj: DkQueue) bool;
 extern fn dkQueueWaitIdle(obj: DkQueue) void;
+extern fn dkQueueSignalFence(obj: DkQueue, fence: *DkFence, flush: bool) void;
 extern fn dkQueueSubmitCommands(obj: DkQueue, cmds: DkCmdList) void;
 extern fn dkQueueAcquireImage(obj: DkQueue, swapchain: DkSwapchain) c_int;
 extern fn dkQueuePresentImage(obj: DkQueue, swapchain: DkSwapchain, imageSlot: c_int) void;
@@ -265,8 +285,11 @@ extern fn dkSwapchainSetSwapInterval(obj: DkSwapchain, interval: u32) void;
 const FB_COUNT = 2;
 const FB_WIDTH = 1280;
 const FB_HEIGHT = 720;
+const DK_RESULT_SUCCESS: DkResult = 0;
 const CODE_MEM_SIZE = 512 * 1024;
 const CMD_MEM_SIZE = 64 * 1024;
+const CMD_MEM_SLICES = 3;
+const FENCE_WAIT_FOREVER: i64 = -1;
 const MAX_VERTEX_ATTRIBS = 32;
 const MAX_VERTEX_BUFFERS = 16;
 const MAX_TEXTURES = 256;
@@ -363,6 +386,11 @@ const TextureData = struct {
     height: u32 = 0,
 };
 
+const RetiredMemBlock = struct {
+    mem_block: *DkMemBlock_T,
+    fence_index: u8,
+};
+
 const TransformUniform = extern struct {
     model: [4][4]f32,
     view: [4][4]f32,
@@ -394,10 +422,18 @@ var sampler_descriptor_gpu_addr: DkGpuAddr = 0;
 
 var meshes = Util.CircularBuffer(MeshData, 8192).init();
 var texture_slots = Util.CircularBuffer(TextureData, MAX_TEXTURES).init();
+var retired_mem_blocks = Util.CircularBuffer(RetiredMemBlock, 4096).init();
 var render_pipeline: PipelineData = undefined;
 
 var render_pipeline_initialized = false;
 var current_slot: c_int = -1;
+var current_cmd_slice: u8 = 0;
+var last_submitted_cmd_slice: u8 = 0;
+var submitted_fence_count: u8 = 0;
+var command_fences: [CMD_MEM_SLICES]DkFence = @splat(emptyFence());
+var command_fence_submitted: [CMD_MEM_SLICES]bool = @splat(false);
+var upload_fence: DkFence = emptyFence();
+var upload_fence_submitted: bool = false;
 var initialized: bool = false;
 var clear_color: [4]f32 = .{ 0.0, 0.0, 0.0, 1.0 };
 var vsync_enabled: bool = true;
@@ -406,10 +442,162 @@ var proj_matrix: Mat4 = Mat4.identity();
 var current_texture: Texture.Handle = 0;
 var culling_enabled: bool = true;
 var alpha_blend_enabled: bool = true;
+var frame_index: u32 = 0;
+var frame_draw_calls: u32 = 0;
+var frame_vertex_count: u32 = 0;
+var last_submitted_frame: u32 = 0;
+var last_submitted_draw_calls: u32 = 0;
+var last_submitted_vertex_count: u32 = 0;
+var diag_frame_trace_remaining: u32 = 0;
+var gpu_error_event: Event = undefined;
+var gpu_error_event_active: bool = false;
+var gpu_error_thread: ?Util.Thread = null;
+var gpu_error_thread_stop = std.atomic.Value(bool).init(false);
 
 pub fn setup(alloc: std.mem.Allocator, io: std.Io) void {
     render_alloc = alloc;
     render_io = io;
+}
+
+fn dekoDebugCallback(_: ?*anyopaque, context: [*:0]const u8, result: DkResult, message: [*:0]const u8) callconv(.c) void {
+    if (result == DK_RESULT_SUCCESS) return;
+    std.debug.panic("deko3d {s}: {s} ({d})", .{ std.mem.span(context), std.mem.span(message), result });
+}
+
+fn assertQueueOk(comptime where: []const u8) void {
+    if (render_queue) |queue| {
+        if (dkQueueIsInErrorState(queue)) {
+            std.debug.panic("deko3d queue entered error state after {s}", .{where});
+        }
+    }
+}
+
+fn emptyFence() DkFence {
+    return .{ .storage = @splat(0) };
+}
+
+fn waitFence(fence: *DkFence, comptime where: []const u8) void {
+    const result = dkFenceWait(fence, FENCE_WAIT_FOREVER);
+    if (result != DK_RESULT_SUCCESS) {
+        std.debug.panic("deko3d fence wait failed at {s}: {d}", .{ where, result });
+    }
+    assertQueueOk(where);
+}
+
+fn lastSubmittedFenceIndex() ?u8 {
+    if (submitted_fence_count == 0) return null;
+    return last_submitted_cmd_slice;
+}
+
+fn resourceRetireFenceIndex() ?u8 {
+    if (current_slot >= 0) return current_cmd_slice;
+    return lastSubmittedFenceIndex();
+}
+
+fn waitQueueIdleForDestroy(comptime where: []const u8) void {
+    if (render_queue) |queue| {
+        dkQueueWaitIdle(queue);
+        assertQueueOk(where);
+    }
+}
+
+fn deferMemBlockDestroy(mem_block: *DkMemBlock_T) void {
+    if (resourceRetireFenceIndex()) |fence_index| {
+        if (retired_mem_blocks.add_element(.{
+            .mem_block = mem_block,
+            .fence_index = fence_index,
+        }) != null) return;
+    } else {
+        dkMemBlockDestroy(mem_block);
+        return;
+    }
+
+    waitQueueIdleForDestroy("deferred destroy overflow");
+    collectAllRetiredMemBlocks();
+    dkMemBlockDestroy(mem_block);
+}
+
+fn collectRetiredMemBlocksForFence(fence_index: u8) void {
+    if (command_fence_submitted[fence_index]) {
+        waitFence(&command_fences[fence_index], "retired resource fence");
+    }
+    for (&retired_mem_blocks.buffer) |*slot| {
+        if (slot.*) |retired| {
+            if (retired.fence_index != fence_index) continue;
+            dkMemBlockDestroy(retired.mem_block);
+            slot.* = null;
+            if (retired_mem_blocks.count > 0) retired_mem_blocks.count -= 1;
+        }
+    }
+}
+
+fn collectAllRetiredMemBlocks() void {
+    for (&retired_mem_blocks.buffer) |*slot| {
+        if (slot.*) |retired| {
+            dkMemBlockDestroy(retired.mem_block);
+            slot.* = null;
+        }
+    }
+    retired_mem_blocks.clear();
+}
+
+pub fn retire_submitted_frame_for_resource_transition() void {
+    if (!initialized) return;
+
+    const retired_count = retired_mem_blocks.len();
+    std.log.info(
+        "switch gfx resource transition retire begin prev_frame={d} prev_draws={d} prev_vertices={d} retired={d}",
+        .{ last_submitted_frame, last_submitted_draw_calls, last_submitted_vertex_count, retired_count },
+    );
+    if (lastSubmittedFenceIndex()) |fence_index| {
+        if (command_fence_submitted[fence_index]) {
+            waitFence(&command_fences[fence_index], "resource transition retire");
+        }
+        collectAllRetiredMemBlocks();
+    }
+    std.log.info("switch gfx resource transition retire end", .{});
+}
+
+fn gpuErrorWatcher() void {
+    const timeout_ns: u64 = 100 * std.time.ns_per_ms;
+    while (!gpu_error_thread_stop.load(.acquire)) {
+        const rc = eventWait(&gpu_error_event, timeout_ns);
+        if (rc == 0) {
+            std.debug.panic("Switch GPU error detected", .{});
+        }
+    }
+}
+
+fn startGpuErrorWatcher() void {
+    gpu_error_thread_stop.store(false, .release);
+    if (appletGetGpuErrorDetectedSystemEvent(&gpu_error_event) != 0) {
+        std.log.warn("Switch GPU error event unavailable", .{});
+        return;
+    }
+    gpu_error_event_active = true;
+    gpu_error_thread = Util.Thread.spawn(.{
+        .allocator = render_alloc,
+        .name = "gpu-error",
+        .stack_size = 256 * 1024,
+        .priority = .high,
+    }, gpuErrorWatcher, .{}) catch |err| {
+        std.log.warn("Switch GPU error watcher unavailable: {s}", .{@errorName(err)});
+        eventClose(&gpu_error_event);
+        gpu_error_event_active = false;
+        return;
+    };
+}
+
+fn stopGpuErrorWatcher() void {
+    gpu_error_thread_stop.store(true, .release);
+    if (gpu_error_thread) |thread| {
+        thread.join();
+        gpu_error_thread = null;
+    }
+    if (gpu_error_event_active) {
+        eventClose(&gpu_error_event);
+        gpu_error_event_active = false;
+    }
 }
 
 pub fn init() anyerror!void {
@@ -418,7 +606,7 @@ pub fn init() anyerror!void {
 
     var device_maker = DkDeviceMaker{
         .userData = null,
-        .cbDebug = null,
+        .cbDebug = dekoDebugCallback,
         .cbAlloc = null,
         .cbFree = null,
         .flags = 0,
@@ -462,11 +650,18 @@ pub fn init() anyerror!void {
         dkQueueDestroy(render_queue);
         render_queue = null;
     }
+    assertQueueOk("queue create");
+    startGpuErrorWatcher();
+    errdefer stopGpuErrorWatcher();
 
     try create_descriptor_memory();
     errdefer destroy_descriptor_memory();
+    std.log.info("switch gfx init sampler begin", .{});
     try initialize_sampler_descriptor();
+    std.log.info("switch gfx init sampler end", .{});
+    std.log.info("switch gfx init fallback texture begin", .{});
     try create_fallback_texture();
+    std.log.info("switch gfx init fallback texture end", .{});
     errdefer destroy_all_textures();
 
     initialized = true;
@@ -474,10 +669,17 @@ pub fn init() anyerror!void {
 }
 
 pub fn deinit() void {
-    if (render_queue) |_| dkQueueWaitIdle(render_queue);
+    stopGpuErrorWatcher();
+
+    if (render_queue) |_| {
+        dkQueueWaitIdle(render_queue);
+        assertQueueOk("deinit wait idle");
+    }
+    collectAllRetiredMemBlocks();
 
     destroy_all_meshes();
     destroy_all_textures();
+    collectAllRetiredMemBlocks();
     render_pipeline_initialized = false;
 
     destroy_descriptor_memory();
@@ -537,16 +739,33 @@ pub fn set_view_matrix(m: *const Mat4) void {
 pub fn start_frame() bool {
     if (!initialized or render_queue == null or swapchain == null or command_buffer == null) return false;
 
-    // Single command-memory arena for the bring-up path. Wait before reuse so
-    // the GPU cannot still be reading last frame's command list.
-    dkQueueWaitIdle(render_queue);
+    const retired_count = retired_mem_blocks.len();
+    if (retired_count > 0) diag_frame_trace_remaining = 64;
+    const trace_frame = diag_frame_trace_remaining > 0;
+    if (trace_frame) {
+        std.log.info(
+            "switch gfx frame {d} wait fence begin slice={d} prev_frame={d} prev_draws={d} prev_vertices={d} retired={d}",
+            .{ frame_index + 1, current_cmd_slice, last_submitted_frame, last_submitted_draw_calls, last_submitted_vertex_count, retired_count },
+        );
+    }
+    if (command_fence_submitted[current_cmd_slice]) {
+        waitFence(&command_fences[current_cmd_slice], "command memory slice");
+    }
+    collectRetiredMemBlocksForFence(current_cmd_slice);
+    if (trace_frame) std.log.info("switch gfx frame {d} wait fence end", .{frame_index + 1});
 
+    if (trace_frame) std.log.info("switch gfx frame {d} acquire begin", .{frame_index + 1});
     const slot = dkQueueAcquireImage(render_queue, swapchain);
+    assertQueueOk("acquire image");
+    if (trace_frame) std.log.info("switch gfx frame {d} acquire end slot={d}", .{ frame_index + 1, slot });
     if (slot < 0 or slot >= FB_COUNT) return false;
     current_slot = slot;
+    frame_index += 1;
+    frame_draw_calls = 0;
+    frame_vertex_count = 0;
 
     dkCmdBufClear(command_buffer);
-    dkCmdBufAddMemory(command_buffer, command_mem, 0, CMD_MEM_SIZE);
+    dkCmdBufAddMemory(command_buffer, command_mem, @as(u32, current_cmd_slice) * CMD_MEM_SIZE, CMD_MEM_SIZE);
 
     var color_view = imageView(&framebuffers[@intCast(slot)]);
     const color_targets = [_]*const DkImageView{&color_view};
@@ -583,9 +802,30 @@ pub fn start_frame() bool {
 pub fn end_frame() void {
     if (!initialized or render_queue == null or swapchain == null or command_buffer == null or current_slot < 0) return;
 
+    const trace_frame = diag_frame_trace_remaining > 0;
+    if (trace_frame) {
+        std.log.info(
+            "switch gfx frame {d} finish begin slot={d} draws={d} vertices={d}",
+            .{ frame_index, current_slot, frame_draw_calls, frame_vertex_count },
+        );
+    }
     const list = dkCmdBufFinishList(command_buffer);
+    if (trace_frame) std.log.info("switch gfx frame {d} submit begin list=0x{x}", .{ frame_index, list });
     dkQueueSubmitCommands(render_queue, list);
+    dkQueueSignalFence(render_queue, &command_fences[current_cmd_slice], false);
+    assertQueueOk("submit commands");
+    if (trace_frame) std.log.info("switch gfx frame {d} present begin", .{frame_index});
     dkQueuePresentImage(render_queue, swapchain, current_slot);
+    assertQueueOk("present image");
+    if (trace_frame) std.log.info("switch gfx frame {d} present end", .{frame_index});
+    last_submitted_frame = frame_index;
+    last_submitted_draw_calls = frame_draw_calls;
+    last_submitted_vertex_count = frame_vertex_count;
+    last_submitted_cmd_slice = current_cmd_slice;
+    command_fence_submitted[current_cmd_slice] = true;
+    if (submitted_fence_count < CMD_MEM_SLICES) submitted_fence_count += 1;
+    current_cmd_slice = @intCast((@as(u32, current_cmd_slice) + 1) % CMD_MEM_SLICES);
+    if (diag_frame_trace_remaining > 0) diag_frame_trace_remaining -= 1;
     current_slot = -1;
 }
 
@@ -623,7 +863,7 @@ pub fn create_mesh() anyerror!Mesh.Handle {
 
 pub fn destroy_mesh(handle: Mesh.Handle) void {
     const mesh = meshes.get_element(handle) orelse return;
-    if (mesh.mem_block) |_| dkMemBlockDestroy(mesh.mem_block);
+    if (mesh.mem_block) |mem_block| deferMemBlockDestroy(mem_block);
     _ = meshes.remove_element(handle);
 }
 
@@ -638,7 +878,7 @@ pub fn update_mesh(handle: Mesh.Handle, data: []const u8) void {
 
     const needed: u32 = @intCast(data.len);
     if (mesh.mem_block == null or mesh.capacity < needed) {
-        if (mesh.mem_block) |_| dkMemBlockDestroy(mesh.mem_block);
+        if (mesh.mem_block) |mem_block| deferMemBlockDestroy(mem_block);
 
         const alloc_size = alignForward(needed, DK_MEMBLOCK_ALIGNMENT);
         var maker = memBlockMaker(alloc_size, DK_MEM_CPU_UNCACHED | DK_MEM_GPU_CACHED);
@@ -694,6 +934,8 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize) void {
     dkCmdBufBindVtxBuffers(command_buffer, 0, extents[0..].ptr, pl.vtx_buffer_count);
 
     dkCmdBufDraw(command_buffer, DK_PRIMITIVE_TRIANGLES, @intCast(count), 1, 0, 0);
+    frame_draw_calls += 1;
+    frame_vertex_count += @intCast(count);
 }
 
 pub fn create_texture(width: u32, height: u32, data: []align(16) u8) anyerror!Texture.Handle {
@@ -768,6 +1010,18 @@ fn create_texture_image(tex: *TextureData, width: u32, height: u32) !void {
 fn upload_texture_pixels(handle: Texture.Handle, tex: *TextureData, data: []const u8) !void {
     if (upload_command_buffer == null or upload_command_mem == null or render_queue == null) return error.GfxInitFailed;
 
+    if (lastSubmittedFenceIndex()) |fence_index| {
+        if (command_fence_submitted[fence_index]) {
+            std.log.info("switch gfx texture upload wait render fence begin index={d}", .{fence_index});
+            waitFence(&command_fences[fence_index], "texture upload frame dependency");
+            std.log.info("switch gfx texture upload wait render fence end", .{});
+        }
+        collectAllRetiredMemBlocks();
+    }
+    if (upload_fence_submitted) {
+        waitFence(&upload_fence, "texture upload command memory");
+    }
+
     const byte_count: u32 = @intCast(@as(usize, tex.width) * @as(usize, tex.height) * 4);
     const staging_size = alignForward(byte_count, DK_IMAGE_LINEAR_STRIDE_ALIGNMENT);
     var staging_maker = memBlockMaker(staging_size, DK_MEM_CPU_UNCACHED | DK_MEM_GPU_CACHED);
@@ -779,7 +1033,6 @@ fn upload_texture_pixels(handle: Texture.Handle, tex: *TextureData, data: []cons
     @memcpy(staging_cpu[0..byte_count], data[0..byte_count]);
     _ = dkMemBlockFlushCpuCache(staging_mem, 0, byte_count);
 
-    dkQueueWaitIdle(render_queue);
     dkCmdBufClear(upload_command_buffer);
     dkCmdBufAddMemory(upload_command_buffer, upload_command_mem, 0, CMD_MEM_SIZE);
 
@@ -809,13 +1062,17 @@ fn upload_texture_pixels(handle: Texture.Handle, tex: *TextureData, data: []cons
     );
 
     const list = dkCmdBufFinishList(upload_command_buffer);
+    std.log.info("switch gfx texture upload submit begin handle={d} bytes={d}", .{ handle, byte_count });
     dkQueueSubmitCommands(render_queue, list);
+    assertQueueOk("texture upload submit");
     dkQueueWaitIdle(render_queue);
+    assertQueueOk("texture upload wait complete");
+    std.log.info("switch gfx texture upload wait complete end", .{});
 }
 
 fn destroy_texture_data(tex: *TextureData) void {
-    if (tex.mem_block) |_| {
-        dkMemBlockDestroy(tex.mem_block);
+    if (tex.mem_block) |mem_block| {
+        deferMemBlockDestroy(mem_block);
         tex.mem_block = null;
     }
     tex.width = 0;
@@ -951,17 +1208,23 @@ fn initialize_sampler_descriptor() !void {
     var descriptor: DkSamplerDescriptor = undefined;
     dkSamplerDescriptorInitialize(&descriptor, &sampler);
 
-    dkQueueWaitIdle(render_queue);
+    if (upload_fence_submitted) {
+        waitFence(&upload_fence, "sampler upload command memory");
+    }
     dkCmdBufClear(upload_command_buffer);
     dkCmdBufAddMemory(upload_command_buffer, upload_command_mem, 0, CMD_MEM_SIZE);
     dkCmdBufPushData(upload_command_buffer, sampler_descriptor_gpu_addr, &descriptor, @sizeOf(DkSamplerDescriptor));
     const list = dkCmdBufFinishList(upload_command_buffer);
+    std.log.info("switch gfx sampler upload submit begin", .{});
     dkQueueSubmitCommands(render_queue, list);
+    assertQueueOk("sampler upload submit");
     dkQueueWaitIdle(render_queue);
+    assertQueueOk("sampler upload wait complete");
+    std.log.info("switch gfx sampler upload wait complete end", .{});
 }
 
 fn create_command_buffer() !void {
-    var mem_maker = memBlockMaker(CMD_MEM_SIZE, DK_MEM_CPU_UNCACHED | DK_MEM_GPU_CACHED);
+    var mem_maker = memBlockMaker(CMD_MEM_SIZE * CMD_MEM_SLICES, DK_MEM_CPU_UNCACHED | DK_MEM_GPU_CACHED);
     command_mem = dkMemBlockCreate(&mem_maker);
     if (command_mem == null) return error.GfxInitFailed;
     errdefer {

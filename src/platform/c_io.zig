@@ -25,8 +25,12 @@ const platform_lifecycle = switch (options.config.platform) {
 };
 
 const c = @import("nintendo_c.zig").c;
+const log = std.log.scoped(.aether_io);
 const max_path_bytes = 1024;
-const async_stack_size = 512 * 1024;
+const async_stack_size = switch (options.config.platform) {
+    .nintendo_switch => 2 * 1024 * 1024,
+    else => 512 * 1024,
+};
 
 const AT_FDCWD: c_int = -2;
 const O_RDONLY: c_int = c.O_RDONLY;
@@ -59,6 +63,7 @@ var empty_stderr_buffer: [0]u8 = .{};
 var resources_mounted = false;
 var data_mounted = false;
 var atomic_counter: u64 = 0x6165_7468_6572_0000;
+var async_debug_stage: std.atomic.Value(u32) = .init(0);
 
 const max_dynamic_dirs = 32;
 const DirSlot = struct {
@@ -71,11 +76,11 @@ var dir_slots: [max_dynamic_dirs]DirSlot = [_]DirSlot{.{}} ** max_dynamic_dirs;
 const vtable: Io.VTable = blk: {
     var v = Io.failing.vtable.*;
     v.crashHandler = crashHandler;
-    if (options.config.platform == .nintendo_3ds) {
-        v.async = threed_async.async;
-        v.concurrent = threed_async.concurrent;
-        v.await = threed_async.await;
-        v.cancel = threed_async.cancel;
+    if (options.config.platform == .nintendo_3ds or options.config.platform == .nintendo_switch) {
+        v.async = nintendo_async.async;
+        v.concurrent = nintendo_async.concurrent;
+        v.await = nintendo_async.await;
+        v.cancel = nintendo_async.cancel;
     } else {
         v.async = Io.noAsync;
     }
@@ -130,6 +135,14 @@ pub fn cwd() Dir {
     return .{ .handle = AT_FDCWD };
 }
 
+pub fn debugAsyncStage() u32 {
+    return async_debug_stage.load(.acquire);
+}
+
+fn setAsyncDebugStage(stage: u32) void {
+    async_debug_stage.store(stage, .release);
+}
+
 pub fn mountData() void {
     data_mounted = platform_paths.mountData();
 }
@@ -175,7 +188,7 @@ fn swapCancelProtection(_: ?*anyopaque, new: Io.CancelProtection) Io.CancelProte
 
 fn checkCancel(_: ?*anyopaque) Io.Cancelable!void {}
 
-const threed_async = if (options.config.platform == .nintendo_3ds) struct {
+const nintendo_async = if (options.config.platform == .nintendo_3ds or options.config.platform == .nintendo_switch) struct {
     const AsyncFuture = struct {
         thread: c.Thread,
         result_len: usize,
@@ -201,14 +214,20 @@ const threed_async = if (options.config.platform == .nintendo_3ds) struct {
         context_alignment: std.mem.Alignment,
         start: *const fn (context: *const anyopaque, result: *anyopaque) void,
     ) ?*AsyncFuture {
-        const result_offset = result_alignment.forward(@sizeOf(AsyncFuture));
-        const context_offset = context_alignment.forward(result_offset + result_len);
-        const total = context_offset + context.len;
+        const result_storage_len = @max(result_len, 1);
+        const max_context_misalignment = context_alignment.toByteUnits() -| @alignOf(AsyncFuture);
+        const max_result_misalignment = result_alignment.toByteUnits() -| @alignOf(AsyncFuture);
+        const worst_case_context_offset = context_alignment.forward(@sizeOf(AsyncFuture) + max_context_misalignment);
+        const worst_case_result_offset = result_alignment.forward(worst_case_context_offset + context.len + max_result_misalignment);
+        const total = worst_case_result_offset + result_storage_len;
 
         const raw = c.malloc(total) orelse return null;
         const future: *AsyncFuture = @ptrCast(@alignCast(raw));
+        const base_addr = @intFromPtr(future);
+        const context_offset = context_alignment.forward(base_addr + @sizeOf(AsyncFuture)) - base_addr;
+        const result_offset = result_alignment.forward(base_addr + context_offset + context.len) - base_addr;
         future.* = .{
-            .thread = null,
+            .thread = undefined,
             .result_len = result_len,
             .result_offset = result_offset,
             .context_offset = context_offset,
@@ -225,29 +244,100 @@ const threed_async = if (options.config.platform == .nintendo_3ds) struct {
     }
 
     fn entry(raw: ?*anyopaque) callconv(.c) void {
-        const future: *AsyncFuture = @ptrCast(@alignCast(raw.?));
-        future.start(future.context(), future.result().ptr);
+        setAsyncDebugStage(10);
+        const raw_ptr = raw orelse {
+            setAsyncDebugStage(901);
+            return;
+        };
+        setAsyncDebugStage(11);
+        const raw_addr = @intFromPtr(raw_ptr);
+        const future_align = @alignOf(AsyncFuture);
+        if (raw_addr % future_align != 0) {
+            setAsyncDebugStage(902);
+            return;
+        }
+        setAsyncDebugStage(12);
+        const future: *AsyncFuture = @ptrCast(@alignCast(raw_ptr));
+        setAsyncDebugStage(13);
+        const result_len = future.result_len;
+        _ = result_len;
+        setAsyncDebugStage(14);
+        const result_offset = future.result_offset;
+        _ = result_offset;
+        setAsyncDebugStage(15);
+        const context_offset = future.context_offset;
+        _ = context_offset;
+        setAsyncDebugStage(16);
+        const start = future.start;
+        setAsyncDebugStage(17);
+        const context = future.context();
+        setAsyncDebugStage(18);
+        const result = future.result().ptr;
+        setAsyncDebugStage(19);
+        start(context, result);
+        setAsyncDebugStage(20);
     }
 
     fn spawn(future: *AsyncFuture) bool {
-        future.thread = c.threadCreate(
-            entry,
-            future,
-            async_stack_size,
-            workerPriority(),
-            -2,
-            false,
-        ) orelse return false;
-        return true;
+        if (comptime options.config.platform == .nintendo_3ds) {
+            log.info("3ds async threadCreate begin", .{});
+            future.thread = c.threadCreate(
+                entry,
+                future,
+                async_stack_size,
+                workerPriority(),
+                -2,
+                false,
+            ) orelse {
+                log.err("3ds async threadCreate failed", .{});
+                return false;
+            };
+            log.info("3ds async threadCreate ok", .{});
+            return true;
+        } else {
+            const priority = workerPriority();
+            log.info("switch async threadCreate begin priority={d} stack={d} future=0x{x}", .{ priority, async_stack_size, @intFromPtr(future) });
+            const create_result = c.threadCreate(
+                &future.thread,
+                entry,
+                future,
+                null,
+                async_stack_size,
+                priority,
+                -2,
+            );
+            if (create_result != 0) {
+                log.err("switch async threadCreate failed rc={d}", .{create_result});
+                return false;
+            }
+            log.info("switch async threadCreate ok handle={d}", .{future.thread.handle});
+            log.info("switch async threadStart begin", .{});
+            const start_result = c.threadStart(&future.thread);
+            if (start_result != 0) {
+                log.err("switch async threadStart failed rc={d}", .{start_result});
+                _ = c.threadClose(&future.thread);
+                return false;
+            }
+            log.info("switch async threadStart ok", .{});
+            return true;
+        }
     }
 
     fn workerPriority() c_int {
-        var priority: c.s32 = 0x30;
-        if (c.threadGetCurrent()) |current| {
-            const handle = c.threadGetHandle(current);
-            _ = c.svcGetThreadPriority(&priority, handle);
+        if (comptime options.config.platform == .nintendo_3ds) {
+            var priority: c.s32 = 0x30;
+            if (c.threadGetCurrent()) |current| {
+                const handle = c.threadGetHandle(current);
+                _ = c.svcGetThreadPriority(&priority, handle);
+            }
+            return @min(priority + 1, 0x3f);
+        } else {
+            var priority: c.s32 = 0x2c;
+            const rc = c.svcGetThreadPriority(&priority, c.threadGetCurHandle());
+            const worker_priority = @min(priority + 1, 0x3f);
+            log.info("switch async priority current={d} worker={d} rc={d}", .{ priority, worker_priority, rc });
+            return worker_priority;
         }
-        return @min(priority + 1, 0x3f);
     }
 
     fn async(
@@ -259,10 +349,13 @@ const threed_async = if (options.config.platform == .nintendo_3ds) struct {
         start: *const fn (context: *const anyopaque, result: *anyopaque) void,
     ) ?*Io.AnyFuture {
         const future = allocFuture(result.len, result_alignment, context, context_alignment, start) orelse {
+            log.err("nintendo async allocFuture failed; running inline", .{});
             start(context.ptr, result.ptr);
             return null;
         };
+        setAsyncDebugStage(1);
         if (!spawn(future)) {
+            log.err("nintendo async spawn failed; running inline", .{});
             freeFuture(future);
             start(context.ptr, result.ptr);
             return null;
@@ -281,7 +374,10 @@ const threed_async = if (options.config.platform == .nintendo_3ds) struct {
         const future = allocFuture(result_len, result_alignment, context, context_alignment, start) orelse
             return error.ConcurrencyUnavailable;
         errdefer freeFuture(future);
+        setAsyncDebugStage(1);
+        log.info("nintendo concurrent spawn requested result_len={d} context_len={d}", .{ result_len, context.len });
         if (!spawn(future)) return error.ConcurrencyUnavailable;
+        log.info("nintendo concurrent spawn returned future", .{});
         return @ptrCast(future);
     }
 
@@ -293,9 +389,18 @@ const threed_async = if (options.config.platform == .nintendo_3ds) struct {
     ) void {
         _ = result_alignment;
         const future: *AsyncFuture = @ptrCast(@alignCast(any_future));
-        _ = c.threadJoin(future.thread, std.math.maxInt(u64));
-        c.threadFree(future.thread);
+        log.info("nintendo async await begin", .{});
+        if (comptime options.config.platform == .nintendo_3ds) {
+            _ = c.threadJoin(future.thread, std.math.maxInt(u64));
+            c.threadFree(future.thread);
+        } else {
+            const wait_result = c.threadWaitForExit(&future.thread);
+            log.info("switch async threadWaitForExit rc={d}", .{wait_result});
+            const close_result = c.threadClose(&future.thread);
+            log.info("switch async threadClose rc={d}", .{close_result});
+        }
         @memcpy(result, future.result());
+        log.info("nintendo async await end", .{});
         freeFuture(future);
     }
 
