@@ -149,6 +149,10 @@ const DkDepthStencilState = extern struct {
     bits1: u32,
 };
 
+const DkBlendState = extern struct {
+    bits: u32,
+};
+
 const DkVtxAttribState = extern struct {
     bits: u32,
 };
@@ -221,6 +225,7 @@ extern fn dkCmdBufBindRasterizerState(obj: DkCmdBuf, state: *const DkRasterizerS
 extern fn dkCmdBufBindColorState(obj: DkCmdBuf, state: *const DkColorState) void;
 extern fn dkCmdBufBindColorWriteState(obj: DkCmdBuf, state: *const DkColorWriteState) void;
 extern fn dkCmdBufBindDepthStencilState(obj: DkCmdBuf, state: *const DkDepthStencilState) void;
+extern fn dkCmdBufBindBlendStates(obj: DkCmdBuf, firstId: u32, states: [*]const DkBlendState, numStates: u32) void;
 extern fn dkCmdBufBindVtxAttribState(obj: DkCmdBuf, attribs: [*]const DkVtxAttribState, numAttribs: u32) void;
 extern fn dkCmdBufBindVtxBufferState(obj: DkCmdBuf, buffers: [*]const DkVtxBufferState, numBuffers: u32) void;
 extern fn dkCmdBufBindVtxBuffers(obj: DkCmdBuf, firstId: u32, buffers: [*]const DkBufExtents, numBuffers: u32) void;
@@ -308,6 +313,12 @@ const DK_FACE_NONE = 0;
 const DK_FACE_BACK = 2;
 const DK_FRONT_FACE_CCW = 1;
 const DK_PROVOKING_VERTEX_LAST = 1;
+const DK_LOGIC_OP_COPY = 3;
+const DK_COMPARE_ALWAYS = 8;
+const DK_BLEND_OP_ADD = 1;
+const DK_BLEND_FACTOR_ONE = 2;
+const DK_BLEND_FACTOR_SRC_ALPHA = 5;
+const DK_BLEND_FACTOR_INV_SRC_ALPHA = 6;
 
 const DK_PRIMITIVE_LINES = 1;
 const DK_PRIMITIVE_TRIANGLES = 4;
@@ -356,6 +367,7 @@ const TransformUniform = extern struct {
     model: [4][4]f32,
     view: [4][4]f32,
     proj: [4][4]f32,
+    alphaBlendEnabled: u32,
 };
 
 const TRANSFORM_UNIFORM_SIZE: u32 = std.mem.alignForward(u32, @intCast(@sizeOf(TransformUniform)), DK_UNIFORM_BUF_ALIGNMENT);
@@ -393,6 +405,7 @@ var view_matrix: Mat4 = Mat4.identity();
 var proj_matrix: Mat4 = Mat4.identity();
 var current_texture: Texture.Handle = 0;
 var culling_enabled: bool = true;
+var alpha_blend_enabled: bool = true;
 
 pub fn setup(alloc: std.mem.Allocator, io: std.Io) void {
     render_alloc = alloc;
@@ -492,7 +505,16 @@ pub fn set_clear_color(r: f32, g: f32, b: f32, a: f32) void {
     clear_color = .{ r, g, b, a };
 }
 
-pub fn set_alpha_blend(_: bool) void {}
+pub fn set_alpha_blend(enabled: bool) void {
+    if (enabled == alpha_blend_enabled) return;
+    alpha_blend_enabled = enabled;
+    if (initialized and command_buffer != null) {
+        var color = colorState();
+        var blend = blendState();
+        dkCmdBufBindColorState(command_buffer, &color);
+        dkCmdBufBindBlendStates(command_buffer, 0, @ptrCast(&blend), 1);
+    }
+}
 pub fn set_depth_write(_: bool) void {}
 pub fn set_fog(_: bool, _: f32, _: f32, _: f32, _: f32, _: f32) void {}
 pub fn set_clip_planes(_: bool) void {}
@@ -653,11 +675,13 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize) void {
         .model = model.data,
         .view = view_matrix.data,
         .proj = proj_matrix.data,
+        .alphaBlendEnabled = @intFromBool(alpha_blend_enabled),
     };
     dkCmdBufPushConstants(command_buffer, transform_gpu_addr, TRANSFORM_UNIFORM_SIZE, 0, @sizeOf(TransformUniform), &transform);
 
     const uniform_buffers = [_]DkBufExtents{.{ .addr = transform_gpu_addr, .size = TRANSFORM_UNIFORM_SIZE }};
     dkCmdBufBindUniformBuffers(command_buffer, DK_STAGE_VERTEX, 0, uniform_buffers[0..].ptr, uniform_buffers.len);
+    dkCmdBufBindUniformBuffers(command_buffer, DK_STAGE_FRAGMENT, 0, uniform_buffers[0..].ptr, uniform_buffers.len);
     const texture_handle = [_]DkResHandle{makeTextureHandle(current_texture, 0)};
     dkCmdBufBindTextures(command_buffer, DK_STAGE_FRAGMENT, 1, texture_handle[0..].ptr, texture_handle.len);
     dkCmdBufBindVtxAttribState(command_buffer, pl.attribs[0..].ptr, pl.attrib_count);
@@ -1093,10 +1117,8 @@ fn vtxAttrib(attr: vertex.Attribute) DkVtxAttribState {
 
 fn bind_fixed_state() void {
     var rasterizer = rasterizerState();
-    const color = DkColorState{
-        // logicOp=Copy, alphaCompare=Always, blending disabled.
-        .bits = (3 << 8) | (8 << 16),
-    };
+    var color = colorState();
+    var blend = blendState();
     const color_write = DkColorWriteState{ .masks = 0xFFFF_FFFF };
     const depth = DkDepthStencilState{
         // No depth attachment in this milestone, so keep depth/stencil off.
@@ -1106,6 +1128,7 @@ fn bind_fixed_state() void {
 
     dkCmdBufBindRasterizerState(command_buffer, &rasterizer);
     dkCmdBufBindColorState(command_buffer, &color);
+    dkCmdBufBindBlendStates(command_buffer, 0, @ptrCast(&blend), 1);
     dkCmdBufBindColorWriteState(command_buffer, &color_write);
     dkCmdBufBindDepthStencilState(command_buffer, &depth);
 }
@@ -1118,6 +1141,22 @@ fn rasterizerState() DkRasterizerState {
         (cull_mode << 7) |
         (DK_FRONT_FACE_CCW << 9) |
         (DK_PROVOKING_VERTEX_LAST << 10) };
+}
+
+fn colorState() DkColorState {
+    const blend_enable_mask: u32 = @intFromBool(alpha_blend_enabled);
+    return .{ .bits = blend_enable_mask |
+        (DK_LOGIC_OP_COPY << 8) |
+        (DK_COMPARE_ALWAYS << 16) };
+}
+
+fn blendState() DkBlendState {
+    return .{ .bits = DK_BLEND_OP_ADD |
+        (DK_BLEND_FACTOR_SRC_ALPHA << 3) |
+        (DK_BLEND_FACTOR_INV_SRC_ALPHA << 9) |
+        (DK_BLEND_OP_ADD << 15) |
+        (DK_BLEND_FACTOR_ONE << 18) |
+        (DK_BLEND_FACTOR_INV_SRC_ALPHA << 24) };
 }
 
 fn imageView(image: *const DkImage) DkImageView {
