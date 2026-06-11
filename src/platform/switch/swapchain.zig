@@ -68,12 +68,13 @@ pub fn beginFrame(self: *Self, gc: *GarbageCollector) bool {
     if (self.chain == null or self.command_buffer == null or self.command_mem == null or self.static_command_buffer == null) return false;
 
     const frame = &self.frames[self.frame_index];
+    var was_submitted = false;
     if (frame.submitted) {
         self.context.waitFence(&frame.fence, "switch frame fence");
         frame.submitted = false;
+        was_submitted = true;
     }
-    gc.frame_index = self.frame_index;
-    gc.collect();
+    gc.retireFrame(self.frame_index, was_submitted);
 
     const slot = dk.dkQueueAcquireImage(self.context.queue, self.chain);
     self.context.assertQueueOk("acquire image");
@@ -139,11 +140,13 @@ pub fn endFrame(self: *Self) PresentState {
 pub fn retireGarbageFrame(self: *Self, gc: *GarbageCollector) void {
     if (gc.frame_index >= MAX_FRAMES) return;
     const frame = &self.frames[gc.frame_index];
+    var was_submitted = false;
     if (frame.submitted) {
         self.context.waitFence(&frame.fence, "switch resource transition frame fence");
         frame.submitted = false;
+        was_submitted = true;
     }
-    gc.collect();
+    gc.retireFrame(gc.frame_index, was_submitted);
 }
 
 pub fn setVsync(self: *Self, enabled: bool) void {
