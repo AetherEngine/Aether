@@ -4,6 +4,23 @@
 #include <stdbool.h>
 #include <switch/types.h>
 
+typedef struct Thread {
+    Handle handle;
+    bool owns_stack_mem;
+    void *stack_mem;
+    void *stack_mirror;
+    size_t stack_sz;
+    void **tls_array;
+    struct Thread *next;
+    struct Thread **prev_next;
+} Thread;
+
+Result threadCreate(Thread *t, ThreadFunc entry, void *arg, void *stack_mem, size_t stack_sz, int prio, int cpuid);
+Result threadStart(Thread *t);
+Result threadWaitForExit(Thread *t);
+Result threadClose(Thread *t);
+Handle threadGetCurHandle(void);
+
 Result fsdevMountSdmc(void);
 int fsdevUnmountDevice(const char *name);
 Result romfsMountSelf(const char *name);
@@ -11,6 +28,8 @@ Result romfsUnmount(const char *name);
 
 u64 svcGetSystemTick(void);
 void svcSleepThread(s64 nano);
+Result svcGetThreadPriority(s32 *priority, Handle handle);
+Result svcSetThreadPriority(Handle handle, u32 priority);
 
 bool appletMainLoop(void);
 
