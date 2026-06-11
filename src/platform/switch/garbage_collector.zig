@@ -10,7 +10,7 @@ const GcItem = union(enum) {
 
 const SharedItem = struct {
     mem_block: *dk.DkMemBlock_T,
-    retire_after_completed_frames: u64,
+    pending_frame_mask: u32,
 };
 
 allocator: std.mem.Allocator,
@@ -36,18 +36,28 @@ pub fn deferDestroyMemBlockForFrame(self: *Self, frame_index: usize, mem_block: 
 }
 
 pub fn deferDestroyMemBlockAfterAllFrames(self: *Self, mem_block: dk.DkMemBlock) !void {
+    try self.deferDestroyMemBlockAfterFrameMask((1 << MAX_FRAMES) - 1, mem_block);
+}
+
+pub fn deferDestroyMemBlockAfterFrameMask(self: *Self, pending_frame_mask: u32, mem_block: dk.DkMemBlock) !void {
     const ptr = mem_block orelse return;
+    if ((pending_frame_mask & ((1 << MAX_FRAMES) - 1)) == 0) {
+        dk.dkMemBlockDestroy(ptr);
+        return;
+    }
     try self.shared.append(self.allocator, .{
         .mem_block = ptr,
-        .retire_after_completed_frames = self.completed_frames + MAX_FRAMES,
+        .pending_frame_mask = pending_frame_mask & ((1 << MAX_FRAMES) - 1),
     });
 }
 
 pub fn retireFrame(self: *Self, frame_index: usize, was_submitted: bool) void {
     self.frame_index = frame_index % MAX_FRAMES;
-    if (was_submitted) self.completed_frames += 1;
-    self.collectFrameBucket(self.frame_index);
-    self.collectShared();
+    if (was_submitted) {
+        self.completed_frames += 1;
+        self.collectFrameBucket(self.frame_index);
+    }
+    self.collectSharedForFrame(self.frame_index, was_submitted);
 }
 
 fn collectFrameBucket(self: *Self, frame_index: usize) void {
@@ -58,13 +68,19 @@ fn collectFrameBucket(self: *Self, frame_index: usize) void {
     list.clearRetainingCapacity();
 }
 
-fn collectShared(self: *Self) void {
+fn collectSharedForFrame(self: *Self, frame_index: usize, was_submitted: bool) void {
+    _ = was_submitted;
+    const retired_bit: u32 = @as(u32, 1) << @intCast(frame_index % MAX_FRAMES);
     var write: usize = 0;
     for (self.shared.items) |item| {
-        if (item.retire_after_completed_frames <= self.completed_frames) {
+        const pending = item.pending_frame_mask & ~retired_bit;
+        if (pending == 0) {
             dk.dkMemBlockDestroy(item.mem_block);
         } else {
-            self.shared.items[write] = item;
+            self.shared.items[write] = .{
+                .mem_block = item.mem_block,
+                .pending_frame_mask = pending,
+            };
             write += 1;
         }
     }
@@ -77,7 +93,6 @@ pub fn collect(self: *Self) void {
         .mem_block => |mem| dk.dkMemBlockDestroy(mem),
     };
     list.clearRetainingCapacity();
-    self.collectShared();
 }
 
 pub fn collectAll(self: *Self) void {

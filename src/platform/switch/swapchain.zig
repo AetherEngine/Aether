@@ -137,16 +137,13 @@ pub fn endFrame(self: *Self) PresentState {
     return .optimal;
 }
 
-pub fn retireGarbageFrame(self: *Self, gc: *GarbageCollector) void {
-    if (gc.frame_index >= MAX_FRAMES) return;
-    const frame = &self.frames[gc.frame_index];
-    var was_submitted = false;
-    if (frame.submitted) {
-        self.context.waitFence(&frame.fence, "switch resource transition frame fence");
-        frame.submitted = false;
-        was_submitted = true;
+pub fn pendingFrameMask(self: *const Self) u32 {
+    var mask: u32 = 0;
+    for (self.frames, 0..) |frame, i| {
+        if (frame.submitted) mask |= @as(u32, 1) << @intCast(i);
     }
-    gc.retireFrame(gc.frame_index, was_submitted);
+    if (self.recording) mask |= @as(u32, 1) << @intCast(self.frame_index);
+    return mask;
 }
 
 pub fn setVsync(self: *Self, enabled: bool) void {
