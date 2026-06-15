@@ -1,30 +1,47 @@
 //! Switch surface stub.
 //!
-//! Switch's framebuffer is 1280x720 in handheld mode and 1920x1080
-//! docked. We advertise 1280x720 so the engine has a sane default;
-//! a real backend will query `appletGetOperationMode` and resize on
-//! dock transitions.
+//! Switch uses 1280x720 in handheld mode and 1920x1080 in docked mode.
 
 const std = @import("std");
 const Self = @This();
 const c = @import("../nintendo_c.zig").c;
 
-alloc: std.mem.Allocator,
+const HANDHELD_WIDTH = 1280;
+const HANDHELD_HEIGHT = 720;
+const DOCKED_WIDTH = 1920;
+const DOCKED_HEIGHT = 1080;
 
-pub fn init(_: *Self, _: u32, _: u32, _: [:0]const u8, _: bool, _: bool, _: bool) anyerror!void {}
+alloc: std.mem.Allocator,
+width: u32 = HANDHELD_WIDTH,
+height: u32 = HANDHELD_HEIGHT,
+
+pub fn init(self: *Self, _: u32, _: u32, _: [:0]const u8, _: bool, _: bool, _: bool) anyerror!void {
+    self.setOperationModeResolution();
+}
 
 pub fn deinit(_: *Self) void {}
 
-pub fn update(_: *Self) bool {
+pub fn update(self: *Self) bool {
+    self.setOperationModeResolution();
     return c.appletMainLoop();
 }
 
 pub fn draw(_: *Self) void {}
 
-pub fn get_width(_: *Self) u32 {
-    return 1280;
+pub fn get_width(self: *Self) u32 {
+    return self.width;
 }
 
-pub fn get_height(_: *Self) u32 {
-    return 720;
+pub fn get_height(self: *Self) u32 {
+    return self.height;
+}
+
+fn setOperationModeResolution(self: *Self) void {
+    if (c.appletGetOperationMode() == c.AppletOperationMode_Console) {
+        self.width = DOCKED_WIDTH;
+        self.height = DOCKED_HEIGHT;
+    } else {
+        self.width = HANDHELD_WIDTH;
+        self.height = HANDHELD_HEIGHT;
+    }
 }

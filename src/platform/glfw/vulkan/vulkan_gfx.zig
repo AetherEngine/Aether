@@ -997,6 +997,12 @@ pub fn destroy_mesh(handle: Mesh.Handle) void {
 pub fn update_mesh(handle: Mesh.Handle, data: []const u8) void {
     var m_data = meshes.get_element(handle) orelse return;
 
+    if (data.len == 0) {
+        m_data.built = false;
+        meshes.update_element(handle, m_data);
+        return;
+    }
+
     // Grow buffers if the current allocation is too small.
     if (data.len > m_data.capacity) {
         // Defer-destroy old buffers.
@@ -1051,6 +1057,7 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize) void {
     draw_state.mat = model.*;
 
     const m_data = meshes.get_element(handle) orelse return;
+    if (!m_data.built or count == 0) return;
     if (render_pipeline.pipeline == .null_handle) return;
     const p_data = &render_pipeline;
 
@@ -1068,6 +1075,7 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize) void {
 
     const offset = [_]vk.DeviceSize{0};
     const frame_buf = m_data.buffers[swapchain.image_index];
+    if (frame_buf == .null_handle) return;
     command_buffer.bindVertexBuffers(0, @ptrCast(&frame_buf), &offset);
     command_buffer.pushConstants(p_data.layout, .{ .vertex_bit = true, .fragment_bit = true }, 0, @sizeOf(DrawState), &draw_state);
     command_buffer.draw(@intCast(count), 1, 0, 0);

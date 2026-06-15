@@ -449,10 +449,12 @@ pub const Engine = struct {
             });
         }
         const drew_frame = Platform.gfx.api.start_frame();
+        Platform.gfx.frame_active = drew_frame;
         if (trace_loop) {
             Util.engine_logger.info("trace: engine loop {d} start_frame end drew={}", .{ trace_loop_index, drew_frame });
         }
         if (drew_frame) {
+            defer Platform.gfx.frame_active = false;
             const draw_start_ns = clock.now(self.io).toNanoseconds();
             // Time until next update step is due
             const slack_us: i64 = @as(i64, @intCast(UPDATE_US)) - @max(0, self.run_loop.update_accum);
@@ -482,11 +484,13 @@ pub const Engine = struct {
                 Util.engine_logger.info("trace: engine loop {d} end_frame begin", .{trace_loop_index});
             }
             Platform.gfx.api.end_frame();
+            Platform.gfx.frame_active = false;
             if (trace_loop) {
                 Util.engine_logger.info("trace: engine loop {d} end_frame end", .{trace_loop_index});
             }
         } else {
             @branchHint(.unlikely);
+            Platform.gfx.frame_active = false;
             if (allow_sleep) {
                 if (options.config.gfx == .headless) {
                     const next_update = @as(i64, @intCast(UPDATE_US)) - self.run_loop.update_accum;
@@ -586,8 +590,10 @@ pub const Engine = struct {
 
             if (trace_loop) Util.engine_logger.info("trace: 3ds loop {d} start_frame begin", .{trace_loop_index});
             const drew_frame = Platform.gfx.api.start_frame();
+            Platform.gfx.frame_active = drew_frame;
             if (trace_loop) Util.engine_logger.info("trace: 3ds loop {d} start_frame end drew={}", .{ trace_loop_index, drew_frame });
             if (drew_frame) {
+                defer Platform.gfx.frame_active = false;
                 const draw_budget = Util.BudgetContext{
                     .phase_budget_ns = frame_budget_ns,
                     .engine_elapsed_ns = 0,
@@ -603,7 +609,10 @@ pub const Engine = struct {
 
                 if (trace_loop) Util.engine_logger.info("trace: 3ds loop {d} end_frame begin", .{trace_loop_index});
                 Platform.gfx.api.end_frame();
+                Platform.gfx.frame_active = false;
                 if (trace_loop) Util.engine_logger.info("trace: 3ds loop {d} end_frame end", .{trace_loop_index});
+            } else {
+                Platform.gfx.frame_active = false;
             }
 
             if (trace_loop) {

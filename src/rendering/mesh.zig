@@ -42,6 +42,9 @@ pub fn Mesh(comptime V: type) type {
         /// Push the current vertex data to the GPU. Call after any `append` or
         /// direct modification of `vertices.items`.
         pub fn update(self: *Self) void {
+            if (gfx.validate_mesh_updates_outside_frame and gfx.frame_active) {
+                @panic("Rendering.Mesh.update called during an active frame; rebuild/upload meshes during update, not draw");
+            }
             gfx.api.update_mesh(
                 self.handle,
                 std.mem.sliceAsBytes(self.vertices.items),

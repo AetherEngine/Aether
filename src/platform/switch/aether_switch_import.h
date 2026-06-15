@@ -33,6 +33,13 @@ Result svcSetThreadPriority(Handle handle, u32 priority);
 
 bool appletMainLoop(void);
 
+typedef enum {
+    AppletOperationMode_Handheld = 0,
+    AppletOperationMode_Console = 1,
+} AppletOperationMode;
+
+AppletOperationMode appletGetOperationMode(void);
+
 typedef struct HidAnalogStickState {
     s32 x;
     s32 y;

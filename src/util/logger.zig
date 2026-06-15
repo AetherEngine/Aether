@@ -42,6 +42,15 @@ pub fn deinit(io: std.Io) void {
     file_logging = false;
 }
 
+pub fn flush() void {
+    if (options.config.flush_logs) return;
+
+    lock();
+    defer unlock();
+
+    if (file_logging) writer.flush() catch {};
+}
+
 pub fn aether_log_fn(
     comptime level: std.log.Level,
     comptime scope: @EnumLiteral(),
