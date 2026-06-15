@@ -280,7 +280,6 @@ const nintendo_async = if (options.config.platform == .nintendo_3ds or options.c
 
     fn spawn(future: *AsyncFuture) bool {
         if (comptime options.config.platform == .nintendo_3ds) {
-            log.info("3ds async threadCreate begin", .{});
             future.thread = c.threadCreate(
                 entry,
                 future,
@@ -292,11 +291,9 @@ const nintendo_async = if (options.config.platform == .nintendo_3ds or options.c
                 log.err("3ds async threadCreate failed", .{});
                 return false;
             };
-            log.info("3ds async threadCreate ok", .{});
             return true;
         } else {
             const priority = workerPriority();
-            log.info("switch async threadCreate begin priority={d} stack={d} future=0x{x}", .{ priority, async_stack_size, @intFromPtr(future) });
             const create_result = c.threadCreate(
                 &future.thread,
                 entry,
@@ -310,15 +307,12 @@ const nintendo_async = if (options.config.platform == .nintendo_3ds or options.c
                 log.err("switch async threadCreate failed rc={d}", .{create_result});
                 return false;
             }
-            log.info("switch async threadCreate ok handle={d}", .{future.thread.handle});
-            log.info("switch async threadStart begin", .{});
             const start_result = c.threadStart(&future.thread);
             if (start_result != 0) {
                 log.err("switch async threadStart failed rc={d}", .{start_result});
                 _ = c.threadClose(&future.thread);
                 return false;
             }
-            log.info("switch async threadStart ok", .{});
             return true;
         }
     }
@@ -334,8 +328,8 @@ const nintendo_async = if (options.config.platform == .nintendo_3ds or options.c
         } else {
             var priority: c.s32 = 0x2c;
             const rc = c.svcGetThreadPriority(&priority, c.threadGetCurHandle());
+            _ = rc;
             const worker_priority = @min(priority + 1, 0x3f);
-            log.info("switch async priority current={d} worker={d} rc={d}", .{ priority, worker_priority, rc });
             return worker_priority;
         }
     }
@@ -375,9 +369,7 @@ const nintendo_async = if (options.config.platform == .nintendo_3ds or options.c
             return error.ConcurrencyUnavailable;
         errdefer freeFuture(future);
         setAsyncDebugStage(1);
-        log.info("nintendo concurrent spawn requested result_len={d} context_len={d}", .{ result_len, context.len });
         if (!spawn(future)) return error.ConcurrencyUnavailable;
-        log.info("nintendo concurrent spawn returned future", .{});
         return @ptrCast(future);
     }
 
@@ -389,18 +381,16 @@ const nintendo_async = if (options.config.platform == .nintendo_3ds or options.c
     ) void {
         _ = result_alignment;
         const future: *AsyncFuture = @ptrCast(@alignCast(any_future));
-        log.info("nintendo async await begin", .{});
         if (comptime options.config.platform == .nintendo_3ds) {
             _ = c.threadJoin(future.thread, std.math.maxInt(u64));
             c.threadFree(future.thread);
         } else {
             const wait_result = c.threadWaitForExit(&future.thread);
-            log.info("switch async threadWaitForExit rc={d}", .{wait_result});
+            if (wait_result != 0) log.err("switch async threadWaitForExit rc={d}", .{wait_result});
             const close_result = c.threadClose(&future.thread);
-            log.info("switch async threadClose rc={d}", .{close_result});
+            if (close_result != 0) log.err("switch async threadClose rc={d}", .{close_result});
         }
         @memcpy(result, future.result());
-        log.info("nintendo async await end", .{});
         freeFuture(future);
     }
 
@@ -608,7 +598,7 @@ fn dirRead(_: ?*anyopaque, reader: *Dir.Reader, out: []Dir.Entry) Dir.Reader.Err
         _ = c.closedir(stream);
     };
 
-    const use_direct_dirnext = options.config.platform == .nintendo_3ds;
+    const use_direct_dirnext = options.config.platform == .nintendo_3ds or options.config.platform == .nintendo_switch;
     if (!use_direct_dirnext) c.seekdir(stream, header.pos);
 
     const dir_dev = if (use_direct_dirnext) c.devoptab_list[@intCast(stream.*.dirData.*.device)] else null;

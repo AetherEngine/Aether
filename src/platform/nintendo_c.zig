@@ -20,6 +20,7 @@ pub const c = @cImport({
     @cInclude("errno.h");
     @cInclude("fcntl.h");
     @cInclude("dirent.h");
+    @cInclude("sys/iosupport.h");
     @cInclude("sys/stat.h");
     @cInclude("unistd.h");
     @cInclude("malloc.h");

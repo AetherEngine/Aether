@@ -47,6 +47,8 @@ comptime {
 pub const api = Api;
 pub var surface: Surface = undefined;
 pub var sync: bool = true;
+pub var frame_active: bool = false;
+pub var validate_mesh_updates_outside_frame: bool = false;
 
 /// Initializes the graphics subsystem with the specified parameters.
 /// Must be called before any other graphics functions.

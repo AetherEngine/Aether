@@ -222,6 +222,8 @@ pub extern fn dkCmdBufDestroy(obj: DkCmdBuf) void;
 pub extern fn dkCmdBufAddMemory(obj: DkCmdBuf, mem: DkMemBlock, offset: u32, size: u32) void;
 pub extern fn dkCmdBufFinishList(obj: DkCmdBuf) DkCmdList;
 pub extern fn dkCmdBufClear(obj: DkCmdBuf) void;
+pub extern fn dkCmdBufBeginCaptureCmds(obj: DkCmdBuf, storage: [*]u32, max_words: u32) void;
+pub extern fn dkCmdBufEndCaptureCmds(obj: DkCmdBuf) u32;
 pub extern fn dkCmdBufCallList(obj: DkCmdBuf, list: DkCmdList) void;
 pub extern fn dkCmdBufSignalFence(obj: DkCmdBuf, fence: *DkFence, flush: bool) void;
 pub extern fn dkCmdBufBarrier(obj: DkCmdBuf, mode: u32, invalidateFlags: u32) void;
@@ -244,6 +246,7 @@ pub extern fn dkCmdBufDiscardDepthStencil(obj: DkCmdBuf) void;
 pub extern fn dkCmdBufPushConstants(obj: DkCmdBuf, uboAddr: DkGpuAddr, uboSize: u32, offset: u32, size: u32, data: *const anyopaque) void;
 pub extern fn dkCmdBufPushData(obj: DkCmdBuf, addr: DkGpuAddr, data: *const anyopaque, size: u32) void;
 pub extern fn dkCmdBufCopyBufferToImage(obj: DkCmdBuf, src: *const DkCopyBuf, dstView: *const DkImageView, dstRect: *const DkImageRect, flags: u32) void;
+pub extern fn dkCmdBufReportValue(obj: DkCmdBuf, value: u32, addr: DkGpuAddr) void;
 pub extern fn dkCmdBufBindImageDescriptorSet(obj: DkCmdBuf, setAddr: DkGpuAddr, numDescriptors: u32) void;
 pub extern fn dkCmdBufBindSamplerDescriptorSet(obj: DkCmdBuf, setAddr: DkGpuAddr, numDescriptors: u32) void;
 pub extern fn dkCmdBufBindTextures(obj: DkCmdBuf, stage: u32, firstId: u32, handles: [*]const DkResHandle, numHandles: u32) void;
@@ -253,7 +256,9 @@ pub extern fn dkQueueCreate(maker: *const DkQueueMaker) DkQueue;
 pub extern fn dkQueueDestroy(obj: DkQueue) void;
 pub extern fn dkQueueIsInErrorState(obj: DkQueue) bool;
 pub extern fn dkQueueWaitIdle(obj: DkQueue) void;
+pub extern fn dkQueueSignalFence(obj: DkQueue, fence: *DkFence, flush: bool) void;
 pub extern fn dkQueueSubmitCommands(obj: DkQueue, cmds: DkCmdList) void;
+pub extern fn dkQueueFlush(obj: DkQueue) void;
 pub extern fn dkQueueAcquireImage(obj: DkQueue, swapchain: DkSwapchain) c_int;
 pub extern fn dkQueuePresentImage(obj: DkQueue, swapchain: DkSwapchain, imageSlot: c_int) void;
 
@@ -272,6 +277,7 @@ pub extern fn dkSwapchainDestroy(obj: DkSwapchain) void;
 pub extern fn dkSwapchainSetSwapInterval(obj: DkSwapchain, interval: u32) void;
 
 pub const ResultSuccess: DkResult = 0;
+pub const ResultTimeout: DkResult = 2;
 pub const FenceWaitForever: i64 = -1;
 
 pub const MemBlockAlignment = 0x1000;
@@ -284,13 +290,17 @@ pub const SamplerDescriptorSize = 0x20;
 pub const ImageLinearStrideAlignment = 0x20;
 
 pub const MemCpuUncached = 1 << 0;
+pub const MemCpuCached = 2 << 0;
+pub const MemGpuUncached = 1 << 2;
 pub const MemGpuCached = 2 << 2;
 pub const MemCode = 1 << 4;
 pub const MemImage = 1 << 5;
+pub const MemZeroFillInit = 1 << 8;
 
 pub const QueueGraphics = 1 << 0;
 pub const QueueMediumPrio = 0 << 2;
 pub const QueueEnableZcull = 0 << 4;
+pub const QueueDisableZcull = 1 << 4;
 pub const QueueMinCmdMemSize = 0x10000;
 pub const PerWarpScratchMemAlignment = 0x200;
 pub const DefaultMaxComputeConcurrentJobs = 128;
@@ -301,6 +311,7 @@ pub const ImageRgba8Unorm = 28;
 pub const ImageZ24S8 = 44;
 pub const ImageUsageRender = 1 << 8;
 pub const ImageUsagePresent = 1 << 10;
+pub const ImageUsage2dEngine = 1 << 11;
 pub const ImageHwCompression = 1 << 2;
 
 pub const BarrierFragments = 2;
@@ -310,6 +321,7 @@ pub const InvalidateImage = 1 << 0;
 pub const InvalidateShader = 1 << 1;
 pub const InvalidateDescriptors = 1 << 2;
 pub const InvalidateZcull = 1 << 3;
+pub const InvalidateL2Cache = 1 << 4;
 
 pub const StageGraphicsMask = (1 << 5) - 1;
 pub const StageVertex = 0;

@@ -1,14 +1,13 @@
-const std = @import("std");
 const gfx = @import("../gfx.zig");
+const Util = @import("../../util/util.zig");
+const logger = @import("../../util/logger.zig");
 const dk = @import("deko.zig");
 const Context = @import("context.zig");
 const GarbageCollector = @import("garbage_collector.zig");
 
 pub const FB_COUNT = 2;
-pub const FB_WIDTH = 1280;
-pub const FB_HEIGHT = 720;
 pub const MAX_FRAMES = 3;
-const CMD_MEM_SIZE = 1024 * 1024;
+const CMD_MEM_SIZE = 16 * 1024 * 1024;
 const STATIC_CMD_MEM_SIZE = 64 * 1024;
 const USE_PRESENT_IMAGE_COMPRESSION = false;
 
@@ -26,8 +25,10 @@ context: *Context,
 chain: dk.DkSwapchain = null,
 framebuffer_mems: [FB_COUNT]dk.DkMemBlock = @splat(null),
 framebuffers: [FB_COUNT]dk.DkImage = undefined,
+framebuffer_views: [FB_COUNT]dk.DkImageView = undefined,
 depth_mem: dk.DkMemBlock = null,
 depth_image: dk.DkImage = undefined,
+depth_view: dk.DkImageView = undefined,
 static_command_mem: dk.DkMemBlock = null,
 static_command_buffer: dk.DkCmdBuf = null,
 framebuffer_cmdlists: [FB_COUNT]dk.DkCmdList = @splat(0),
@@ -36,10 +37,20 @@ command_buffer: dk.DkCmdBuf = null,
 frames: [MAX_FRAMES]Frame = @splat(.{}),
 frame_index: usize = 0,
 image_index: usize = 0,
+width: u32 = 0,
+height: u32 = 0,
 vsync: bool = true,
 recording: bool = false,
+trace_frames_remaining: u32 = 0,
+startup_wait_frames_remaining: u32 = 0,
 
 const Self = @This();
+
+fn trace(self: *const Self, comptime format: []const u8, args: anytype) void {
+    if (self.trace_frames_remaining == 0) return;
+    Util.engine_logger.err(format, args);
+    logger.flush();
+}
 
 pub fn init(context: *Context, vsync: bool) !Self {
     var self = Self{ .context = context, .vsync = vsync };
@@ -64,24 +75,32 @@ pub fn deinit(self: *Self) void {
 }
 
 pub fn beginFrame(self: *Self, gc: *GarbageCollector) bool {
+    self.trace("Switch swapchain beginFrame: enter frame={d}", .{self.frame_index});
     if (gfx.surface.get_width() == 0 or gfx.surface.get_height() == 0) return false;
     if (self.chain == null or self.command_buffer == null or self.command_mem == null or self.static_command_buffer == null) return false;
+    self.resizeIfNeeded() catch return false;
 
     const frame = &self.frames[self.frame_index];
     var was_submitted = false;
     if (frame.submitted) {
+        self.trace("Switch swapchain beginFrame: wait prior fence begin frame={d}", .{self.frame_index});
         self.context.waitFence(&frame.fence, "switch frame fence");
+        self.trace("Switch swapchain beginFrame: wait prior fence end frame={d}", .{self.frame_index});
         frame.submitted = false;
         was_submitted = true;
     }
     gc.retireFrame(self.frame_index, was_submitted);
+    self.limitSubmittedFrames(gc, 0);
 
+    self.trace("Switch swapchain beginFrame: acquire begin", .{});
     const slot = dk.dkQueueAcquireImage(self.context.queue, self.chain);
+    self.trace("Switch swapchain beginFrame: acquire end slot={d}", .{slot});
     self.context.assertQueueOk("acquire image");
     if (slot < 0 or slot >= FB_COUNT) return false;
     self.image_index = @intCast(slot);
     if (self.framebuffer_cmdlists[self.image_index] == 0) return false;
 
+    self.trace("Switch swapchain beginFrame: command setup begin image={d}", .{self.image_index});
     dk.dkCmdBufClear(self.command_buffer);
     dk.dkCmdBufAddMemory(
         self.command_buffer,
@@ -90,6 +109,7 @@ pub fn beginFrame(self: *Self, gc: *GarbageCollector) bool {
         CMD_MEM_SIZE,
     );
     dk.dkCmdBufCallList(self.command_buffer, self.framebuffer_cmdlists[self.image_index]);
+    self.trace("Switch swapchain beginFrame: command setup end", .{});
     self.recording = true;
     return true;
 }
@@ -117,23 +137,43 @@ pub fn bindRenderTargetsAndClear(self: *Self, clear_color: *const [4]f32) void {
     dk.dkCmdBufBindColorWriteState(self.command_buffer, &color_write);
     dk.dkCmdBufClearColor(self.command_buffer, 0, dk.ColorMaskRgba, clear_color);
     dk.dkCmdBufClearDepthStencil(self.command_buffer, true, 1.0, 0xFF, 0);
+    self.context.markCpu(.frame_clear, @intCast(self.frame_index), @intCast(self.image_index), width, height);
+    self.context.markGpu(self.command_buffer, .frame_clear);
 }
 
 pub fn endFrame(self: *Self) PresentState {
     if (!self.recording or self.chain == null or self.command_buffer == null) return .optimal;
 
+    self.trace("Switch swapchain endFrame: finish begin frame={d} image={d}", .{ self.frame_index, self.image_index });
+    self.context.markCpu(.frame_before_submit, @intCast(self.frame_index), @intCast(self.image_index), 0, 0);
+    self.context.markGpu(self.command_buffer, .frame_before_submit);
     dk.dkCmdBufBarrier(self.command_buffer, dk.BarrierFragments, 0);
     dk.dkCmdBufDiscardDepthStencil(self.command_buffer);
     dk.dkCmdBufSignalFence(self.command_buffer, &self.frames[self.frame_index].fence, true);
     const list = dk.dkCmdBufFinishList(self.command_buffer);
-    if (list == 0) std.debug.panic("deko3d failed to finish frame command list", .{});
+    if (list == 0) Context.panicGpu("deko3d failed to finish frame command list", .{});
+    self.trace("Switch swapchain endFrame: finish end list=0x{x}", .{list});
+    self.trace("Switch swapchain endFrame: submit begin", .{});
     dk.dkQueueSubmitCommands(self.context.queue, list);
+    self.trace("Switch swapchain endFrame: submit end", .{});
+    self.context.markCpu(.frame_submitted, @intCast(self.frame_index), @intCast(self.image_index), 0, 0);
     self.context.assertQueueOk("submit frame");
+    if (self.startup_wait_frames_remaining > 0) {
+        self.trace("Switch swapchain endFrame: startup render wait begin", .{});
+        self.context.flushQueue("startup frame render flush");
+        self.context.waitFence(&self.frames[self.frame_index].fence, "startup frame render fence");
+        self.trace("Switch swapchain endFrame: startup render wait end", .{});
+        self.startup_wait_frames_remaining -= 1;
+    }
+    self.trace("Switch swapchain endFrame: present begin image={d}", .{self.image_index});
     dk.dkQueuePresentImage(self.context.queue, self.chain, @intCast(self.image_index));
+    self.trace("Switch swapchain endFrame: present end", .{});
+    self.context.markCpu(.frame_presented, @intCast(self.frame_index), @intCast(self.image_index), 0, 0);
     self.context.assertQueueOk("present image");
     self.frames[self.frame_index].submitted = true;
     self.frame_index = (self.frame_index + 1) % MAX_FRAMES;
     self.recording = false;
+    if (self.trace_frames_remaining > 0) self.trace_frames_remaining -= 1;
     return .optimal;
 }
 
@@ -151,7 +191,62 @@ pub fn setVsync(self: *Self, enabled: bool) void {
     if (self.chain) |chain| dk.dkSwapchainSetSwapInterval(chain, @intFromBool(enabled));
 }
 
+fn limitSubmittedFrames(self: *Self, gc: *GarbageCollector, max_submitted: u32) void {
+    while (self.submittedFrameCount() > max_submitted) {
+        if (!self.waitOldestSubmittedFrame(gc)) return;
+    }
+}
+
+fn submittedFrameCount(self: *const Self) u32 {
+    var count: u32 = 0;
+    for (self.frames) |frame| {
+        if (frame.submitted) count += 1;
+    }
+    return count;
+}
+
+fn waitOldestSubmittedFrame(self: *Self, gc: *GarbageCollector) bool {
+    var offset: usize = 0;
+    while (offset < MAX_FRAMES) : (offset += 1) {
+        const index = (self.frame_index + offset) % MAX_FRAMES;
+        const frame = &self.frames[index];
+        if (!frame.submitted) continue;
+        self.trace("Switch swapchain beginFrame: throttle wait begin frame={d}", .{index});
+        self.context.waitFence(&frame.fence, "switch vsync-off throttle fence");
+        self.trace("Switch swapchain beginFrame: throttle wait end frame={d}", .{index});
+        frame.submitted = false;
+        gc.retireFrame(index, true);
+        return true;
+    }
+    return false;
+}
+
+fn resizeIfNeeded(self: *Self) !void {
+    const width = gfx.surface.get_width();
+    const height = gfx.surface.get_height();
+    if (width == self.width and height == self.height) return;
+
+    self.context.waitIdle("switch swapchain resize");
+    self.frames = @splat(.{});
+    self.frame_index = 0;
+    self.image_index = 0;
+    self.recording = false;
+
+    self.destroyFramebufferCommandLists();
+    self.destroyDepthImage();
+    self.destroyFramebuffers();
+
+    try self.createFramebuffers();
+    errdefer self.destroyFramebuffers();
+    try self.createDepthImage();
+    errdefer self.destroyDepthImage();
+    try self.createFramebufferCommandLists();
+    self.setVsync(self.vsync);
+}
+
 fn createFramebuffers(self: *Self) !void {
+    const width = gfx.surface.get_width();
+    const height = gfx.surface.get_height();
     var layout_maker = dk.DkImageLayoutMaker{
         .device = self.context.device,
         .type = dk.ImageType2d,
@@ -159,7 +254,7 @@ fn createFramebuffers(self: *Self) !void {
             if (USE_PRESENT_IMAGE_COMPRESSION) dk.ImageHwCompression else 0,
         .format = dk.ImageRgba8Unorm,
         .msMode = 0,
-        .dimensions = .{ FB_WIDTH, FB_HEIGHT, 0 },
+        .dimensions = .{ width, height, 0 },
         .mipLevels = 1,
         .pitchStride = 0,
     };
@@ -177,6 +272,7 @@ fn createFramebuffers(self: *Self) !void {
             self.framebuffer_mems[i] = null;
         }
         dk.dkImageInitialize(fb, &framebuffer_layout, self.framebuffer_mems[i], 0);
+        self.framebuffer_views[i] = dk.imageView(fb);
         swapchain_images[i] = fb;
     }
 
@@ -188,6 +284,8 @@ fn createFramebuffers(self: *Self) !void {
     };
     self.chain = dk.dkSwapchainCreate(&swapchain_maker);
     if (self.chain == null) return error.GfxInitFailed;
+    self.width = width;
+    self.height = height;
 }
 
 fn destroyFramebuffers(self: *Self) void {
@@ -201,16 +299,20 @@ fn destroyFramebuffers(self: *Self) void {
             mem.* = null;
         }
     }
+    self.width = 0;
+    self.height = 0;
 }
 
 fn createDepthImage(self: *Self) !void {
+    const width = gfx.surface.get_width();
+    const height = gfx.surface.get_height();
     var layout_maker = dk.DkImageLayoutMaker{
         .device = self.context.device,
         .type = dk.ImageType2d,
-        .flags = dk.ImageUsageRender | dk.ImageHwCompression,
+        .flags = dk.ImageUsageRender,
         .format = dk.ImageZ24S8,
         .msMode = 0,
-        .dimensions = .{ FB_WIDTH, FB_HEIGHT, 0 },
+        .dimensions = .{ width, height, 0 },
         .mipLevels = 1,
         .pitchStride = 0,
     };
@@ -221,6 +323,7 @@ fn createDepthImage(self: *Self) !void {
     const depth_size = dk.alignForward(@intCast(dk.dkImageLayoutGetSize(&depth_layout)), depth_align);
     self.depth_mem = try self.context.createMemBlock(depth_size, dk.MemGpuCached | dk.MemImage);
     dk.dkImageInitialize(&self.depth_image, &depth_layout, self.depth_mem, 0);
+    self.depth_view = dk.imageView(&self.depth_image);
 }
 
 fn destroyDepthImage(self: *Self) void {
@@ -250,11 +353,9 @@ fn createFramebufferCommandLists(self: *Self) !void {
     }
 
     dk.dkCmdBufAddMemory(self.static_command_buffer, self.static_command_mem, 0, STATIC_CMD_MEM_SIZE);
-    for (&self.framebuffers, 0..) |*fb, i| {
-        var color_view = dk.imageView(fb);
-        var depth_view = dk.imageView(&self.depth_image);
-        const color_targets = [_]*const dk.DkImageView{&color_view};
-        dk.dkCmdBufBindRenderTargets(self.static_command_buffer, color_targets[0..].ptr, 1, &depth_view);
+    for (&self.framebuffer_views, 0..) |*color_view, i| {
+        const color_targets = [_]*const dk.DkImageView{color_view};
+        dk.dkCmdBufBindRenderTargets(self.static_command_buffer, color_targets[0..].ptr, 1, &self.depth_view);
         self.framebuffer_cmdlists[i] = dk.dkCmdBufFinishList(self.static_command_buffer);
         if (self.framebuffer_cmdlists[i] == 0) return error.GfxInitFailed;
     }
