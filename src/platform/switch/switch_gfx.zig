@@ -391,6 +391,7 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize) void {
     }
 
     ensure_image_descriptors_current();
+    const texture_id = resolve_texture_handle(draw_state.tex_id);
 
     context.markCpu(.draw_begin, @intCast(frame_index), @intCast(swapchain.image_index), @intCast(handle), @intCast(count));
     context.markFrameStats(frame_draw_calls, frame_vertex_count);
@@ -402,7 +403,7 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize) void {
         frame_draw_calls,
         @intCast(handle),
         @intCast(count),
-        draw_state.tex_id,
+        texture_id,
         buffer.size,
         next_uniform_slot,
     );
@@ -411,8 +412,8 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize) void {
     const shaders = [_]*const dk.DkShader{ &pl.vertex_shader, &pl.fragment_shader };
     dk.dkCmdBufBindShaders(swapchain.command_buffer, dk.StageGraphicsMask, shaders[0..].ptr, shaders.len);
 
-    if (!bind_draw_uniform()) return;
-    const texture_handle = [_]dk.DkResHandle{dk.makeTextureHandle(draw_state.tex_id, 0)};
+    if (!bind_draw_uniform(texture_id)) return;
+    const texture_handle = [_]dk.DkResHandle{dk.makeTextureHandle(texture_id, 0)};
     dk.dkCmdBufBindTextures(swapchain.command_buffer, dk.StageFragment, 1, texture_handle[0..].ptr, texture_handle.len);
     dk.dkCmdBufBindVtxAttribState(swapchain.command_buffer, pl.attribs[0..].ptr, pl.attrib_count);
     dk.dkCmdBufBindVtxBufferState(swapchain.command_buffer, pl.vtx_buffers[0..].ptr, pl.vtx_buffer_count);
@@ -430,7 +431,7 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize) void {
         frame_draw_calls,
         @intCast(handle),
         @intCast(count),
-        draw_state.tex_id,
+        texture_id,
         buffer.size,
         next_uniform_slot - 1,
     );
@@ -443,7 +444,7 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize) void {
         frame_draw_calls,
         @intCast(handle),
         @intCast(count),
-        draw_state.tex_id,
+        texture_id,
         buffer.size,
         next_uniform_slot - 1,
     );
@@ -490,7 +491,7 @@ pub fn destroy_texture(handle: Texture.Handle) void {
     const tex = texture_slots.get_element_ptr(handle) orelse return;
     if (!tex.alive) return;
     destroy_texture_data(tex, true);
-    image_descriptors[handle] = .{ .storage = @splat(0) };
+    image_descriptors[handle] = fallback_image_descriptor();
     if (image_descriptor_count == handle + 1) recompute_image_descriptor_count();
     image_descriptors_dirty = true;
     tex.alive = false;
@@ -664,12 +665,46 @@ fn publish_image_descriptors_for_frame(frame_index: usize) void {
     const dst = descriptor_cpu_addr orelse return;
     const byte_count = image_descriptor_count * dk.ImageDescriptorSize;
     const offset: u32 = @intCast(imageDescriptorGpuAddr(frame_index) - image_descriptor_gpu_addr);
-    @memcpy(dst[offset..][0..byte_count], std.mem.asBytes(&image_descriptors)[0..byte_count]);
+    var published: [MAX_TEXTURES]dk.DkImageDescriptor = undefined;
+    const count: usize = @intCast(image_descriptor_count);
+    for (published[0..count], 0..) |*descriptor, index| {
+        if (is_texture_handle_live(index)) {
+            descriptor.* = image_descriptors[index];
+        } else {
+            descriptor.* = fallback_image_descriptor();
+        }
+    }
+    @memcpy(dst[offset..][0..byte_count], std.mem.asBytes(&published)[0..byte_count]);
     _ = dk.dkMemBlockFlushCpuCache(descriptor_mem, offset, byte_count);
     context.markCpu(.descriptors, @intCast(frame_index), @intCast(swapchain.image_index), image_descriptor_count, offset);
     if (swapchain.recording) {
         dk.dkCmdBufBarrier(swapchain.command_buffer, dk.BarrierFull, dk.InvalidateDescriptors | dk.InvalidateL2Cache);
     }
+}
+
+fn fallback_image_descriptor() dk.DkImageDescriptor {
+    if (image_descriptor_is_zero(&image_descriptors[0])) {
+        return .{ .storage = @splat(0) };
+    }
+    return image_descriptors[0];
+}
+
+fn is_texture_handle_live(handle: usize) bool {
+    if (handle == 0) return !image_descriptor_is_zero(&image_descriptors[0]);
+    const tex = texture_slots.get_element(handle) orelse return false;
+    return tex.alive;
+}
+
+fn image_descriptor_is_zero(descriptor: *const dk.DkImageDescriptor) bool {
+    for (descriptor.storage) |word| {
+        if (word != 0) return false;
+    }
+    return true;
+}
+
+fn resolve_texture_handle(handle: Texture.Handle) u32 {
+    if (is_texture_handle_live(handle)) return @intCast(handle);
+    return 0;
 }
 
 fn bind_current_image_descriptor_set() void {
@@ -975,14 +1010,14 @@ fn recompute_image_descriptor_count() void {
     image_descriptor_count = count;
 }
 
-fn bind_draw_uniform() bool {
+fn bind_draw_uniform(texture_id: u32) bool {
     if (next_uniform_slot >= UNIFORM_SLOTS) return false;
 
     var uniform = SwitchUniform{
         .model = draw_state.mat.data,
         .view = pending_state.view.data,
         .proj = pending_state.proj.data,
-        .textureIndex = draw_state.tex_id,
+        .textureIndex = texture_id,
         .fogEnabled = draw_state.fog_enabled,
         .fogStart = draw_state.fog_start,
         .fogEnd = draw_state.fog_end,
