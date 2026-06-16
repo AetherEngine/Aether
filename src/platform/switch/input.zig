@@ -122,10 +122,12 @@ pub fn end_text_input_session() void {}
 fn diff_buttons(buttons: u64) void {
     const Pair = struct { mask: u64, button: core.Button };
     const map = [_]Pair{
+        // A/B actions follow Nintendo labels. X/Y are swapped so Aether's
+        // semantic X=left, Y=top layout matches Nintendo face positions.
         .{ .mask = BUTTON_A, .button = .A },
         .{ .mask = BUTTON_B, .button = .B },
-        .{ .mask = BUTTON_X, .button = .X },
-        .{ .mask = BUTTON_Y, .button = .Y },
+        .{ .mask = BUTTON_X, .button = .Y },
+        .{ .mask = BUTTON_Y, .button = .X },
         .{ .mask = BUTTON_L | BUTTON_LEFT_SL | BUTTON_RIGHT_SL, .button = .LButton },
         .{ .mask = BUTTON_R | BUTTON_LEFT_SR | BUTTON_RIGHT_SR, .button = .RButton },
         .{ .mask = BUTTON_MINUS, .button = .Back },
