@@ -3,6 +3,7 @@
 
 const std = @import("std");
 const core = @import("../../core/input/input.zig");
+const Util = @import("../../util/util.zig");
 const c = @import("../nintendo_c.zig").c;
 
 const HID_NPAD_STYLE_STANDARD: u32 = c.HidNpadStyleTag_NpadFullKey |
@@ -83,6 +84,31 @@ pub fn pump() void {
 }
 
 pub fn apply_cursor_mode(_: core.CursorMode) void {}
+
+pub fn handle_operation_mode_changed() void {
+    if (!initialized) return;
+
+    release_all_input_state();
+
+    var arg: c.HidLaControllerSupportArg = undefined;
+    c.hidLaCreateControllerSupportArg(&arg);
+    arg.hdr.player_count_min = 1;
+    arg.hdr.player_count_max = 1;
+    arg.hdr.enable_take_over_connection = 1;
+    arg.hdr.enable_left_justify = 1;
+    arg.hdr.enable_permit_joy_dual = 1;
+    arg.hdr.enable_single_mode = 1;
+
+    var result: c.HidLaControllerSupportResultInfo = std.mem.zeroes(c.HidLaControllerSupportResultInfo);
+    const rc = c.hidLaShowControllerSupport(&result, &arg);
+    if (rc != 0) {
+        Util.engine_logger.warn("Switch controller support applet failed: {d}", .{rc});
+    }
+
+    c.padConfigureInput(1, HID_NPAD_STYLE_STANDARD);
+    c.padInitializeWithMask(&pad, DEFAULT_PAD_MASK);
+    reset_previous_input_state();
+}
 
 pub fn begin_text_input_session(target: core.TextInputTarget, options: core.TextInputOptions) anyerror!void {
     var config_buf: [SWKBD_CONFIG_BYTES]u8 align(8) = @splat(0);
@@ -192,6 +218,25 @@ fn deliver_axis(axis: core.Axis, value: f32) void {
     const prev = prev_axes[idx];
     if (value != 0.0 or prev != 0.0) core.deliver_gamepad_axis(axis, value);
     prev_axes[idx] = value;
+}
+
+fn release_all_input_state() void {
+    if (prev_buttons != 0) diff_buttons(0);
+    inline for (std.meta.fields(core.Axis)) |f| {
+        const axis: core.Axis = @enumFromInt(f.value);
+        const index = @intFromEnum(axis);
+        if (prev_axes[index] != 0.0) deliver_axis(axis, 0.0);
+    }
+    if (prev_touch_down) core.deliver_mouse_button(.Left, .released, prev_touch_pos);
+    core.signal_frame_boundary();
+    reset_previous_input_state();
+}
+
+fn reset_previous_input_state() void {
+    prev_buttons = 0;
+    prev_axes = @splat(0.0);
+    prev_touch_down = false;
+    prev_touch_pos = .{};
 }
 
 fn normalize_stick(raw: i32) f32 {

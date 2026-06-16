@@ -247,6 +247,7 @@ fn resizeIfNeeded(self: *Self) !void {
 fn createFramebuffers(self: *Self) !void {
     const width = gfx.surface.get_width();
     const height = gfx.surface.get_height();
+    const native_window = try self.configureNativeWindow(width, height);
     var layout_maker = dk.DkImageLayoutMaker{
         .device = self.context.device,
         .type = dk.ImageType2d,
@@ -278,7 +279,7 @@ fn createFramebuffers(self: *Self) !void {
 
     var swapchain_maker = dk.DkSwapchainMaker{
         .device = self.context.device,
-        .nativeWindow = dk.nwindowGetDefault(),
+        .nativeWindow = native_window,
         .pImages = swapchain_images[0..].ptr,
         .numImages = FB_COUNT,
     };
@@ -301,6 +302,21 @@ fn destroyFramebuffers(self: *Self) void {
     }
     self.width = 0;
     self.height = 0;
+}
+
+fn configureNativeWindow(self: *Self, width: u32, height: u32) !*anyopaque {
+    const native_window = dk.nwindowGetDefault() orelse return error.GfxInitFailed;
+    var rc = dk.nwindowSetDimensions(native_window, width, height);
+    if (rc != 0) {
+        _ = dk.nwindowReleaseBuffers(native_window);
+        rc = dk.nwindowSetDimensions(native_window, width, height);
+    }
+    if (rc != 0) {
+        Util.engine_logger.err("Switch nwindowSetDimensions failed: {d} for {d}x{d}", .{ rc, width, height });
+        return error.GfxInitFailed;
+    }
+    self.trace("Switch swapchain native window dimensions set: {d}x{d}", .{ width, height });
+    return native_window;
 }
 
 fn createDepthImage(self: *Self) !void {
