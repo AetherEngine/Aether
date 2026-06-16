@@ -48,6 +48,7 @@ var prev_buttons: u64 = 0;
 var prev_axes: [axis_count]f32 = @splat(0.0);
 var prev_touch_down: bool = false;
 var prev_touch_pos: core.Vec2 = .{};
+var current_cursor_mode: core.CursorMode = .visible;
 
 pub fn setup(_: std.mem.Allocator, _: std.Io) void {
     initialized = false;
@@ -56,6 +57,7 @@ pub fn setup(_: std.mem.Allocator, _: std.Io) void {
     prev_axes = @splat(0.0);
     prev_touch_down = false;
     prev_touch_pos = .{};
+    current_cursor_mode = .visible;
 }
 
 pub fn init() anyerror!void {
@@ -83,7 +85,9 @@ pub fn pump() void {
     core.signal_frame_boundary();
 }
 
-pub fn apply_cursor_mode(_: core.CursorMode) void {}
+pub fn apply_cursor_mode(mode: core.CursorMode) void {
+    current_cursor_mode = mode;
+}
 
 pub fn handle_operation_mode_changed() void {
     if (!initialized) return;
@@ -188,6 +192,13 @@ fn pump_axes(buttons: u64) void {
 }
 
 fn pump_touch() void {
+    if (current_cursor_mode == .captured) {
+        if (prev_touch_down) core.deliver_mouse_button(.Left, .released, prev_touch_pos);
+        prev_touch_down = false;
+        prev_touch_pos = .{};
+        return;
+    }
+
     var states: [1]c.HidTouchScreenState = undefined;
     const state_count = c.hidGetTouchScreenStates(&states, states.len);
     const touch_down = state_count > 0 and states[0].count > 0;
