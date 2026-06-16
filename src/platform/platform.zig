@@ -32,6 +32,11 @@ pub fn update(engine: *Engine) void {
         engine.running = false;
         return;
     }
+    if (@hasDecl(gfx.Surface, "take_operation_mode_changed") and @hasDecl(input.Api, "handle_operation_mode_changed")) {
+        if (gfx.surface.take_operation_mode_changed()) {
+            input.Api.handle_operation_mode_changed();
+        }
+    }
     audio.update();
 }
 

@@ -80,6 +80,36 @@ typedef struct PadState {
     u32 gc_triggers[2];
 } PadState;
 
+typedef struct HidLaControllerSupportArgHeader {
+    s8 player_count_min;
+    s8 player_count_max;
+    u8 enable_take_over_connection;
+    u8 enable_left_justify;
+    u8 enable_permit_joy_dual;
+    u8 enable_single_mode;
+    u8 enable_identification_color;
+} HidLaControllerSupportArgHeader;
+
+typedef struct HidLaControllerSupportArgColor {
+    u8 r;
+    u8 g;
+    u8 b;
+    u8 a;
+} HidLaControllerSupportArgColor;
+
+typedef struct HidLaControllerSupportArg {
+    HidLaControllerSupportArgHeader hdr;
+    HidLaControllerSupportArgColor identification_color[8];
+    u8 enable_explain_text;
+    char explain_text[8][0x81];
+} HidLaControllerSupportArg;
+
+typedef struct HidLaControllerSupportResultInfo {
+    s8 player_count;
+    u8 pad[3];
+    u32 selected_id;
+} HidLaControllerSupportResultInfo;
+
 #define HidNpadStyleTag_NpadFullKey  BIT(0)
 #define HidNpadStyleTag_NpadHandheld BIT(1)
 #define HidNpadStyleTag_NpadJoyDual  BIT(2)
@@ -120,6 +150,9 @@ size_t hidGetTouchScreenStates(HidTouchScreenState *states, size_t count);
 void padConfigureInput(u32 max_players, u32 style_set);
 void padInitializeWithMask(PadState *pad, u64 mask);
 void padUpdate(PadState *pad);
+
+void hidLaCreateControllerSupportArg(HidLaControllerSupportArg *arg);
+Result hidLaShowControllerSupport(HidLaControllerSupportResultInfo *result_info, const HidLaControllerSupportArg *arg);
 
 Result swkbdCreate(void *c, s32 max_dictwords);
 void swkbdClose(void *c);

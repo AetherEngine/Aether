@@ -201,6 +201,8 @@ pub const DkSampler = extern struct {
 };
 
 pub extern fn nwindowGetDefault() ?*anyopaque;
+pub extern fn nwindowSetDimensions(nw: ?*anyopaque, width: u32, height: u32) u32;
+pub extern fn nwindowReleaseBuffers(nw: ?*anyopaque) u32;
 pub extern fn appletGetGpuErrorDetectedSystemEvent(out_event: *Event) u32;
 pub extern fn eventWait(event: *Event, timeout: u64) u32;
 pub extern fn eventClose(event: *Event) void;
