@@ -14,8 +14,7 @@ struct VertexOutput {
 struct CameraState {
     float4x4 view;
     float4x4 proj;
-#ifndef VULKAN
-#ifndef AETHER_SWITCH
+#if !defined(VULKAN) && !defined(AETHER_DEKO)
     uint fogEnabled;
     float fogStart;
     float fogEnd;
@@ -24,10 +23,9 @@ struct CameraState {
     uint alphaBlendEnabled;
     float2 uvOffset;
 #endif
-#endif
 };
 
-#ifdef VULKAN
+#if defined(VULKAN)
 
 [[vk::binding(0, 0)]]
 ConstantBuffer<CameraState> camera;
@@ -53,11 +51,19 @@ SamplerState g_sampler;
 Texture2D g_textures[];
 
 float4x4 getModel() { return pc.model; }
+float4x4 getView() { return camera.view; }
+float4x4 getProj() { return camera.proj; }
+uint getTextureIndex() { return pc.textureIndex; }
+uint getFogEnabled() { return pc.fogEnabled; }
+float getFogStart() { return pc.fogStart; }
+float getFogEnd() { return pc.fogEnd; }
+float3 getFogColor() { return pc.fogColor; }
+uint getAlphaBlendEnabled() { return pc.alphaBlendEnabled; }
 float2 getUvOffset() { return pc.uvOffset; }
 
-#elif defined(AETHER_SWITCH)
+#elif defined(AETHER_DEKO)
 
-struct SwitchUniform {
+struct DrawUniform {
     float4x4 model;
     float4x4 view;
     float4x4 proj;
@@ -71,10 +77,21 @@ struct SwitchUniform {
 };
 
 [[vk::binding(0, 0)]]
-ConstantBuffer<SwitchUniform> switchState;
+ConstantBuffer<DrawUniform> draw;
 
 [[vk::binding(1, 0)]]
-Sampler2D switchTexture;
+Sampler2D boundTexture;
+
+float4x4 getModel() { return draw.model; }
+float4x4 getView() { return draw.view; }
+float4x4 getProj() { return draw.proj; }
+uint getTextureIndex() { return draw.textureIndex; }
+uint getFogEnabled() { return draw.fogEnabled; }
+float getFogStart() { return draw.fogStart; }
+float getFogEnd() { return draw.fogEnd; }
+float3 getFogColor() { return draw.fogColor; }
+uint getAlphaBlendEnabled() { return draw.alphaBlendEnabled; }
+float2 getUvOffset() { return draw.uvOffset; }
 
 #else
 
@@ -92,82 +109,58 @@ ConstantBuffer<PerObject> perObject;
 Sampler2D u_combinedTexture;
 
 float4x4 getModel() { return perObject.model; }
+float4x4 getView() { return camera.view; }
+float4x4 getProj() { return camera.proj; }
+uint getFogEnabled() { return camera.fogEnabled; }
+float getFogStart() { return camera.fogStart; }
+float getFogEnd() { return camera.fogEnd; }
+float3 getFogColor() { return camera.fogColor; }
+uint getAlphaBlendEnabled() { return camera.alphaBlendEnabled; }
 float2 getUvOffset() { return camera.uvOffset; }
 
 #endif
 
+float4 sampleMaterial(float2 uv, float4 vertexColor) {
+#if defined(VULKAN)
+    uint textureIndex = getTextureIndex();
+    if (textureIndex == 0) {
+        return vertexColor;
+    }
+    uint idx = NonUniformResourceIndex(textureIndex);
+    return g_textures[idx].Sample(g_sampler, uv) * vertexColor;
+#elif defined(AETHER_DEKO)
+    if (getTextureIndex() == 0) {
+        return vertexColor;
+    }
+    return boundTexture.Sample(uv) * vertexColor;
+#else
+    return u_combinedTexture.Sample(uv) * vertexColor;
+#endif
+}
+
 [shader("vertex")]
 VertexOutput vertexMain(VertexInput input) {
     VertexOutput output;
-#ifdef AETHER_SWITCH
-    float4 viewPos = mul(switchState.view, mul(switchState.model, float4(input.position, 1.0)));
-    output.position = mul(switchState.proj, viewPos);
-    output.viewDepth = -viewPos.z;
-    output.uv = input.uv + switchState.uvOffset;
-    output.color = input.color;
-#else
-    float4 viewPos = mul(camera.view, mul(getModel(), float4(input.position, 1.0)));
-    output.position = mul(camera.proj, viewPos);
+    float4 viewPos = mul(getView(), mul(getModel(), float4(input.position, 1.0)));
+    output.position = mul(getProj(), viewPos);
     output.viewDepth = -viewPos.z;
     output.uv = input.uv + getUvOffset();
     output.color = input.color;
-#endif
     return output;
 }
 
 [shader("fragment")]
 float4 fragmentMain(VertexOutput input) : SV_Target {
-#ifdef VULKAN
-    float4 color;
-    if (pc.textureIndex == 0) {
-        color = input.color;
-    } else {
-        uint idx = NonUniformResourceIndex(pc.textureIndex);
-        color = g_textures[idx].Sample(g_sampler, input.uv) * input.color;
+    float4 color = sampleMaterial(input.uv, input.color);
+    if (getFogEnabled() != 0) {
+        float factor = clamp((getFogEnd() - input.viewDepth) / (getFogEnd() - getFogStart()), 0.0, 1.0);
+        color.rgb = lerp(getFogColor(), color.rgb, factor);
     }
-#elif defined(AETHER_SWITCH)
-    float4 color;
-    if (switchState.textureIndex == 0) {
-        color = input.color;
-    } else {
-        color = switchTexture.Sample(input.uv) * input.color;
-    }
-#else
-    float4 color = u_combinedTexture.Sample(input.uv) * input.color;
-#endif
-#ifdef VULKAN
-    if (pc.fogEnabled != 0) {
-        float factor = clamp((pc.fogEnd - input.viewDepth) / (pc.fogEnd - pc.fogStart), 0.0, 1.0);
-        color.rgb = lerp(pc.fogColor, color.rgb, factor);
-    }
-    if (pc.alphaBlendEnabled == 0) {
+    if (getAlphaBlendEnabled() == 0) {
         color.a = 1.0;
     } else {
         if (color.a <= 0.1)
             discard;
     }
-#elif defined(AETHER_SWITCH)
-    if (switchState.fogEnabled != 0) {
-        float factor = clamp((switchState.fogEnd - input.viewDepth) / (switchState.fogEnd - switchState.fogStart), 0.0, 1.0);
-        color.rgb = lerp(switchState.fogColor, color.rgb, factor);
-    }
-    if (switchState.alphaBlendEnabled == 0) {
-        color.a = 1.0;
-    } else {
-        if (color.a <= 0.1)
-            discard;
-    }
-#else
-    if (camera.fogEnabled != 0) {
-        float factor = clamp((camera.fogEnd - input.viewDepth) / (camera.fogEnd - camera.fogStart), 0.0, 1.0);
-        color.rgb = lerp(camera.fogColor, color.rgb, factor);
-    }
-    if (camera.alphaBlendEnabled == 0) {
-        color.a = 1.0;
-    } else {
-        if (color.a <= 0.1)
-            discard;
-    }
-#endif
     return color;
 }

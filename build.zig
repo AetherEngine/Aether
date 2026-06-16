@@ -721,15 +721,15 @@ fn internalShaderStages(owner: *std.Build, b: *std.Build, config: Config) ?Shade
         const slangc = requireSlangcPath(owner);
         const source = owner.path("src/rendering/shaders/basic.slang");
         const vert_glsl = addSlangStep(b, slangc, &.{
-            "-target",         "glsl",       "-matrix-layout-column-major",
-            "-DAETHER_SWITCH", "-profile",   "glsl_450",
-            "-entry",          "vertexMain", "-stage",
+            "-target",       "glsl",       "-matrix-layout-column-major",
+            "-DAETHER_DEKO", "-profile",   "glsl_450",
+            "-entry",        "vertexMain", "-stage",
             "vertex",
         }, "basic.vert.switch.glsl", source);
         const frag_glsl = addSlangStep(b, slangc, &.{
-            "-target",         "glsl",         "-matrix-layout-column-major",
-            "-DAETHER_SWITCH", "-profile",     "glsl_450",
-            "-entry",          "fragmentMain", "-stage",
+            "-target",       "glsl",         "-matrix-layout-column-major",
+            "-DAETHER_DEKO", "-profile",     "glsl_450",
+            "-entry",        "fragmentMain", "-stage",
             "fragment",
         }, "basic.frag.switch.glsl", source);
         return .{
