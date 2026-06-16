@@ -30,7 +30,7 @@ const MAX_TEXTURES = 256;
 const UNIFORM_SLOTS = 4096;
 const RETAIN_PENDING_UPLOAD_LIMIT = 16 * 1024;
 const DYNAMIC_FRAME_BUFFER_LIMIT = 64 * 1024;
-const UNIFORM_STRIDE: u32 = dk.alignForward(@intCast(@sizeOf(SwitchUniform)), dk.UniformBufferAlignment);
+const UNIFORM_STRIDE: u32 = dk.alignForward(@intCast(@sizeOf(DrawUniform)), dk.UniformBufferAlignment);
 const UNIFORM_FRAME_SIZE: u32 = UNIFORM_STRIDE * UNIFORM_SLOTS;
 const IMAGE_DESCRIPTOR_TABLES_PER_FRAME = 128;
 const IMAGE_DESCRIPTOR_TABLE_SIZE: u32 = dk.alignForward(MAX_TEXTURES * dk.ImageDescriptorSize, dk.ImageDescriptorAlignment);
@@ -93,7 +93,7 @@ pub const DrawState = struct {
     uv_offset: [2]f32 = .{ 0.0, 0.0 },
 };
 
-const SwitchUniform = extern struct {
+const DrawUniform = extern struct {
     model: [4][4]f32,
     view: [4][4]f32,
     proj: [4][4]f32,
@@ -1013,7 +1013,7 @@ fn recompute_image_descriptor_count() void {
 fn bind_draw_uniform(texture_id: u32) bool {
     if (next_uniform_slot >= UNIFORM_SLOTS) return false;
 
-    var uniform = SwitchUniform{
+    var uniform = DrawUniform{
         .model = draw_state.mat.data,
         .view = pending_state.view.data,
         .proj = pending_state.proj.data,
@@ -1029,7 +1029,7 @@ fn bind_draw_uniform(texture_id: u32) bool {
     const addr = uniform_gpu_addr +
         @as(dk.DkGpuAddr, @intCast(swapchain.frame_index)) * UNIFORM_FRAME_SIZE +
         @as(dk.DkGpuAddr, next_uniform_slot) * UNIFORM_STRIDE;
-    dk.dkCmdBufPushConstants(swapchain.command_buffer, addr, UNIFORM_STRIDE, 0, @sizeOf(SwitchUniform), &uniform);
+    dk.dkCmdBufPushConstants(swapchain.command_buffer, addr, UNIFORM_STRIDE, 0, @sizeOf(DrawUniform), &uniform);
     const uniform_buffers = [_]dk.DkBufExtents{.{ .addr = addr, .size = UNIFORM_STRIDE }};
     dk.dkCmdBufBindUniformBuffers(swapchain.command_buffer, dk.StageVertex, 0, uniform_buffers[0..].ptr, uniform_buffers.len);
     dk.dkCmdBufBindUniformBuffers(swapchain.command_buffer, dk.StageFragment, 0, uniform_buffers[0..].ptr, uniform_buffers.len);
