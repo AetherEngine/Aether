@@ -69,6 +69,7 @@ var prev_keys: u32 = 0;
 var prev_axes: [axis_count]f32 = @splat(0.0);
 var prev_touch_down: bool = false;
 var prev_touch_pos: core.Vec2 = .{};
+var current_cursor_mode: core.CursorMode = .visible;
 
 pub fn setup(_: std.mem.Allocator, _: std.Io) void {
     initialized = false;
@@ -76,6 +77,7 @@ pub fn setup(_: std.mem.Allocator, _: std.Io) void {
     prev_axes = @splat(0.0);
     prev_touch_down = false;
     prev_touch_pos = .{};
+    current_cursor_mode = .visible;
 }
 
 pub fn init() anyerror!void {
@@ -105,7 +107,9 @@ pub fn pump() void {
     core.signal_frame_boundary();
 }
 
-pub fn apply_cursor_mode(_: core.CursorMode) void {}
+pub fn apply_cursor_mode(mode: core.CursorMode) void {
+    current_cursor_mode = mode;
+}
 
 pub fn begin_text_input_session(target: core.TextInputTarget, options: core.TextInputOptions) anyerror!void {
     var state_buf: [SWKBD_STATE_BYTES]u8 align(8) = @splat(0);
@@ -183,6 +187,13 @@ fn pump_axes(keys: u32) void {
 }
 
 fn pump_touch(keys: u32) void {
+    if (current_cursor_mode == .captured) {
+        if (prev_touch_down) core.deliver_mouse_button(.Left, .released, prev_touch_pos);
+        prev_touch_down = false;
+        prev_touch_pos = .{};
+        return;
+    }
+
     const touch_down = keys & KEY_TOUCH != 0;
     if (touch_down) {
         var touch: TouchPosition = .{ .px = 0, .py = 0 };
