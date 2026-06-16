@@ -21,6 +21,7 @@
 
 const process_init = @import("aether").CProcessInit;
 const std = @import("std");
+const Cio = @import("aether").Cio;
 const options = @import("options");
 
 pub const os = struct {
@@ -134,6 +135,7 @@ fn entry() callconv(.c) c_int {
     installCrashHandlers();
 
     const init = process_init.makeInit(.{ .vector = &argv });
+    defer Cio.deinitNetworking();
     AppRoot().main(init) catch |err| {
         fatalMainError(err, @errorReturnTrace(), @returnAddress());
     };

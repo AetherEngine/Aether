@@ -4,6 +4,7 @@ const options = @import("options");
 const Io = std.Io;
 const Dir = Io.Dir;
 const File = Io.File;
+const net = Io.net;
 
 const platform_time = switch (options.config.platform) {
     .nintendo_3ds => @import("3ds/time.zig"),
@@ -64,6 +65,8 @@ var resources_mounted = false;
 var data_mounted = false;
 var atomic_counter: u64 = 0x6165_7468_6572_0000;
 var async_debug_stage: std.atomic.Value(u32) = .init(0);
+var net_init_state: std.atomic.Value(u32) = .init(0);
+var soc_buffer: ?[*]align(0x1000) u8 = null;
 
 const max_dynamic_dirs = 32;
 const DirSlot = struct {
@@ -124,6 +127,21 @@ const vtable: Io.VTable = blk: {
     v.clockResolution = clockResolution;
     v.sleep = sleep;
     v.random = random;
+    v.netListenIp = netListenIp;
+    v.netAccept = netAccept;
+    v.netBindIp = netBindIp;
+    v.netConnectIp = netConnectIp;
+    v.netListenUnix = netListenUnix;
+    v.netConnectUnix = netConnectUnix;
+    v.netSocketCreatePair = netSocketCreatePair;
+    v.netSend = netSend;
+    v.netRead = netRead;
+    v.netWrite = netWrite;
+    v.netClose = netClose;
+    v.netShutdown = netShutdown;
+    v.netInterfaceNameResolve = netInterfaceNameResolve;
+    v.netInterfaceName = netInterfaceName;
+    v.netLookup = netLookup;
     break :blk v;
 };
 
@@ -175,6 +193,21 @@ pub fn deinitAppDirs() void {
 
 pub fn useCwdDirs() void {
     deinitAppDirs();
+}
+
+pub fn deinitNetworking() void {
+    if (net_init_state.swap(0, .acq_rel) != 2) return;
+    switch (options.config.platform) {
+        .nintendo_3ds => {
+            _ = c.socExit();
+            if (soc_buffer) |buffer| {
+                c.free(buffer);
+                soc_buffer = null;
+            }
+        },
+        .nintendo_switch => c.socketExit(),
+        else => unreachable,
+    }
 }
 
 fn crashHandler(_: ?*anyopaque) void {}
@@ -409,8 +442,274 @@ fn operate(_: ?*anyopaque, operation: Io.Operation) Io.Cancelable!Io.Operation.R
         .file_read_streaming => |op| .{ .file_read_streaming = fileReadStreaming(op.file, op.data) },
         .file_write_streaming => |op| .{ .file_write_streaming = fileWriteStreaming(op.file, op.header, op.data, op.splat) },
         .device_io_control => unsupported("device_io_control"),
-        .net_receive => .{ .net_receive = .{ error.NetworkDown, 0 } },
+        .net_receive => |op| .{ .net_receive = netReceive(op.socket_handle, op.message_buffer, op.data_buffer, op.flags) },
     };
+}
+
+fn ensureNetworking() error{ NetworkDown, SystemResources }!void {
+    while (true) {
+        switch (net_init_state.load(.acquire)) {
+            2 => return,
+            1 => {
+                _ = c.svcSleepThread(1_000_000);
+                continue;
+            },
+            else => {},
+        }
+
+        if (net_init_state.cmpxchgStrong(0, 1, .acq_rel, .acquire) != null) continue;
+        const result = initNetworking();
+        if (result) {
+            net_init_state.store(2, .release);
+            return;
+        } else |err| {
+            net_init_state.store(0, .release);
+            return err;
+        }
+    }
+}
+
+fn initNetworking() error{ NetworkDown, SystemResources }!void {
+    switch (options.config.platform) {
+        .nintendo_3ds => {
+            const buffer = c.memalign(0x1000, 0x100000) orelse return error.SystemResources;
+            errdefer c.free(buffer);
+            const aligned: [*]align(0x1000) u8 = @ptrCast(@alignCast(buffer));
+            if (c.socInit(@ptrCast(aligned), 0x100000) != 0) return error.NetworkDown;
+            soc_buffer = aligned;
+        },
+        .nintendo_switch => {
+            if (c.socketInitialize(null) != 0) return error.NetworkDown;
+        },
+        else => unreachable,
+    }
+}
+
+fn netListenIp(_: ?*anyopaque, address: *const net.IpAddress, opts: net.IpAddress.ListenOptions) net.IpAddress.ListenError!net.Socket {
+    try ensureNetworking();
+    const fd = try openSocket(address, opts.mode, opts.protocol);
+    errdefer _ = c.close(fd);
+    if (opts.reuse_address) try setSocketOption(fd, c.SOL_SOCKET, c.SO_REUSEADDR, 1);
+    var storage = try sockaddrFromIp4(address);
+    var len = sockaddrLen(&storage);
+    try bindSocket(fd, &storage, len);
+    try listenSocket(fd, opts.kernel_backlog);
+    try getSockName(fd, &storage, &len);
+    return .{ .handle = fd, .address = ip4FromSockaddr(&storage) };
+}
+
+fn netAccept(_: ?*anyopaque, listen_fd: net.Socket.Handle, options_arg: net.Server.AcceptOptions) net.Server.AcceptError!net.Socket {
+    _ = options_arg;
+    try ensureNetworking();
+    var storage: c.struct_sockaddr_in = undefined;
+    var len: c.socklen_t = @sizeOf(c.struct_sockaddr_in);
+    while (true) {
+        const fd = c.accept(listen_fd, sockaddrPtr(&storage), &len);
+        if (fd >= 0) return .{ .handle = fd, .address = ip4FromSockaddr(&storage) };
+        switch (errno()) {
+            c.EINTR => continue,
+            c.EAGAIN => return error.WouldBlock,
+            c.ECONNABORTED => return error.ConnectionAborted,
+            c.EINVAL => return error.SocketNotListening,
+            c.EMFILE => return error.ProcessFdQuotaExceeded,
+            c.ENFILE => return error.SystemFdQuotaExceeded,
+            c.ENOBUFS, c.ENOMEM => return error.SystemResources,
+            c.ENETDOWN => return error.NetworkDown,
+            else => return error.Unexpected,
+        }
+    }
+}
+
+fn netBindIp(_: ?*anyopaque, address: *const net.IpAddress, opts: net.IpAddress.BindOptions) net.IpAddress.BindError!net.Socket {
+    try ensureNetworking();
+    const fd = try openSocket(address, opts.mode, opts.protocol);
+    errdefer _ = c.close(fd);
+    if (opts.allow_broadcast) try setSocketOption(fd, c.SOL_SOCKET, c.SO_BROADCAST, 1);
+    var storage = try sockaddrFromIp4(address);
+    var len = sockaddrLen(&storage);
+    try bindSocket(fd, &storage, len);
+    try getSockName(fd, &storage, &len);
+    return .{ .handle = fd, .address = ip4FromSockaddr(&storage) };
+}
+
+fn netConnectIp(_: ?*anyopaque, address: *const net.IpAddress, opts: net.IpAddress.ConnectOptions) net.IpAddress.ConnectError!net.Socket {
+    if (opts.timeout != .none) return error.OptionUnsupported;
+    try ensureNetworking();
+    const fd = try openSocket(address, opts.mode, opts.protocol);
+    errdefer _ = c.close(fd);
+    var storage = try sockaddrFromIp4(address);
+    var len = sockaddrLen(&storage);
+    try connectSocket(fd, &storage, len);
+    try getSockName(fd, &storage, &len);
+    return .{ .handle = fd, .address = ip4FromSockaddr(&storage) };
+}
+
+fn netListenUnix(_: ?*anyopaque, _: *const net.UnixAddress, _: net.UnixAddress.ListenOptions) net.UnixAddress.ListenError!net.Socket.Handle {
+    return error.AddressFamilyUnsupported;
+}
+
+fn netConnectUnix(_: ?*anyopaque, _: *const net.UnixAddress) net.UnixAddress.ConnectError!net.Socket.Handle {
+    return error.AddressFamilyUnsupported;
+}
+
+fn netSocketCreatePair(_: ?*anyopaque, _: net.Socket.CreatePairOptions) net.Socket.CreatePairError![2]net.Socket {
+    return error.OperationUnsupported;
+}
+
+fn netSend(_: ?*anyopaque, handle: net.Socket.Handle, messages: []net.OutgoingMessage, flags: net.SendFlags) struct { ?net.Socket.SendError, usize } {
+    ensureNetworking() catch |err| return .{ err, 0 };
+    const send_flags = sendFlags(flags);
+    for (messages, 0..) |*message, i| {
+        var storage = sockaddrFromIp4(message.address) catch |err| return .{ err, i };
+        const n = c.sendto(handle, message.data_ptr, message.data_len, send_flags, sockaddrConstPtr(&storage), sockaddrLen(&storage));
+        if (n < 0) return .{ sendError(errno()), i };
+        message.data_len = @intCast(n);
+    }
+    return .{ null, messages.len };
+}
+
+fn netReceive(
+    handle: net.Socket.Handle,
+    messages: []net.IncomingMessage,
+    data: []u8,
+    flags: net.ReceiveFlags,
+) struct { ?net.Socket.ReceiveError, usize } {
+    ensureNetworking() catch |err| return .{ err, 0 };
+    if (messages.len == 0) return .{ null, 0 };
+    var storage: c.struct_sockaddr_in = undefined;
+    var len: c.socklen_t = @sizeOf(c.struct_sockaddr_in);
+    const n = c.recvfrom(handle, data.ptr, data.len, receiveFlags(flags), sockaddrPtr(&storage), &len);
+    if (n < 0) return .{ receiveError(errno()), 0 };
+    messages[0] = .{
+        .from = ip4FromSockaddr(&storage),
+        .data = data[0..@intCast(n)],
+        .control = messages[0].control,
+        .flags = .{
+            .eor = false,
+            .trunc = false,
+            .ctrunc = false,
+            .oob = flags.oob,
+            .errqueue = false,
+        },
+    };
+    return .{ null, 1 };
+}
+
+fn netRead(_: ?*anyopaque, fd: net.Socket.Handle, data: [][]u8) net.Stream.Reader.Error!usize {
+    try ensureNetworking();
+    for (data) |buf| {
+        if (buf.len == 0) continue;
+        while (true) {
+            const n = c.recv(fd, buf.ptr, buf.len, c.MSG_NOSIGNAL);
+            if (n >= 0) return @intCast(n);
+            switch (errno()) {
+                c.EINTR => continue,
+                else => return streamReadError(errno()),
+            }
+        }
+    }
+    return 0;
+}
+
+fn netWrite(
+    _: ?*anyopaque,
+    fd: net.Socket.Handle,
+    header: []const u8,
+    data: []const []const u8,
+    splat: usize,
+) net.Stream.Writer.Error!usize {
+    try ensureNetworking();
+    var total: usize = 0;
+    sendStreamSegment(fd, header, &total) catch |err| return if (total != 0) total else err;
+    if (data.len == 0) return total;
+    for (data[0 .. data.len - 1]) |bytes| {
+        sendStreamSegment(fd, bytes, &total) catch |err| return if (total != 0) total else err;
+    }
+    const pattern = data[data.len - 1];
+    for (0..splat) |_| {
+        sendStreamSegment(fd, pattern, &total) catch |err| return if (total != 0) total else err;
+    }
+    return total;
+}
+
+fn netClose(_: ?*anyopaque, handles: []const net.Socket.Handle) void {
+    for (handles) |handle| _ = c.close(handle);
+}
+
+fn netShutdown(_: ?*anyopaque, handle: net.Socket.Handle, how: net.ShutdownHow) net.ShutdownError!void {
+    try ensureNetworking();
+    const c_how: c_int = switch (how) {
+        .recv => c.SHUT_RD,
+        .send => c.SHUT_WR,
+        .both => c.SHUT_RDWR,
+    };
+    while (true) {
+        if (c.shutdown(handle, c_how) == 0) return;
+        switch (errno()) {
+            c.EINTR => continue,
+            c.ENOTCONN => return error.SocketUnconnected,
+            c.ENOBUFS, c.ENOMEM => return error.SystemResources,
+            c.ENETDOWN => return error.NetworkDown,
+            c.ECONNABORTED => return error.ConnectionAborted,
+            c.ECONNRESET => return error.ConnectionResetByPeer,
+            else => return error.Unexpected,
+        }
+    }
+}
+
+fn netInterfaceNameResolve(_: ?*anyopaque, _: *const net.Interface.Name) net.Interface.Name.ResolveError!net.Interface {
+    return error.InterfaceNotFound;
+}
+
+fn netInterfaceName(_: ?*anyopaque, _: net.Interface) net.Interface.NameError!net.Interface.Name {
+    return error.InterfaceNotFound;
+}
+
+fn netLookup(_: ?*anyopaque, host_name: net.HostName, resolved: *Io.Queue(net.HostName.LookupResult), opts: net.HostName.LookupOptions) net.HostName.LookupError!void {
+    defer resolved.close(io());
+    try ensureNetworking();
+
+    var name_buf: [net.HostName.max_len:0]u8 = undefined;
+    @memcpy(name_buf[0..host_name.bytes.len], host_name.bytes);
+    name_buf[host_name.bytes.len] = 0;
+    const name_c = name_buf[0..host_name.bytes.len :0];
+
+    var port_buf: [8]u8 = undefined;
+    const port_c = std.fmt.bufPrintZ(&port_buf, "{d}", .{opts.port}) catch unreachable;
+
+    var hints: c.struct_addrinfo = std.mem.zeroes(c.struct_addrinfo);
+    hints.ai_flags = c.AI_NUMERICSERV | if (opts.canonical_name_buffer != null) c.AI_CANONNAME else 0;
+    hints.ai_family = c.AF_INET;
+    hints.ai_socktype = c.SOCK_STREAM;
+    hints.ai_protocol = c.IPPROTO_TCP;
+
+    var result: ?*c.struct_addrinfo = null;
+    const rc = c.getaddrinfo(name_c.ptr, port_c.ptr, &hints, &result);
+    if (rc != 0) return lookupError(rc);
+    defer if (result) |r| c.freeaddrinfo(r);
+
+    var it = result;
+    var canonical_name: ?[*:0]const u8 = null;
+    var found_address = false;
+    while (it) |info| : (it = info.ai_next) {
+        if (info.ai_addr == null or info.ai_family != c.AF_INET) continue;
+        const addr = ip4FromSockaddr(@ptrCast(@alignCast(info.ai_addr.?)));
+        resolved.putOne(io(), .{ .address = addr }) catch |err| switch (err) {
+            error.Closed => unreachable,
+            error.Canceled => return error.Canceled,
+        };
+        found_address = true;
+        if (canonical_name == null and info.ai_canonname != null) canonical_name = info.ai_canonname;
+    }
+    if (!found_address) return error.NoAddressReturned;
+    if (canonical_name) |name| {
+        if (copyCanonicalName(opts.canonical_name_buffer, std.mem.sliceTo(name, 0))) |canon| {
+            resolved.putOne(io(), .{ .canonical_name = canon }) catch |err| switch (err) {
+                error.Closed => unreachable,
+                error.Canceled => return error.Canceled,
+            };
+        }
+    }
 }
 
 fn dirCreateDir(
@@ -1152,8 +1451,276 @@ fn createFileAtomicDirError(err: anyerror) Dir.CreateFileAtomicError {
     };
 }
 
+fn sockaddrFromIp4(address: *const net.IpAddress) error{AddressFamilyUnsupported}!c.struct_sockaddr_in {
+    const ip4 = switch (address.*) {
+        .ip4 => |ip4| ip4,
+        .ip6 => return error.AddressFamilyUnsupported,
+    };
+    var storage: c.struct_sockaddr_in = std.mem.zeroes(c.struct_sockaddr_in);
+    if (@hasField(c.struct_sockaddr_in, "sin_len")) storage.sin_len = @sizeOf(c.struct_sockaddr_in);
+    storage.sin_family = c.AF_INET;
+    storage.sin_port = c.htons(ip4.port);
+    storage.sin_addr.s_addr = @bitCast(ip4.bytes);
+    return storage;
+}
+
+fn ip4FromSockaddr(storage: *const c.struct_sockaddr_in) net.IpAddress {
+    return .{ .ip4 = .{
+        .bytes = @bitCast(storage.sin_addr.s_addr),
+        .port = c.ntohs(storage.sin_port),
+    } };
+}
+
+fn sockaddrPtr(storage: *c.struct_sockaddr_in) *c.struct_sockaddr {
+    return @ptrCast(storage);
+}
+
+fn sockaddrConstPtr(storage: *const c.struct_sockaddr_in) *const c.struct_sockaddr {
+    return @ptrCast(storage);
+}
+
+fn sockaddrLen(_: *const c.struct_sockaddr_in) c.socklen_t {
+    return @sizeOf(c.struct_sockaddr_in);
+}
+
+fn openSocket(
+    address: *const net.IpAddress,
+    mode: net.Socket.Mode,
+    maybe_protocol: ?net.Protocol,
+) error{
+    AddressFamilyUnsupported,
+    ProtocolUnsupportedBySystem,
+    ProtocolUnsupportedByAddressFamily,
+    SocketModeUnsupported,
+    ProcessFdQuotaExceeded,
+    SystemFdQuotaExceeded,
+    SystemResources,
+    NetworkDown,
+    OptionUnsupported,
+    Unexpected,
+}!c_int {
+    switch (address.*) {
+        .ip4 => {},
+        .ip6 => return error.AddressFamilyUnsupported,
+    }
+    const socket_type: c_int = switch (mode) {
+        .stream => c.SOCK_STREAM,
+        .dgram => c.SOCK_DGRAM,
+        else => return error.SocketModeUnsupported,
+    };
+    const protocol: c_int = if (maybe_protocol) |protocol| switch (protocol) {
+        .tcp => c.IPPROTO_TCP,
+        .udp => c.IPPROTO_UDP,
+        else => return error.ProtocolUnsupportedBySystem,
+    } else switch (mode) {
+        .stream => c.IPPROTO_TCP,
+        .dgram => c.IPPROTO_UDP,
+        else => unreachable,
+    };
+
+    while (true) {
+        const fd = c.socket(c.AF_INET, socket_type, protocol);
+        if (fd >= 0) return fd;
+        switch (errno()) {
+            c.EINTR => continue,
+            c.EAFNOSUPPORT => return error.AddressFamilyUnsupported,
+            c.EINVAL => return error.ProtocolUnsupportedBySystem,
+            c.EMFILE => return error.ProcessFdQuotaExceeded,
+            c.ENFILE => return error.SystemFdQuotaExceeded,
+            c.ENOBUFS, c.ENOMEM => return error.SystemResources,
+            c.EPROTONOSUPPORT => return error.ProtocolUnsupportedByAddressFamily,
+            c.EPROTOTYPE => return error.SocketModeUnsupported,
+            c.ENETDOWN => return error.NetworkDown,
+            else => return error.Unexpected,
+        }
+    }
+}
+
+fn bindSocket(fd: c_int, storage: *const c.struct_sockaddr_in, len: c.socklen_t) net.IpAddress.BindError!void {
+    while (true) {
+        if (c.bind(fd, sockaddrConstPtr(storage), len) == 0) return;
+        switch (errno()) {
+            c.EINTR => continue,
+            c.EADDRINUSE => return error.AddressInUse,
+            c.EADDRNOTAVAIL => return error.AddressUnavailable,
+            c.EAFNOSUPPORT => return error.AddressFamilyUnsupported,
+            c.ENOMEM => return error.SystemResources,
+            c.ENETDOWN => return error.NetworkDown,
+            else => return error.Unexpected,
+        }
+    }
+}
+
+fn connectSocket(fd: c_int, storage: *const c.struct_sockaddr_in, len: c.socklen_t) net.IpAddress.ConnectError!void {
+    while (true) {
+        if (c.connect(fd, sockaddrConstPtr(storage), len) == 0) return;
+        switch (errno()) {
+            c.EINTR => continue,
+            c.EADDRNOTAVAIL => return error.AddressUnavailable,
+            c.EAFNOSUPPORT => return error.AddressFamilyUnsupported,
+            c.EAGAIN, c.EINPROGRESS => return error.WouldBlock,
+            c.EALREADY => return error.ConnectionPending,
+            c.ECONNREFUSED => return error.ConnectionRefused,
+            c.ECONNRESET => return error.ConnectionResetByPeer,
+            c.EHOSTUNREACH => return error.HostUnreachable,
+            c.ENETUNREACH => return error.NetworkUnreachable,
+            c.ETIMEDOUT => return error.Timeout,
+            c.EACCES => return error.AccessDenied,
+            c.ENETDOWN => return error.NetworkDown,
+            c.ENOBUFS, c.ENOMEM => return error.SystemResources,
+            else => return error.Unexpected,
+        }
+    }
+}
+
+fn listenSocket(fd: c_int, backlog: u31) net.IpAddress.ListenError!void {
+    while (true) {
+        if (c.listen(fd, @intCast(backlog)) == 0) return;
+        switch (errno()) {
+            c.EINTR => continue,
+            c.EADDRINUSE => return error.AddressInUse,
+            c.ENOBUFS, c.ENOMEM => return error.SystemResources,
+            c.ENETDOWN => return error.NetworkDown,
+            else => return error.Unexpected,
+        }
+    }
+}
+
+fn getSockName(fd: c_int, storage: *c.struct_sockaddr_in, len: *c.socklen_t) error{ SystemResources, Unexpected }!void {
+    while (true) {
+        if (c.getsockname(fd, sockaddrPtr(storage), len) == 0) return;
+        switch (errno()) {
+            c.EINTR => continue,
+            c.ENOBUFS, c.ENOMEM => return error.SystemResources,
+            else => return error.Unexpected,
+        }
+    }
+}
+
+fn setSocketOption(fd: c_int, level: c_int, opt: c_int, value: c_int) error{Unexpected}!void {
+    var option = value;
+    while (true) {
+        if (c.setsockopt(fd, level, opt, &option, @sizeOf(c_int)) == 0) return;
+        switch (errno()) {
+            c.EINTR => continue,
+            else => return error.Unexpected,
+        }
+    }
+}
+
+fn sendFlags(flags: net.SendFlags) c_int {
+    return @as(c_int, if (flags.dont_route) c.MSG_DONTROUTE else 0) |
+        @as(c_int, if (flags.oob) c.MSG_OOB else 0) |
+        @as(c_int, if (@hasDecl(c, "MSG_EOR") and flags.eor) c.MSG_EOR else 0) |
+        @as(c_int, if (@hasDecl(c, "MSG_FASTOPEN") and flags.fastopen) c.MSG_FASTOPEN else 0) |
+        @as(c_int, if (@hasDecl(c, "MSG_NOSIGNAL")) c.MSG_NOSIGNAL else 0);
+}
+
+fn receiveFlags(flags: net.ReceiveFlags) c_int {
+    return @as(c_int, if (flags.oob) c.MSG_OOB else 0) |
+        @as(c_int, if (flags.peek) c.MSG_PEEK else 0) |
+        @as(c_int, if (@hasDecl(c, "MSG_TRUNC") and flags.trunc) c.MSG_TRUNC else 0) |
+        @as(c_int, if (@hasDecl(c, "MSG_NOSIGNAL")) c.MSG_NOSIGNAL else 0);
+}
+
+fn sendStreamSegment(fd: c_int, bytes: []const u8, total: *usize) net.Stream.Writer.Error!void {
+    if (bytes.len == 0) return;
+    while (true) {
+        const n = c.send(fd, bytes.ptr, bytes.len, if (@hasDecl(c, "MSG_NOSIGNAL")) c.MSG_NOSIGNAL else 0);
+        if (n >= 0) {
+            total.* += @intCast(n);
+            return;
+        }
+        switch (errno()) {
+            c.EINTR => continue,
+            else => return streamWriteError(errno()),
+        }
+    }
+}
+
+fn copyCanonicalName(buffer: ?*[net.HostName.max_len]u8, name: []const u8) ?net.HostName {
+    const dest_buf = buffer orelse return null;
+    const end = if (name.len > 0 and name[name.len - 1] == '.') name.len - 1 else name.len;
+    if (end > dest_buf.len) return null;
+    @memcpy(dest_buf[0..end], name[0..end]);
+    return net.HostName.init(dest_buf[0..end]) catch null;
+}
+
 fn errno() c_int {
     return c.__errno().*;
+}
+
+fn sendError(code: c_int) net.Socket.SendError {
+    return switch (code) {
+        c.EACCES => error.AccessDenied,
+        c.EALREADY => error.FastOpenAlreadyInProgress,
+        c.ECONNREFUSED => error.ConnectionRefused,
+        c.ECONNRESET => error.ConnectionResetByPeer,
+        c.EMSGSIZE => error.MessageOversize,
+        c.ENOBUFS, c.ENOMEM => error.SystemResources,
+        c.EPIPE, c.ENOTCONN => error.SocketUnconnected,
+        c.EAFNOSUPPORT => error.AddressFamilyUnsupported,
+        c.EHOSTUNREACH => error.HostUnreachable,
+        c.ENETUNREACH => error.NetworkUnreachable,
+        c.ENETDOWN => error.NetworkDown,
+        else => error.Unexpected,
+    };
+}
+
+fn receiveError(code: c_int) net.Socket.ReceiveError {
+    return switch (code) {
+        c.EMFILE => error.ProcessFdQuotaExceeded,
+        c.ENFILE => error.SystemFdQuotaExceeded,
+        c.ENOBUFS, c.ENOMEM => error.SystemResources,
+        c.ENOTCONN, c.EPIPE => error.SocketUnconnected,
+        c.EMSGSIZE => error.MessageOversize,
+        c.ECONNRESET => error.ConnectionResetByPeer,
+        c.ENETDOWN => error.NetworkDown,
+        else => error.Unexpected,
+    };
+}
+
+fn streamReadError(code: c_int) net.Stream.Reader.Error {
+    return switch (code) {
+        c.ENOBUFS, c.ENOMEM => error.SystemResources,
+        c.ENOTCONN, c.EPIPE => error.SocketUnconnected,
+        c.ECONNRESET => error.ConnectionResetByPeer,
+        c.ETIMEDOUT => error.Timeout,
+        c.EACCES => error.AccessDenied,
+        c.ENETDOWN => error.NetworkDown,
+        else => error.Unexpected,
+    };
+}
+
+fn streamWriteError(code: c_int) net.Stream.Writer.Error {
+    return switch (code) {
+        c.EALREADY => error.FastOpenAlreadyInProgress,
+        c.ECONNREFUSED => error.ConnectionRefused,
+        c.ECONNRESET => error.ConnectionResetByPeer,
+        c.ENOBUFS, c.ENOMEM => error.SystemResources,
+        c.EPIPE, c.ENOTCONN => error.SocketUnconnected,
+        c.EAFNOSUPPORT => error.AddressFamilyUnsupported,
+        c.EHOSTUNREACH => error.HostUnreachable,
+        c.ENETUNREACH => error.NetworkUnreachable,
+        c.ENETDOWN => error.NetworkDown,
+        else => error.Unexpected,
+    };
+}
+
+fn lookupError(code: c_int) net.HostName.LookupError {
+    return switch (code) {
+        c.EAI_FAMILY => error.AddressFamilyUnsupported,
+        c.EAI_MEMORY => error.SystemResources,
+        c.EAI_NONAME => error.UnknownHostName,
+        else => if (@hasDecl(c, "EAI_AGAIN") and code == c.EAI_AGAIN)
+            error.NameServerFailure
+        else if (@hasDecl(c, "EAI_FAIL") and code == c.EAI_FAIL)
+            error.NameServerFailure
+        else if (@hasDecl(c, "EAI_NODATA") and code == c.EAI_NODATA)
+            error.UnknownHostName
+        else
+            error.Unexpected,
+    };
 }
 
 fn createDirError(code: c_int) Dir.CreateDirError {

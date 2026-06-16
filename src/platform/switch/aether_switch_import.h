@@ -26,6 +26,9 @@ int fsdevUnmountDevice(const char *name);
 Result romfsMountSelf(const char *name);
 Result romfsUnmount(const char *name);
 
+Result socketInitialize(const void *config);
+void socketExit(void);
+
 u64 svcGetSystemTick(void);
 void svcSleepThread(s64 nano);
 Result svcGetThreadPriority(s32 *priority, Handle handle);

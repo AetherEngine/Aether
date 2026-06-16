@@ -12,6 +12,7 @@
 
 const process_init = @import("aether").CProcessInit;
 const std = @import("std");
+const Cio = @import("aether").Cio;
 const c = @cImport({
     @cUndef("_GNU_SOURCE");
     @cUndef("_DEFAULT_SOURCE");
@@ -129,6 +130,7 @@ fn entry(_: c_int, _: [*c][*c]u8) callconv(.c) c_int {
     }
 
     const init = process_init.makeInit(.{ .vector = {} });
+    defer Cio.deinitNetworking();
     AppRoot().main(init) catch |err| {
         fatalMainError(err, @errorReturnTrace(), @returnAddress());
     };

@@ -13,6 +13,7 @@ pub const c = @cImport({
         },
         .nintendo_switch => {
             @cDefine("__SWITCH__", "1");
+            @cDefine("__thread", "");
         },
         else => @compileError("platform/nintendo_c.zig is only wired for Nintendo targets"),
     }
@@ -22,6 +23,12 @@ pub const c = @cImport({
     @cInclude("dirent.h");
     @cInclude("sys/iosupport.h");
     @cInclude("sys/stat.h");
+    @cInclude("sys/types.h");
+    @cInclude("sys/socket.h");
+    @cInclude("netinet/in.h");
+    @cInclude("arpa/inet.h");
+    @cInclude("netdb.h");
+    @cInclude("poll.h");
     @cInclude("unistd.h");
     @cInclude("malloc.h");
     @cInclude("stdio.h");
@@ -34,6 +41,7 @@ pub const c = @cImport({
             @cInclude("3ds/archive.h");
             @cInclude("3ds/romfs.h");
             @cInclude("3ds/svc.h");
+            @cInclude("3ds/services/soc.h");
         },
         .nintendo_switch => {
             @cInclude("switch/aether_switch_import.h");
