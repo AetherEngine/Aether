@@ -1,5 +1,6 @@
 const std = @import("std");
 const pspsdk = @import("pspsdk");
+const zitrus = @import("zitrus");
 
 pub const Platform = enum {
     windows,
@@ -7,6 +8,7 @@ pub const Platform = enum {
     macos,
     wasm,
     psp,
+    nintendo_3ds,
     /// Nintendo Switch. Zig 0.16 has no `switch`/`horizon` OS tag, so the
     /// canonical target is `aarch64-freestanding-none` and we can't infer
     /// the platform from `target.os.tag` alone. Opt in with
@@ -81,6 +83,7 @@ pub const Config = struct {
                 .linux => .linux,
                 .wasi => .wasm,
                 .psp => .psp,
+                .@"3ds" => .nintendo_3ds,
                 else => |t| {
                     std.debug.panic("Unsupported OS! {}\n", .{t});
                 },
@@ -197,6 +200,13 @@ pub fn webTarget(b: *std.Build) std.Build.ResolvedTarget {
     });
 }
 
+pub fn nintendo3dsTarget(b: *std.Build) std.Build.ResolvedTarget {
+    return b.resolveTargetQuery(.{
+        .cpu_arch = .arm,
+        .os_tag = .@"3ds",
+    });
+}
+
 fn addNintendoCImportPaths(_: *std.Build, mod: *std.Build.Module, config: Config, dkp: []const u8) void {
     const b = mod.owner;
     switch (config.platform) {
@@ -227,6 +237,7 @@ fn addNintendoCImportPaths(_: *std.Build, mod: *std.Build.Module, config: Config
 pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.Step.Compile {
     const config = Config.resolve(opts.target, opts.overrides);
     const uses_nintendo_c_io = config.platform == .nintendo_switch;
+    const uses_zitrus = config.platform == .nintendo_3ds;
 
     // Switch forces ofmt=c -- there's no Zig-native backend for Horizon yet,
     // so we emit C and let devkitA64/libnx compile the result.
@@ -254,9 +265,12 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
         .target = target,
         .optimize = opts.optimize,
     }) else null;
+    const zitrus_dep = if (uses_zitrus) owner.dependency("zitrus", .{}) else null;
 
     if (psp_dep) |pd| {
         mod.addImport("pspsdk", pd.module("pspsdk"));
+    } else if (zitrus_dep) |zd| {
+        mod.addImport("zitrus", zd.module("zitrus"));
     } else if (config.platform == .nintendo_switch) {
         // Console SDK symbols are declared as backend-local externs and
         // resolved by the export pipeline's devkitPro link step.
@@ -357,21 +371,28 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
             .{ .name = "aether", .module = mod },
         },
     });
+    if (zitrus_dep) |zd| {
+        user_mod.addImport("zitrus", zd.module("zitrus"));
+    }
 
-    const root_mod = if (uses_nintendo_c_io) b.createModule(.{
+    const root_mod = if (uses_nintendo_c_io or uses_zitrus) b.createModule(.{
         .root_source_file = owner.path(switch (config.platform) {
             .nintendo_switch => "src/platform/switch/services.zig",
+            .nintendo_3ds => "src/platform/3ds/entry.zig",
             else => unreachable,
         }),
         .target = target,
         .optimize = opts.optimize,
-        .link_libc = true,
+        .link_libc = if (uses_nintendo_c_io) true else null,
         .imports = &.{
             .{ .name = "aether", .module = mod },
             .{ .name = user_root_import_name, .module = user_mod },
             .{ .name = "options", .module = options_module },
         },
     }) else user_mod;
+    if (zitrus_dep) |zd| {
+        root_mod.addImport("zitrus", zd.module("zitrus"));
+    }
     if (uses_nintendo_c_io) {
         addNintendoCImportPaths(owner, root_mod, config, devkitProPath(b));
     }
@@ -379,6 +400,7 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
     const exe = b.addExecutable(.{
         .name = opts.name,
         .root_module = root_mod,
+        .zig_lib_dir = if (zitrus_dep) |zd| zd.namedLazyPath("juice/zig_lib") else null,
     });
 
     if (psp_dep) |pd| {
@@ -392,6 +414,14 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
         exe.link_emit_relocs = true;
         exe.entry = .{ .symbol_name = "module_start" };
         exe.setLinkerScript(pd.path("tools/linkfile.ld"));
+    }
+
+    if (zitrus_dep) |zd| {
+        if (userRootModule(exe).import_table.get("zitrus") == null) {
+            userRootModule(exe).addImport("zitrus", zd.module("zitrus"));
+        }
+        exe.pie = true;
+        exe.setLinkerScript(zd.namedLazyPath("horizon/ld"));
     }
 
     if (config.platform == .windows and (opts.optimize == .ReleaseFast or opts.optimize == .ReleaseSmall)) {
@@ -432,6 +462,7 @@ pub fn addHeadless(owner: *std.Build, b: *std.Build, opts: HeadlessOptions) *std
     config.gfx = .headless;
     config.audio = .none;
     const uses_nintendo_c_io = config.platform == .nintendo_switch;
+    const uses_zitrus = config.platform == .nintendo_3ds;
 
     // Switch forces ofmt=c (see addGame for details).
     const target = if (uses_nintendo_c_io) blk: {
@@ -457,9 +488,12 @@ pub fn addHeadless(owner: *std.Build, b: *std.Build, opts: HeadlessOptions) *std
         .target = target,
         .optimize = opts.optimize,
     }) else null;
+    const zitrus_dep = if (uses_zitrus) owner.dependency("zitrus", .{}) else null;
 
     if (psp_dep) |pd| {
         mod.addImport("pspsdk", pd.module("pspsdk"));
+    } else if (zitrus_dep) |zd| {
+        mod.addImport("zitrus", zd.module("zitrus"));
     }
 
     if (uses_nintendo_c_io) {
@@ -476,21 +510,28 @@ pub fn addHeadless(owner: *std.Build, b: *std.Build, opts: HeadlessOptions) *std
             .{ .name = "aether", .module = mod },
         },
     });
+    if (zitrus_dep) |zd| {
+        user_mod.addImport("zitrus", zd.module("zitrus"));
+    }
 
-    const root_mod = if (uses_nintendo_c_io) b.createModule(.{
+    const root_mod = if (uses_nintendo_c_io or uses_zitrus) b.createModule(.{
         .root_source_file = owner.path(switch (config.platform) {
             .nintendo_switch => "src/platform/switch/services.zig",
+            .nintendo_3ds => "src/platform/3ds/entry.zig",
             else => unreachable,
         }),
         .target = target,
         .optimize = opts.optimize,
-        .link_libc = true,
+        .link_libc = if (uses_nintendo_c_io) true else null,
         .imports = &.{
             .{ .name = "aether", .module = mod },
             .{ .name = user_root_import_name, .module = user_mod },
             .{ .name = "options", .module = options_module },
         },
     }) else user_mod;
+    if (zitrus_dep) |zd| {
+        root_mod.addImport("zitrus", zd.module("zitrus"));
+    }
     if (uses_nintendo_c_io) {
         addNintendoCImportPaths(owner, root_mod, config, devkitProPath(b));
     }
@@ -498,6 +539,7 @@ pub fn addHeadless(owner: *std.Build, b: *std.Build, opts: HeadlessOptions) *std
     const exe = b.addExecutable(.{
         .name = opts.name,
         .root_module = root_mod,
+        .zig_lib_dir = if (zitrus_dep) |zd| zd.namedLazyPath("juice/zig_lib") else null,
     });
 
     if (psp_dep) |pd| {
@@ -508,6 +550,14 @@ pub fn addHeadless(owner: *std.Build, b: *std.Build, opts: HeadlessOptions) *std
         exe.link_emit_relocs = true;
         exe.entry = .{ .symbol_name = "module_start" };
         exe.setLinkerScript(pd.path("tools/linkfile.ld"));
+    }
+
+    if (zitrus_dep) |zd| {
+        if (userRootModule(exe).import_table.get("zitrus") == null) {
+            userRootModule(exe).addImport("zitrus", zd.module("zitrus"));
+        }
+        exe.pie = true;
+        exe.setLinkerScript(zd.namedLazyPath("horizon/ld"));
     }
 
     if (uses_nintendo_c_io) {
@@ -744,6 +794,15 @@ pub const ExportOptions = struct {
     /// Switch: directory embedded into the NRO as RomFS. When null, no
     /// RomFS is attached.
     switch_romfs: ?std.Build.LazyPath = null,
+    /// 3DS: publisher string embedded in SMDH metadata. Empty falls back to
+    /// "Aether".
+    nintendo_3ds_publisher: []const u8 = "",
+    /// 3DS: 48x48 icon embedded in SMDH metadata. When null, Zitrus' default
+    /// icon is used.
+    nintendo_3ds_icon: ?std.Build.LazyPath = null,
+    /// 3DS: directory embedded into the 3DSX as RomFS. When null, no RomFS is
+    /// attached.
+    nintendo_3ds_romfs: ?std.Build.LazyPath = null,
 
     pub const Resource = struct {
         /// Source file to copy.
@@ -767,6 +826,8 @@ pub fn exportArtifact(owner: *std.Build, b: *std.Build, exe: *std.Build.Step.Com
         // register on the downstream project's builder.
         const psp_dep = owner.dependency("pspsdk", .{});
         _ = pspEbootPipeline(b, exe, psp_dep, opts);
+    } else if (config.platform == .nintendo_3ds) {
+        nintendo3dsPipeline(owner, b, exe, opts);
     } else if (config.platform == .nintendo_switch) {
         switchNroPipeline(b, exe, opts);
     } else if (config.platform == .wasm) {
@@ -1060,6 +1121,64 @@ fn pspEbootPipeline(b: *std.Build, exe: *std.Build.Step.Compile, psp_dep: *std.B
     return result;
 }
 
+fn nintendo3dsPipeline(owner: *std.Build, b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOptions) void {
+    const zitrus_dep = owner.dependency("zitrus", .{});
+
+    b.installArtifact(exe);
+
+    const title = if (opts.title.len > 0) opts.title else exe.name;
+    const publisher = if (opts.nintendo_3ds_publisher.len > 0) opts.nintendo_3ds_publisher else "Aether";
+    const settings_zon = b.fmt(
+        \\.{{
+        \\    .titles = .{{
+        \\        .english = .{{
+        \\            .title = "{s}",
+        \\            .description = "{s}",
+        \\            .publisher = "{s}",
+        \\        }},
+        \\    }},
+        \\}}
+        \\
+    , .{ title, title, publisher });
+
+    const write_files = b.addWriteFiles();
+    const smdh_settings = write_files.add("aether.smdh.zon", settings_zon);
+
+    const smdh: zitrus.MakeSmdh = .initInner(b, .{
+        .tools_artifact = zitrus_dep.artifact("zitrus"),
+        .default_icon = zitrus_dep.path("assets/zitrus-logo-smdh.png"),
+    }, .{
+        .settings = smdh_settings,
+        .icon = opts.nintendo_3ds_icon,
+    });
+
+    const romfs = if (opts.nintendo_3ds_romfs) |root| blk: {
+        const make_romfs: zitrus.MakeRomFs = .initInner(b, .{
+            .tools_artifact = zitrus_dep.artifact("zitrus"),
+        }, .{
+            .name = "romfs.bin",
+            .root = root,
+        });
+        break :blk make_romfs.out;
+    } else null;
+
+    const final_3dsx: zitrus.Make3dsx = .initInner(b, .{
+        .tools_artifact = zitrus_dep.artifact("zitrus"),
+    }, .{
+        .name = b.fmt("{s}.3dsx", .{exe.name}),
+        .exe = exe,
+        .smdh = smdh.out,
+        .romfs = romfs,
+    });
+    final_3dsx.install(b, .{
+        .install_dir = .bin,
+        .dest_sub_path = if (opts.output_dir) |dir|
+            b.fmt("{s}/{s}", .{ dir, final_3dsx.name })
+        else
+            final_3dsx.name,
+    });
+}
+
 fn cBackendOptimizeMode(exe: *std.Build.Step.Compile) std.builtin.OptimizeMode {
     return exe.root_module.optimize orelse .Debug;
 }
@@ -1296,6 +1415,7 @@ pub fn build(b: *std.Build) void {
         .title = "Aether",
         .output_dir = switch (config.platform) {
             .psp => "Aether-PSP",
+            .nintendo_3ds => "Aether-3DS",
             .nintendo_switch => "Aether-Switch",
             else => null,
         },
@@ -1304,6 +1424,7 @@ pub fn build(b: *std.Build) void {
             .{ .path = b.path("test/calm1.wav"), .name = "calm1.wav" },
             .{ .path = b.path("test/grass1.wav"), .name = "grass1.wav" },
         },
+        .nintendo_3ds_romfs = if (config.platform == .nintendo_3ds) nintendo_romfs.getDirectory() else null,
         .switch_romfs = if (config.platform == .nintendo_switch) nintendo_romfs.getDirectory() else null,
     });
 
@@ -1362,6 +1483,25 @@ pub fn build(b: *std.Build) void {
         // `zig build run` aliases to nxlink for Switch so the same
         // command works across host/PSP/Switch workflows.
         run_step.dependOn(&link_cmd.step);
+    } else if (config.platform == .nintendo_3ds) {
+        const dkp = devkitProPath(b);
+        const link_cmd = b.addSystemCommand(&.{b.pathJoin(&.{ dkp, "tools/bin/3dslink" })});
+        if (b.option([]const u8, "3dslink-address", "3DS: target IP/hostname for 3dslink push (default: broadcast discovery)")) |ip| {
+            link_cmd.addArgs(&.{ "-a", ip });
+        }
+        if (b.option(u32, "3dslink-retries", "3DS: 3dslink retry count")) |n| {
+            link_cmd.addArgs(&.{ "-r", b.fmt("{d}", .{n}) });
+        }
+        if (b.option(bool, "3dslink-server", "3DS: pass -s so 3dslink stays listening after upload") orelse false) {
+            link_cmd.addArg("-s");
+        }
+        link_cmd.addArg(b.getInstallPath(.bin, "Aether-3DS/Aether.3dsx"));
+        link_cmd.step.dependOn(b.getInstallStep());
+
+        const link_step = b.step("3dslink", "Push the 3dsx to a networked 3DS via 3dslink");
+        link_step.dependOn(&link_cmd.step);
+
+        run_step.dependOn(&link_cmd.step);
     } else {
         const run_cmd = b.addRunArtifact(exe);
         run_cmd.step.dependOn(b.getInstallStep());
@@ -1369,9 +1509,9 @@ pub fn build(b: *std.Build) void {
         run_step.dependOn(&run_cmd.step);
     }
 
-    // Engine unit tests (desktop only -- PSP/Switch pull in symbols
+    // Engine unit tests (desktop only -- PSP/3DS/Switch pull in symbols
     // that can't be linked or analyzed under the test runner)
-    if (config.platform != .psp and config.platform != .nintendo_switch) {
+    if (config.platform != .psp and config.platform != .nintendo_3ds and config.platform != .nintendo_switch) {
         const mod_tests = b.addTest(.{
             .root_module = exe.root_module.import_table.get("aether").?,
         });

@@ -1,8 +1,10 @@
 const std = @import("std");
+const options = @import("options");
 
 pub const gfx = @import("gfx.zig");
 pub const audio = @import("audio.zig");
 pub const input = @import("input.zig");
+const app_3ds = if (options.config.platform == .nintendo_3ds) @import("3ds/app.zig") else struct {};
 
 const Engine = @import("../engine.zig").Engine;
 
@@ -27,6 +29,11 @@ pub fn init(engine: *Engine, width: u32, height: u32, title: [:0]const u8, fulls
 
 /// Updates the platform subsystems. Must be called once per frame.
 pub fn update(engine: *Engine) void {
+    if (options.config.platform == .nintendo_3ds and !app_3ds.update()) {
+        engine.running = false;
+        return;
+    }
+
     if (!gfx.surface.update()) {
         // Window should close
         engine.running = false;
