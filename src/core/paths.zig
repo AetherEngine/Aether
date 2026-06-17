@@ -95,6 +95,7 @@ pub fn resolve(
         .macos => resolve_macos(io, environ_map, app_name),
         .windows => resolve_windows(io, environ_map, app_name),
         .linux => resolve_linux(io, environ_map, app_name),
+        .nintendo_3ds => resolve_nintendo_3ds(io, app_name),
         .nintendo_switch => resolve_nintendo(io, app_name),
         // PSP: both dirs collapse to CWD. The EBOOT and its siblings all
         // live under `ms0:/PSP/GAME/<id>/`; the runtime sets CWD there
@@ -105,6 +106,21 @@ pub fn resolve(
         // platform-specific code.
         else => .{ .resources = Io.Dir.cwd(), .data = Io.Dir.cwd() },
     };
+}
+
+fn resolve_nintendo_3ds(io: Io, app_name: []const u8) Error!Dirs {
+    var data_buf: [Io.Dir.max_path_bytes]u8 = undefined;
+    const data_path = std.fmt.bufPrint(&data_buf, "sdmc:/3ds/{s}", .{app_name}) catch return error.PathTooLong;
+    const cwd = Io.Dir.cwd();
+
+    const data = cwd.createDirPathOpen(io, data_path, .{ .open_options = .{ .iterate = true } }) catch
+        cwd.openDir(io, "sdmc:/", .{ .iterate = true }) catch
+        cwd;
+    errdefer if (data.handle != cwd.handle) data.close(io);
+
+    const resources = cwd.openDir(io, "romfs:/", .{}) catch data;
+
+    return .{ .resources = resources, .data = data };
 }
 
 fn resolve_nintendo(io: Io, app_name: []const u8) Error!Dirs {

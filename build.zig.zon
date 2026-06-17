@@ -90,6 +90,10 @@
             .url = "git+https://github.com/GasInfinity/zsflt.git#1929cbae9d41c7e1178e494e42aa7b349a68cd8a",
             .hash = "zsflt-0.0.1-_pCibQ4wAABnfZskVOk2Y14F056VNJtuqVpAEzUNBGfl",
         },
+        .zitrus = .{
+            .url = "git+https://codeberg.org/GasInfinity/zitrus#4a4be51616dc13ccba21fa75ae635389bfce2c18",
+            .hash = "zitrus-0.0.0-Ewix9EvdGwCpohG68VMzKA5o3jbqVwMbG4vVWS9FaGbz",
+        },
     },
     .paths = .{
         "build.zig",

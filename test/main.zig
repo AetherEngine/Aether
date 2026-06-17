@@ -18,13 +18,17 @@ comptime {
 
 pub const psp_stack_size: u32 = 256 * 1024;
 
-// PSP and Switch override panic/IO handlers that would otherwise
+// PSP/Switch override panic/IO handlers that would otherwise
 // pull in posix symbols (Io.Threaded references std.posix decls that
 // don't exist for these targets). Switch uses Aether's newlib-backed
-// baseline so debug prints and file IO go through the backend instead of
-// dereferencing an undefined Io implementation.
+// baseline.
 const is_freestanding_console = ae.platform == .psp or ae.platform == .nintendo_switch;
-pub const panic = if (ae.platform == .psp) sdk.extra.debug.panic else if (ae.platform == .nintendo_switch) std.debug.no_panic else std.debug.FullPanic(std.debug.defaultPanic);
+pub const panic = if (ae.platform == .psp)
+    sdk.extra.debug.panic
+else if (ae.platform == .nintendo_switch)
+    std.debug.no_panic
+else
+    std.debug.FullPanic(std.debug.defaultPanic);
 pub const std_options_debug_threaded_io = if (is_freestanding_console) null else std.Io.Threaded.global_single_threaded;
 pub const std_options_debug_io: std.Io =
     if (ae.platform == .psp) sdk.extra.Io.psp_io else if (ae.platform == .nintendo_switch) ae.Cio.io() else std.Io.Threaded.global_single_threaded.io();
