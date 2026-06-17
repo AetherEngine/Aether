@@ -5,6 +5,7 @@ pub const gfx = @import("gfx.zig");
 pub const audio = @import("audio.zig");
 pub const input = @import("input.zig");
 const app_3ds = if (options.config.platform == .nintendo_3ds) @import("3ds/app.zig") else struct {};
+const horizon_3ds = if (options.config.platform == .nintendo_3ds) @import("zitrus").horizon else struct {};
 
 const Engine = @import("../engine.zig").Engine;
 
@@ -29,7 +30,7 @@ pub fn init(engine: *Engine, width: u32, height: u32, title: [:0]const u8, fulls
 
 /// Updates the platform subsystems. Must be called once per frame.
 pub fn update(engine: *Engine) void {
-    if (options.config.platform == .nintendo_3ds and !app_3ds.update()) {
+    if (options.config.platform == .nintendo_3ds and !app_3ds.update(audio.Api.suspend_for_applet, audio.Api.resume_from_applet)) {
         engine.running = false;
         return;
     }
@@ -45,6 +46,9 @@ pub fn update(engine: *Engine) void {
         }
     }
     audio.update();
+    if (options.config.platform == .nintendo_3ds) {
+        horizon_3ds.sleepThread(0);
+    }
 }
 
 /// Deinitializes the platform subsystems in reverse order.
