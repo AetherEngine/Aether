@@ -2,7 +2,7 @@
 //!
 //! Exports a C-callable `main` that hands control to the user's Zig
 //! `main`. The allocator and baseline `std.Io` pieces of `std.process.Init`
-//! are wired through newlib; deeper platform services remain TODO.
+//! are wired through newlib.
 //!
 //! libnx's switch.specs links with `--require-defined=main`, which
 //! pulls a strong `main` from libnx's crt0 by default. We shadow it
@@ -29,20 +29,20 @@ pub const os = struct {
     pub const NAME_MAX = 255;
 };
 
-fn AppRoot() type {
+fn app_root() type {
     const root = @import("root");
     return if (@hasDecl(root, "main")) root else @import("aether_user_root");
 }
 
-pub const std_options = if (@hasDecl(AppRoot(), "std_options")) AppRoot().std_options else std.Options{};
-pub const std_options_debug_threaded_io = if (@hasDecl(AppRoot(), "std_options_debug_threaded_io")) AppRoot().std_options_debug_threaded_io else null;
-pub const std_options_debug_io = if (@hasDecl(AppRoot(), "std_options_debug_io")) AppRoot().std_options_debug_io else std.Io.failing;
-const app_std_options_cwd: ?fn () std.Io.Dir = if (@hasDecl(AppRoot(), "std_options_cwd")) AppRoot().std_options_cwd else null;
+pub const std_options = if (@hasDecl(app_root(), "std_options")) app_root().std_options else std.Options{};
+pub const std_options_debug_threaded_io = if (@hasDecl(app_root(), "std_options_debug_threaded_io")) app_root().std_options_debug_threaded_io else null;
+pub const std_options_debug_io = if (@hasDecl(app_root(), "std_options_debug_io")) app_root().std_options_debug_io else std.Io.failing;
+const app_std_options_cwd: ?fn () std.Io.Dir = if (@hasDecl(app_root(), "std_options_cwd")) app_root().std_options_cwd else null;
 pub const std_options_cwd = app_std_options_cwd orelse @import("aether").Cio.cwd;
 
 const fatal_result: u32 = 0xf801;
-const FatalPolicy_ErrorScreen: c_int = 2;
-const BreakReason_Panic: u32 = 0;
+const fatal_policy_error_screen: c_int = 2;
+const break_reason_panic: u32 = 0;
 
 const CpuRegister = extern union {
     x: u64,
@@ -112,7 +112,7 @@ extern const __text_end: u8;
 
 comptime {
     @export(&entry, .{ .name = "main" });
-    @export(&exceptionHandler, .{ .name = "__libnx_exception_handler" });
+    @export(&exception_handler, .{ .name = "__libnx_exception_handler" });
 }
 
 var panic_stage: u8 = 0;
@@ -131,19 +131,19 @@ fn entry(_: c_int, _: [*c][*c]u8) callconv(.c) c_int {
 
     const init = process_init.makeInit(.{ .vector = {} });
     defer Cio.deinitNetworking();
-    AppRoot().main(init) catch |err| {
-        fatalMainError(err, @errorReturnTrace(), @returnAddress());
+    app_root().main(init) catch |err| {
+        fatal_main_error(err, @errorReturnTrace(), @returnAddress());
     };
     return 0;
 }
 
-fn getFramePointer() usize {
+fn get_frame_pointer() usize {
     return asm volatile ("mov %[fp], x29"
         : [fp] "=r" (-> usize),
     );
 }
 
-fn isLikelyReturnAddress(addr: usize) bool {
+fn is_likely_return_address(addr: usize) bool {
     @setRuntimeSafety(false);
     const ts = @intFromPtr(&__text_start);
     const te = @intFromPtr(&__text_end);
@@ -151,12 +151,12 @@ fn isLikelyReturnAddress(addr: usize) bool {
     const prev = addr -% 4;
     if (prev < ts) return false;
     const inst = @as(*const u32, @ptrFromInt(prev)).*;
-    if ((inst & 0xfc000000) == 0x94000000) return true; // bl imm26
-    if ((inst & 0xfffffc1f) == 0xd63f0000) return true; // blr xn
+    if ((inst & 0xfc000000) == 0x94000000) return true;
+    if ((inst & 0xfffffc1f) == 0xd63f0000) return true;
     return false;
 }
 
-fn collectStackAddresses(first_addr: usize, out: []usize, start_fp: ?usize, start_lr: ?usize, start_sp: ?usize) usize {
+fn collect_stack_addresses(first_addr: usize, out: []usize, start_fp: ?usize, start_lr: ?usize, start_sp: ?usize) usize {
     @setRuntimeSafety(false);
     const min_valid_fp: usize = 0x100000;
     var count: usize = 0;
@@ -165,13 +165,13 @@ fn collectStackAddresses(first_addr: usize, out: []usize, start_fp: ?usize, star
         count = 1;
     }
     if (start_lr) |lr| {
-        if (lr > 1 and lr != first_addr and count < out.len and isLikelyReturnAddress(lr)) {
+        if (lr > 1 and lr != first_addr and count < out.len and is_likely_return_address(lr)) {
             out[count] = lr;
             count += 1;
         }
     }
 
-    var fp = start_fp orelse getFramePointer();
+    var fp = start_fp orelse get_frame_pointer();
     var guard: usize = 0;
     while (count < out.len and guard < 64) : (guard += 1) {
         if (fp < min_valid_fp or (fp & 7) != 0) break;
@@ -179,7 +179,7 @@ fn collectStackAddresses(first_addr: usize, out: []usize, start_fp: ?usize, star
         const saved_lr: *const u64 = @ptrFromInt(fp + 8);
         const lr: usize = @intCast(saved_lr.*);
         const next_fp: usize = @intCast(saved_fp.*);
-        if (lr > 1 and count < out.len and isLikelyReturnAddress(lr)) {
+        if (lr > 1 and count < out.len and is_likely_return_address(lr)) {
             out[count] = lr;
             count += 1;
         }
@@ -201,7 +201,7 @@ fn collectStackAddresses(first_addr: usize, out: []usize, start_fp: ?usize, star
         }) {
             if (scan < 0x1000) break;
             const val = @as(*const usize, @ptrFromInt(scan)).*;
-            if (isLikelyReturnAddress(val)) {
+            if (is_likely_return_address(val)) {
                 var have = false;
                 for (out[0..count]) |prev| if (prev == val) {
                     have = true;
@@ -218,46 +218,46 @@ fn collectStackAddresses(first_addr: usize, out: []usize, start_fp: ?usize, star
     return count;
 }
 
-fn showCrashScreen(title: []const u8, message: []const u8, pc: usize, stack: []const usize) void {
+fn show_crash_screen(title: []const u8, message: []const u8, pc: usize, stack: []const usize) void {
     @setRuntimeSafety(false);
 
     _ = consoleInit(null);
     consoleClear();
 
-    consolePrint("\x1b[31;1m{s}\x1b[0m\n\n", .{title});
+    console_print("\x1b[31;1m{s}\x1b[0m\n\n", .{title});
     if (message.len != 0) {
-        consoleWrite(message);
-        if (message[message.len - 1] != '\n') consoleWrite("\n");
-        consoleWrite("\n");
+        console_write(message);
+        if (message[message.len - 1] != '\n') console_write("\n");
+        console_write("\n");
     }
 
     const base = @intFromPtr(&__text_start);
     const text_end = @intFromPtr(&__text_end);
-    consolePrint("Backtrace start addr = 0x{x}\n", .{base});
+    console_print("Backtrace start addr = 0x{x}\n", .{base});
     if (pc != 0) {
-        consolePrint("PC = 0x{x}", .{pc});
-        if (pc >= base and pc < text_end) consolePrint(" (+0x{x})", .{pc - base});
-        consoleWrite("\n");
+        console_print("PC = 0x{x}", .{pc});
+        if (pc >= base and pc < text_end) console_print(" (+0x{x})", .{pc - base});
+        console_write("\n");
     }
 
     const show = @min(stack.len, 24);
     for (stack[0..show], 0..) |addr, i| {
-        consolePrint("BT{d} = 0x{x}", .{ i, addr });
-        if (addr >= base and addr < text_end) consolePrint(" (+0x{x})", .{addr - base});
-        consoleWrite("\n");
+        console_print("BT{d} = 0x{x}", .{ i, addr });
+        if (addr >= base and addr < text_end) console_print(" (+0x{x})", .{addr - base});
+        console_write("\n");
     }
     if (show == 0 and pc != 0) {
-        consolePrint("BT0 = 0x{x}", .{pc});
-        if (pc >= base and pc < text_end) consolePrint(" (+0x{x})", .{pc - base});
-        consoleWrite("\n");
+        console_print("BT0 = 0x{x}", .{pc});
+        if (pc >= base and pc < text_end) console_print(" (+0x{x})", .{pc - base});
+        console_write("\n");
     }
 
-    consoleWrite("\nClose the app from HOME after recording this screen.\n");
+    console_write("\nClose the app from HOME after recording this screen.\n");
     consoleUpdate(null);
-    waitOnCrashScreen();
+    wait_on_crash_screen();
 }
 
-fn waitOnCrashScreen() void {
+fn wait_on_crash_screen() void {
     @setRuntimeSafety(false);
 
     while (appletMainLoop()) {
@@ -266,14 +266,14 @@ fn waitOnCrashScreen() void {
     }
 }
 
-fn consolePrint(comptime fmt: []const u8, args: anytype) void {
+fn console_print(comptime fmt: []const u8, args: anytype) void {
     var buf: [256]u8 = undefined;
     var fixed: std.Io.Writer = .fixed(&buf);
     fixed.print(fmt, args) catch {};
-    consoleWrite(fixed.buffered());
+    console_write(fixed.buffered());
 }
 
-fn consoleWrite(message: []const u8) void {
+fn console_write(message: []const u8) void {
     var rest = message;
     while (rest.len != 0) {
         const n = @min(rest.len, @as(usize, @intCast(std.math.maxInt(c_int))));
@@ -282,12 +282,12 @@ fn consoleWrite(message: []const u8) void {
     }
 }
 
-fn fatalMainError(err: anyerror, maybe_trace: ?*std.builtin.StackTrace, fallback_addr: usize) noreturn {
+fn fatal_main_error(err: anyerror, maybe_trace: ?*std.builtin.StackTrace, fallback_addr: usize) noreturn {
     @branchHint(.cold);
     @setRuntimeSafety(false);
 
     if (panic_stage != 0) {
-        fatalDisplay("Aether recursive error in main");
+        fatal_display("Aether recursive error in main");
     }
     panic_stage = 1;
 
@@ -308,7 +308,7 @@ fn fatalMainError(err: anyerror, maybe_trace: ?*std.builtin.StackTrace, fallback
     );
 
     var addrs: [32]usize = undefined;
-    const n = collectStackAddresses(main_pc, &addrs, entry_fp, entry_lr, entry_sp);
+    const n = collect_stack_addresses(main_pc, &addrs, entry_fp, entry_lr, entry_sp);
 
     var trace_buf: [768]u8 = undefined;
     var fixed: std.Io.Writer = .fixed(&trace_buf);
@@ -333,10 +333,10 @@ fn fatalMainError(err: anyerror, maybe_trace: ?*std.builtin.StackTrace, fallback
     }
 
     const text = fixed.buffered();
-    debugString(text);
-    debugString("\n");
-    showCrashScreen("Aether main error", text, main_pc, addrs[0..n]);
-    fatalWithContext(main_pc, entry_fp, entry_lr, entry_sp, 0, 0, 0, 0, addrs[0..n], 0);
+    debug_string(text);
+    debug_string("\n");
+    show_crash_screen("Aether main error", text, main_pc, addrs[0..n]);
+    fatal_with_context(main_pc, entry_fp, entry_lr, entry_sp, 0, 0, 0, 0, addrs[0..n], 0);
 }
 
 pub fn panic(msg: []const u8, _: ?*std.builtin.StackTrace, first_trace_addr: ?usize) noreturn {
@@ -344,7 +344,7 @@ pub fn panic(msg: []const u8, _: ?*std.builtin.StackTrace, first_trace_addr: ?us
     @setRuntimeSafety(false);
 
     if (panic_stage != 0) {
-        fatalDisplay("Aether recursive panic");
+        fatal_display("Aether recursive panic");
     }
     panic_stage = 1;
 
@@ -360,7 +360,7 @@ pub fn panic(msg: []const u8, _: ?*std.builtin.StackTrace, first_trace_addr: ?us
     );
 
     var addrs: [64]usize = undefined;
-    const n = collectStackAddresses(first, &addrs, entry_fp, entry_lr, entry_sp);
+    const n = collect_stack_addresses(first, &addrs, entry_fp, entry_lr, entry_sp);
 
     var trace_buf: [768]u8 = undefined;
     var fixed: std.Io.Writer = .fixed(&trace_buf);
@@ -388,13 +388,13 @@ pub fn panic(msg: []const u8, _: ?*std.builtin.StackTrace, first_trace_addr: ?us
     }
 
     const text = fixed.buffered();
-    debugString(text);
-    debugString("\n");
-    showCrashScreen("Aether panic", text, first, addrs[0..n]);
-    fatalWithContext(first, entry_fp, entry_lr, entry_sp, 0, 0, 0, 0, addrs[0..n], 0);
+    debug_string(text);
+    debug_string("\n");
+    show_crash_screen("Aether panic", text, first, addrs[0..n]);
+    fatal_with_context(first, entry_fp, entry_lr, entry_sp, 0, 0, 0, 0, addrs[0..n], 0);
 }
 
-fn exceptionHandler(dump: *ThreadExceptionDump) callconv(.c) noreturn {
+fn exception_handler(dump: *ThreadExceptionDump) callconv(.c) noreturn {
     @branchHint(.cold);
     @setRuntimeSafety(false);
 
@@ -404,7 +404,7 @@ fn exceptionHandler(dump: *ThreadExceptionDump) callconv(.c) noreturn {
     const sp: usize = @intCast(dump.sp.x);
 
     var addrs: [32]usize = undefined;
-    const n = collectStackAddresses(pc, &addrs, fp, lr, sp);
+    const n = collect_stack_addresses(pc, &addrs, fp, lr, sp);
 
     var buf: [768]u8 = undefined;
     var fixed: std.Io.Writer = .fixed(&buf);
@@ -416,7 +416,7 @@ fn exceptionHandler(dump: *ThreadExceptionDump) callconv(.c) noreturn {
         \\stack trace:
         \\
     , .{
-        exceptionName(dump.error_desc),
+        exception_name(dump.error_desc),
         pc,
         lr,
         sp,
@@ -434,11 +434,11 @@ fn exceptionHandler(dump: *ThreadExceptionDump) callconv(.c) noreturn {
     }
 
     const text = fixed.buffered();
-    debugString(text);
-    debugString("\n");
-    showCrashScreen("Aether CPU exception", text, pc, addrs[0..n]);
+    debug_string(text);
+    debug_string("\n");
+    show_crash_screen("Aether CPU exception", text, pc, addrs[0..n]);
 
-    fatalWithContext(
+    fatal_with_context(
         pc,
         fp,
         lr,
@@ -452,7 +452,7 @@ fn exceptionHandler(dump: *ThreadExceptionDump) callconv(.c) noreturn {
     );
 }
 
-fn exceptionName(desc: u32) []const u8 {
+fn exception_name(desc: u32) []const u8 {
     return switch (desc) {
         0x100 => "Instruction Abort",
         0x102 => "Misaligned PC",
@@ -465,7 +465,7 @@ fn exceptionName(desc: u32) []const u8 {
     };
 }
 
-fn fatalWithContext(
+fn fatal_with_context(
     pc: usize,
     fp: usize,
     lr: usize,
@@ -495,20 +495,20 @@ fn fatalWithContext(
     }
     ctx.aarch64_ctx.stack_trace_size = @intCast(n);
 
-    fatalThrowWithContext(fatal_result, FatalPolicy_ErrorScreen, &ctx);
-    _ = svcBreak(BreakReason_Panic, 0, 0);
+    fatalThrowWithContext(fatal_result, fatal_policy_error_screen, &ctx);
+    _ = svcBreak(break_reason_panic, 0, 0);
     while (true) {}
 }
 
-fn fatalDisplay(message: [:0]const u8) noreturn {
-    debugString(message);
-    debugString("\n");
-    showCrashScreen("Aether fatal error", message, 0, &.{});
-    _ = svcBreak(BreakReason_Panic, @intFromPtr(message.ptr), message.len);
+fn fatal_display(message: [:0]const u8) noreturn {
+    debug_string(message);
+    debug_string("\n");
+    show_crash_screen("Aether fatal error", message, 0, &.{});
+    _ = svcBreak(break_reason_panic, @intFromPtr(message.ptr), message.len);
     while (true) {}
 }
 
-fn debugString(message: []const u8) void {
+fn debug_string(message: []const u8) void {
     if (message.len == 0) return;
     _ = svcOutputDebugString(message.ptr, @intCast(message.len));
 }

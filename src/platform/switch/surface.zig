@@ -19,7 +19,7 @@ operation_mode_changed: bool = false,
 
 pub fn init(self: *Self, _: u32, _: u32, _: [:0]const u8, _: bool, _: bool, _: bool) anyerror!void {
     self.operation_mode = c.appletGetOperationMode();
-    self.setOperationModeResolution(self.operation_mode);
+    self.set_operation_mode_resolution(self.operation_mode);
     self.operation_mode_changed = false;
 }
 
@@ -32,7 +32,7 @@ pub fn update(self: *Self) bool {
         self.operation_mode = mode;
         self.operation_mode_changed = true;
     }
-    self.setOperationModeResolution(mode);
+    self.set_operation_mode_resolution(mode);
     return running;
 }
 
@@ -52,7 +52,7 @@ pub fn take_operation_mode_changed(self: *Self) bool {
     return changed;
 }
 
-fn setOperationModeResolution(self: *Self, mode: c.AppletOperationMode) void {
+fn set_operation_mode_resolution(self: *Self, mode: c.AppletOperationMode) void {
     if (mode == c.AppletOperationMode_Console) {
         self.width = DOCKED_WIDTH;
         self.height = DOCKED_HEIGHT;
