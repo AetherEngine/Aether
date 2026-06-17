@@ -1,7 +1,7 @@
 //! Switch thread backend -- wraps libnx's `threadCreate`/`threadStart`.
 
 const std = @import("std");
-const c = @import("../nintendo_c.zig").c;
+const c = @import("../nintendo_c.zig").switch_c;
 const api = @import("../thread_api.zig");
 
 const Header = struct {

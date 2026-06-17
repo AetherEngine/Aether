@@ -1,5 +1,5 @@
 const std = @import("std");
-const c = @import("../nintendo_c.zig").c;
+const c = @import("../nintendo_c.zig").switch_c;
 
 pub fn mountData() bool {
     return c.fsdevMountSdmc() == 0;

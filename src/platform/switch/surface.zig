@@ -4,7 +4,7 @@
 
 const std = @import("std");
 const Self = @This();
-const c = @import("../nintendo_c.zig").c;
+const c = @import("../nintendo_c.zig").switch_c;
 
 const HANDHELD_WIDTH = 1280;
 const HANDHELD_HEIGHT = 720;

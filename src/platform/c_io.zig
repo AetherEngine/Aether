@@ -25,13 +25,16 @@ const platform_lifecycle = switch (options.config.platform) {
     },
 };
 
-const c = @import("nintendo_c.zig").c;
+const nintendo_c = @import("nintendo_c.zig");
+const c = nintendo_c.c;
+const switch_c = nintendo_c.switch_c;
 const log = std.log.scoped(.aether_io);
 const max_path_bytes = 1024;
 const async_stack_size = switch (options.config.platform) {
     .nintendo_switch => 2 * 1024 * 1024,
     else => 512 * 1024,
 };
+const NintendoThread = if (options.config.platform == .nintendo_switch) switch_c.Thread else c.Thread;
 
 const AT_FDCWD: c_int = -2;
 const O_RDONLY: c_int = c.O_RDONLY;
@@ -192,7 +195,7 @@ pub fn deinitNetworking() void {
                 soc_buffer = null;
             }
         },
-        .nintendo_switch => c.socketExit(),
+        .nintendo_switch => switch_c.socketExit(),
         else => unreachable,
     }
 }
@@ -210,7 +213,7 @@ fn checkCancel(_: ?*anyopaque) Io.Cancelable!void {}
 
 const nintendo_async = struct {
     const AsyncFuture = struct {
-        thread: c.Thread,
+        thread: NintendoThread,
         result_len: usize,
         result_offset: usize,
         context_offset: usize,
@@ -314,7 +317,7 @@ const nintendo_async = struct {
             return true;
         } else {
             const priority = workerPriority();
-            const create_result = c.threadCreate(
+            const create_result = switch_c.threadCreate(
                 &future.thread,
                 entry,
                 future,
@@ -327,10 +330,10 @@ const nintendo_async = struct {
                 log.err("switch async threadCreate failed rc={d}", .{create_result});
                 return false;
             }
-            const start_result = c.threadStart(&future.thread);
+            const start_result = switch_c.threadStart(&future.thread);
             if (start_result != 0) {
                 log.err("switch async threadStart failed rc={d}", .{start_result});
-                _ = c.threadClose(&future.thread);
+                _ = switch_c.threadClose(&future.thread);
                 return false;
             }
             return true;
@@ -346,8 +349,8 @@ const nintendo_async = struct {
             }
             return @min(priority + 1, 0x3f);
         } else {
-            var priority: c.s32 = 0x2c;
-            const rc = c.svcGetThreadPriority(&priority, c.threadGetCurHandle());
+            var priority: switch_c.s32 = 0x2c;
+            const rc = switch_c.svcGetThreadPriority(&priority, switch_c.threadGetCurHandle());
             _ = rc;
             const worker_priority = @min(priority + 1, 0x3f);
             return worker_priority;
@@ -405,9 +408,9 @@ const nintendo_async = struct {
             _ = c.threadJoin(future.thread, std.math.maxInt(u64));
             c.threadFree(future.thread);
         } else {
-            const wait_result = c.threadWaitForExit(&future.thread);
+            const wait_result = switch_c.threadWaitForExit(&future.thread);
             if (wait_result != 0) log.err("switch async threadWaitForExit rc={d}", .{wait_result});
-            const close_result = c.threadClose(&future.thread);
+            const close_result = switch_c.threadClose(&future.thread);
             if (close_result != 0) log.err("switch async threadClose rc={d}", .{close_result});
         }
         @memcpy(result, future.result());
@@ -438,7 +441,11 @@ fn ensureNetworking() error{ NetworkDown, SystemResources }!void {
         switch (net_init_state.load(.acquire)) {
             2 => return,
             1 => {
-                _ = c.svcSleepThread(1_000_000);
+                switch (options.config.platform) {
+                    .nintendo_3ds => _ = c.svcSleepThread(1_000_000),
+                    .nintendo_switch => switch_c.svcSleepThread(1_000_000),
+                    else => unreachable,
+                }
                 continue;
             },
             else => {},
@@ -466,7 +473,7 @@ fn initNetworking() error{ NetworkDown, SystemResources }!void {
             soc_buffer = aligned;
         },
         .nintendo_switch => {
-            if (c.socketInitialize(null) != 0) return error.NetworkDown;
+            if (switch_c.socketInitialize(null) != 0) return error.NetworkDown;
         },
         else => unreachable,
     }

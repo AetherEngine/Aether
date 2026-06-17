@@ -213,9 +213,8 @@ pub fn webTarget(b: *std.Build) std.Build.ResolvedTarget {
     });
 }
 
-fn addNintendoCImportPaths(owner: *std.Build, mod: *std.Build.Module, config: Config, dkp: []const u8) void {
+fn addNintendoCImportPaths(_: *std.Build, mod: *std.Build.Module, config: Config, dkp: []const u8) void {
     const b = mod.owner;
-    mod.addIncludePath(owner.path("src/platform"));
     switch (config.platform) {
         .nintendo_3ds => {
             // Keep newlib before libctru so libctru's include_next sys wrappers
@@ -653,7 +652,6 @@ fn add3dsMangoImport(owner: *std.Build, b: *std.Build, mod: *std.Build.Module, t
         },
     });
     zitrus_mod.addImport("zitrus", zitrus_mod);
-    zitrus_mod.addIncludePath(owner.path("src/platform"));
     zitrus_mod.addCMacro("_FORTIFY_SOURCE", "0");
     zitrus_mod.addIncludePath(.{ .cwd_relative = b.pathJoin(&.{ dkp, "devkitARM/arm-none-eabi/include" }) });
     zitrus_mod.addIncludePath(.{ .cwd_relative = b.pathJoin(&.{ dkp, "libctru/include" }) });

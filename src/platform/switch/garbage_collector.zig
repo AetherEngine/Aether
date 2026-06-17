@@ -5,7 +5,7 @@ const Context = @import("context.zig");
 const MAX_FRAMES = 3;
 
 const SharedItem = struct {
-    mem_block: *dk.DkMemBlock_T,
+    mem_block: dk.DkMemBlock,
     pending_frame_mask: u32,
 };
 

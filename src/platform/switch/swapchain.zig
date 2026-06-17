@@ -221,7 +221,7 @@ fn create_framebuffers(self: *Self) !void {
         .msMode = 0,
         .dimensions = .{ width, height, 0 },
         .mipLevels = 1,
-        .pitchStride = 0,
+        .unnamed_0 = .{ .pitchStride = 0 },
     };
 
     var framebuffer_layout: dk.DkImageLayout = undefined;
@@ -293,7 +293,7 @@ fn create_depth_image(self: *Self) !void {
         .msMode = 0,
         .dimensions = .{ width, height, 0 },
         .mipLevels = 1,
-        .pitchStride = 0,
+        .unnamed_0 = .{ .pitchStride = 0 },
     };
 
     var depth_layout: dk.DkImageLayout = undefined;

@@ -116,7 +116,7 @@ var descriptor_cpu_addr: ?[*]u8 = null;
 var image_descriptor_base_gpu_addr: dk.DkGpuAddr = 0;
 var sampler_descriptor_gpu_addr: dk.DkGpuAddr = 0;
 var sampler_descriptor_offset: u32 = 0;
-var image_descriptors: [MAX_TEXTURES]dk.DkImageDescriptor = @splat(.{ .storage = @splat(0) });
+var image_descriptors: [MAX_TEXTURES]dk.DkImageDescriptor = @splat(.{ ._storage = @splat(0) });
 var image_descriptor_count: u32 = 1;
 var image_descriptors_dirty = true;
 var image_descriptor_table_indices: [Swapchain.MAX_FRAMES]u32 = @splat(0);
@@ -560,7 +560,7 @@ fn create_descriptor_memory() !void {
     image_descriptor_base_gpu_addr = dk.dkMemBlockGetGpuAddr(descriptor_mem);
     sampler_descriptor_offset = sampler_offset;
     sampler_descriptor_gpu_addr = image_descriptor_base_gpu_addr + sampler_offset;
-    image_descriptors = @splat(.{ .storage = @splat(0) });
+    image_descriptors = @splat(.{ ._storage = @splat(0) });
     image_descriptor_count = 1;
     image_descriptors_dirty = true;
     image_descriptor_table_indices = @splat(0);
@@ -578,26 +578,7 @@ fn destroy_descriptor_memory() void {
 }
 
 fn initialize_sampler_descriptor() !void {
-    var sampler = dk.DkSampler{
-        .minFilter = dk.FilterNearest,
-        .magFilter = dk.FilterNearest,
-        .mipFilter = dk.MipFilterNone,
-        .wrapMode = .{ dk.WrapRepeat, dk.WrapRepeat, dk.WrapRepeat },
-        .lodClampMin = 0.0,
-        .lodClampMax = 1000.0,
-        .lodBias = 0.0,
-        .lodSnap = 0.0,
-        .compareEnable = false,
-        .compareOp = dk.CompareLess,
-        .borderColor = .{
-            .{ .value_ui = 0 },
-            .{ .value_ui = 0 },
-            .{ .value_ui = 0 },
-            .{ .value_ui = 0 },
-        },
-        .maxAnisotropy = 1.0,
-        .reductionMode = dk.SamplerReductionWeightedAverage,
-    };
+    var sampler = dk.defaultSampler();
     var descriptor: dk.DkSamplerDescriptor = undefined;
     dk.dkSamplerDescriptorInitialize(&descriptor, &sampler);
 
@@ -631,7 +612,7 @@ fn publish_image_descriptors_for_frame(frame_index: usize) void {
 
 fn fallback_image_descriptor() dk.DkImageDescriptor {
     if (image_descriptor_is_zero(&image_descriptors[0])) {
-        return .{ .storage = @splat(0) };
+        return .{ ._storage = @splat(0) };
     }
     return image_descriptors[0];
 }
@@ -643,8 +624,8 @@ fn is_texture_handle_live(handle: usize) bool {
 }
 
 fn image_descriptor_is_zero(descriptor: *const dk.DkImageDescriptor) bool {
-    for (descriptor.storage) |word| {
-        if (word != 0) return false;
+    for (descriptor._storage) |byte| {
+        if (byte != 0) return false;
     }
     return true;
 }
@@ -692,7 +673,7 @@ fn create_texture_image(tex: *TextureData, width: u32, height: u32) !void {
         .msMode = 0,
         .dimensions = .{ width, height, 0 },
         .mipLevels = 1,
-        .pitchStride = 0,
+        .unnamed_0 = .{ .pitchStride = 0 },
     };
 
     var layout: dk.DkImageLayout = undefined;
@@ -871,7 +852,7 @@ fn destroy_all_textures() void {
     }
     texture_slots.clear();
     retired_texture_slots.clearRetainingCapacity();
-    image_descriptors = @splat(.{ .storage = @splat(0) });
+    image_descriptors = @splat(.{ ._storage = @splat(0) });
     image_descriptor_count = 1;
     image_descriptors_dirty = true;
     current_texture = 0;
@@ -990,27 +971,27 @@ fn bind_fixed_state() void {
 }
 
 fn bind_rasterizer_state() void {
-    const cull_mode: u32 = if (culling_enabled) dk.FaceBack else dk.FaceNone;
+    const cull_mode: u32 = @intCast(if (culling_enabled) dk.FaceBack else dk.FaceNone);
     var rasterizer = dk.DkRasterizerState{ .bits = 1 |
-        (dk.PolygonModeFill << 3) |
-        (dk.PolygonModeFill << 5) |
+        (@as(u32, @intCast(dk.PolygonModeFill)) << 3) |
+        (@as(u32, @intCast(dk.PolygonModeFill)) << 5) |
         (cull_mode << 7) |
-        (dk.FrontFaceCcw << 9) |
-        (dk.ProvokingVertexLast << 10) };
+        (@as(u32, @intCast(dk.FrontFaceCcw)) << 9) |
+        (@as(u32, @intCast(dk.ProvokingVertexLast)) << 10) };
     dk.dkCmdBufBindRasterizerState(swapchain.command_buffer, &rasterizer);
 }
 
 fn bind_color_state() void {
     const blend_enable_mask: u32 = @intFromBool(alpha_blend_enabled);
     var color = dk.DkColorState{ .bits = blend_enable_mask |
-        (dk.LogicOpCopy << 8) |
-        (dk.CompareAlways << 16) };
-    var blend = dk.DkBlendState{ .bits = dk.BlendOpAdd |
-        (dk.BlendFactorSrcAlpha << 3) |
-        (dk.BlendFactorInvSrcAlpha << 9) |
-        (dk.BlendOpAdd << 15) |
-        (dk.BlendFactorOne << 18) |
-        (dk.BlendFactorInvSrcAlpha << 24) };
+        (@as(u32, @intCast(dk.LogicOpCopy)) << 8) |
+        (@as(u32, @intCast(dk.CompareAlways)) << 16) };
+    var blend = dk.DkBlendState{ .bits = @as(u32, @intCast(dk.BlendOpAdd)) |
+        (@as(u32, @intCast(dk.BlendFactorSrcAlpha)) << 3) |
+        (@as(u32, @intCast(dk.BlendFactorInvSrcAlpha)) << 9) |
+        (@as(u32, @intCast(dk.BlendOpAdd)) << 15) |
+        (@as(u32, @intCast(dk.BlendFactorOne)) << 18) |
+        (@as(u32, @intCast(dk.BlendFactorInvSrcAlpha)) << 24) };
     dk.dkCmdBufBindColorState(swapchain.command_buffer, &color);
     dk.dkCmdBufBindBlendStates(swapchain.command_buffer, 0, @ptrCast(&blend), 1);
 }
