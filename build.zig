@@ -797,6 +797,9 @@ pub const ExportOptions = struct {
     /// 3DS: publisher string embedded in SMDH metadata. Empty falls back to
     /// "Aether".
     nintendo_3ds_publisher: []const u8 = "",
+    /// 3DS: description string embedded in SMDH metadata. Empty falls back to
+    /// the title.
+    nintendo_3ds_description: []const u8 = "",
     /// 3DS: 48x48 icon embedded in SMDH metadata. When null, Zitrus' default
     /// icon is used.
     nintendo_3ds_icon: ?std.Build.LazyPath = null,
@@ -1128,6 +1131,7 @@ fn nintendo3dsPipeline(owner: *std.Build, b: *std.Build, exe: *std.Build.Step.Co
 
     const title = if (opts.title.len > 0) opts.title else exe.name;
     const publisher = if (opts.nintendo_3ds_publisher.len > 0) opts.nintendo_3ds_publisher else "Aether";
+    const description = if (opts.nintendo_3ds_description.len > 0) opts.nintendo_3ds_description else title;
     const settings_zon = b.fmt(
         \\.{{
         \\    .titles = .{{
@@ -1139,7 +1143,7 @@ fn nintendo3dsPipeline(owner: *std.Build, b: *std.Build, exe: *std.Build.Step.Co
         \\    }},
         \\}}
         \\
-    , .{ title, title, publisher });
+    , .{ title, description, publisher });
 
     const write_files = b.addWriteFiles();
     const smdh_settings = write_files.add("aether.smdh.zon", settings_zon);
@@ -1177,6 +1181,22 @@ fn nintendo3dsPipeline(owner: *std.Build, b: *std.Build, exe: *std.Build.Step.Co
         else
             final_3dsx.name,
     });
+}
+
+pub fn add3dslink(b: *std.Build, threedsx_path: []const u8) *std.Build.Step.Run {
+    const dkp = devkitProPath(b);
+    const link_cmd = b.addSystemCommand(&.{b.pathJoin(&.{ dkp, "tools/bin/3dslink" })});
+    if (b.option([]const u8, "3dslink-address", "3DS: target IP/hostname for 3dslink push (default: broadcast discovery)")) |ip| {
+        link_cmd.addArgs(&.{ "-a", ip });
+    }
+    if (b.option(u32, "3dslink-retries", "3DS: 3dslink retry count")) |n| {
+        link_cmd.addArgs(&.{ "-r", b.fmt("{d}", .{n}) });
+    }
+    if (b.option(bool, "3dslink-server", "3DS: pass -s so 3dslink stays listening after upload") orelse false) {
+        link_cmd.addArg("-s");
+    }
+    link_cmd.addArg(threedsx_path);
+    return link_cmd;
 }
 
 fn cBackendOptimizeMode(exe: *std.Build.Step.Compile) std.builtin.OptimizeMode {
@@ -1484,18 +1504,7 @@ pub fn build(b: *std.Build) void {
         // command works across host/PSP/Switch workflows.
         run_step.dependOn(&link_cmd.step);
     } else if (config.platform == .nintendo_3ds) {
-        const dkp = devkitProPath(b);
-        const link_cmd = b.addSystemCommand(&.{b.pathJoin(&.{ dkp, "tools/bin/3dslink" })});
-        if (b.option([]const u8, "3dslink-address", "3DS: target IP/hostname for 3dslink push (default: broadcast discovery)")) |ip| {
-            link_cmd.addArgs(&.{ "-a", ip });
-        }
-        if (b.option(u32, "3dslink-retries", "3DS: 3dslink retry count")) |n| {
-            link_cmd.addArgs(&.{ "-r", b.fmt("{d}", .{n}) });
-        }
-        if (b.option(bool, "3dslink-server", "3DS: pass -s so 3dslink stays listening after upload") orelse false) {
-            link_cmd.addArg("-s");
-        }
-        link_cmd.addArg(b.getInstallPath(.bin, "Aether-3DS/Aether.3dsx"));
+        const link_cmd = add3dslink(b, b.getInstallPath(.bin, "Aether-3DS/Aether.3dsx"));
         link_cmd.step.dependOn(b.getInstallStep());
 
         const link_step = b.step("3dslink", "Push the 3dsx to a networked 3DS via 3dslink");
