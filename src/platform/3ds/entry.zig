@@ -14,11 +14,14 @@ const Application = zitrus.horizon.Init.Application;
 pub const std_options = if (@hasDecl(app_root, "std_options")) app_root.std_options else aether.Util.std_options;
 pub const std_os_options = zitrus.std_os_options;
 pub const panic = std.debug.FullPanic(zitrus.horizon.debug.defaultPanic);
+pub const debug = @import("debug.zig");
 pub const std_options_debug_threaded_io = null;
 pub const std_options_debug_io: std.Io = zitrus.horizon.Io.debug_io;
 pub const std_options_cwd = zitrus.horizon.Io.Dir.cwd;
 
 pub fn main(init: Application) !void {
+    debug.installExceptionHandler();
+
     aether.N3ds.setApplication(&init);
     defer aether.N3ds.clearApplication(&init);
 

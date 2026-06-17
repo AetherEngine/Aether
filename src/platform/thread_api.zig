@@ -14,9 +14,13 @@ const builtin = @import("builtin");
 
 pub const Priority = enum(i8) { lowest, low, normal, high, highest };
 
-/// PSP RAM is precious so we keep the default tight; desktop pthreads need
-/// room for TLS and guard pages, so we hand them something more conservative.
-pub const default_stack_size: usize = if (builtin.os.tag == .psp) 16 * 1024 else 1 * 1024 * 1024;
+/// PSP/3DS RAM is precious so we keep the default tight; desktop pthreads
+/// need room for TLS and guard pages, so we hand them something more
+/// conservative.
+pub const default_stack_size: usize = switch (builtin.os.tag) {
+    .psp, .@"3ds" => 16 * 1024,
+    else => 1 * 1024 * 1024,
+};
 
 pub const Config = struct {
     /// Display name (PSP shows this in dev tools; ignored on desktop).
