@@ -3,13 +3,13 @@
 
 ## What is Aether?
 
-Aether is a game engine written in [Zig](https://ziglang.org/). It is platform-agnostic — there should be no difference running between Windows, Linux, macOS, and consoles like the PSP or the 3DS.
+Aether is a game engine written in [Zig](https://ziglang.org/). It is platform-agnostic -- there should be no difference running between Windows, Linux, macOS, and consoles like the PSP or Switch.
 
 User code is structured as hooks into the engine via a `State` interface. You implement the game logic; the engine handles the platform details.
 
 ## Features
 
-- **Cross-platform**: Windows, Linux, macOS (PSP/3DS planned)
+- **Cross-platform**: Windows, Linux, macOS (PSP/Switch planned)
 - **Multiple graphics backends**: OpenGL 4.5, Vulkan — selected at compile time, overridable with `-Dgfx=opengl`
 - **Fixed-step game loop**: 144 Hz updates, 20 Hz ticks, uncapped rendering
 - **Action-based input system**: keyboard, mouse, and gamepad with callback bindings
@@ -155,16 +155,9 @@ zig build run -Dgfx=opengl
 # Build for PSP
 zig build -Dtarget=mipsel-psp
 
-# Build for 3DS
-zig build -Dtarget=arm-3ds-eabihf
-
 # Build in release mode
 zig build -Doptimize=ReleaseFast
 ```
-
-3DS builds default to a 4 MiB regular libctru/newlib heap and a 60 MiB
-linear heap. Aether's process allocator uses linear memory on 3DS, so engine
-pool allocations and GPU upload buffers come from the same memory class.
 
 ## Input System
 

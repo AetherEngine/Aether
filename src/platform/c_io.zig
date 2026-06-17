@@ -7,22 +7,12 @@ const File = Io.File;
 const net = Io.net;
 
 const platform_time = switch (options.config.platform) {
-    .nintendo_3ds => @import("3ds/time.zig"),
     .nintendo_switch => @import("switch/time.zig"),
     else => @compileError("platform/c_io.zig is only wired for Nintendo targets"),
 };
 const platform_paths = switch (options.config.platform) {
-    .nintendo_3ds => @import("3ds/paths.zig"),
     .nintendo_switch => @import("switch/paths.zig"),
     else => unreachable,
-};
-const platform_lifecycle = switch (options.config.platform) {
-    .nintendo_3ds => @import("3ds/surface.zig"),
-    else => struct {
-        pub fn is_system_closing() bool {
-            return false;
-        }
-    },
 };
 
 const nintendo_c = @import("nintendo_c.zig");
@@ -30,11 +20,8 @@ const c = nintendo_c.c;
 const switch_c = nintendo_c.switch_c;
 const log = std.log.scoped(.aether_io);
 const max_path_bytes = 1024;
-const async_stack_size = switch (options.config.platform) {
-    .nintendo_switch => 2 * 1024 * 1024,
-    else => 512 * 1024,
-};
-const NintendoThread = if (options.config.platform == .nintendo_switch) switch_c.Thread else c.Thread;
+const async_stack_size = 2 * 1024 * 1024;
+const NintendoThread = switch_c.Thread;
 
 const AT_FDCWD: c_int = -2;
 const O_RDONLY: c_int = c.O_RDONLY;
@@ -60,7 +47,6 @@ var data_mounted = false;
 var atomic_counter: u64 = 0x6165_7468_6572_0000;
 var async_debug_stage: std.atomic.Value(u32) = .init(0);
 var net_init_state: std.atomic.Value(u32) = .init(0);
-var soc_buffer: ?[*]align(0x1000) u8 = null;
 
 const max_dynamic_dirs = 32;
 const DirSlot = struct {
@@ -166,11 +152,6 @@ pub fn dataRoot(buffer: []u8, app_name: []const u8) error{NameTooLong}![]const u
 
 pub fn deinitAppDirs() void {
     for (&dir_slots) |*slot| slot.used = false;
-    if (platform_lifecycle.is_system_closing()) {
-        resources_mounted = false;
-        data_mounted = false;
-        return;
-    }
     if (resources_mounted) {
         platform_paths.unmountResources();
         resources_mounted = false;
@@ -187,17 +168,7 @@ pub fn useCwdDirs() void {
 
 pub fn deinitNetworking() void {
     if (net_init_state.swap(0, .acq_rel) != 2) return;
-    switch (options.config.platform) {
-        .nintendo_3ds => {
-            _ = c.socExit();
-            if (soc_buffer) |buffer| {
-                c.free(buffer);
-                soc_buffer = null;
-            }
-        },
-        .nintendo_switch => switch_c.socketExit(),
-        else => unreachable,
-    }
+    switch_c.socketExit();
 }
 
 fn crashHandler(_: ?*anyopaque) void {}
@@ -302,59 +273,35 @@ const nintendo_async = struct {
     }
 
     fn spawn(future: *AsyncFuture) bool {
-        if (comptime options.config.platform == .nintendo_3ds) {
-            future.thread = c.threadCreate(
-                entry,
-                future,
-                async_stack_size,
-                workerPriority(),
-                -2,
-                false,
-            ) orelse {
-                log.err("3ds async threadCreate failed", .{});
-                return false;
-            };
-            return true;
-        } else {
-            const priority = workerPriority();
-            const create_result = switch_c.threadCreate(
-                &future.thread,
-                entry,
-                future,
-                null,
-                async_stack_size,
-                priority,
-                -2,
-            );
-            if (create_result != 0) {
-                log.err("switch async threadCreate failed rc={d}", .{create_result});
-                return false;
-            }
-            const start_result = switch_c.threadStart(&future.thread);
-            if (start_result != 0) {
-                log.err("switch async threadStart failed rc={d}", .{start_result});
-                _ = switch_c.threadClose(&future.thread);
-                return false;
-            }
-            return true;
+        const priority = workerPriority();
+        const create_result = switch_c.threadCreate(
+            &future.thread,
+            entry,
+            future,
+            null,
+            async_stack_size,
+            priority,
+            -2,
+        );
+        if (create_result != 0) {
+            log.err("switch async threadCreate failed rc={d}", .{create_result});
+            return false;
         }
+        const start_result = switch_c.threadStart(&future.thread);
+        if (start_result != 0) {
+            log.err("switch async threadStart failed rc={d}", .{start_result});
+            _ = switch_c.threadClose(&future.thread);
+            return false;
+        }
+        return true;
     }
 
     fn workerPriority() c_int {
-        if (comptime options.config.platform == .nintendo_3ds) {
-            var priority: c.s32 = 0x30;
-            if (c.threadGetCurrent()) |current| {
-                const handle = c.threadGetHandle(current);
-                _ = c.svcGetThreadPriority(&priority, handle);
-            }
-            return @min(priority + 1, 0x3f);
-        } else {
-            var priority: switch_c.s32 = 0x2c;
-            const rc = switch_c.svcGetThreadPriority(&priority, switch_c.threadGetCurHandle());
-            _ = rc;
-            const worker_priority = @min(priority + 1, 0x3f);
-            return worker_priority;
-        }
+        var priority: switch_c.s32 = 0x2c;
+        const rc = switch_c.svcGetThreadPriority(&priority, switch_c.threadGetCurHandle());
+        _ = rc;
+        const worker_priority = @min(priority + 1, 0x3f);
+        return worker_priority;
     }
 
     fn async(
@@ -404,15 +351,10 @@ const nintendo_async = struct {
     ) void {
         _ = result_alignment;
         const future: *AsyncFuture = @ptrCast(@alignCast(any_future));
-        if (comptime options.config.platform == .nintendo_3ds) {
-            _ = c.threadJoin(future.thread, std.math.maxInt(u64));
-            c.threadFree(future.thread);
-        } else {
-            const wait_result = switch_c.threadWaitForExit(&future.thread);
-            if (wait_result != 0) log.err("switch async threadWaitForExit rc={d}", .{wait_result});
-            const close_result = switch_c.threadClose(&future.thread);
-            if (close_result != 0) log.err("switch async threadClose rc={d}", .{close_result});
-        }
+        const wait_result = switch_c.threadWaitForExit(&future.thread);
+        if (wait_result != 0) log.err("switch async threadWaitForExit rc={d}", .{wait_result});
+        const close_result = switch_c.threadClose(&future.thread);
+        if (close_result != 0) log.err("switch async threadClose rc={d}", .{close_result});
         @memcpy(result, future.result());
         freeFuture(future);
     }
@@ -441,11 +383,7 @@ fn ensureNetworking() error{ NetworkDown, SystemResources }!void {
         switch (net_init_state.load(.acquire)) {
             2 => return,
             1 => {
-                switch (options.config.platform) {
-                    .nintendo_3ds => _ = c.svcSleepThread(1_000_000),
-                    .nintendo_switch => switch_c.svcSleepThread(1_000_000),
-                    else => unreachable,
-                }
+                switch_c.svcSleepThread(1_000_000);
                 continue;
             },
             else => {},
@@ -464,19 +402,7 @@ fn ensureNetworking() error{ NetworkDown, SystemResources }!void {
 }
 
 fn initNetworking() error{ NetworkDown, SystemResources }!void {
-    switch (options.config.platform) {
-        .nintendo_3ds => {
-            const buffer = c.memalign(0x1000, 0x100000) orelse return error.SystemResources;
-            errdefer c.free(buffer);
-            const aligned: [*]align(0x1000) u8 = @ptrCast(@alignCast(buffer));
-            if (c.socInit(@ptrCast(aligned), 0x100000) != 0) return error.NetworkDown;
-            soc_buffer = aligned;
-        },
-        .nintendo_switch => {
-            if (switch_c.socketInitialize(null) != 0) return error.NetworkDown;
-        },
-        else => unreachable,
-    }
+    if (switch_c.socketInitialize(null) != 0) return error.NetworkDown;
 }
 
 fn netListenIp(_: ?*anyopaque, address: *const net.IpAddress, opts: net.IpAddress.ListenOptions) net.IpAddress.ListenError!net.Socket {

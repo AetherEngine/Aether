@@ -18,32 +18,18 @@ comptime {
 
 pub const psp_stack_size: u32 = 256 * 1024;
 
-const ThreeDSLinearHeap = if (ae.platform == .nintendo_3ds) struct {
-    extern fn linearSpaceFree() u32;
-
-    fn spaceFree() usize {
-        return linearSpaceFree();
-    }
-} else struct {
-    fn spaceFree() usize {
-        return 0;
-    }
-};
-
-// PSP, 3DS, and Switch override panic/IO handlers that would otherwise
+// PSP and Switch override panic/IO handlers that would otherwise
 // pull in posix symbols (Io.Threaded references std.posix decls that
-// don't exist for these targets). 3DS and Switch use Aether's newlib-backed
+// don't exist for these targets). Switch uses Aether's newlib-backed
 // baseline so debug prints and file IO go through the backend instead of
 // dereferencing an undefined Io implementation.
-const is_freestanding_console = ae.platform == .psp or ae.platform == .nintendo_3ds or ae.platform == .nintendo_switch;
-// 3DS routes panics through err:f; Switch keeps `no_panic` while the debug IO
-// baseline is intentionally small.
-pub const panic = if (ae.platform == .psp) sdk.extra.debug.panic else if (ae.platform == .nintendo_3ds) ae.ThreeDS.panic else if (ae.platform == .nintendo_switch) std.debug.no_panic else std.debug.FullPanic(std.debug.defaultPanic);
+const is_freestanding_console = ae.platform == .psp or ae.platform == .nintendo_switch;
+pub const panic = if (ae.platform == .psp) sdk.extra.debug.panic else if (ae.platform == .nintendo_switch) std.debug.no_panic else std.debug.FullPanic(std.debug.defaultPanic);
 pub const std_options_debug_threaded_io = if (is_freestanding_console) null else std.Io.Threaded.global_single_threaded;
 pub const std_options_debug_io: std.Io =
-    if (ae.platform == .psp) sdk.extra.Io.psp_io else if (ae.platform == .nintendo_3ds or ae.platform == .nintendo_switch) ae.Cio.io() else std.Io.Threaded.global_single_threaded.io();
+    if (ae.platform == .psp) sdk.extra.Io.psp_io else if (ae.platform == .nintendo_switch) ae.Cio.io() else std.Io.Threaded.global_single_threaded.io();
 pub const std_options_cwd =
-    if (ae.platform == .psp) psp_cwd else if (ae.platform == .nintendo_3ds or ae.platform == .nintendo_switch) ae.Cio.cwd else null;
+    if (ae.platform == .psp) psp_cwd else if (ae.platform == .nintendo_switch) ae.Cio.cwd else null;
 fn psp_cwd() std.Io.Dir {
     return .{ .handle = -1 };
 }
@@ -83,10 +69,6 @@ const BatchBColors = [_]u32{
 
 fn snorm16(v: f32) i16 {
     return @intFromFloat(std.math.clamp(v, -1.0, 1.0) * 32767.0);
-}
-
-fn tenths(v: f32) i32 {
-    return @intFromFloat(v * 10.0);
 }
 
 fn vertex(x: f32, y: f32, color: u32, u: f32, v: f32) Vertex {
@@ -268,7 +250,7 @@ pub const MyState = struct {
         defer file.close(engine.io);
 
         var tmp: [4096]u8 = undefined;
-        var rdr = if (ae.platform == .nintendo_3ds or ae.platform == .nintendo_switch)
+        var rdr = if (ae.platform == .nintendo_switch)
             file.readerStreaming(engine.io, &tmp)
         else
             file.reader(engine.io, &tmp);
@@ -359,11 +341,7 @@ pub const MyState = struct {
                 .max_distance = 25.0,
             }) catch return;
 
-            if (ae.platform == .nintendo_3ds) {
-                Util.game_logger.info("grass at x10={} z10={} dist10={}", .{ tenths(pos.x), tenths(pos.z), tenths(dist) });
-            } else {
-                Util.game_logger.info("grass at ({d:.1}, 0, {d:.1})  dist={d:.1}", .{ pos.x, pos.z, dist });
-            }
+            Util.game_logger.info("grass at ({d:.1}, 0, {d:.1})  dist={d:.1}", .{ pos.x, pos.z, dist });
         }
     }
 
@@ -414,7 +392,7 @@ pub const MyState = struct {
 pub fn main(init: std.process.Init) !void {
     const mib = 1024 * 1024;
     const memory_config: ae.Util.MemoryConfig = .{
-        .render = if (ae.platform == .nintendo_3ds) 28 * 1024 * 1024 else 12 * 1024 * 1024,
+        .render = 12 * 1024 * 1024,
         .audio = 10 * 1024 * 1024,
         .game = 2 * 1024 * 1024,
         .user = 8 * 1024 * 1024,
@@ -422,12 +400,9 @@ pub fn main(init: std.process.Init) !void {
     const main_memory_bytes = memory_config.total();
     const memory = init.gpa.alignedAlloc(u8, .fromByteUnits(16), main_memory_bytes) catch |err| switch (err) {
         error.OutOfMemory => std.debug.panic(
-            "MainOOMMiB m={} f={} h={} l={}",
+            "MainOOMMiB m={}",
             .{
                 main_memory_bytes / mib,
-                ThreeDSLinearHeap.spaceFree() / mib,
-                ae.nintendo_3ds_heap_size / mib,
-                ae.nintendo_3ds_linear_heap_size / mib,
             },
         ),
     };

@@ -27,7 +27,7 @@ const std = @import("std");
 const options = @import("options");
 
 const Io = std.Io;
-const NintendoIo = if (options.config.platform == .nintendo_3ds or options.config.platform == .nintendo_switch)
+const NintendoIo = if (options.config.platform == .nintendo_switch)
     @import("../platform/c_io.zig")
 else
     void;
@@ -95,7 +95,7 @@ pub fn resolve(
         .macos => resolve_macos(io, environ_map, app_name),
         .windows => resolve_windows(io, environ_map, app_name),
         .linux => resolve_linux(io, environ_map, app_name),
-        .nintendo_3ds, .nintendo_switch => resolve_nintendo(io, app_name),
+        .nintendo_switch => resolve_nintendo(io, app_name),
         // PSP: both dirs collapse to CWD. The EBOOT and its siblings all
         // live under `ms0:/PSP/GAME/<id>/`; the runtime sets CWD there
         // before main. No separation to enforce.

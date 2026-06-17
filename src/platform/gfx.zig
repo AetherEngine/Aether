@@ -10,9 +10,7 @@ const surface_iface = @import("surface.zig");
 /// `gfx.api.start_frame()` resolve to direct function calls with no
 /// indirection.
 pub const Api = switch (options.config.gfx) {
-    .default => if (builtin.os.tag == .@"3ds")
-        @import("3ds/3ds_gfx.zig")
-    else if (options.config.platform == .nintendo_switch)
+    .default => if (options.config.platform == .nintendo_switch)
         @import("switch/switch_gfx.zig")
     else if (options.config.platform == .wasm)
         @import("wasm/webgl_gfx.zig")
@@ -30,8 +28,6 @@ pub const Surface = if (options.config.gfx == .headless)
     @import("headless/surface.zig")
 else if (builtin.os.tag == .psp)
     @import("psp/surface.zig")
-else if (builtin.os.tag == .@"3ds")
-    @import("3ds/surface.zig")
 else if (options.config.platform == .nintendo_switch)
     @import("switch/surface.zig")
 else if (options.config.platform == .wasm)

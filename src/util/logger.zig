@@ -68,6 +68,5 @@ pub fn aether_log_fn(
         writer.print(prefix ++ format ++ "\n", args) catch {};
         if (options.config.flush_logs) writer.flush() catch {};
     }
-    const echo_stderr = !(options.config.platform == .nintendo_3ds and options.config.flush_logs);
-    if (echo_stderr) std.debug.print(prefix ++ format ++ "\n", args);
+    std.debug.print(prefix ++ format ++ "\n", args);
 }

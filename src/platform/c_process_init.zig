@@ -1,17 +1,8 @@
 const std = @import("std");
 const c_io = @import("c_io.zig");
 const c = @import("nintendo_c.zig").c;
-const options = @import("options");
 
-const ProcessHeap = if (options.config.platform == .nintendo_3ds) struct {
-    fn alloc(alignment: usize, size: usize) ?*anyopaque {
-        return c.linearMemAlign(size, alignment);
-    }
-
-    fn free(ptr: ?*anyopaque) void {
-        c.linearFree(ptr);
-    }
-} else struct {
+const ProcessHeap = struct {
     fn alloc(alignment: usize, size: usize) ?*anyopaque {
         return c.memalign(alignment, size);
     }

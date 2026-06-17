@@ -21,8 +21,8 @@ comptime {
 pub const std_options: std.Options = .{
     .log_level = if (builtin.mode == .Debug) .debug else .info,
     .logFn = logger.aether_log_fn,
-    .page_size_min = if (builtin.os.tag == .@"3ds" or builtin.os.tag == .freestanding) 4096 else null,
-    .page_size_max = if (builtin.os.tag == .@"3ds" or builtin.os.tag == .freestanding) 4096 else null,
+    .page_size_min = if (builtin.os.tag == .freestanding) 4096 else null,
+    .page_size_max = if (builtin.os.tag == .freestanding) 4096 else null,
 };
 
 pub const engine_logger = std.log.scoped(.engine);
