@@ -8,7 +8,6 @@ const std = @import("std");
 const Util = @import("../../util/util.zig");
 const Mat4 = @import("../../math/math.zig").Mat4;
 const Rendering = @import("../../rendering/rendering.zig");
-const logger = @import("../../util/logger.zig");
 const vertex = Rendering.vertex;
 const Mesh = Rendering.mesh;
 const Texture = Rendering.Texture;
@@ -22,21 +21,16 @@ const GarbageCollector = @import("garbage_collector.zig");
 
 const CODE_MEM_SIZE = 512 * 1024;
 const UPLOAD_CMD_MEM_SIZE = 64 * 1024;
-const UPLOAD_CAPTURE_WORDS = 512;
-const UPLOAD_CAPTURE_DUMP_WORDS = 96;
 const MAX_VERTEX_ATTRIBS = 32;
 const MAX_VERTEX_BUFFERS = 16;
 const MAX_TEXTURES = 256;
 const UNIFORM_SLOTS = 4096;
 const RETAIN_PENDING_UPLOAD_LIMIT = 16 * 1024;
-const DYNAMIC_FRAME_BUFFER_LIMIT = 64 * 1024;
 const UNIFORM_STRIDE: u32 = dk.alignForward(@intCast(@sizeOf(DrawUniform)), dk.UniformBufferAlignment);
 const UNIFORM_FRAME_SIZE: u32 = UNIFORM_STRIDE * UNIFORM_SLOTS;
 const IMAGE_DESCRIPTOR_TABLES_PER_FRAME = 128;
 const IMAGE_DESCRIPTOR_TABLE_SIZE: u32 = dk.alignForward(MAX_TEXTURES * dk.ImageDescriptorSize, dk.ImageDescriptorAlignment);
 const IMAGE_DESCRIPTOR_FRAME_SIZE: u32 = IMAGE_DESCRIPTOR_TABLE_SIZE * IMAGE_DESCRIPTOR_TABLES_PER_FRAME;
-const ALL_FRAME_BITS: u8 = (1 << Swapchain.MAX_FRAMES) - 1;
-const DIAGNOSTIC_CLEAR_ONLY = false;
 
 const PipelineData = struct {
     vertex_shader: dk.DkShader,
@@ -56,10 +50,8 @@ const MeshBuffer = struct {
 
 const MeshData = struct {
     buffer: MeshBuffer = .{},
-    frame_buffers: [Swapchain.MAX_FRAMES]MeshBuffer = @splat(.{}),
     pending: ?[]u8 = null,
     pending_size: usize = 0,
-    dirty_frame_mask: u8 = 0,
     dirty: bool = false,
 };
 
@@ -97,13 +89,13 @@ const DrawUniform = extern struct {
     model: [4][4]f32,
     view: [4][4]f32,
     proj: [4][4]f32,
-    textureIndex: u32,
-    fogEnabled: u32,
-    fogStart: f32,
-    fogEnd: f32,
-    fogColor: [3]f32,
-    alphaBlendEnabled: u32,
-    uvOffset: [2]f32,
+    texture_index: u32,
+    fog_enabled: u32,
+    fog_start: f32,
+    fog_end: f32,
+    fog_color: [3]f32,
+    alpha_blend_enabled: u32,
+    uv_offset: [2]f32,
 };
 
 var render_alloc: std.mem.Allocator = undefined;
@@ -117,13 +109,11 @@ var code_mem: dk.DkMemBlock = null;
 var code_offset: u32 = 0;
 var upload_command_mem: dk.DkMemBlock = null;
 var upload_command_buffer: dk.DkCmdBuf = null;
-var upload_capture_storage: [UPLOAD_CAPTURE_WORDS]u32 = @splat(0);
-var upload_capture_count: u32 = 0;
 var uniform_mem: dk.DkMemBlock = null;
 var uniform_gpu_addr: dk.DkGpuAddr = 0;
 var descriptor_mem: dk.DkMemBlock = null;
 var descriptor_cpu_addr: ?[*]u8 = null;
-var image_descriptor_gpu_addr: dk.DkGpuAddr = 0;
+var image_descriptor_base_gpu_addr: dk.DkGpuAddr = 0;
 var sampler_descriptor_gpu_addr: dk.DkGpuAddr = 0;
 var sampler_descriptor_offset: u32 = 0;
 var image_descriptors: [MAX_TEXTURES]dk.DkImageDescriptor = @splat(.{ .storage = @splat(0) });
@@ -156,21 +146,6 @@ var current_texture: Texture.Handle = 0;
 var next_uniform_slot: u32 = 0;
 var frame_draw_calls: u32 = 0;
 var frame_vertex_count: u32 = 0;
-var frame_trace_remaining: u32 = 0;
-
-fn traceFrame(comptime format: []const u8, args: anytype) void {
-    if (frame_trace_remaining == 0) return;
-    Util.engine_logger.err(format, args);
-    logger.flush();
-}
-
-pub fn trace_next_frames(count: u8) void {
-    frame_trace_remaining = count;
-    if (initialized) {
-        swapchain.trace_frames_remaining = count;
-        swapchain.startup_wait_frames_remaining = count;
-    }
-}
 
 pub fn setup(alloc: std.mem.Allocator, io: std.Io) void {
     render_alloc = alloc;
@@ -180,7 +155,7 @@ pub fn setup(alloc: std.mem.Allocator, io: std.Io) void {
 pub fn init() anyerror!void {
     _ = render_io;
     context = try Context.init(render_alloc);
-    context.activateDiagnostics();
+    context.activate();
     errdefer context.deinit();
 
     swapchain = try Swapchain.init(&context, gfx.sync);
@@ -209,19 +184,18 @@ pub fn init() anyerror!void {
     errdefer destroy_all_textures();
 
     initialized = true;
-    frame_trace_remaining = 0;
     set_vsync(vsync_enabled);
 }
 
 pub fn deinit() void {
     if (!initialized) return;
 
-    context.waitIdle("switch gfx deinit");
+    context.wait_idle("switch gfx deinit");
     destroy_all_meshes();
     destroy_all_textures();
     retired_texture_slots.deinit(render_alloc);
     retired_texture_slots = .empty;
-    gc.collectAll();
+    gc.collect_all();
 
     render_pipeline_initialized = false;
     destroy_descriptor_memory();
@@ -281,44 +255,27 @@ pub fn set_view_matrix(m: *const Mat4) void {
 
 pub fn start_frame() bool {
     if (!initialized) return false;
-    traceFrame("Switch frame: start begin frame={d}", .{swapchain.frame_index});
-    if (!swapchain.beginFrame(&gc)) return false;
-    traceFrame("Switch frame: beginFrame ok frame={d} image={d}", .{ swapchain.frame_index, swapchain.image_index });
-    context.markCpu(.frame_begin, @intCast(swapchain.frame_index), @intCast(swapchain.image_index), 0, 0);
+    if (!swapchain.begin_frame(&gc)) return false;
     collect_retired_texture_slots();
 
     next_uniform_slot = 0;
     frame_draw_calls = 0;
     frame_vertex_count = 0;
 
-    if (DIAGNOSTIC_CLEAR_ONLY) {
-        const diagnostic_clear: [4]f32 = .{ 1.0, 0.0, 1.0, 1.0 };
-        swapchain.bindRenderTargetsAndClear(&diagnostic_clear);
-        return true;
-    }
-
-    traceFrame("Switch frame: bind/clear begin", .{});
-    swapchain.bindRenderTargetsAndClear(&clear_color);
-    traceFrame("Switch frame: bind/clear end", .{});
+    swapchain.bind_render_targets_and_clear(&clear_color);
     image_descriptor_table_indices[swapchain.frame_index] = 0;
-    traceFrame("Switch frame: publish descriptors begin count={d}", .{image_descriptor_count});
     publish_image_descriptors_for_frame(swapchain.frame_index);
     image_descriptors_dirty = false;
     bind_current_image_descriptor_set();
     dk.dkCmdBufBindSamplerDescriptorSet(swapchain.command_buffer, sampler_descriptor_gpu_addr, 1);
     bind_fixed_state();
-    traceFrame("Switch frame: fixed state end", .{});
-    context.markCpu(.descriptors, @intCast(swapchain.frame_index), @intCast(swapchain.image_index), image_descriptor_count, 0);
-    context.markGpu(swapchain.command_buffer, .descriptors);
+    context.mark_gpu(swapchain.command_buffer, .descriptors);
     return true;
 }
 
 pub fn end_frame() void {
     if (!initialized) return;
-    traceFrame("Switch frame: end begin frame={d} image={d}", .{ swapchain.frame_index, swapchain.image_index });
-    _ = swapchain.endFrame();
-    traceFrame("Switch frame: end done next_frame={d}", .{swapchain.frame_index});
-    if (frame_trace_remaining > 0) frame_trace_remaining -= 1;
+    _ = swapchain.end_frame();
 }
 
 pub fn clear_depth() void {
@@ -328,7 +285,7 @@ pub fn clear_depth() void {
 
 pub fn set_vsync(v: bool) void {
     vsync_enabled = v;
-    if (initialized) swapchain.setVsync(v);
+    if (initialized) swapchain.set_vsync(v);
 }
 
 pub fn create_mesh() anyerror!Mesh.Handle {
@@ -359,12 +316,10 @@ pub fn update_mesh(handle: Mesh.Handle, data: []const u8) void {
     }
 
     mesh.pending_size = data.len;
-    mesh.dirty_frame_mask = ALL_FRAME_BITS;
     mesh.dirty = true;
 }
 
 pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize) void {
-    if (DIAGNOSTIC_CLEAR_ONLY) return;
     if (!initialized or !render_pipeline_initialized or !swapchain.recording) return;
     const mesh = meshes.get_element_ptr(handle) orelse return;
     const frame_index = swapchain.frame_index;
@@ -374,7 +329,7 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize) void {
         }
     }
 
-    const buffer = active_mesh_buffer(mesh, frame_index);
+    const buffer = mesh.buffer;
     if (buffer.mem_block == null or buffer.size == 0 or count == 0) return;
     const vertex_stride = vertex.Layout.stride;
     if (count > std.math.maxInt(usize) / vertex_stride) {
@@ -393,9 +348,7 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize) void {
     ensure_image_descriptors_current();
     const texture_id = resolve_texture_handle(draw_state.tex_id);
 
-    context.markCpu(.draw_begin, @intCast(frame_index), @intCast(swapchain.image_index), @intCast(handle), @intCast(count));
-    context.markFrameStats(frame_draw_calls, frame_vertex_count);
-    context.markGpuDraw(
+    context.mark_gpu_draw(
         swapchain.command_buffer,
         .draw_begin,
         @intCast(frame_index),
@@ -423,7 +376,7 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize) void {
         extent.* = .{ .addr = buffer.gpu_addr, .size = buffer.size };
     }
     dk.dkCmdBufBindVtxBuffers(swapchain.command_buffer, 0, extents[0..].ptr, pl.vtx_buffer_count);
-    context.markGpuDraw(
+    context.mark_gpu_draw(
         swapchain.command_buffer,
         .draw_bound,
         @intCast(frame_index),
@@ -436,7 +389,7 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize) void {
         next_uniform_slot - 1,
     );
     dk.dkCmdBufDraw(swapchain.command_buffer, dk.PrimitiveTriangles, @intCast(count), 1, 0, 0);
-    context.markGpuDraw(
+    context.mark_gpu_draw(
         swapchain.command_buffer,
         .draw_done,
         @intCast(frame_index),
@@ -451,7 +404,6 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize) void {
 
     frame_draw_calls += 1;
     frame_vertex_count += @intCast(count);
-    context.markFrameStats(frame_draw_calls, frame_vertex_count);
 }
 
 pub fn create_texture(width: u32, height: u32, data: []align(16) u8) anyerror!Texture.Handle {
@@ -499,7 +451,7 @@ pub fn destroy_texture(handle: Texture.Handle) void {
         .handle = handle,
         .retire_after_completed_frames = gc.completed_frames + Swapchain.MAX_FRAMES,
     }) catch {
-        context.waitIdle("texture slot retirement fallback");
+        context.wait_idle("texture slot retirement fallback");
         _ = texture_slots.remove_element(handle);
     };
     if (current_texture == handle) {
@@ -547,7 +499,7 @@ fn collect_retired_texture_slots() void {
 }
 
 fn create_code_memory() !void {
-    code_mem = try context.createMemBlock(CODE_MEM_SIZE, dk.MemCpuUncached | dk.MemGpuCached | dk.MemCode);
+    code_mem = try context.create_mem_block(CODE_MEM_SIZE, dk.MemCpuUncached | dk.MemGpuCached | dk.MemCode);
     code_offset = 0;
 }
 
@@ -560,7 +512,7 @@ fn destroy_code_memory() void {
 }
 
 fn create_uniform_memory() !void {
-    uniform_mem = try context.createMemBlock(UNIFORM_FRAME_SIZE * Swapchain.MAX_FRAMES, dk.MemCpuUncached | dk.MemGpuCached);
+    uniform_mem = try context.create_mem_block(UNIFORM_FRAME_SIZE * Swapchain.MAX_FRAMES, dk.MemCpuUncached | dk.MemGpuCached);
     uniform_gpu_addr = dk.dkMemBlockGetGpuAddr(uniform_mem);
 }
 
@@ -573,7 +525,7 @@ fn destroy_uniform_memory() void {
 }
 
 fn create_upload_command_buffer() !void {
-    upload_command_mem = try context.createMemBlock(UPLOAD_CMD_MEM_SIZE, dk.MemCpuUncached | dk.MemGpuCached);
+    upload_command_mem = try context.create_mem_block(UPLOAD_CMD_MEM_SIZE, dk.MemCpuUncached | dk.MemGpuCached);
     errdefer {
         dk.dkMemBlockDestroy(upload_command_mem);
         upload_command_mem = null;
@@ -603,11 +555,11 @@ fn create_descriptor_memory() !void {
     const image_bytes = IMAGE_DESCRIPTOR_FRAME_SIZE * Swapchain.MAX_FRAMES;
     const sampler_offset = dk.alignForward(image_bytes, dk.ImageDescriptorAlignment);
     const total_size = sampler_offset + dk.SamplerDescriptorSize;
-    descriptor_mem = try context.createMemBlock(total_size, dk.MemCpuUncached | dk.MemGpuCached);
+    descriptor_mem = try context.create_mem_block(total_size, dk.MemCpuUncached | dk.MemGpuCached);
     descriptor_cpu_addr = @ptrCast(dk.dkMemBlockGetCpuAddr(descriptor_mem) orelse return error.GfxInitFailed);
-    image_descriptor_gpu_addr = dk.dkMemBlockGetGpuAddr(descriptor_mem);
+    image_descriptor_base_gpu_addr = dk.dkMemBlockGetGpuAddr(descriptor_mem);
     sampler_descriptor_offset = sampler_offset;
-    sampler_descriptor_gpu_addr = image_descriptor_gpu_addr + sampler_offset;
+    sampler_descriptor_gpu_addr = image_descriptor_base_gpu_addr + sampler_offset;
     image_descriptors = @splat(.{ .storage = @splat(0) });
     image_descriptor_count = 1;
     image_descriptors_dirty = true;
@@ -620,7 +572,7 @@ fn destroy_descriptor_memory() void {
         descriptor_mem = null;
     }
     descriptor_cpu_addr = null;
-    image_descriptor_gpu_addr = 0;
+    image_descriptor_base_gpu_addr = 0;
     sampler_descriptor_offset = 0;
     sampler_descriptor_gpu_addr = 0;
 }
@@ -652,19 +604,15 @@ fn initialize_sampler_descriptor() !void {
     const dst = descriptor_cpu_addr orelse return error.GfxInitFailed;
     @memcpy(dst[sampler_descriptor_offset..][0..@sizeOf(dk.DkSamplerDescriptor)], std.mem.asBytes(&descriptor));
     _ = dk.dkMemBlockFlushCpuCache(descriptor_mem, sampler_descriptor_offset, @sizeOf(dk.DkSamplerDescriptor));
-    context.markCpu(.upload_submitted, 0, 0, 0x53414d50, @intCast(sampler_descriptor_gpu_addr & 0xFFFF_FFFF));
-}
-
-fn imageDescriptorGpuAddr(frame_index: usize) dk.DkGpuAddr {
-    return image_descriptor_gpu_addr +
-        @as(dk.DkGpuAddr, @intCast(frame_index)) * IMAGE_DESCRIPTOR_FRAME_SIZE +
-        @as(dk.DkGpuAddr, image_descriptor_table_indices[frame_index]) * IMAGE_DESCRIPTOR_TABLE_SIZE;
 }
 
 fn publish_image_descriptors_for_frame(frame_index: usize) void {
     const dst = descriptor_cpu_addr orelse return;
     const byte_count = image_descriptor_count * dk.ImageDescriptorSize;
-    const offset: u32 = @intCast(imageDescriptorGpuAddr(frame_index) - image_descriptor_gpu_addr);
+    const offset: u32 = @intCast(
+        @as(dk.DkGpuAddr, @intCast(frame_index)) * IMAGE_DESCRIPTOR_FRAME_SIZE +
+            @as(dk.DkGpuAddr, image_descriptor_table_indices[frame_index]) * IMAGE_DESCRIPTOR_TABLE_SIZE,
+    );
     var published: [MAX_TEXTURES]dk.DkImageDescriptor = undefined;
     const count: usize = @intCast(image_descriptor_count);
     for (published[0..count], 0..) |*descriptor, index| {
@@ -676,7 +624,6 @@ fn publish_image_descriptors_for_frame(frame_index: usize) void {
     }
     @memcpy(dst[offset..][0..byte_count], std.mem.asBytes(&published)[0..byte_count]);
     _ = dk.dkMemBlockFlushCpuCache(descriptor_mem, offset, byte_count);
-    context.markCpu(.descriptors, @intCast(frame_index), @intCast(swapchain.image_index), image_descriptor_count, offset);
     if (swapchain.recording) {
         dk.dkCmdBufBarrier(swapchain.command_buffer, dk.BarrierFull, dk.InvalidateDescriptors | dk.InvalidateL2Cache);
     }
@@ -708,7 +655,11 @@ fn resolve_texture_handle(handle: Texture.Handle) u32 {
 }
 
 fn bind_current_image_descriptor_set() void {
-    dk.dkCmdBufBindImageDescriptorSet(swapchain.command_buffer, imageDescriptorGpuAddr(swapchain.frame_index), image_descriptor_count);
+    const frame_index = swapchain.frame_index;
+    const addr = image_descriptor_base_gpu_addr +
+        @as(dk.DkGpuAddr, @intCast(frame_index)) * IMAGE_DESCRIPTOR_FRAME_SIZE +
+        @as(dk.DkGpuAddr, image_descriptor_table_indices[frame_index]) * IMAGE_DESCRIPTOR_TABLE_SIZE;
+    dk.dkCmdBufBindImageDescriptorSet(swapchain.command_buffer, addr, image_descriptor_count);
 }
 
 fn ensure_image_descriptors_current() void {
@@ -748,7 +699,7 @@ fn create_texture_image(tex: *TextureData, width: u32, height: u32) !void {
     dk.dkImageLayoutInitialize(&layout, &layout_maker);
     const image_align = dk.dkImageLayoutGetAlignment(&layout);
     const image_size = dk.alignForward(@intCast(dk.dkImageLayoutGetSize(&layout)), image_align);
-    tex.mem_block = try context.createMemBlock(image_size, dk.MemGpuCached | dk.MemImage);
+    tex.mem_block = try context.create_mem_block(image_size, dk.MemGpuCached | dk.MemImage);
     dk.dkImageInitialize(&tex.image, &layout, tex.mem_block, 0);
     tex.view = dk.imageView(&tex.image);
     tex.width = width;
@@ -757,12 +708,11 @@ fn create_texture_image(tex: *TextureData, width: u32, height: u32) !void {
 
 fn upload_texture_pixels(handle: Texture.Handle, tex: *TextureData, data: []const u8) !void {
     if (upload_command_buffer == null or upload_command_mem == null) return error.GfxInitFailed;
-    if (initialized) context.waitIdle("texture upload dependency");
+    if (initialized) context.wait_idle("texture upload dependency");
 
     const byte_count: u32 = @intCast(@as(usize, tex.width) * @as(usize, tex.height) * 4);
-    context.markCpu(.upload_begin, 0, 0, @intCast(handle), byte_count);
     const staging_size = dk.alignForward(byte_count, dk.ImageLinearStrideAlignment);
-    const staging_mem = try context.createMemBlock(staging_size, dk.MemCpuUncached | dk.MemGpuCached);
+    const staging_mem = try context.create_mem_block(staging_size, dk.MemCpuUncached | dk.MemGpuCached);
     defer dk.dkMemBlockDestroy(staging_mem);
 
     const staging_cpu: [*]u8 = @ptrCast(dk.dkMemBlockGetCpuAddr(staging_mem) orelse return error.GfxInitFailed);
@@ -784,7 +734,7 @@ fn upload_texture_pixels(handle: Texture.Handle, tex: *TextureData, data: []cons
         .depth = 1,
     };
     dk.dkCmdBufCopyBufferToImage(upload_command_buffer, &copy_src, &tex.view, &copy_dst, 0);
-    context.markGpu(upload_command_buffer, .upload_copy);
+    context.mark_gpu(upload_command_buffer, .upload_copy);
 
     var descriptor: dk.DkImageDescriptor = undefined;
     dk.dkImageDescriptorInitialize(&descriptor, &tex.view, false, false);
@@ -798,8 +748,8 @@ fn upload_texture_pixels(handle: Texture.Handle, tex: *TextureData, data: []cons
 fn destroy_texture_data(tex: *TextureData, deferred: bool) void {
     if (tex.mem_block) |mem| {
         if (deferred and initialized) {
-            gc.deferDestroyMemBlockAfterFrameMask(swapchain.pendingFrameMask(), mem) catch {
-                context.waitIdle("texture deferred destroy fallback");
+            gc.defer_destroy_mem_block_after_frame_mask(swapchain.pending_frame_mask(), mem) catch {
+                context.wait_idle("texture deferred destroy fallback");
                 dk.dkMemBlockDestroy(mem);
             };
         } else {
@@ -819,47 +769,29 @@ fn begin_upload_commands() void {
 
 fn submit_upload_commands(comptime where: []const u8) void {
     const list = dk.dkCmdBufFinishList(upload_command_buffer);
-    if (list == 0) Context.panicGpu("deko3d failed to finish upload command list at {s}", .{where});
+    if (list == 0) Context.panic_gpu("deko3d failed to finish upload command list at {s}", .{where});
     dk.dkQueueSubmitCommands(context.queue, list);
-    context.markCpu(.upload_submitted, 0, 0, 0, 0);
-    context.flushQueue(where ++ " flush");
-    context.assertQueueOk(where);
-    context.markCpu(.wait_idle, 0, 0, 0, 0);
-    context.waitIdle(where ++ " wait");
-}
-
-fn dump_upload_capture(comptime where: []const u8) void {
-    const count = @min(upload_capture_count, UPLOAD_CAPTURE_WORDS);
-    Util.engine_logger.err("Switch upload capture {s}: words={d}", .{ where, upload_capture_count });
-    const dump_count = @min(count, UPLOAD_CAPTURE_DUMP_WORDS);
-    var i: usize = 0;
-    while (i < dump_count) : (i += 4) {
-        const a = upload_capture_storage[i];
-        const b = if (i + 1 < dump_count) upload_capture_storage[i + 1] else 0;
-        const c = if (i + 2 < dump_count) upload_capture_storage[i + 2] else 0;
-        const d = if (i + 3 < dump_count) upload_capture_storage[i + 3] else 0;
-        Util.engine_logger.err("  [{d:0>3}] {x:0>8} {x:0>8} {x:0>8} {x:0>8}", .{ i, a, b, c, d });
-    }
+    context.flush_queue(where ++ " flush");
+    context.assert_queue_ok(where);
+    context.wait_idle(where ++ " wait");
 }
 
 fn upload_mesh(mesh: *MeshData, frame_index: usize) !bool {
     if (mesh.pending_size == 0) {
         mesh.buffer.size = 0;
-        for (&mesh.frame_buffers) |*buffer| buffer.size = 0;
-        mesh.dirty_frame_mask = 0;
         mesh.dirty = false;
         return false;
     }
 
     const needed: u32 = @intCast(mesh.pending_size);
     const current_frame_bit_u32: u32 = @as(u32, 1) << @intCast(frame_index);
-    const submitted_frame_mask = swapchain.pendingFrameMask() & ~current_frame_bit_u32;
+    const submitted_frame_mask = swapchain.pending_frame_mask() & ~current_frame_bit_u32;
     var target = &mesh.buffer;
 
     if (target.mem_block == null or target.capacity < needed) {
         if (target.mem_block) |mem| {
-            gc.deferDestroyMemBlockAfterFrameMask(submitted_frame_mask, mem) catch {
-                context.waitIdle("mesh deferred destroy fallback");
+            gc.defer_destroy_mem_block_after_frame_mask(submitted_frame_mask, mem) catch {
+                context.wait_idle("mesh deferred destroy fallback");
                 dk.dkMemBlockDestroy(mem);
             };
         }
@@ -867,8 +799,8 @@ fn upload_mesh(mesh: *MeshData, frame_index: usize) !bool {
     } else if (submitted_frame_mask != 0) {
         const old = target.*;
         target.* = try create_mesh_buffer(needed);
-        gc.deferDestroyMemBlockAfterFrameMask(submitted_frame_mask, old.mem_block) catch {
-            context.waitIdle("mesh deferred destroy fallback");
+        gc.defer_destroy_mem_block_after_frame_mask(submitted_frame_mask, old.mem_block) catch {
+            context.wait_idle("mesh deferred destroy fallback");
             dk.dkMemBlockDestroy(old.mem_block);
         };
     }
@@ -877,8 +809,6 @@ fn upload_mesh(mesh: *MeshData, frame_index: usize) !bool {
     @memcpy(dst[0..mesh.pending_size], mesh.pending.?[0..mesh.pending_size]);
     _ = dk.dkMemBlockFlushCpuCache(target.mem_block, 0, needed);
     target.size = needed;
-    for (&mesh.frame_buffers) |*buffer| buffer.size = 0;
-    mesh.dirty_frame_mask = 0;
     mesh.dirty = false;
     if (mesh.pending) |pending| {
         if (!mesh.dirty and pending.len > RETAIN_PENDING_UPLOAD_LIMIT) {
@@ -890,53 +820,10 @@ fn upload_mesh(mesh: *MeshData, frame_index: usize) !bool {
     return true;
 }
 
-fn upload_mesh_bytes(mesh: *MeshData, data: []const u8) !void {
-    if (mesh.pending) |pending| {
-        render_alloc.free(pending);
-        mesh.pending = null;
-    }
-    mesh.pending_size = 0;
-    mesh.dirty_frame_mask = 0;
-    mesh.dirty = false;
-
-    if (data.len == 0) {
-        mesh.buffer.size = 0;
-        for (&mesh.frame_buffers) |*buffer| buffer.size = 0;
-        return;
-    }
-
-    const needed: u32 = @intCast(data.len);
-    const submitted_frame_mask = swapchain.pendingFrameMask();
-    var target = &mesh.buffer;
-
-    if (target.mem_block == null or target.capacity < needed) {
-        if (target.mem_block) |mem| {
-            gc.deferDestroyMemBlockAfterFrameMask(submitted_frame_mask, mem) catch {
-                context.waitIdle("mesh deferred destroy fallback");
-                dk.dkMemBlockDestroy(mem);
-            };
-        }
-        target.* = try create_mesh_buffer(needed);
-    } else if (submitted_frame_mask != 0) {
-        const old = target.*;
-        target.* = try create_mesh_buffer(needed);
-        gc.deferDestroyMemBlockAfterFrameMask(submitted_frame_mask, old.mem_block) catch {
-            context.waitIdle("mesh deferred destroy fallback");
-            dk.dkMemBlockDestroy(old.mem_block);
-        };
-    }
-
-    const dst: [*]u8 = @ptrCast(dk.dkMemBlockGetCpuAddr(target.mem_block) orelse return error.GfxInitFailed);
-    @memcpy(dst[0..data.len], data);
-    _ = dk.dkMemBlockFlushCpuCache(target.mem_block, 0, needed);
-    target.size = needed;
-    for (&mesh.frame_buffers) |*buffer| buffer.size = 0;
-}
-
 fn create_mesh_buffer(needed: u32) !MeshBuffer {
     var new_cap: u32 = 256;
     while (new_cap < needed) new_cap *= 2;
-    const mem = try context.createMemBlock(new_cap, dk.MemCpuUncached | dk.MemGpuCached);
+    const mem = try context.create_mem_block(new_cap, dk.MemCpuUncached | dk.MemGpuCached);
     return .{
         .mem_block = mem,
         .capacity = dk.dkMemBlockGetSize(mem),
@@ -945,30 +832,21 @@ fn create_mesh_buffer(needed: u32) !MeshBuffer {
     };
 }
 
-fn active_mesh_buffer(mesh: *const MeshData, frame_index: usize) MeshBuffer {
-    _ = frame_index;
-    return mesh.buffer;
-}
-
 fn destroy_mesh_data(mesh: *MeshData, deferred: bool) void {
     if (mesh.pending) |pending| {
         render_alloc.free(pending);
         mesh.pending = null;
     }
     destroy_mesh_buffer(&mesh.buffer, deferred);
-    for (&mesh.frame_buffers) |*buffer| {
-        destroy_mesh_buffer(buffer, deferred);
-    }
     mesh.pending_size = 0;
-    mesh.dirty_frame_mask = 0;
     mesh.dirty = false;
 }
 
 fn destroy_mesh_buffer(buffer: *MeshBuffer, deferred: bool) void {
     if (buffer.mem_block) |mem| {
         if (deferred and initialized) {
-            gc.deferDestroyMemBlockAfterFrameMask(swapchain.pendingFrameMask(), mem) catch {
-                context.waitIdle("mesh deferred destroy fallback");
+            gc.defer_destroy_mem_block_after_frame_mask(swapchain.pending_frame_mask(), mem) catch {
+                context.wait_idle("mesh deferred destroy fallback");
                 dk.dkMemBlockDestroy(mem);
             };
         } else {
@@ -1017,13 +895,13 @@ fn bind_draw_uniform(texture_id: u32) bool {
         .model = draw_state.mat.data,
         .view = pending_state.view.data,
         .proj = pending_state.proj.data,
-        .textureIndex = texture_id,
-        .fogEnabled = draw_state.fog_enabled,
-        .fogStart = draw_state.fog_start,
-        .fogEnd = draw_state.fog_end,
-        .fogColor = draw_state.fog_color,
-        .alphaBlendEnabled = draw_state.alpha_blend_enabled,
-        .uvOffset = draw_state.uv_offset,
+        .texture_index = texture_id,
+        .fog_enabled = draw_state.fog_enabled,
+        .fog_start = draw_state.fog_start,
+        .fog_end = draw_state.fog_end,
+        .fog_color = draw_state.fog_color,
+        .alpha_blend_enabled = draw_state.alpha_blend_enabled,
+        .uv_offset = draw_state.uv_offset,
     };
 
     const addr = uniform_gpu_addr +
@@ -1068,7 +946,7 @@ fn init_layout(data: *PipelineData, layout: vertex.VertexLayout) !void {
         }
 
         const loc: usize = attr.location;
-        data.attribs[loc] = vtxAttrib(attr);
+        data.attribs[loc] = vtx_attrib(attr);
         max_location = @max(max_location, attr.location + 1);
         max_binding = @max(max_binding, attr.binding + 1);
     }
@@ -1081,7 +959,7 @@ fn init_layout(data: *PipelineData, layout: vertex.VertexLayout) !void {
     data.vtx_buffer_count = @max(max_binding, 1);
 }
 
-fn vtxAttrib(attr: vertex.Attribute) dk.DkVtxAttribState {
+fn vtx_attrib(attr: vertex.Attribute) dk.DkVtxAttribState {
     const Format = struct {
         size: u32,
         kind: u32,
@@ -1112,13 +990,27 @@ fn bind_fixed_state() void {
 }
 
 fn bind_rasterizer_state() void {
-    var rasterizer = rasterizerState();
+    const cull_mode: u32 = if (culling_enabled) dk.FaceBack else dk.FaceNone;
+    var rasterizer = dk.DkRasterizerState{ .bits = 1 |
+        (dk.PolygonModeFill << 3) |
+        (dk.PolygonModeFill << 5) |
+        (cull_mode << 7) |
+        (dk.FrontFaceCcw << 9) |
+        (dk.ProvokingVertexLast << 10) };
     dk.dkCmdBufBindRasterizerState(swapchain.command_buffer, &rasterizer);
 }
 
 fn bind_color_state() void {
-    var color = colorState();
-    var blend = blendState();
+    const blend_enable_mask: u32 = @intFromBool(alpha_blend_enabled);
+    var color = dk.DkColorState{ .bits = blend_enable_mask |
+        (dk.LogicOpCopy << 8) |
+        (dk.CompareAlways << 16) };
+    var blend = dk.DkBlendState{ .bits = dk.BlendOpAdd |
+        (dk.BlendFactorSrcAlpha << 3) |
+        (dk.BlendFactorInvSrcAlpha << 9) |
+        (dk.BlendOpAdd << 15) |
+        (dk.BlendFactorOne << 18) |
+        (dk.BlendFactorInvSrcAlpha << 24) };
     dk.dkCmdBufBindColorState(swapchain.command_buffer, &color);
     dk.dkCmdBufBindBlendStates(swapchain.command_buffer, 0, @ptrCast(&blend), 1);
 }
@@ -1126,30 +1018,4 @@ fn bind_color_state() void {
 fn bind_depth_state() void {
     var depth = dk.depthStencilBits(depth_write_enabled);
     dk.dkCmdBufBindDepthStencilState(swapchain.command_buffer, &depth);
-}
-
-fn rasterizerState() dk.DkRasterizerState {
-    const cull_mode: u32 = if (culling_enabled) dk.FaceBack else dk.FaceNone;
-    return .{ .bits = 1 |
-        (dk.PolygonModeFill << 3) |
-        (dk.PolygonModeFill << 5) |
-        (cull_mode << 7) |
-        (dk.FrontFaceCcw << 9) |
-        (dk.ProvokingVertexLast << 10) };
-}
-
-fn colorState() dk.DkColorState {
-    const blend_enable_mask: u32 = @intFromBool(alpha_blend_enabled);
-    return .{ .bits = blend_enable_mask |
-        (dk.LogicOpCopy << 8) |
-        (dk.CompareAlways << 16) };
-}
-
-fn blendState() dk.DkBlendState {
-    return .{ .bits = dk.BlendOpAdd |
-        (dk.BlendFactorSrcAlpha << 3) |
-        (dk.BlendFactorInvSrcAlpha << 9) |
-        (dk.BlendOpAdd << 15) |
-        (dk.BlendFactorOne << 18) |
-        (dk.BlendFactorInvSrcAlpha << 24) };
 }

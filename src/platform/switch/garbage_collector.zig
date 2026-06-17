@@ -4,10 +4,6 @@ const Context = @import("context.zig");
 
 const MAX_FRAMES = 3;
 
-const GcItem = union(enum) {
-    mem_block: *dk.DkMemBlock_T,
-};
-
 const SharedItem = struct {
     mem_block: *dk.DkMemBlock_T,
     pending_frame_mask: u32,
@@ -15,7 +11,6 @@ const SharedItem = struct {
 
 allocator: std.mem.Allocator,
 context: *Context,
-buckets: [MAX_FRAMES]std.ArrayList(GcItem) = .{ .empty, .empty, .empty },
 shared: std.ArrayList(SharedItem) = .empty,
 frame_index: usize = 0,
 completed_frames: u64 = 0,
@@ -26,20 +21,7 @@ pub fn init(allocator: std.mem.Allocator, context: *Context) Self {
     return .{ .allocator = allocator, .context = context };
 }
 
-pub fn deferDestroyMemBlock(self: *Self, mem_block: dk.DkMemBlock) !void {
-    try self.deferDestroyMemBlockForFrame(self.frame_index, mem_block);
-}
-
-pub fn deferDestroyMemBlockForFrame(self: *Self, frame_index: usize, mem_block: dk.DkMemBlock) !void {
-    const ptr = mem_block orelse return;
-    try self.buckets[frame_index % MAX_FRAMES].append(self.allocator, .{ .mem_block = ptr });
-}
-
-pub fn deferDestroyMemBlockAfterAllFrames(self: *Self, mem_block: dk.DkMemBlock) !void {
-    try self.deferDestroyMemBlockAfterFrameMask((1 << MAX_FRAMES) - 1, mem_block);
-}
-
-pub fn deferDestroyMemBlockAfterFrameMask(self: *Self, pending_frame_mask: u32, mem_block: dk.DkMemBlock) !void {
+pub fn defer_destroy_mem_block_after_frame_mask(self: *Self, pending_frame_mask: u32, mem_block: dk.DkMemBlock) !void {
     const ptr = mem_block orelse return;
     if ((pending_frame_mask & ((1 << MAX_FRAMES) - 1)) == 0) {
         dk.dkMemBlockDestroy(ptr);
@@ -51,26 +33,10 @@ pub fn deferDestroyMemBlockAfterFrameMask(self: *Self, pending_frame_mask: u32, 
     });
 }
 
-pub fn retireFrame(self: *Self, frame_index: usize, was_submitted: bool) void {
+pub fn retire_frame(self: *Self, frame_index: usize, was_submitted: bool) void {
     self.frame_index = frame_index % MAX_FRAMES;
-    if (was_submitted) {
-        self.completed_frames += 1;
-        self.collectFrameBucket(self.frame_index);
-    }
-    self.collectSharedForFrame(self.frame_index, was_submitted);
-}
-
-fn collectFrameBucket(self: *Self, frame_index: usize) void {
-    var list = &self.buckets[frame_index % MAX_FRAMES];
-    for (list.items) |item| switch (item) {
-        .mem_block => |mem| dk.dkMemBlockDestroy(mem),
-    };
-    list.clearRetainingCapacity();
-}
-
-fn collectSharedForFrame(self: *Self, frame_index: usize, was_submitted: bool) void {
-    _ = was_submitted;
-    const retired_bit: u32 = @as(u32, 1) << @intCast(frame_index % MAX_FRAMES);
+    if (was_submitted) self.completed_frames += 1;
+    const retired_bit: u32 = @as(u32, 1) << @intCast(self.frame_index);
     var write: usize = 0;
     for (self.shared.items) |item| {
         const pending = item.pending_frame_mask & ~retired_bit;
@@ -87,21 +53,7 @@ fn collectSharedForFrame(self: *Self, frame_index: usize, was_submitted: bool) v
     self.shared.shrinkRetainingCapacity(write);
 }
 
-pub fn collect(self: *Self) void {
-    var list = &self.buckets[self.frame_index];
-    for (list.items) |item| switch (item) {
-        .mem_block => |mem| dk.dkMemBlockDestroy(mem),
-    };
-    list.clearRetainingCapacity();
-}
-
-pub fn collectAll(self: *Self) void {
-    for (&self.buckets) |*list| {
-        for (list.items) |item| switch (item) {
-            .mem_block => |mem| dk.dkMemBlockDestroy(mem),
-        };
-        list.clearRetainingCapacity();
-    }
+pub fn collect_all(self: *Self) void {
     for (self.shared.items) |item| {
         dk.dkMemBlockDestroy(item.mem_block);
     }
@@ -109,13 +61,7 @@ pub fn collectAll(self: *Self) void {
 }
 
 pub fn deinit(self: *Self) void {
-    self.context.waitIdle("switch gc deinit");
-    for (&self.buckets) |*list| {
-        for (list.items) |item| switch (item) {
-            .mem_block => |mem| dk.dkMemBlockDestroy(mem),
-        };
-        list.deinit(self.allocator);
-    }
+    self.context.wait_idle("switch gc deinit");
     for (self.shared.items) |item| {
         dk.dkMemBlockDestroy(item.mem_block);
     }

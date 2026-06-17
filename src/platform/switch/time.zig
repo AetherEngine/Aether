@@ -16,12 +16,12 @@ pub fn clockResolution(clock: std.Io.Clock) std.Io.Clock.ResolutionError!std.Io.
 }
 
 pub fn sleep(timeout: std.Io.Timeout) std.Io.Cancelable!void {
-    const ns = timeoutNanoseconds(timeout);
+    const ns = timeout_nanoseconds(timeout);
     if (ns <= 0) return;
-    c.svcSleepThread(clampNs(ns));
+    c.svcSleepThread(clamp_ns(ns));
 }
 
-fn timeoutNanoseconds(timeout: std.Io.Timeout) i96 {
+fn timeout_nanoseconds(timeout: std.Io.Timeout) i96 {
     return switch (timeout) {
         .none => 0,
         .duration => |duration| duration.raw.nanoseconds,
@@ -29,7 +29,7 @@ fn timeoutNanoseconds(timeout: std.Io.Timeout) i96 {
     };
 }
 
-fn clampNs(ns: i96) i64 {
+fn clamp_ns(ns: i96) i64 {
     if (ns > std.math.maxInt(i64)) return std.math.maxInt(i64);
     return @intCast(ns);
 }
