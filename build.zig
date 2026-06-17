@@ -1,19 +1,12 @@
 const std = @import("std");
 const pspsdk = @import("pspsdk");
 
-const DEFAULT_3DS_HEAP_SIZE: u32 = 4 * 1024 * 1024;
-const DEFAULT_3DS_LINEAR_HEAP_SIZE: u32 = 60 * 1024 * 1024;
-
 pub const Platform = enum {
     windows,
     linux,
     macos,
     wasm,
     psp,
-    /// Nintendo 3DS. Builtin os tag is `.@"3ds"`, but the Zig options
-    /// serializer can't emit `.@"3ds"` as an enum value literal, so the
-    /// internal Aether tag uses a leading-letter form.
-    nintendo_3ds,
     /// Nintendo Switch. Zig 0.16 has no `switch`/`horizon` OS tag, so the
     /// canonical target is `aarch64-freestanding-none` and we can't infer
     /// the platform from `target.os.tag` alone. Opt in with
@@ -54,10 +47,6 @@ pub const Config = struct {
     /// levels for the texture. Off by default since the extra VRAM cost
     /// only pays off for textures sampled at a wide range of distances.
     psp_mipmaps: bool = false,
-    /// 3DS: small regular heap reserved for libctru/newlib internals.
-    nintendo_3ds_heap_size: u32 = DEFAULT_3DS_HEAP_SIZE,
-    /// 3DS: linear heap used by Aether's process allocator and GPU uploads.
-    nintendo_3ds_linear_heap_size: u32 = DEFAULT_3DS_LINEAR_HEAP_SIZE,
     /// When true, `Core.paths.resolve` returns CWD for both resources
     /// and data, bypassing the platform-specific layout (.app Resources
     /// on mac, APPDATA on Windows, XDG on Linux).
@@ -92,7 +81,6 @@ pub const Config = struct {
                 .linux => .linux,
                 .wasi => .wasm,
                 .psp => .psp,
-                .@"3ds" => .nintendo_3ds,
                 else => |t| {
                     std.debug.panic("Unsupported OS! {}\n", .{t});
                 },
@@ -115,8 +103,6 @@ pub const Config = struct {
             .audio = overrides.audio orelse default_audio,
             .psp_display_mode = overrides.psp_display_mode orelse .rgba8888,
             .psp_mipmaps = overrides.psp_mipmaps orelse false,
-            .nintendo_3ds_heap_size = overrides.nintendo_3ds_heap_size orelse DEFAULT_3DS_HEAP_SIZE,
-            .nintendo_3ds_linear_heap_size = overrides.nintendo_3ds_linear_heap_size orelse DEFAULT_3DS_LINEAR_HEAP_SIZE,
             .use_cwd = overrides.use_cwd orelse false,
             .flush_logs = overrides.flush_logs orelse false,
         };
@@ -127,8 +113,6 @@ pub const Config = struct {
         audio: ?Audio = null,
         psp_display_mode: ?PspDisplayMode = null,
         psp_mipmaps: ?bool = null,
-        nintendo_3ds_heap_size: ?u32 = null,
-        nintendo_3ds_linear_heap_size: ?u32 = null,
         use_cwd: ?bool = null,
         flush_logs: ?bool = null,
         /// Promotes an `aarch64-freestanding-none` target to the
@@ -190,7 +174,7 @@ fn macosGlfwPath(b: *std.Build) []const u8 {
 var devkitpro_path_cached: ?[]const u8 = null;
 fn devkitProPath(b: *std.Build) []const u8 {
     if (devkitpro_path_cached) |p| return p;
-    const opt = b.option([]const u8, "devkitpro-path", "3DS: devkitPro install root (default: $DEVKITPRO or /opt/devkitpro)");
+    const opt = b.option([]const u8, "devkitpro-path", "Switch: devkitPro install root (default: $DEVKITPRO or /opt/devkitpro)");
     const p = opt orelse b.graph.environ_map.get("DEVKITPRO") orelse "/opt/devkitpro";
     devkitpro_path_cached = p;
     return p;
@@ -216,17 +200,6 @@ pub fn webTarget(b: *std.Build) std.Build.ResolvedTarget {
 fn addNintendoCImportPaths(_: *std.Build, mod: *std.Build.Module, config: Config, dkp: []const u8) void {
     const b = mod.owner;
     switch (config.platform) {
-        .nintendo_3ds => {
-            // Keep newlib before libctru so libctru's include_next sys wrappers
-            // resolve during Zig's C translation of SDK headers.
-            //
-            // Zig's 3DS C import can otherwise see newlib's fortified unistd
-            // wrappers and emit references to __ssp_real_* symbols. devkitARM is
-            // built without libssp, so keep fortify off for translated SDK calls.
-            mod.addCMacro("_FORTIFY_SOURCE", "0");
-            mod.addIncludePath(.{ .cwd_relative = b.pathJoin(&.{ dkp, "devkitARM/arm-none-eabi/include" }) });
-            mod.addIncludePath(.{ .cwd_relative = b.pathJoin(&.{ dkp, "libctru/include" }) });
-        },
         .nintendo_switch => {
             // Zig's Switch C import can otherwise see newlib's fortified
             // wrappers and emit references to __ssp_real_* symbols.
@@ -236,27 +209,6 @@ fn addNintendoCImportPaths(_: *std.Build, mod: *std.Build.Module, config: Config
         },
         else => {},
     }
-}
-
-/// Creates a `3dslink` command for pushing an installed `.3dsx` to a
-/// networked 3DS. Reuses Aether's devkitPro option/cache so downstream
-/// builds do not need to redeclare `-Ddevkitpro-path`.
-pub fn add3dslink(b: *std.Build, threedsx_path: []const u8) *std.Build.Step.Run {
-    const dkp = devkitProPath(b);
-    const link_cmd = b.addSystemCommand(&.{b.pathJoin(&.{ dkp, "tools/bin/3dslink" })});
-    if (b.option([]const u8, "3dslink-address", "3DS: target IP for 3dslink push (default: mDNS auto-discover)")) |ip| {
-        link_cmd.addArgs(&.{ "-a", ip });
-    }
-    if (b.option(u32, "3dslink-retries", "3DS: 3dslink retry count (default: 10)")) |n| {
-        link_cmd.addArgs(&.{ "-r", b.fmt("{d}", .{n}) });
-    }
-    if (b.option(bool, "3dslink-server", "3DS: pass -s so 3dslink stays listening after the upload (useful for some Rosalina versions and for stdout relay)") orelse false) {
-        link_cmd.addArg("-s");
-    }
-    link_cmd.addArg(threedsx_path);
-    link_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| link_cmd.addArgs(args);
-    return link_cmd;
 }
 
 /// Creates an executable with the Aether engine module and all platform
@@ -274,12 +226,10 @@ pub fn add3dslink(b: *std.Build, threedsx_path: []const u8) *std.Build.Step.Run 
 /// the actual build steps and executable.
 pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.Step.Compile {
     const config = Config.resolve(opts.target, opts.overrides);
-    const uses_nintendo_c_io = config.platform == .nintendo_3ds or config.platform == .nintendo_switch;
+    const uses_nintendo_c_io = config.platform == .nintendo_switch;
 
-    // 3DS and Switch force ofmt=c — there's no Zig-native backend for
-    // either Horizon target yet, so we emit C and let an external
-    // toolchain (devkitARM/libctru on 3DS, devkitA64/libnx on Switch)
-    // compile the result.
+    // Switch forces ofmt=c -- there's no Zig-native backend for Horizon yet,
+    // so we emit C and let devkitA64/libnx compile the result.
     const target = if (uses_nintendo_c_io) blk: {
         var q = opts.target.query;
         q.ofmt = .c;
@@ -307,7 +257,7 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
 
     if (psp_dep) |pd| {
         mod.addImport("pspsdk", pd.module("pspsdk"));
-    } else if (config.platform == .nintendo_3ds or config.platform == .nintendo_switch) {
+    } else if (config.platform == .nintendo_switch) {
         // Console SDK symbols are declared as backend-local externs and
         // resolved by the export pipeline's devkitPro link step.
     } else if (config.platform == .wasm) {
@@ -394,10 +344,6 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
     if (uses_nintendo_c_io) {
         addNintendoCImportPaths(owner, mod, config, devkitProPath(b));
     }
-    if (config.platform == .nintendo_3ds and config.gfx == .default) {
-        add3dsMangoImport(owner, b, mod, target, opts.optimize);
-    }
-
     addInternalShaderModule(owner, b, mod, config);
 
     // --- user executable ---
@@ -414,7 +360,6 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
 
     const root_mod = if (uses_nintendo_c_io) b.createModule(.{
         .root_source_file = owner.path(switch (config.platform) {
-            .nintendo_3ds => "src/platform/3ds/services.zig",
             .nintendo_switch => "src/platform/switch/services.zig",
             else => unreachable,
         }),
@@ -486,9 +431,9 @@ pub fn addHeadless(owner: *std.Build, b: *std.Build, opts: HeadlessOptions) *std
     var config = Config.resolve(opts.target, opts.overrides);
     config.gfx = .headless;
     config.audio = .none;
-    const uses_nintendo_c_io = config.platform == .nintendo_3ds or config.platform == .nintendo_switch;
+    const uses_nintendo_c_io = config.platform == .nintendo_switch;
 
-    // 3DS and Switch force ofmt=c (see addGame for details).
+    // Switch forces ofmt=c (see addGame for details).
     const target = if (uses_nintendo_c_io) blk: {
         var q = opts.target.query;
         q.ofmt = .c;
@@ -534,7 +479,6 @@ pub fn addHeadless(owner: *std.Build, b: *std.Build, opts: HeadlessOptions) *std
 
     const root_mod = if (uses_nintendo_c_io) b.createModule(.{
         .root_source_file = owner.path(switch (config.platform) {
-            .nintendo_3ds => "src/platform/3ds/services.zig",
             .nintendo_switch => "src/platform/switch/services.zig",
             else => unreachable,
         }),
@@ -633,62 +577,6 @@ fn addUamStep(b: *std.Build, uam: []const u8, stage: []const u8, comptime output
     return output;
 }
 
-fn addPicassoStep(b: *std.Build, picasso: []const u8, comptime output_name: []const u8, input: std.Build.LazyPath) std.Build.LazyPath {
-    const run = b.addSystemCommand(&.{ picasso, "-o" });
-    const output = run.addOutputFileArg(output_name);
-    run.addFileArg(input);
-    return output;
-}
-
-fn add3dsMangoImport(owner: *std.Build, b: *std.Build, mod: *std.Build.Module, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
-    const zsflt = owner.dependency("zsflt", .{}).module("zsflt");
-    const dkp = devkitProPath(owner);
-    const zitrus_mod = b.createModule(.{
-        .root_source_file = owner.path("src/platform/3ds/mango/zitrus.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "zsflt", .module = zsflt },
-        },
-    });
-    zitrus_mod.addImport("zitrus", zitrus_mod);
-    zitrus_mod.addCMacro("_FORTIFY_SOURCE", "0");
-    zitrus_mod.addIncludePath(.{ .cwd_relative = b.pathJoin(&.{ dkp, "devkitARM/arm-none-eabi/include" }) });
-    zitrus_mod.addIncludePath(.{ .cwd_relative = b.pathJoin(&.{ dkp, "libctru/include" }) });
-    mod.addImport("zitrus", zitrus_mod);
-}
-
-fn addMangoPsmStep(owner: *std.Build, b: *std.Build, comptime output_name: []const u8, input: std.Build.LazyPath) std.Build.LazyPath {
-    const zsflt = owner.dependency("zsflt", .{}).module("zsflt");
-    const host_target = b.resolveTargetQuery(.{});
-    const zitrus_mod = b.createModule(.{
-        .root_source_file = owner.path("src/platform/3ds/mango/zitrus_tools.zig"),
-        .target = host_target,
-        .optimize = .Debug,
-        .imports = &.{
-            .{ .name = "zsflt", .module = zsflt },
-        },
-    });
-    zitrus_mod.addImport("zitrus", zitrus_mod);
-
-    const tool = b.addExecutable(.{
-        .name = "aether-psm-to-zpsh",
-        .root_module = b.createModule(.{
-            .root_source_file = owner.path("src/platform/3ds/mango/tools/psm_to_zpsh.zig"),
-            .target = host_target,
-            .optimize = .Debug,
-            .imports = &.{
-                .{ .name = "zitrus", .module = zitrus_mod },
-            },
-        }),
-    });
-
-    const run = b.addRunArtifact(tool);
-    run.setName("assemble 3ds mango shader");
-    run.addFileArg(input);
-    return run.addOutputFileArg(output_name);
-}
-
 fn addInternalShaderModule(owner: *std.Build, b: *std.Build, mod: *std.Build.Module, config: Config) void {
     const stages = internalShaderStages(owner, b, config) orelse return;
 
@@ -707,13 +595,6 @@ fn addInternalShaderModule(owner: *std.Build, b: *std.Build, mod: *std.Build.Mod
 }
 
 fn internalShaderStages(owner: *std.Build, b: *std.Build, config: Config) ?ShaderStagePaths {
-    if (config.platform == .nintendo_3ds and config.gfx == .default) {
-        const vert = addMangoPsmStep(owner, b, "basic.psh", owner.path("src/platform/3ds/shaders/basic.psm"));
-        const files = b.addWriteFiles();
-        const frag = files.add("basic.frag.stub", "");
-        return .{ .vert = vert, .frag = frag };
-    }
-
     if (config.platform == .nintendo_switch and config.gfx == .default) {
         const uam = b.pathJoin(&.{ devkitProPath(b), "tools/bin/uam" });
         const slangc = requireSlangcPath(owner);
@@ -838,7 +719,7 @@ pub const ExportOptions = struct {
     icon_png: ?std.Build.LazyPath = null,
     /// Files to install into the app bundle. On macOS they land under
     /// `Contents/Resources/<name>`. On desktop non-macOS they are copied
-    /// alongside the exe in `zig-out/bin/`. Ignored on PSP and 3DS.
+    /// alongside the exe in `zig-out/bin/`. Ignored on PSP.
     resources: []const Resource = &.{},
     /// WASM/browser: directory copied into the web artifact root and exposed
     /// through `resources.manifest` for the JavaScript WASI preloader.
@@ -851,16 +732,6 @@ pub const ExportOptions = struct {
     /// WASM/browser: destination wasm filename. Defaults to the name expected
     /// by the stock Aether web loader.
     web_wasm_name: []const u8 = "Aether.wasm",
-    /// 3DS: SMDH long description (the second line shown in the HOME
-    /// menu detail panel). Falls back to "Built with Aether" when empty.
-    smdh_long_description: []const u8 = "",
-    /// 3DS: SMDH author string. Empty leaves the field blank.
-    smdh_author: []const u8 = "",
-    /// 3DS: 48x48 PNG icon embedded in the SMDH. When null, libctru's
-    /// `default_icon.png` is used.
-    smdh_icon: ?std.Build.LazyPath = null,
-    /// 3DS: directory (or pre-built `.romfs`) embedded into the 3DSX.
-    romfs: ?std.Build.LazyPath = null,
     /// Switch: NACP author string (shows under the title in the HOME
     /// menu). Empty falls back to "Aether".
     switch_author: []const u8 = "",
@@ -896,8 +767,6 @@ pub fn exportArtifact(owner: *std.Build, b: *std.Build, exe: *std.Build.Step.Com
         // register on the downstream project's builder.
         const psp_dep = owner.dependency("pspsdk", .{});
         _ = pspEbootPipeline(b, exe, psp_dep, opts);
-    } else if (config.platform == .nintendo_3ds) {
-        threedsxPipeline(b, exe, opts);
     } else if (config.platform == .nintendo_switch) {
         switchNroPipeline(b, exe, opts);
     } else if (config.platform == .wasm) {
@@ -1191,36 +1060,6 @@ fn pspEbootPipeline(b: *std.Build, exe: *std.Build.Step.Compile, psp_dep: *std.B
     return result;
 }
 
-fn patch3dsGeneratedC(b: *std.Build, exe: *std.Build.Step.Compile) std.Build.LazyPath {
-    const patch = b.addSystemCommand(&.{
-        "perl", "-e",
-        \\local $/;
-        \\my $src = <>;
-        \\my %align16 = ();
-        \\while ($src =~ /zig_static_assert\(_Alignof \(struct ([A-Za-z0-9_]+)\) == 16,/g) {
-        \\    $align16{$1} = 1;
-        \\}
-        \\my $pending = "";
-        \\for my $line (split /(?<=\n)/, $src) {
-        \\    if ($pending ne "") {
-        \\        if ($line =~ s/^};/} __attribute__((aligned(16)));/) {
-        \\            $pending = "";
-        \\        }
-        \\    } elsif ($line =~ /^struct\s+([A-Za-z0-9_]+)\s*\{/) {
-        \\        my $name = $1;
-        \\        if ($align16{$name}) {
-        \\            if ($line !~ s/\};/} __attribute__((aligned(16)));/) {
-        \\                $pending = $name;
-        \\            }
-        \\        }
-        \\    }
-        \\    print $line;
-        \\}
-    });
-    patch.addArtifactArg(exe);
-    return patch.captureStdOut(.{ .basename = b.fmt("{s}.3ds.c", .{exe.name}) });
-}
-
 fn cBackendOptimizeMode(exe: *std.Build.Step.Compile) std.builtin.OptimizeMode {
     return exe.root_module.optimize orelse .Debug;
 }
@@ -1237,259 +1076,19 @@ fn cBackendGccDebugArg(optimize: std.builtin.OptimizeMode) []const u8 {
     return if (optimize == .Debug or optimize == .ReleaseSafe) "-g" else "-g0";
 }
 
-/// Compiles the zig-emitted C with devkitARM, links against libctru, and
-/// packages the ELF (plus an SMDH and optional RomFS) into a `.3dsx`
-/// homebrew bundle. Mirrors `pspEbootPipeline` for the PSP toolchain.
-fn threedsxPipeline(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOptions) void {
-    // Derive a sibling target for compiler_rt: same cpu/abi/endianness
-    // as the game (so the calling conventions and float ABI match
-    // libctru), but os=freestanding (sidesteps the 3DS-specific posix
-    // dependencies in std) and the default object format (so this
-    // module compiles natively to an ELF object the gcc driver can
-    // consume, rather than .c). devkitARM's libgcc.a doesn't ship the
-    // 128-bit-int compiler-rt entry points (`__multi3`/`__divti3`/etc.),
-    // so we provide them ourselves from zig's compiler_rt.
-    const game_target = exe.root_module.resolved_target.?;
-    var crt_query = game_target.query;
-    crt_query.os_tag = .freestanding;
-    crt_query.ofmt = null;
-    // Explicitly pin the cpu model to whatever the game target
-    // resolved to (arm.mpcore for the 3DS). Without this, swapping
-    // os_tag to .freestanding loses the os-derived cpu choice and
-    // zig falls back to a generic baseline that emits ARMv6T2+
-    // instructions (e.g. `mls`) the ARMv6K MPCore doesn't decode —
-    // crashes show up as "undefined instruction" in compiler_rt
-    // helpers like `__udivmodsi4`.
-    crt_query.cpu_model = .{ .explicit = game_target.result.cpu.model };
-    const crt_target = b.resolveTargetQuery(crt_query);
-
-    const compiler_rt_path = b.pathJoin(&.{
-        b.graph.zig_lib_directory.path orelse ".",
-        "compiler_rt.zig",
-    });
-    const crt_obj = b.addObject(.{
-        .name = "aether_3ds_compiler_rt",
-        .root_module = b.createModule(.{
-            .root_source_file = .{ .cwd_relative = compiler_rt_path },
-            .target = crt_target,
-            .optimize = .ReleaseSmall,
-            .strip = true,
-        }),
-    });
-
-    const dkp = devkitProPath(b);
-
-    // Strip the libc-overlap symbols from the compiler_rt object.
-    // zig's compiler_rt re-exports `memset`/`memcpy`/`memmove` and
-    // their `__aeabi_*` shims as WEAK; the `__aeabi_memset` and
-    // `memset` versions form a recursive `bl` cycle that blows the
-    // stack on 32-bit ARM. Newlib has real implementations, but the
-    // linker won't reach for them while compiler_rt's weak version
-    // already resolves the reference. `--strip-symbol` drops the
-    // exports so the references stay unresolved at compiler_rt and
-    // the linker pulls newlib's strong implementations from libc.a.
-    const strip_libc = b.addSystemCommand(&.{
-        b.pathJoin(&.{ dkp, "devkitARM/bin/arm-none-eabi-objcopy" }),
-        "--localize-symbol=memset",
-        "--localize-symbol=memcpy",
-        "--localize-symbol=memmove",
-        "--localize-symbol=memcmp",
-        "--localize-symbol=__memset",
-        "--localize-symbol=__memcpy",
-        "--localize-symbol=__memmove",
-        "--localize-symbol=__memcpy_chk",
-        "--localize-symbol=__aeabi_memset",
-        "--localize-symbol=__aeabi_memset4",
-        "--localize-symbol=__aeabi_memset8",
-        "--localize-symbol=__aeabi_memcpy",
-        "--localize-symbol=__aeabi_memcpy4",
-        "--localize-symbol=__aeabi_memcpy8",
-        "--localize-symbol=__aeabi_memmove",
-        "--localize-symbol=__aeabi_memmove4",
-        "--localize-symbol=__aeabi_memmove8",
-        "--localize-symbol=strlen",
-        "--localize-symbol=bcmp",
-    });
-    strip_libc.addArtifactArg(crt_obj);
-    const crt_clean = strip_libc.addOutputFileArg("aether_3ds_compiler_rt.o");
-    const gcc = b.pathJoin(&.{ dkp, "devkitARM/bin/arm-none-eabi-gcc" });
-    const tool_3dsx = b.pathJoin(&.{ dkp, "tools/bin/3dsxtool" });
-    const tool_smdh = b.pathJoin(&.{ dkp, "tools/bin/smdhtool" });
-    const ctru_inc = b.pathJoin(&.{ dkp, "libctru/include" });
-    const ctru_lib = b.pathJoin(&.{ dkp, "libctru/lib" });
-    const default_icon = b.pathJoin(&.{ dkp, "libctru/default_icon.png" });
-    const zig_h_src = b.pathJoin(&.{ b.graph.zig_lib_directory.path orelse ".", "zig.h" });
-
-    // zig.h hardcodes `zig_align(16)` for its `zig_i128`/`zig_u128`
-    // struct fallback (used when `__int128` isn't supported by the C
-    // compiler -- gcc on 32-bit ARM is one such target). Zig's ARM
-    // layout uses 8-byte alignment for those integer types, while f128
-    // still needs 16-byte alignment. Patch only the integer fallback
-    // typedefs, then route unsupported ARM f128 through zig.h's vector
-    // fallback with explicit 16-byte alignment.
-    const patch = b.addSystemCommand(&.{"perl"});
-    patch.addArgs(&.{
-        "-0pe",
-        \\s/typedef struct \{ zig_align\(16\) uint64_t lo; uint64_t hi; \} zig_u128;/typedef struct { zig_align(8) uint64_t lo; uint64_t hi; } zig_u128;/g;
-        \\s/typedef struct \{ zig_align\(16\) uint64_t lo;  int64_t hi; \} zig_i128;/typedef struct { zig_align(8) uint64_t lo;  int64_t hi; } zig_i128;/g;
-        \\s/typedef struct \{ zig_align\(16\) uint64_t hi; uint64_t lo; \} zig_u128;/typedef struct { zig_align(8) uint64_t hi; uint64_t lo; } zig_u128;/g;
-        \\s/typedef struct \{ zig_align\(16\)  int64_t hi; uint64_t lo; \} zig_i128;/typedef struct { zig_align(8)  int64_t hi; uint64_t lo; } zig_i128;/g;
-        \\s/#if defined\(zig_darwin\) \|\| defined\(zig_aarch64\)/#if defined(zig_darwin) || defined(zig_aarch64) || defined(zig_arm)/;
-        \\s/typedef __attribute__\(\(__vector_size__\(2 \* sizeof\(uint64_t\)\)\)\) uint64_t zig_v2u64;/typedef __attribute__((__vector_size__(2 * sizeof(uint64_t)), aligned(16))) uint64_t zig_v2u64;/;
-    });
-    patch.addFileArg(.{ .cwd_relative = zig_h_src });
-    const patched_zig_h = patch.captureStdOut(.{ .basename = "zig.h" });
-
-    const include_wf = b.addWriteFiles();
-    _ = include_wf.addCopyFile(patched_zig_h, "zig.h");
-
-    const shim_wf = b.addWriteFiles();
-    const exception_shim = shim_wf.add("aether_3ds_exception.c",
-        \\#include <3ds.h>
-        \\
-        \\extern void aether3dsExceptionHandler(ERRF_ExceptionInfo *excep, CpuRegisters *regs);
-        \\
-        \\void aether3dsInstallExceptionHandler(void *stack_top) {
-        \\    threadOnException(aether3dsExceptionHandler, stack_top, WRITE_DATA_TO_HANDLER_STACK);
-        \\}
-        \\
-    );
-
-    // Small linker script fragment providing accurate .text bounds as
-    // link-time constants. This lets the panic unwinder in services.zig
-    // use real section start/end (via ADDR/SIZEOF) instead of any
-    // hardcoded/sketchy ranges for isLikelyReturnAddress text checks.
-    const syms_wf = b.addWriteFiles();
-    const text_syms_ld = syms_wf.add("aether_3ds_text_syms.ld",
-        \\/* Zig C backend (for 3DS ofmt=c) mangles extern names with zig_e_ prefix. */
-        \\/* Provide both for the isLikelyReturnAddress range checks + any debug. */
-        \\zig_e___text_start = ADDR(.text);
-        \\zig_e___text_end = ADDR(.text) + SIZEOF(.text);
-        \\__text_start = zig_e___text_start;
-        \\__text_end = zig_e___text_end;
-    );
-
-    // Standard 3DS arch flags from devkitPro's template Makefile.
-    const arch = [_][]const u8{
-        "-march=armv6k",           "-mtune=mpcore", "-mfloat-abi=hard", "-mtp=soft",
-        // Keep frame pointers so manual r11-based stack walk in panic handler
-        // can produce useful unwind (otherwise gcc -O* uses r11 as temp and
-        // chains are absent or clobbered, leading to data aborts in the walker).
-        "-fno-omit-frame-pointer",
-    };
-
-    // Single-shot compile + link via the gcc driver. 3dsx.specs pulls
-    // in `_3dsx_crt0` (which calls our exported `main`) and the 3DSX
-    // linker script. We also supply a tiny -T fragment for accurate
-    // __text_* symbols (see text_syms_ld above).
-    const exe_optimize = cBackendOptimizeMode(exe);
-
-    const link = b.addSystemCommand(&.{gcc});
-    link.addArgs(&arch);
-    link.addArgs(&.{
-        "-mword-relocations",
-        "-ffunction-sections",
-        "-D_FORTIFY_SOURCE=0",
-        "-D__3DS__",
-        "-DARM11",
-        cBackendGccOptimizeArg(exe_optimize),
-        cBackendGccDebugArg(exe_optimize),
-        "-specs=3dsx.specs",
-        "-T",
-    });
-    link.addFileArg(text_syms_ld);
-    link.addArgs(&.{
-        "-Wl,--wrap=threadCreate",
-        "-Wl,--no-warn-execstack",
-    });
-    link.addArgs(&.{
-        // Pin the C standard to C11. zig.h picks `[[noreturn]]` under
-        // C23 but emits it in attribute-list position that gcc rejects;
-        // C11's `_Noreturn` is what zig's emitter actually targets.
-        "-std=gnu11",
-    });
-    link.addArgs(&.{
-        // zig's -ofmt=c emitter treats `uintptr_t` and `uint32_t` as
-        // interchangeable on 32-bit ARM (they ARE the same width) but
-        // gcc 14+ promotes the resulting pointer-type mismatch from a
-        // warning to an error. Demote it and a couple of related
-        // chatters; we don't author this C and there's nothing
-        // actionable in the warnings.
-        "-fno-strict-aliasing",
-        "-Wno-incompatible-pointer-types",
-        "-Wno-int-conversion",
-        "-Wno-builtin-declaration-mismatch",
-    });
-    link.addArg(b.fmt("-I{s}", .{ctru_inc}));
-    link.addPrefixedDirectoryArg("-I", include_wf.getDirectory());
-    link.addArg("-x");
-    link.addArg("c");
-    link.addFileArg(patch3dsGeneratedC(b, exe));
-    link.addFileArg(exception_shim);
-    // Reset language so gcc treats subsequent inputs by extension; the
-    // compiler_rt object is ELF arm and `-x c` would mis-parse it.
-    link.addArg("-x");
-    link.addArg("none");
-    link.addFileArg(crt_clean);
-    link.addArg(b.fmt("-L{s}", .{ctru_lib}));
-    link.addArgs(&.{ "-lctru", "-lm" });
-    link.addArg("-o");
-    const elf = link.addOutputFileArg(b.fmt("{s}.elf", .{exe.name}));
-
-    // SMDH metadata (HOME-menu name, description, author, icon).
-    const smdh_run = b.addSystemCommand(&.{ tool_smdh, "--create" });
-    smdh_run.addArg(if (opts.title.len > 0) opts.title else exe.name);
-    smdh_run.addArg(if (opts.smdh_long_description.len > 0)
-        opts.smdh_long_description
-    else
-        "Built with Aether");
-    smdh_run.addArg(opts.smdh_author);
-    if (opts.smdh_icon) |icon|
-        smdh_run.addFileArg(icon)
-    else
-        smdh_run.addArg(default_icon);
-    const smdh = smdh_run.addOutputFileArg(b.fmt("{s}.smdh", .{exe.name}));
-
-    // ELF -> 3DSX. The smdh and (optional) romfs ride in via the
-    // `--smdh=` / `--romfs=` flag-form args.
-    const pack = b.addSystemCommand(&.{tool_3dsx});
-    pack.addFileArg(elf);
-    const threedsx = pack.addOutputFileArg(b.fmt("{s}.3dsx", .{exe.name}));
-    pack.addPrefixedFileArg("--smdh=", smdh);
-    if (opts.romfs) |r| pack.addPrefixedDirectoryArg("--romfs=", r);
-
-    if (opts.output_dir) |dir| {
-        const alloc = b.allocator;
-        b.getInstallStep().dependOn(&b.addInstallBinFile(
-            threedsx,
-            std.mem.concat(alloc, u8, &.{ dir, "/", exe.name, ".3dsx" }) catch @panic("OOM"),
-        ).step);
-        b.getInstallStep().dependOn(&b.addInstallBinFile(
-            elf,
-            std.mem.concat(alloc, u8, &.{ dir, "/", exe.name, ".elf" }) catch @panic("OOM"),
-        ).step);
-    } else {
-        b.getInstallStep().dependOn(&b.addInstallBinFile(
-            threedsx,
-            b.fmt("{s}.3dsx", .{exe.name}),
-        ).step);
-    }
-}
-
 /// Compiles the zig-emitted C with devkitA64, links against libnx, and
 /// packages the ELF (plus a NACP and optional RomFS) into a `.nro`
-/// homebrew bundle. Mirrors `threedsxPipeline` for the Switch toolchain.
+/// homebrew bundle.
 fn switchNroPipeline(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOptions) void {
     // aarch64 GCC supports __int128 natively, so we don't need the
-    // `zig.h` align(16) -> align(8) patch the 3DS pipeline applies.
-    //
+    // `zig.h` integer-alignment patch used by old 32-bit ARM C pipelines.
     // We do still need a compiler_rt object: zig.h calls helpers like
     // `__floatunsisf` / `__floatundidf` / `__floatdisf` unconditionally,
     // but devkitA64's libgcc doesn't ship them — gcc on aarch64 with
     // hardware FP inlines these casts as `ucvtf`/`scvtf`, so the
     // helpers are dead code in normal compilations. Zig's emitted C
     // takes the slow path, so we drop in zig's own compiler_rt to
-    // satisfy the references. Like the 3DS pipeline we localize
+    // satisfy the references. We localize
     // symbols that overlap newlib (memset/memcpy/...) so the linker
     // pulls newlib's strong implementations.
     const game_target = exe.root_module.resolved_target.?;
@@ -1586,7 +1185,7 @@ fn switchNroPipeline(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOp
     link.addArg(b.fmt("-I{s}", .{libnx_inc}));
     // zig's emitted C `#include "zig.h"`. The header lives in zig's
     // own lib directory; point gcc at it. aarch64 GCC's __int128
-    // alignment matches zig's, so no patching is needed (unlike 3DS).
+    // alignment matches zig's, so no patching is needed.
     link.addArg(b.fmt("-I{s}", .{b.graph.zig_lib_directory.path orelse "."}));
     link.addArg("-x");
     link.addArg("c");
@@ -1664,8 +1263,6 @@ fn makeResourceManifest(b: *std.Build, resource_dir_path: []const u8) []const u8
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const threeds_heap_mib = b.option(u32, "3ds-heap-mib", "3DS: regular libctru/newlib heap size in MiB (default: 4)");
-    const threeds_linear_heap_mib = b.option(u32, "3ds-linear-heap-mib", "3DS: linear heap size in MiB (default: 60)");
     const web_resources_path = b.option([]const u8, "web-resources", "WASM/browser: directory to copy into zig-out/web and preload via resources.manifest (default: test)") orelse "test";
     const web_host = b.option([]const u8, "web-host", "serve-web: bind host (default: 127.0.0.1)") orelse "127.0.0.1";
     const web_port = b.option(u16, "web-port", "serve-web: bind port (default: 8080)") orelse 8080;
@@ -1675,8 +1272,6 @@ pub fn build(b: *std.Build) void {
         .audio = b.option(Audio, "audio", "Audio backend override (default: platform default)"),
         .psp_display_mode = b.option(PspDisplayMode, "psp-display", "PSP display mode: rgba8888 (32-bit, default) or rgb565 (16-bit)"),
         .psp_mipmaps = b.option(bool, "psp-mipmaps", "PSP: generate mip levels for VRAM-resident textures (default: false)"),
-        .nintendo_3ds_heap_size = if (threeds_heap_mib) |mib| mib * 1024 * 1024 else null,
-        .nintendo_3ds_linear_heap_size = if (threeds_linear_heap_mib) |mib| mib * 1024 * 1024 else null,
         .use_cwd = b.option(bool, "use-cwd", "Force resources+data dirs to CWD (debug/CI convenience; default: false)"),
         .flush_logs = b.option(bool, "flush-logs", "Flush aether.log after every log message (debugging hard hangs; default: false)"),
         .nintendo_switch = b.option(bool, "nintendo-switch", "Build for Nintendo Switch (requires -Dtarget=aarch64-freestanding-none and devkitA64/libnx)"),
@@ -1701,18 +1296,14 @@ pub fn build(b: *std.Build) void {
         .title = "Aether",
         .output_dir = switch (config.platform) {
             .psp => "Aether-PSP",
-            .nintendo_3ds => "Aether-3DS",
             .nintendo_switch => "Aether-Switch",
             else => null,
         },
-        .smdh_long_description = "Aether engine test app",
-        .smdh_author = "Aether",
         .resources = &.{
             .{ .path = b.path("test/test.png"), .name = "test.png" },
             .{ .path = b.path("test/calm1.wav"), .name = "calm1.wav" },
             .{ .path = b.path("test/grass1.wav"), .name = "grass1.wav" },
         },
-        .romfs = if (config.platform == .nintendo_3ds) nintendo_romfs.getDirectory() else null,
         .switch_romfs = if (config.platform == .nintendo_switch) nintendo_romfs.getDirectory() else null,
     });
 
@@ -1742,19 +1333,7 @@ pub fn build(b: *std.Build) void {
     serve_web_step.dependOn(&serve_web_cmd.step);
 
     const run_step = b.step("run", "Run the app");
-    if (config.platform == .nintendo_3ds) {
-        // 3DS can't run natively on the host. The 3DS-side homebrew
-        // launcher listens for incoming .3dsx pushes on port 17491;
-        // `3dslink` finds it via mDNS or accepts an explicit IP.
-        const link_cmd = add3dslink(b, b.getInstallPath(.bin, "Aether-3DS/Aether.3dsx"));
-
-        const link_step = b.step("3dslink", "Push the 3dsx to a networked 3DS via 3dslink");
-        link_step.dependOn(&link_cmd.step);
-
-        // `zig build run` aliases to 3dslink for 3DS so the same
-        // command works across host/PSP/3DS workflows.
-        run_step.dependOn(&link_cmd.step);
-    } else if (config.platform == .nintendo_switch) {
+    if (config.platform == .nintendo_switch) {
         // Switch can't run natively on the host. nxlink pushes the
         // .nro to nx-hbloader on a networked Switch (mDNS by default,
         // explicit IP via -a).
@@ -1781,7 +1360,7 @@ pub fn build(b: *std.Build) void {
         link_step.dependOn(&link_cmd.step);
 
         // `zig build run` aliases to nxlink for Switch so the same
-        // command works across host/PSP/3DS/Switch workflows.
+        // command works across host/PSP/Switch workflows.
         run_step.dependOn(&link_cmd.step);
     } else {
         const run_cmd = b.addRunArtifact(exe);
@@ -1790,9 +1369,9 @@ pub fn build(b: *std.Build) void {
         run_step.dependOn(&run_cmd.step);
     }
 
-    // Engine unit tests (desktop only — PSP/3DS/Switch pull in symbols
+    // Engine unit tests (desktop only -- PSP/Switch pull in symbols
     // that can't be linked or analyzed under the test runner)
-    if (config.platform != .psp and config.platform != .nintendo_3ds and config.platform != .nintendo_switch) {
+    if (config.platform != .psp and config.platform != .nintendo_switch) {
         const mod_tests = b.addTest(.{
             .root_module = exe.root_module.import_table.get("aether").?,
         });

@@ -273,18 +273,11 @@ pub const Engine = struct {
 
     pub fn stepFrame(self: *Engine) !bool {
         if (!self.run_loop.initialized) self.beginRun();
-        if (options.config.platform == .nintendo_3ds) {
-            @compileError("Engine.stepFrame is not implemented for the Nintendo 3DS fixed-vblank loop");
-        }
         try self.stepFrameInternal(false);
         return self.running;
     }
 
     pub fn run(self: *Engine) !void {
-        if (options.config.platform == .nintendo_3ds) {
-            return self.runNintendo3ds();
-        }
-
         self.beginRun();
         while (self.running) {
             try self.stepFrameInternal(true);
@@ -292,8 +285,6 @@ pub const Engine = struct {
     }
 
     fn stepFrameInternal(self: *Engine, allow_sleep: bool) !void {
-        if (options.config.platform == .nintendo_3ds) unreachable;
-
         const US_PER_S: u64 = std.time.us_per_s;
         const NS_PER_US: i64 = 1000;
 
@@ -524,104 +515,6 @@ pub const Engine = struct {
                 self.run_loop.fps_count = 0;
                 self.run_loop.fps_window_end = saturatingAddI64(end_us, fps_window_us);
             }
-        }
-    }
-
-    fn runNintendo3ds(self: *Engine) !void {
-        const US_PER_S: u64 = std.time.us_per_s;
-        const NS_PER_US: i64 = 1000;
-        const FRAMES_HZ: u32 = 60;
-        const TICKS_HZ: u32 = 20;
-        const TICK_FRAME_INTERVAL: u32 = FRAMES_HZ / TICKS_HZ;
-        const FRAME_US: u64 = US_PER_S / FRAMES_HZ;
-        const FRAME_DT_S: f32 = @as(f32, @floatFromInt(FRAME_US)) / @as(f32, US_PER_S);
-        const frame_budget_ns: i64 = @as(i64, @intCast(FRAME_US)) * NS_PER_US;
-
-        comptime assert(FRAMES_HZ % TICKS_HZ == 0);
-
-        if (!self.vsync) self.set_vsync(true);
-
-        var frame_count: u32 = 0;
-        while (self.running) {
-            const trace_loop = self.debug_trace_loops > 0;
-            const trace_loop_index = self.debug_trace_loop_index + 1;
-            const is_tick_frame = frame_count % TICK_FRAME_INTERVAL == 0;
-
-            if (trace_loop) {
-                Util.engine_logger.info("trace: 3ds loop {d} begin frame={d} dt_bits=0x{x} tick_frame={}", .{
-                    trace_loop_index,
-                    frame_count,
-                    @as(u32, @bitCast(FRAME_DT_S)),
-                    is_tick_frame,
-                });
-                Util.engine_logger.info("trace: 3ds loop {d} platform begin", .{trace_loop_index});
-            }
-
-            Platform.update(self);
-            if (trace_loop) {
-                Util.engine_logger.info("trace: 3ds loop {d} platform end running={}", .{ trace_loop_index, self.running });
-            }
-            if (!self.running) break;
-
-            if (is_tick_frame) {
-                if (trace_loop) Util.engine_logger.info("trace: 3ds loop {d} tick begin", .{trace_loop_index});
-                try Core.state_machine.tick(self);
-                if (trace_loop) Util.engine_logger.info("trace: 3ds loop {d} tick end", .{trace_loop_index});
-            }
-
-            if (trace_loop) Util.engine_logger.info("trace: 3ds loop {d} input begin", .{trace_loop_index});
-            Platform.input.update();
-            Core.input.update();
-            if (trace_loop) Util.engine_logger.info("trace: 3ds loop {d} input end running={}", .{ trace_loop_index, self.running });
-            if (!self.running) break;
-
-            const budget = Util.BudgetContext{
-                .phase_budget_ns = frame_budget_ns,
-                .engine_elapsed_ns = 0,
-                .remaining_ns = frame_budget_ns,
-                .is_tick_frame = is_tick_frame,
-                .tick_cost_ns = 0,
-                .safety_margin_ns = Util.BudgetContext.DEFAULT_SAFETY_MARGIN_NS,
-            };
-
-            if (trace_loop) Util.engine_logger.info("trace: 3ds loop {d} update begin", .{trace_loop_index});
-            try Core.state_machine.update(self, FRAME_DT_S, &budget);
-            if (trace_loop) Util.engine_logger.info("trace: 3ds loop {d} update end", .{trace_loop_index});
-
-            if (trace_loop) Util.engine_logger.info("trace: 3ds loop {d} start_frame begin", .{trace_loop_index});
-            const drew_frame = Platform.gfx.api.start_frame();
-            Platform.gfx.frame_active = drew_frame;
-            if (trace_loop) Util.engine_logger.info("trace: 3ds loop {d} start_frame end drew={}", .{ trace_loop_index, drew_frame });
-            if (drew_frame) {
-                defer Platform.gfx.frame_active = false;
-                const draw_budget = Util.BudgetContext{
-                    .phase_budget_ns = frame_budget_ns,
-                    .engine_elapsed_ns = 0,
-                    .remaining_ns = frame_budget_ns,
-                    .is_tick_frame = is_tick_frame,
-                    .tick_cost_ns = 0,
-                    .safety_margin_ns = Util.BudgetContext.DEFAULT_SAFETY_MARGIN_NS,
-                };
-
-                if (trace_loop) Util.engine_logger.info("trace: 3ds loop {d} draw begin", .{trace_loop_index});
-                try Core.state_machine.draw(self, FRAME_DT_S, &draw_budget);
-                if (trace_loop) Util.engine_logger.info("trace: 3ds loop {d} draw end", .{trace_loop_index});
-
-                if (trace_loop) Util.engine_logger.info("trace: 3ds loop {d} end_frame begin", .{trace_loop_index});
-                Platform.gfx.api.end_frame();
-                Platform.gfx.frame_active = false;
-                if (trace_loop) Util.engine_logger.info("trace: 3ds loop {d} end_frame end", .{trace_loop_index});
-            } else {
-                Platform.gfx.frame_active = false;
-            }
-
-            if (trace_loop) {
-                Util.engine_logger.info("trace: 3ds loop {d} end drew={}", .{ trace_loop_index, drew_frame });
-                self.debug_trace_loop_index = trace_loop_index;
-                self.debug_trace_loops -= 1;
-            }
-
-            frame_count +%= 1;
         }
     }
 };

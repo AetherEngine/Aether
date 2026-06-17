@@ -7,10 +7,6 @@ const imported = @cImport({
     @cDefine("wint_t", "__WINT_TYPE__");
 
     switch (options.config.platform) {
-        .nintendo_3ds => {
-            @cDefine("__3DS__", "1");
-            @cDefine("ARM11", "1");
-        },
         .nintendo_switch => {
             @cDefine("__SWITCH__", "1");
             @cDefine("__thread", "");
@@ -34,15 +30,6 @@ const imported = @cImport({
     @cInclude("stdio.h");
 
     switch (options.config.platform) {
-        .nintendo_3ds => {
-            @cInclude("3ds/types.h");
-            @cInclude("3ds/thread.h");
-            @cInclude("3ds/allocator/linear.h");
-            @cInclude("3ds/archive.h");
-            @cInclude("3ds/romfs.h");
-            @cInclude("3ds/svc.h");
-            @cInclude("3ds/services/soc.h");
-        },
         .nintendo_switch => {
             @cInclude("switch/types.h");
         },

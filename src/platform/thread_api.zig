@@ -28,7 +28,7 @@ pub const Config = struct {
     /// thread-local so `current_priority()` round-trips, but does NOT change
     /// OS-level scheduling.
     priority: Priority = .normal,
-    /// Required on PSP/3DS (used to allocate the trampoline closure). Desktop
+    /// Required on PSP (used to allocate the trampoline closure). Desktop
     /// forwards it to `std.Thread.spawn`.
     allocator: ?std.mem.Allocator = null,
 };

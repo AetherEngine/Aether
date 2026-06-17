@@ -6,7 +6,7 @@ const Platform = @import("../platform/platform.zig");
 const gfx = Platform.gfx;
 const options = @import("options");
 const psp_gfx = if (builtin.os.tag == .psp) @import("../platform/psp/psp_gfx_ge.zig") else struct {};
-const use_streaming_file_reader = options.config.platform == .nintendo_3ds or options.config.platform == .nintendo_switch;
+const use_streaming_file_reader = options.config.platform == .nintendo_switch;
 
 pub const Handle = u32;
 

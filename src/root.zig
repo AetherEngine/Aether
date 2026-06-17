@@ -12,11 +12,8 @@ pub const ctx_to_self = Util.ctx_to_self;
 /// PSP-exclusive system utility dialogs (OSK, network configuration).
 /// Only available when `platform == .psp`; evaluates to `void` otherwise.
 pub const Psp = if (platform == .psp) @import("platform/psp/psp_dialogs.zig") else void;
-pub const Cio = if (platform == .nintendo_3ds or platform == .nintendo_switch) @import("platform/c_io.zig") else void;
-pub const CProcessInit = if (platform == .nintendo_3ds or platform == .nintendo_switch) @import("platform/c_process_init.zig") else void;
-pub const ThreeDS = if (platform == .nintendo_3ds) struct {
-    pub const panic = @import("root").panic;
-} else void;
+pub const Cio = if (platform == .nintendo_switch) @import("platform/c_io.zig") else void;
+pub const CProcessInit = if (platform == .nintendo_switch) @import("platform/c_process_init.zig") else void;
 
 /// Comptime-known platform and graphics backend, resolved from build options.
 /// User code can switch on these for per-platform configuration without
@@ -25,8 +22,6 @@ pub const Platform = options.@"build.Platform";
 pub const Gfx = options.@"build.Gfx";
 pub const platform: Platform = options.config.platform;
 pub const gfx: Gfx = options.config.gfx;
-pub const nintendo_3ds_heap_size: u32 = options.config.nintendo_3ds_heap_size;
-pub const nintendo_3ds_linear_heap_size: u32 = options.config.nintendo_3ds_linear_heap_size;
 
 comptime {
     if (platform != .wasm) std.testing.refAllDecls(@This());
