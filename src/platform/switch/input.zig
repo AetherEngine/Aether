@@ -4,7 +4,7 @@
 const std = @import("std");
 const core = @import("../../core/input/input.zig");
 const Util = @import("../../util/util.zig");
-const c = @import("../nintendo_c.zig").c;
+const c = @import("../nintendo_c.zig").switch_c;
 
 const HID_NPAD_STYLE_STANDARD: u32 = c.HidNpadStyleTag_NpadFullKey |
     c.HidNpadStyleTag_NpadHandheld |

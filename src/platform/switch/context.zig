@@ -96,9 +96,13 @@ fn gpu_fatal(self: ?*Self, comptime format: []const u8, args: anytype) noreturn 
     std.debug.panic(format, args);
 }
 
-fn deko_debug_callback(_: ?*anyopaque, context: [*:0]const u8, result: dk.DkResult, message: [*:0]const u8) callconv(.c) void {
+fn c_string(ptr: [*c]const u8) []const u8 {
+    return std.mem.span(@as([*:0]const u8, @ptrCast(ptr)));
+}
+
+fn deko_debug_callback(_: ?*anyopaque, context: [*c]const u8, result: dk.DkResult, message: [*c]const u8) callconv(.c) void {
     if (result == dk.ResultSuccess) return;
-    gpu_fatal(null, "deko3d {s}: {s} ({d})", .{ std.mem.span(context), std.mem.span(message), result });
+    gpu_fatal(null, "deko3d {s}: {s} ({d})", .{ c_string(context), c_string(message), result });
 }
 
 pub fn init(allocator: std.mem.Allocator) !Self {

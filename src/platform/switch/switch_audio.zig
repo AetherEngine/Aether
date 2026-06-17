@@ -7,7 +7,7 @@
 const std = @import("std");
 const Stream = @import("../../audio/stream.zig").Stream;
 const PcmFormat = @import("../../audio/stream.zig").PcmFormat;
-const c = @import("../nintendo_c.zig").c;
+const c = @import("../nintendo_c.zig").switch_c;
 
 const DEVICE_SAMPLE_RATE: u32 = 48_000;
 const DEVICE_CHANNELS: usize = 2;
