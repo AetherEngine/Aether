@@ -47,15 +47,6 @@ const SEEK_SET: c_int = c.SEEK_SET;
 const SEEK_CUR: c_int = c.SEEK_CUR;
 const SEEK_END: c_int = c.SEEK_END;
 
-const DT_FIFO: u8 = c.DT_FIFO;
-const DT_CHR: u8 = c.DT_CHR;
-const DT_DIR: u8 = c.DT_DIR;
-const DT_BLK: u8 = c.DT_BLK;
-const DT_REG: u8 = c.DT_REG;
-const DT_LNK: u8 = c.DT_LNK;
-const DT_SOCK: u8 = c.DT_SOCK;
-const DT_WHT: u8 = c.DT_WHT;
-
 var read_fd: c_int = -1;
 var write_fd: c_int = -1;
 var stderr_writer: File.Writer = undefined;
@@ -79,14 +70,10 @@ var dir_slots: [max_dynamic_dirs]DirSlot = [_]DirSlot{.{}} ** max_dynamic_dirs;
 const vtable: Io.VTable = blk: {
     var v = Io.failing.vtable.*;
     v.crashHandler = crashHandler;
-    if (options.config.platform == .nintendo_3ds or options.config.platform == .nintendo_switch) {
-        v.async = nintendo_async.async;
-        v.concurrent = nintendo_async.concurrent;
-        v.await = nintendo_async.await;
-        v.cancel = nintendo_async.cancel;
-    } else {
-        v.async = Io.noAsync;
-    }
+    v.async = nintendo_async.async;
+    v.concurrent = nintendo_async.concurrent;
+    v.await = nintendo_async.await;
+    v.cancel = nintendo_async.cancel;
     v.groupAsync = Io.noGroupAsync;
     v.recancel = recancel;
     v.swapCancelProtection = swapCancelProtection;
@@ -221,7 +208,7 @@ fn swapCancelProtection(_: ?*anyopaque, new: Io.CancelProtection) Io.CancelProte
 
 fn checkCancel(_: ?*anyopaque) Io.Cancelable!void {}
 
-const nintendo_async = if (options.config.platform == .nintendo_3ds or options.config.platform == .nintendo_switch) struct {
+const nintendo_async = struct {
     const AsyncFuture = struct {
         thread: c.Thread,
         result_len: usize,
@@ -435,7 +422,7 @@ const nintendo_async = if (options.config.platform == .nintendo_3ds or options.c
     ) void {
         await(userdata, any_future, result, result_alignment);
     }
-} else struct {};
+};
 
 fn operate(_: ?*anyopaque, operation: Io.Operation) Io.Cancelable!Io.Operation.Result {
     return switch (operation) {
@@ -897,48 +884,32 @@ fn dirRead(_: ?*anyopaque, reader: *Dir.Reader, out: []Dir.Entry) Dir.Reader.Err
         _ = c.closedir(stream);
     };
 
-    const use_direct_dirnext = options.config.platform == .nintendo_3ds or options.config.platform == .nintendo_switch;
-    if (!use_direct_dirnext) c.seekdir(stream, header.pos);
-
-    const dir_dev = if (use_direct_dirnext) c.devoptab_list[@intCast(stream.*.dirData.*.device)] else null;
-    const dirnext = if (use_direct_dirnext) dir_dev.*.dirnext_r.? else {};
-    const reent = if (use_direct_dirnext) c.__syscall_getreent() else {};
+    const dir_dev = c.devoptab_list[@intCast(stream.*.dirData.*.device)];
+    const dirnext = dir_dev.*.dirnext_r.?;
+    const reent = c.__syscall_getreent();
     var direct_name: [Dir.max_name_bytes + 1]u8 = @splat(0);
     var direct_stat: c.struct_stat = undefined;
-    if (use_direct_dirnext) {
-        var skipped: c_long = 0;
-        while (skipped < header.pos) : (skipped += 1) {
-            if (dirnext(reent, stream.*.dirData, &direct_name, &direct_stat) != 0) {
-                reader.state = .finished;
-                return 0;
-            }
+    var skipped: c_long = 0;
+    while (skipped < header.pos) : (skipped += 1) {
+        if (dirnext(reent, stream.*.dirData, &direct_name, &direct_stat) != 0) {
+            reader.state = .finished;
+            return 0;
         }
     }
 
     var count: usize = 0;
     var name_end = reader.buffer.len;
     while (count < out.len) {
-        const name, const kind, const inode = if (use_direct_dirnext) direct: {
-            @memset(&direct_name, 0);
-            direct_stat = undefined;
-            if (dirnext(reent, stream.*.dirData, &direct_name, &direct_stat) != 0) {
-                reader.state = .finished;
-                return count;
-            }
-            header.pos += 1;
-            const name = std.mem.span(@as([*:0]const u8, @ptrCast(&direct_name)));
-            break :direct .{ name, statKind(direct_stat.st_mode), @as(File.INode, @intCast(direct_stat.st_ino)) };
-        } else libc: {
-            c.__errno().* = 0;
-            const entry = c.readdir(stream) orelse {
-                if (errno() != 0) return dirReadError(errno());
-                reader.state = .finished;
-                return count;
-            };
-            header.pos = c.telldir(stream);
-            const name = std.mem.span(@as([*:0]const u8, @ptrCast(&entry.*.d_name)));
-            break :libc .{ name, direntKind(entry.*.d_type), @as(File.INode, @intCast(entry.*.d_ino)) };
-        };
+        @memset(&direct_name, 0);
+        direct_stat = undefined;
+        if (dirnext(reent, stream.*.dirData, &direct_name, &direct_stat) != 0) {
+            reader.state = .finished;
+            return count;
+        }
+        header.pos += 1;
+        const name = std.mem.span(@as([*:0]const u8, @ptrCast(&direct_name)));
+        const kind = statKind(direct_stat.st_mode);
+        const inode: File.INode = @intCast(direct_stat.st_ino);
         if (std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) continue;
         if (name.len + 1 > name_end - header_end) {
             if (count == 0) return error.Unexpected;
@@ -1362,20 +1333,6 @@ fn rootedPath(buf: *[max_path_bytes:0]u8, path: []const u8, root: []const u8) er
 
 fn rootedPathForDir(buf: *[max_path_bytes:0]u8, dir: Dir, path: []const u8) error{ NameTooLong, BadPathName }![:0]const u8 {
     return rootedPath(buf, path, dirRoot(dir));
-}
-
-fn direntKind(kind: u8) File.Kind {
-    return switch (kind) {
-        DT_BLK => .block_device,
-        DT_CHR => .character_device,
-        DT_DIR => .directory,
-        DT_FIFO => .named_pipe,
-        DT_LNK => .sym_link,
-        DT_REG => .file,
-        DT_SOCK => .unix_domain_socket,
-        DT_WHT => .whiteout,
-        else => .unknown,
-    };
 }
 
 fn statKind(mode: c.mode_t) File.Kind {
