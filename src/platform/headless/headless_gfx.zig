@@ -31,6 +31,12 @@ pub fn start_frame() bool {
 
 pub fn end_frame() void {}
 pub fn clear_depth() void {}
+pub fn has_second_screen() bool {
+    return false;
+}
+pub fn switch_second_screen() void {
+    unreachable;
+}
 pub fn set_vsync(_: bool) void {}
 
 pub fn create_mesh() anyerror!Mesh.Handle {

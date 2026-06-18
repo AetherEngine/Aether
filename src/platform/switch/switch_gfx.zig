@@ -283,6 +283,14 @@ pub fn clear_depth() void {
     dk.dkCmdBufClearDepthStencil(swapchain.command_buffer, true, 1.0, 0xFF, 0);
 }
 
+pub fn has_second_screen() bool {
+    return false;
+}
+
+pub fn switch_second_screen() void {
+    unreachable;
+}
+
 pub fn set_vsync(v: bool) void {
     vsync_enabled = v;
     if (initialized) swapchain.set_vsync(v);

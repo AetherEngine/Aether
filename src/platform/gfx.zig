@@ -80,3 +80,11 @@ pub fn set_vsync(v: bool) void {
     sync = v;
     Api.set_vsync(v);
 }
+
+pub fn has_second_screen() bool {
+    return Api.has_second_screen();
+}
+
+pub fn switch_second_screen() void {
+    Api.switch_second_screen();
+}

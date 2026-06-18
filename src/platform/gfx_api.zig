@@ -27,6 +27,8 @@ pub const Interface = struct {
     start_frame: fn () bool,
     end_frame: fn () void,
     clear_depth: fn () void,
+    has_second_screen: fn () bool,
+    switch_second_screen: fn () void,
 
     set_vsync: fn (bool) void,
 

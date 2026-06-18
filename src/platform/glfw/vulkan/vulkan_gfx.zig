@@ -680,6 +680,14 @@ pub fn clear_depth() void {
     command_buffer.clearAttachments(@ptrCast(&attachment), @ptrCast(&rect));
 }
 
+pub fn has_second_screen() bool {
+    return false;
+}
+
+pub fn switch_second_screen() void {
+    unreachable;
+}
+
 pub fn end_frame() void {
     command_buffer.endRendering();
     const post = vk.ImageMemoryBarrier2{

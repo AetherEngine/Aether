@@ -5,6 +5,9 @@ const Rendering = @import("../../rendering/rendering.zig");
 const Mesh = Rendering.mesh;
 const Texture = Rendering.Texture;
 
+const Screen = enum { primary, second };
+var active_screen: Screen = .primary;
+
 pub fn setup(_: std.mem.Allocator, _: std.Io) void {}
 
 pub fn init() anyerror!void {}
@@ -21,6 +24,8 @@ pub fn set_proj_matrix(_: *const Mat4) void {}
 pub fn set_view_matrix(_: *const Mat4) void {}
 
 pub fn start_frame() bool {
+    active_screen = .primary;
+    gfx.surface.present_bottom = false;
     return true;
 }
 
@@ -28,6 +33,17 @@ pub fn end_frame() void {
     gfx.surface.draw();
 }
 pub fn clear_depth() void {}
+
+pub fn has_second_screen() bool {
+    return true;
+}
+
+pub fn switch_second_screen() void {
+    if (active_screen == .second) return;
+    active_screen = .second;
+    gfx.surface.present_bottom = true;
+}
+
 pub fn set_vsync(v: bool) void {
     gfx.surface.sync = v;
 }
