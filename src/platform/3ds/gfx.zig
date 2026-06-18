@@ -1,4 +1,5 @@
 const std = @import("std");
+const gfx = @import("../gfx.zig");
 const Mat4 = @import("../../math/math.zig").Mat4;
 const Rendering = @import("../../rendering/rendering.zig");
 const Mesh = Rendering.mesh;
@@ -20,12 +21,16 @@ pub fn set_proj_matrix(_: *const Mat4) void {}
 pub fn set_view_matrix(_: *const Mat4) void {}
 
 pub fn start_frame() bool {
-    return false;
+    return true;
 }
 
-pub fn end_frame() void {}
+pub fn end_frame() void {
+    gfx.surface.draw();
+}
 pub fn clear_depth() void {}
-pub fn set_vsync(_: bool) void {}
+pub fn set_vsync(v: bool) void {
+    gfx.surface.sync = v;
+}
 
 pub fn create_mesh() anyerror!Mesh.Handle {
     return 0;
