@@ -4,6 +4,7 @@ const app_3ds = @import("app.zig");
 const Self = @This();
 
 const horizon = zitrus.horizon;
+const pica = zitrus.hardware.pica;
 const GraphicsServerGpu = horizon.services.GraphicsServerGpu;
 const Graphics = GraphicsServerGpu.Graphics;
 const Framebuffer = Graphics.Framebuffer;
@@ -17,6 +18,7 @@ top: ?Framebuffer = null,
 bottom: ?Framebuffer = null,
 sync: bool = true,
 applet_released: bool = false,
+present_bottom: bool = false,
 
 pub fn init(self: *Self, _: u32, _: u32, _: [:0]const u8, _: bool, sync: bool, _: bool) anyerror!void {
     const app = app_3ds.currentApplication() orelse return error.NoCurrentApplication;
@@ -36,7 +38,7 @@ pub fn init(self: *Self, _: u32, _: u32, _: [:0]const u8, _: bool, sync: bool, _
 
     var bottom = try Framebuffer.init(.{
         .screen = .bottom,
-        .double_buffer = false,
+        .double_buffer = true,
         .mode = .@"2d",
         .pixel_format = .bgr888,
     }, horizon.heap.linear_page_allocator);
@@ -89,10 +91,15 @@ pub fn deinit(self: *Self) void {
 pub fn suspend_for_applet(self: *Self) !GraphicsServerGpu.ScreenCapture {
     const app = app_3ds.currentApplication() orelse return error.NoCurrentApplication;
     const graphics = if (self.gfx) |*g| g else return error.GraphicsNotInitialized;
-    if (self.applet_released) return app.gsp.sendImportDisplayCaptureInfo();
+    if (self.applet_released) return self.current_capture();
 
-    const capture = try graphics.release(app.gsp);
-    // The zitrus helpers update this flag opposite of deinit's ownership check.
+    self.present_bottom = false;
+    wait_vblank(graphics, true) catch {};
+    const capture = try self.current_capture();
+    clear_framebuffer_updates(graphics);
+    graphics.discardInterrupts();
+    try app.gsp.sendSaveVRAMSysArea();
+    try app.gsp.sendReleaseRight();
     graphics.gsp_owned = false;
     self.applet_released = true;
     return capture;
@@ -120,10 +127,24 @@ pub fn update(_: *Self) bool {
 pub fn draw(self: *Self) void {
     const top = if (self.top) |*t| t else return;
     const graphics = if (self.gfx) |*g| g else return;
+    const present_bottom = self.present_bottom;
+    defer self.present_bottom = false;
 
     top.flush();
     top.swap(graphics, .ignore_stereo);
-    if (self.sync) wait_vblank(graphics, false) catch {};
+    if (present_bottom) {
+        if (self.bottom) |*bottom| {
+            bottom.flush();
+            bottom.swap(graphics, .ignore_stereo);
+        }
+    }
+    if (self.sync) {
+        if (present_bottom) {
+            wait_vblank(graphics, true) catch {};
+        } else {
+            wait_vblank(graphics, false) catch {};
+        }
+    }
 }
 
 pub fn get_width(_: *Self) u32 {
@@ -136,6 +157,59 @@ pub fn get_height(_: *Self) u32 {
 
 fn clear_all_buffers(fb: *Framebuffer) void {
     @memset(fb.allocation, 0);
+}
+
+fn clear_framebuffer_updates(graphics: *Graphics) void {
+    const clean = std.mem.zeroes(GraphicsServerGpu.FramebufferInfo.Header);
+    @atomicStore(GraphicsServerGpu.FramebufferInfo.Header, &graphics.shared_memory.framebuffers[graphics.thread_index][0].header, clean, .release);
+    @atomicStore(GraphicsServerGpu.FramebufferInfo.Header, &graphics.shared_memory.framebuffers[graphics.thread_index][1].header, clean, .release);
+}
+
+fn current_capture(self: *Self) !GraphicsServerGpu.ScreenCapture {
+    const top = if (self.top) |*t| t else return error.GraphicsNotInitialized;
+    const bottom = if (self.bottom) |*b| b else return error.GraphicsNotInitialized;
+
+    return .{
+        .top = capture_info(top, .ignore_stereo),
+        .bottom = capture_info(bottom, .ignore_stereo),
+    };
+}
+
+fn capture_info(fb: *Framebuffer, ignore_stereo: Framebuffer.IgnoreStereo) GraphicsServerGpu.ScreenCapture.Info {
+    const displayed = displayed_framebuffer(fb);
+    const left = framebuffer_side(fb, displayed, .left).ptr;
+    const right = if (fb.config.mode == .@"3d" and ignore_stereo == .none)
+        framebuffer_side(fb, displayed, .right).ptr
+    else
+        left;
+
+    return .{
+        .left_vaddr = @ptrCast(left),
+        .right_vaddr = @ptrCast(right),
+        .format = framebuffer_format(fb, ignore_stereo),
+        .stride = (fb.config.pixel_format.bytesPerPixel() * fb.config.screen.width()) << @intFromBool(fb.config.mode == .full),
+    };
+}
+
+fn displayed_framebuffer(fb: *const Framebuffer) u1 {
+    return fb.current_framebuffer ^ @as(u1, @intFromBool(fb.config.double_buffer));
+}
+
+fn framebuffer_side(fb: *Framebuffer, index: u1, side: Framebuffer.Side) []u8 {
+    std.debug.assert((fb.config.mode != .@"3d" and side != .right) or fb.config.mode == .@"3d");
+    const side_offset = @as(usize, @intFromEnum(side)) * (fb.framebuffer_bytes >> 1);
+    const start = (fb.framebuffer_bytes * @as(usize, index)) + side_offset;
+    const len = fb.framebuffer_bytes >> @intFromBool(fb.config.mode == .@"3d");
+    return fb.allocation[start..][0..len];
+}
+
+fn framebuffer_format(fb: *const Framebuffer, ignore_stereo: Framebuffer.IgnoreStereo) pica.DisplayController.Framebuffer.Format {
+    return .{
+        .pixel_format = fb.config.pixel_format,
+        .dma_size = fb.config.dma_size,
+        .interlacing = if (fb.config.mode == .@"3d" and ignore_stereo == .none) .enable else .none,
+        .half_rate = fb.config.screen == .top and fb.config.mode == .@"2d",
+    };
 }
 
 fn wait_vblank(graphics: ?*Graphics, comptime include_bottom: bool) !void {

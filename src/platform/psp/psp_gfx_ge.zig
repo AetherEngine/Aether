@@ -851,6 +851,14 @@ pub fn end_frame() void {
     gfx.surface.draw();
 }
 
+pub fn has_second_screen() bool {
+    return false;
+}
+
+pub fn switch_second_screen() void {
+    unreachable;
+}
+
 pub fn set_vsync(v: bool) void {
     gfx.surface.sync = v;
 }

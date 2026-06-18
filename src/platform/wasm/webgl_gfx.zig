@@ -103,6 +103,14 @@ pub fn clear_depth() void {
     aether_webgl_clear_depth();
 }
 
+pub fn has_second_screen() bool {
+    return false;
+}
+
+pub fn switch_second_screen() void {
+    unreachable;
+}
+
 pub fn set_vsync(_: bool) void {}
 
 pub fn create_mesh() anyerror!Mesh.Handle {

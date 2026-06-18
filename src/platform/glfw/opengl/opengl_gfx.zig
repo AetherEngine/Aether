@@ -156,6 +156,14 @@ pub fn clear_depth() void {
     gl.Clear(gl.DEPTH_BUFFER_BIT);
 }
 
+pub fn has_second_screen() bool {
+    return false;
+}
+
+pub fn switch_second_screen() void {
+    unreachable;
+}
+
 pub fn set_vsync(v: bool) void {
     glfw.swapInterval(@intFromBool(v));
 }
