@@ -11,6 +11,26 @@ const Engine = @import("../engine.zig").Engine;
 
 pub const GraphicsAPI = @import("options").@"build.Gfx";
 
+const AppletCallbacks = if (options.config.platform == .nintendo_3ds) struct {
+    const ScreenCapture = horizon_3ds.services.GraphicsServerGpu.ScreenCapture;
+
+    fn suspend_for_applet() anyerror!ScreenCapture {
+        const capture = if (@hasDecl(gfx.Surface, "suspend_for_applet"))
+            try gfx.surface.suspend_for_applet()
+        else blk: {
+            const app = app_3ds.currentApplication() orelse return error.NoCurrentApplication;
+            break :blk try app.gsp.sendImportDisplayCaptureInfo();
+        };
+        audio.Api.suspend_for_applet();
+        return capture;
+    }
+
+    fn resume_from_applet() void {
+        if (@hasDecl(gfx.Surface, "resume_from_applet")) gfx.surface.resume_from_applet();
+        audio.Api.resume_from_applet();
+    }
+} else struct {};
+
 /// Initializes the platform subsystems: graphics, audio, then input.
 /// Order matters: input subscribes to surface callbacks created by gfx.
 pub fn init(engine: *Engine, width: u32, height: u32, title: [:0]const u8, fullscreen: bool, sync: bool, resizable: bool) !void {
@@ -30,7 +50,7 @@ pub fn init(engine: *Engine, width: u32, height: u32, title: [:0]const u8, fulls
 
 /// Updates the platform subsystems. Must be called once per frame.
 pub fn update(engine: *Engine) void {
-    if (options.config.platform == .nintendo_3ds and !app_3ds.update(audio.Api.suspend_for_applet, audio.Api.resume_from_applet)) {
+    if (options.config.platform == .nintendo_3ds and !app_3ds.update(AppletCallbacks.suspend_for_applet, AppletCallbacks.resume_from_applet)) {
         engine.running = false;
         return;
     }

@@ -20,7 +20,7 @@ pub fn currentApplication() ?*const Application {
     return app_init;
 }
 
-pub fn update(comptime suspend_cb: fn () void, comptime resume_cb: fn () void) bool {
+pub fn update(comptime suspend_cb: anytype, comptime resume_cb: fn () void) bool {
     const app = app_init orelse return true;
 
     while (app.pollEvent() catch |err| {
@@ -30,11 +30,10 @@ pub fn update(comptime suspend_cb: fn () void, comptime resume_cb: fn () void) b
         .jump_home_rejected => {},
         .quit => return false,
         .jump_home => {
-            const capture = app.gsp.sendImportDisplayCaptureInfo() catch |err| {
-                std.log.err("3DS HOME capture failed: {s}", .{@errorName(err)});
+            const capture = suspend_cb() catch |err| {
+                std.log.err("3DS HOME suspend failed: {s}", .{@errorName(err)});
                 return true;
             };
-            suspend_cb();
             switch (app.app.jumpToHome(app.apt, .app, app.srv, capture, .none) catch |err| {
                 std.log.err("3DS HOME jump failed: {s}", .{@errorName(err)});
                 resume_cb();
@@ -46,9 +45,13 @@ pub fn update(comptime suspend_cb: fn () void, comptime resume_cb: fn () void) b
             }
         },
         .sleep => {
-            suspend_cb();
+            _ = suspend_cb() catch |err| {
+                std.log.err("3DS sleep suspend failed: {s}", .{@errorName(err)});
+                return true;
+            };
             while ((app.app.waitNotification(app.apt, .app, app.srv) catch |err| {
                 std.log.err("3DS sleep wait failed: {s}", .{@errorName(err)});
+                resume_cb();
                 return false;
             }) != .sleep_wakeup) {}
             resume_cb();
