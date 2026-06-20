@@ -22,8 +22,8 @@ pub const std_options_cwd = zitrus.horizon.Io.Dir.cwd;
 pub fn main(init: Application) !void {
     debug.installExceptionHandler();
 
-    aether.N3ds.setApplication(&init);
-    defer aether.N3ds.clearApplication(&init);
+    aether.N3ds.setApplication(init);
+    defer aether.N3ds.clearApplication();
 
     try zitrus.horizon.Io.global.initStorage(init.srv, .fs, 0);
     defer zitrus.horizon.Io.global.deinitFilesystem();
