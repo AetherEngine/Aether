@@ -108,8 +108,8 @@ pub fn init() anyerror!void {
     const shm_slice = shm_ptr[0..SHM_SIZE];
 
     const init_handles = send_initialize(snd.?) catch |err| return init_failed("initialize CSND", err);
-    snd_mutex = init_handles[0];
-    snd_shm_block = @bitCast(init_handles[1]);
+    snd_mutex = @bitCast(init_handles.mutex);
+    snd_shm_block = init_handles.shared_memory;
     errdefer {
         snd_shm_block.close();
         snd_shm_block = .none;
@@ -489,16 +489,16 @@ fn raw_command(id: CommandId, payload: anytype) CsndCommand {
     return cmd_value;
 }
 
-fn send_initialize(sound: ChannelSound) ![2]horizon.Object {
+fn send_initialize(sound: ChannelSound) !ChannelSound.Handles {
     const data = horizon.tls.get();
     return switch ((try data.ipc.sendRequest(sound.session, ChannelSound.command.Initialize, .{
-        .shared_block_size = SHM_SIZE,
-        .offset0 = STATUS_DSP_OFFSET,
-        .offset1 = STATUS_CHANNEL_OFFSET,
-        .offset2 = STATUS_CAPTURE_OFFSET,
-        .offset3 = STATUS_EXTRA_OFFSET,
+        .shared_memory_size = SHM_SIZE,
+        .dsp_state_offset = STATUS_DSP_OFFSET,
+        .channel_state_offset = STATUS_CHANNEL_OFFSET,
+        .capture_unit_state_offset = STATUS_CAPTURE_OFFSET,
+        .direct_sound_state_offset = STATUS_EXTRA_OFFSET,
     }, .{})).cases()) {
-        .success => |s| s.value.mutex_shm,
+        .success => |s| s.value.handles.wrapped,
         .failure => |code| horizon.unexpectedResult(code),
     };
 }

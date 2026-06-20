@@ -8,6 +8,7 @@ pub const Exception = horizon.ErrorDisplayManager.Exception;
 pub const ExceptionHandler = *const fn (*const Exception.Info, *const Exception.Registers) callconv(.c) noreturn;
 
 threadlocal var exception_stage: usize = 0;
+threadlocal var panic_stage: usize = 0;
 
 pub fn installExceptionHandler(entry: ExceptionHandler) void {
     horizon.tls.get().exception = .{
@@ -22,6 +23,40 @@ pub fn installExceptionHandler(entry: ExceptionHandler) void {
 
 pub fn installDefaultExceptionHandler() void {
     installExceptionHandler(&handleException);
+}
+
+pub fn handlePanic(msg: []const u8, first_trace_addr: ?usize) noreturn {
+    @branchHint(.cold);
+
+    defer hangForever();
+
+    const pc = first_trace_addr orelse @returnAddress();
+
+    switch (panic_stage) {
+        0 => {
+            panic_stage = 1;
+
+            var trace_buffer: [512]u8 = undefined;
+            var trace_writer: std.Io.Writer = .fixed(&trace_buffer);
+            writePanicReport(&trace_writer, msg, pc) catch {};
+            zitrus.horizon.debug.print("{s}\n", .{trace_writer.buffered()});
+
+            var errdisp = horizon.ErrorDisplayManager.open() catch {
+                zitrus.horizon.debug.print("panic: could not open err:f connection\n", .{});
+                hangForever();
+            };
+            defer errdisp.close();
+
+            errdisp.sendSetUserString(trace_writer.buffered()) catch zitrus.horizon.debug.print("panic: 'err:f' could not set user string", .{});
+            errdisp.sendThrow(panicError(msg, pc)) catch zitrus.horizon.debug.print("panic: 'err:f' could not throw with message '{s}'", .{msg});
+        },
+        1 => {
+            panic_stage = 2;
+            zitrus.horizon.debug.print("panic: recursive panic while reporting\n", .{});
+            hangForever();
+        },
+        else => {},
+    }
 }
 
 pub fn handleSegfault(addr: ?usize, name: []const u8, opt_ctx: ?std.debug.CpuContextPtr) noreturn {
@@ -110,6 +145,18 @@ fn exceptionName(info: Exception.Info) []const u8 {
     };
 }
 
+fn writePanicReport(writer: *std.Io.Writer, msg: []const u8, pc: usize) std.Io.Writer.Error!void {
+    try writer.print(
+        \\Aether panic
+        \\PC=0x{x:0>8}
+        \\{s}
+        \\
+    , .{
+        pc,
+        msg,
+    });
+}
+
 fn writeExceptionReport(
     writer: *std.Io.Writer,
     name: []const u8,
@@ -187,6 +234,22 @@ fn exceptionError(info: *const Exception.Info, registers: *const Exception.Regis
     };
 }
 
+fn panicError(msg: []const u8, pc: usize) horizon.ErrorDisplayManager.FatalError {
+    return .{
+        .type = .failure,
+        .revision_high = 0x00,
+        .revision_low = 0x00,
+        .result_code = .failure,
+        .pc_address = @intCast(pc),
+        .process_id = @intFromEnum(horizon.getProcessId(.current).value),
+        .title_id = 0x0,
+        .applet_title_id = 0x0,
+        .data = .{ .failure = .{
+            .message = panicDisplayMessage(msg, pc),
+        } },
+    };
+}
+
 fn failureError(name: []const u8, addr: ?usize, opt_ctx: ?std.debug.CpuContextPtr) horizon.ErrorDisplayManager.FatalError {
     return .{
         .type = .failure,
@@ -201,6 +264,18 @@ fn failureError(name: []const u8, addr: ?usize, opt_ctx: ?std.debug.CpuContextPt
             .message = errorDisplayMessage(name, addr, opt_ctx),
         } },
     };
+}
+
+fn panicDisplayMessage(msg: []const u8, pc: usize) [0x60]u8 {
+    var buffer: [0x60]u8 = @splat(0);
+    var writer: std.Io.Writer = .fixed(&buffer);
+
+    writer.print("panic PC=0x{x:0>8} {s}", .{
+        pc,
+        shortMessage(msg, 0x60 - "panic PC=0x00000000 ".len - 1),
+    }) catch {};
+
+    return buffer;
 }
 
 fn errorDisplayMessage(name: []const u8, addr: ?usize, opt_ctx: ?std.debug.CpuContextPtr) [0x60]u8 {
@@ -224,4 +299,12 @@ fn errorDisplayMessage(name: []const u8, addr: ?usize, opt_ctx: ?std.debug.CpuCo
 
 fn shortName(name: []const u8) []const u8 {
     return if (name.len > 18) name[0..18] else name;
+}
+
+fn shortMessage(msg: []const u8, comptime max_len: usize) []const u8 {
+    return if (msg.len > max_len) msg[0..max_len] else msg;
+}
+
+fn hangForever() noreturn {
+    while (true) {}
 }

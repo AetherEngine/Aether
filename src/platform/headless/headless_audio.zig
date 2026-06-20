@@ -12,6 +12,8 @@ pub fn setup(alloc: std.mem.Allocator, io: std.Io) void {
 pub fn init() anyerror!void {}
 pub fn deinit() void {}
 pub fn update() void {}
+pub fn suspend_for_applet() void {}
+pub fn resume_from_applet() void {}
 
 pub fn max_voices() u32 {
     return 32;

@@ -5,7 +5,8 @@ const Util = @import("../../util/util.zig");
 const Rendering = @import("../../rendering/rendering.zig");
 const Mesh = Rendering.mesh;
 const Texture = Rendering.Texture;
-const shaders = @import("aether_shaders");
+const basic_vert align(@alignOf(u32)) = @embedFile("aether_basic_vert").*;
+const basic_frag align(@alignOf(u32)) = @embedFile("aether_basic_frag").*;
 
 const MAX_MESHES = 8192;
 
@@ -45,7 +46,7 @@ pub fn setup(alloc: std.mem.Allocator, io: std.Io) void {
 }
 
 pub fn init() anyerror!void {
-    if (!aether_webgl_init(&shaders.basic_vert, shaders.basic_vert.len, &shaders.basic_frag, shaders.basic_frag.len)) {
+    if (!aether_webgl_init(&basic_vert, basic_vert.len, &basic_frag, basic_frag.len)) {
         return error.WebGlInitFailed;
     }
 }

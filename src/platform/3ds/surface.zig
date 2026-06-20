@@ -4,148 +4,121 @@ const app_3ds = @import("app.zig");
 const Self = @This();
 
 const horizon = zitrus.horizon;
-const pica = zitrus.hardware.pica;
+const mango = zitrus.mango;
 const GraphicsServerGpu = horizon.services.GraphicsServerGpu;
-const Graphics = GraphicsServerGpu.Graphics;
-const Framebuffer = Graphics.Framebuffer;
 
 const VIRTUAL_WIDTH = 400;
 const VIRTUAL_HEIGHT = 240;
+const SWAP_IMAGE_COUNT = 2;
+const COLOR_FORMAT = mango.Format.a8b8g8r8_unorm;
+const COLOR_BYTES_PER_PIXEL = 4;
+const ACQUIRE_TIMEOUT_NS = 2 * std.time.ns_per_s;
+
+pub const Screen = enum {
+    top,
+    bottom,
+};
+
+const SwapchainState = struct {
+    surface: mango.Surface,
+    swapchain: mango.Swapchain = .null,
+    memories: [SWAP_IMAGE_COUNT]mango.DeviceMemory = @splat(.null),
+    memory_infos: [SWAP_IMAGE_COUNT]mango.SwapchainCreateInfo.ImageMemoryInfo = undefined,
+    images: [SWAP_IMAGE_COUNT]mango.Image = @splat(.null),
+    views: [SWAP_IMAGE_COUNT]mango.ImageView = @splat(.null),
+    image_index: u8 = 0,
+    image_count: u8 = 0,
+    acquired: bool = false,
+
+    fn dimensions(state: SwapchainState) struct { width: u16, height: u16 } {
+        return switch (state.surface) {
+            .top_240x400 => .{ .width = 240, .height = 400 },
+            .bottom_240x320 => .{ .width = 240, .height = 320 },
+            .top_240x800 => .{ .width = 240, .height = 800 },
+            else => unreachable,
+        };
+    }
+};
 
 alloc: std.mem.Allocator,
-gfx: ?Graphics = null,
-top: ?Framebuffer = null,
-bottom: ?Framebuffer = null,
+device: mango.Device = .null,
+queues: std.EnumArray(mango.QueueFamily, mango.Queue) = .initFill(.null),
+top: SwapchainState = .{ .surface = .top_240x800 },
+bottom: SwapchainState = .{ .surface = .bottom_240x320 },
 sync: bool = true,
 applet_released: bool = false,
-present_bottom: bool = false,
+last_capture: ?GraphicsServerGpu.ScreenCapture = null,
 
 pub fn init(self: *Self, _: u32, _: u32, _: [:0]const u8, _: bool, sync: bool, _: bool) anyerror!void {
     const app = app_3ds.currentApplication() orelse return error.NoCurrentApplication;
 
     self.sync = sync;
+    self.device = try mango.createHorizonBackedDevice(.{
+        .gsp = app.gsp,
+        .arbiter = app.base.arbiter,
+    }, self.alloc);
+    errdefer {
+        self.device.destroy();
+        self.device = .null;
+    }
 
-    var graphics = try Graphics.init(app.gsp);
-    errdefer graphics.deinit(app.gsp);
+    for (std.enums.values(mango.QueueFamily)) |family| {
+        self.queues.set(family, self.device.getQueue(family));
+    }
 
-    var top = try Framebuffer.init(.{
-        .screen = .top,
-        .double_buffer = true,
-        .mode = .full,
-        .pixel_format = .bgr888,
-    }, horizon.heap.linear_page_allocator);
-    errdefer top.deinit(horizon.heap.linear_page_allocator);
+    try self.init_swapchain(&self.top);
+    errdefer self.deinit_swapchain(&self.top);
 
-    var bottom = try Framebuffer.init(.{
-        .screen = .bottom,
-        .double_buffer = true,
-        .mode = .@"2d",
-        .pixel_format = .bgr888,
-    }, horizon.heap.linear_page_allocator);
-    errdefer bottom.deinit(horizon.heap.linear_page_allocator);
-
-    clear_all_buffers(&top);
-    clear_all_buffers(&bottom);
-    top.flush();
-    bottom.flush();
-
-    top.swap(&graphics, .ignore_stereo);
-    bottom.swap(&graphics, .ignore_stereo);
-    top.swap(&graphics, .ignore_stereo);
-    bottom.swap(&graphics, .ignore_stereo);
-    if (self.sync) wait_vblank(&graphics, true) catch {};
-    app.gsp.sendSetLcdForceBlack(false) catch {};
-
-    self.gfx = graphics;
-    self.top = top;
-    self.bottom = bottom;
+    try self.init_swapchain(&self.bottom);
+    errdefer self.deinit_swapchain(&self.bottom);
 }
 
 pub fn deinit(self: *Self) void {
-    const app = app_3ds.currentApplication();
-    const must_close = if (app) |a| a.app.flags.must_close else true;
+    if (self.device == .null) return;
 
-    if (app) |a| {
-        if (self.applet_released and !must_close) self.resume_from_applet();
-        if (!must_close) {
-            if (self.gfx) |*graphics| wait_vblank(graphics, true) catch {};
-            a.gsp.sendSetLcdForceBlack(true) catch {};
-        }
-    }
+    const closing = self.is_system_closing();
+    if (self.applet_released and !closing) self.resume_from_applet();
+
+    self.device.waitIdle();
+    self.deinit_swapchain(&self.bottom);
+    self.deinit_swapchain(&self.top);
+    self.device.destroy();
+    self.device = .null;
     self.applet_released = false;
+    self.last_capture = null;
+}
 
-    if (self.bottom) |*bottom| {
-        bottom.deinit(horizon.heap.linear_page_allocator);
-        self.bottom = null;
-    }
-    if (self.top) |*top| {
-        top.deinit(horizon.heap.linear_page_allocator);
-        self.top = null;
-    }
-    if (self.gfx) |*graphics| {
-        if (app) |a| graphics.deinit(a.gsp);
-        self.gfx = null;
-    }
+pub fn is_system_closing(_: *const Self) bool {
+    const app = app_3ds.currentApplication() orelse return true;
+    return app.app.flags.must_close;
 }
 
 pub fn suspend_for_applet(self: *Self) !GraphicsServerGpu.ScreenCapture {
-    const app = app_3ds.currentApplication() orelse return error.NoCurrentApplication;
-    const graphics = if (self.gfx) |*g| g else return error.GraphicsNotInitialized;
-    if (self.applet_released) return self.current_capture();
+    if (self.device == .null) return error.GraphicsNotInitialized;
+    if (self.applet_released) return self.last_capture orelse error.GraphicsNotInitialized;
 
-    self.present_bottom = false;
-    wait_vblank(graphics, true) catch {};
-    const capture = try self.current_capture();
-    clear_framebuffer_updates(graphics);
-    graphics.discardInterrupts();
-    try app.gsp.sendSaveVRAMSysArea();
-    try app.gsp.sendReleaseRight();
-    graphics.gsp_owned = false;
+    const capture = try self.device.release();
+    self.last_capture = capture;
     self.applet_released = true;
     return capture;
 }
 
 pub fn resume_from_applet(self: *Self) void {
-    if (!self.applet_released) return;
+    if (!self.applet_released or self.device == .null) return;
 
-    const app = app_3ds.currentApplication() orelse return;
-    const graphics = if (self.gfx) |*g| g else return;
-    graphics.reacquire(app.gsp) catch |err| {
-        std.log.err("3DS graphics reacquire failed: {s}", .{@errorName(err)});
+    self.device.reacquire() catch |err| {
+        std.log.err("3DS Mango device reacquire failed: {s}", .{@errorName(err)});
         return;
     };
-    // Keep deinit's ownership check accurate after returning from the applet.
-    graphics.gsp_owned = true;
     self.applet_released = false;
-    app.gsp.sendSetLcdForceBlack(false) catch {};
+    self.last_capture = null;
 }
 
 pub fn update(_: *Self) bool {
     return true;
 }
 
-pub fn draw(self: *Self) void {
-    const top = if (self.top) |*t| t else return;
-    const graphics = if (self.gfx) |*g| g else return;
-    const present_bottom = self.present_bottom;
-    defer self.present_bottom = false;
-
-    top.flush();
-    top.swap(graphics, .ignore_stereo);
-    if (present_bottom) {
-        if (self.bottom) |*bottom| {
-            bottom.flush();
-            bottom.swap(graphics, .ignore_stereo);
-        }
-    }
-    if (self.sync) {
-        if (present_bottom) {
-            wait_vblank(graphics, true) catch {};
-        } else {
-            wait_vblank(graphics, false) catch {};
-        }
-    }
-}
+pub fn draw(_: *Self) void {}
 
 pub fn get_width(_: *Self) u32 {
     return VIRTUAL_WIDTH;
@@ -155,70 +128,132 @@ pub fn get_height(_: *Self) u32 {
     return VIRTUAL_HEIGHT;
 }
 
-fn clear_all_buffers(fb: *Framebuffer) void {
-    @memset(fb.allocation, 0);
-}
-
-fn clear_framebuffer_updates(graphics: *Graphics) void {
-    const clean = std.mem.zeroes(GraphicsServerGpu.FramebufferInfo.Header);
-    @atomicStore(GraphicsServerGpu.FramebufferInfo.Header, &graphics.shared_memory.framebuffers[graphics.thread_index][0].header, clean, .release);
-    @atomicStore(GraphicsServerGpu.FramebufferInfo.Header, &graphics.shared_memory.framebuffers[graphics.thread_index][1].header, clean, .release);
-}
-
-fn current_capture(self: *Self) !GraphicsServerGpu.ScreenCapture {
-    const top = if (self.top) |*t| t else return error.GraphicsNotInitialized;
-    const bottom = if (self.bottom) |*b| b else return error.GraphicsNotInitialized;
-
-    return .{
-        .top = capture_info(top, .ignore_stereo),
-        .bottom = capture_info(bottom, .ignore_stereo),
+pub fn acquire(self: *Self, which: Screen) !void {
+    const chain = self.screen(which);
+    if (chain.acquired) return;
+    chain.image_index = self.device.acquireNextImage(chain.swapchain, ACQUIRE_TIMEOUT_NS) catch |err| {
+        std.log.err("3DS Mango swapchain acquire stalled: screen={}", .{which});
+        return err;
     };
+    chain.acquired = true;
 }
 
-fn capture_info(fb: *Framebuffer, ignore_stereo: Framebuffer.IgnoreStereo) GraphicsServerGpu.ScreenCapture.Info {
-    const displayed = displayed_framebuffer(fb);
-    const left = framebuffer_side(fb, displayed, .left).ptr;
-    const right = if (fb.config.mode == .@"3d" and ignore_stereo == .none)
-        framebuffer_side(fb, displayed, .right).ptr
+pub fn current_image(self: *Self, which: Screen) mango.Image {
+    const chain = self.screen(which);
+    std.debug.assert(chain.acquired);
+    return chain.images[chain.image_index];
+}
+
+pub fn current_view(self: *Self, which: Screen) mango.ImageView {
+    const chain = self.screen(which);
+    std.debug.assert(chain.acquired);
+    return chain.views[chain.image_index];
+}
+
+pub fn present(self: *Self, which: Screen, wait_value: u64, wait_semaphore: mango.Semaphore) !void {
+    const chain = self.screen(which);
+    if (!chain.acquired) return;
+
+    const wait_op: ?mango.SemaphoreQueueOperation = if (wait_value == 0)
+        null
     else
-        left;
+        .init(wait_semaphore, wait_value);
 
-    return .{
-        .left_vaddr = @ptrCast(left),
-        .right_vaddr = @ptrCast(right),
-        .format = framebuffer_format(fb, ignore_stereo),
-        .stride = (fb.config.pixel_format.bytesPerPixel() * fb.config.screen.width()) << @intFromBool(fb.config.mode == .full),
+    try self.queues.get(.present).present(.{
+        .wait_semaphore = if (wait_op) |*op| op else null,
+        .swapchain = chain.swapchain,
+        .image_index = chain.image_index,
+        .flags = .{ .ignore_stereoscopic = true },
+    });
+    chain.acquired = false;
+}
+
+fn screen(self: *Self, which: Screen) *SwapchainState {
+    return switch (which) {
+        .top => &self.top,
+        .bottom => &self.bottom,
     };
 }
 
-fn displayed_framebuffer(fb: *const Framebuffer) u1 {
-    return fb.current_framebuffer ^ @as(u1, @intFromBool(fb.config.double_buffer));
-}
+fn init_swapchain(self: *Self, chain: *SwapchainState) !void {
+    const dims = chain.dimensions();
+    const bytes_per_image = @as(u32, dims.width) * @as(u32, dims.height) * COLOR_BYTES_PER_PIXEL;
 
-fn framebuffer_side(fb: *Framebuffer, index: u1, side: Framebuffer.Side) []u8 {
-    std.debug.assert((fb.config.mode != .@"3d" and side != .right) or fb.config.mode == .@"3d");
-    const side_offset = @as(usize, @intFromEnum(side)) * (fb.framebuffer_bytes >> 1);
-    const start = (fb.framebuffer_bytes * @as(usize, index)) + side_offset;
-    const len = fb.framebuffer_bytes >> @intFromBool(fb.config.mode == .@"3d");
-    return fb.allocation[start..][0..len];
-}
+    for (0..SWAP_IMAGE_COUNT) |i| {
+        const memory = try self.device.allocateMemory(.{
+            .allocation_size = .size(bytes_per_image),
+            .memory_type = .fcram_cached,
+        }, null);
+        errdefer self.device.freeMemory(memory, null);
 
-fn framebuffer_format(fb: *const Framebuffer, ignore_stereo: Framebuffer.IgnoreStereo) pica.DisplayController.Framebuffer.Format {
-    return .{
-        .pixel_format = fb.config.pixel_format,
-        .dma_size = fb.config.dma_size,
-        .interlacing = if (fb.config.mode == .@"3d" and ignore_stereo == .none) .enable else .none,
-        .half_rate = fb.config.screen == .top and fb.config.mode == .@"2d",
-    };
-}
-
-fn wait_vblank(graphics: ?*Graphics, comptime include_bottom: bool) !void {
-    const gfx = graphics orelse return;
-    gfx.discardInterrupts();
-    var bottom = !include_bottom;
-    while (true) {
-        const interrupts = try gfx.waitInterrupts();
-        if (interrupts.contains(.vblank_bottom)) bottom = true;
-        if (bottom and interrupts.contains(.vblank_top)) return;
+        chain.memories[i] = memory;
+        chain.memory_infos[i] = .{
+            .memory = memory,
+            .memory_offset = .size(0),
+        };
     }
+    errdefer for (chain.memories) |memory| {
+        if (memory != .null) self.device.freeMemory(memory, null);
+    };
+
+    chain.swapchain = try self.device.createSwapchain(.{
+        .surface = chain.surface,
+        .present_mode = if (self.sync) .fifo else .mailbox,
+        .image_usage = .{
+            .transfer_dst = true,
+            .color_attachment = true,
+        },
+        .image_format = COLOR_FORMAT,
+        .image_array_layers = .@"1",
+        .image_count = SWAP_IMAGE_COUNT,
+        .image_memory_info = &chain.memory_infos,
+    }, null);
+    errdefer {
+        self.device.destroySwapchain(chain.swapchain, null);
+        chain.swapchain = .null;
+    }
+
+    chain.image_count = try self.device.getSwapchainImages(chain.swapchain, &chain.images);
+    errdefer for (&chain.views) |*view| {
+        if (view.* != .null) {
+            self.device.destroyImageView(view.*, null);
+            view.* = .null;
+        }
+    };
+
+    for (chain.images[0..chain.image_count], 0..) |image, i| {
+        chain.views[i] = try self.device.createImageView(.{
+            .type = .@"2d",
+            .format = COLOR_FORMAT,
+            .image = image,
+            .subresource_range = .full,
+        }, null);
+    }
+}
+
+fn deinit_swapchain(self: *Self, chain: *SwapchainState) void {
+    for (&chain.views) |*view| {
+        if (view.* != .null) {
+            self.device.destroyImageView(view.*, null);
+            view.* = .null;
+        }
+    }
+
+    if (chain.swapchain != .null) {
+        self.device.destroySwapchain(chain.swapchain, null);
+        chain.swapchain = .null;
+    }
+
+    for (&chain.memories) |*memory| {
+        if (memory.* != .null) {
+            self.device.freeMemory(memory.*, null);
+            memory.* = .null;
+        }
+    }
+
+    chain.images = @splat(.null);
+    chain.views = @splat(.null);
+    chain.image_count = 0;
+    chain.image_index = 0;
+    chain.acquired = false;
 }

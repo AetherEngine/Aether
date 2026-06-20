@@ -630,21 +630,18 @@ fn addUamStep(b: *std.Build, uam: []const u8, stage: []const u8, comptime output
 fn addInternalShaderModule(owner: *std.Build, b: *std.Build, mod: *std.Build.Module, config: Config) void {
     const stages = internalShaderStages(owner, b, config) orelse return;
 
-    const files = b.addWriteFiles();
-    _ = files.addCopyFile(stages.vert, "basic.vert");
-    _ = files.addCopyFile(stages.frag, "basic.frag");
-    const root = files.add("aether_shaders.zig",
-        \\pub const basic_vert align(@alignOf(u32)) = @embedFile("basic.vert").*;
-        \\pub const basic_frag align(@alignOf(u32)) = @embedFile("basic.frag").*;
-        \\
-    );
-
-    mod.addImport("aether_shaders", b.createModule(.{
-        .root_source_file = root,
-    }));
+    mod.addAnonymousImport("aether_basic_vert", .{ .root_source_file = stages.vert });
+    mod.addAnonymousImport("aether_basic_frag", .{ .root_source_file = stages.frag });
 }
 
 fn internalShaderStages(owner: *std.Build, b: *std.Build, config: Config) ?ShaderStagePaths {
+    if (config.platform == .nintendo_3ds and config.gfx == .default) {
+        return .{
+            .vert = addZpshStep(owner, b, "basic.vert.zpsh", owner.path("src/platform/3ds/shaders/basic.zpsm")),
+            .frag = b.addWriteFiles().add("basic.frag.3ds.stub", "3ds fixed-function fragment stage\n"),
+        };
+    }
+
     if (config.platform == .nintendo_switch and config.gfx == .default) {
         const uam = b.pathJoin(&.{ devkitProPath(b), "tools/bin/uam" });
         const slangc = requireSlangcPath(owner);
@@ -743,6 +740,15 @@ fn internalShaderStages(owner: *std.Build, b: *std.Build, config: Config) ?Shade
         },
         .default, .headless => return null,
     }
+}
+
+fn addZpshStep(owner: *std.Build, b: *std.Build, output_name: []const u8, input: std.Build.LazyPath) std.Build.LazyPath {
+    const zitrus_dep = owner.dependency("zitrus", .{});
+    const run = b.addRunArtifact(zitrus_dep.artifact("zitrus"));
+    run.addArgs(&.{ "pica", "asm", "-o" });
+    const output = run.addOutputFileArg(output_name);
+    run.addFileArg(input);
+    return output;
 }
 
 pub const ExportOptions = struct {
