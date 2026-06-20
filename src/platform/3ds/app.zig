@@ -6,14 +6,16 @@ const Application = horizon.Init.Application;
 
 pub const Debug = @import("debug_impl.zig");
 
+var app_init_storage: Application = undefined;
 var app_init: ?*const Application = null;
 
-pub fn setApplication(app: *const Application) void {
-    app_init = app;
+pub fn setApplication(app: Application) void {
+    app_init_storage = app;
+    app_init = &app_init_storage;
 }
 
-pub fn clearApplication(app: *const Application) void {
-    if (app_init == app) app_init = null;
+pub fn clearApplication() void {
+    app_init = null;
 }
 
 pub fn currentApplication() ?*const Application {

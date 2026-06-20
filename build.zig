@@ -1133,7 +1133,17 @@ fn pspEbootPipeline(b: *std.Build, exe: *std.Build.Step.Compile, psp_dep: *std.B
 fn nintendo3dsPipeline(owner: *std.Build, b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOptions) void {
     const zitrus_dep = owner.dependency("zitrus", .{});
 
-    b.installArtifact(exe);
+    const elf_name = b.fmt("{s}.elf", .{exe.name});
+    const install_elf = if (opts.output_dir) |dir|
+        b.addInstallArtifact(exe, .{
+            .dest_dir = .{ .override = .{ .custom = b.fmt("bin/{s}", .{dir}) } },
+            .dest_sub_path = elf_name,
+        })
+    else
+        b.addInstallArtifact(exe, .{
+            .dest_sub_path = elf_name,
+        });
+    b.getInstallStep().dependOn(&install_elf.step);
 
     const title = if (opts.title.len > 0) opts.title else exe.name;
     const publisher = if (opts.nintendo_3ds_publisher.len > 0) opts.nintendo_3ds_publisher else "Aether";
