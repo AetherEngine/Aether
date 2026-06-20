@@ -4,8 +4,6 @@ const zitrus = @import("zitrus");
 const horizon = zitrus.horizon;
 const Application = horizon.Init.Application;
 
-pub const Debug = @import("debug_impl.zig");
-
 var app_init_storage: Application = undefined;
 var app_init: ?*const Application = null;
 
