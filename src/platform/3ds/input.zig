@@ -11,7 +11,9 @@ const IrRst = @import("irrst.zig");
 const SoftwareKeyboard = horizon.services.Applet.Application.SoftwareKeyboard;
 
 const IR_UPDATE_MS = 10;
+const IR_USE_RAW_C_STICK = false;
 const STICK_MAX: f32 = 0x9C;
+const STICK_DEADZONE: f32 = 0.15;
 const MAX_OSK_TEXT_UNITS = 1024;
 const MAX_OSK_UTF8_BYTES = MAX_OSK_TEXT_UNITS * 4;
 const DEFAULT_OSK_BYTES = 256;
@@ -133,7 +135,7 @@ fn init_ir() void {
 
     const service = IrRst.open(app.srv) catch return;
 
-    service.sendInitialize(IR_UPDATE_MS, true) catch {
+    service.sendInitialize(IR_UPDATE_MS, IR_USE_RAW_C_STICK) catch {
         service.close();
         return;
     };
@@ -172,8 +174,8 @@ fn pump_buttons(entry: Hid.Pad.Entry) void {
 }
 
 fn pump_left_stick(entry: Hid.Pad.Entry) void {
-    var x = normalize_stick(entry.circle.x);
-    var y = -normalize_stick(entry.circle.y);
+    var x = normalize_stick(entry.circle.y);
+    var y = -normalize_stick(entry.circle.x);
 
     if (x == 0.0) {
         if (entry.current.circle_pad_right) x = 1.0;
@@ -198,8 +200,8 @@ fn pump_ir() void {
     };
 
     const entry = input.pollPad();
-    var x = normalize_stick(entry.c_stick.x);
-    var y = -normalize_stick(entry.c_stick.y);
+    var x = normalize_stick(entry.c_stick.y);
+    var y = -normalize_stick(entry.c_stick.x);
 
     if (x == 0.0) {
         if (entry.current.c_stick_right) x = 1.0;
@@ -262,7 +264,8 @@ fn deliver_axis(axis: core.Axis, value: f32) void {
 
 fn normalize_stick(raw: i16) f32 {
     const value = @as(f32, @floatFromInt(raw)) / STICK_MAX;
-    return std.math.clamp(value, -1.0, 1.0);
+    const clamped = std.math.clamp(value, -1.0, 1.0);
+    return if (@abs(clamped) < STICK_DEADZONE) 0.0 else clamped;
 }
 
 fn copy_current_text_for_osk(dst: []u8, options: core.TextInputOptions) []const u8 {

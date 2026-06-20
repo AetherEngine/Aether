@@ -29,7 +29,7 @@ pub const CategoryTracker = struct {
 
     fn tracked_alloc(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
         const self: *CategoryTracker = @ptrCast(@alignCast(ctx));
-        if (self.used + len > self.budget) return null;
+        if (len > self.budget -| self.used) return null;
         const result = self.inner.vtable.alloc(self.inner.ptr, len, alignment, ret_addr) orelse return null;
         self.used += len;
         return result;
@@ -47,6 +47,8 @@ pub const CategoryTracker = struct {
                 ret_addr,
             });
             logger.flush();
+            self.used = 0;
+            return;
         }
         self.used -= buf.len;
     }
@@ -55,7 +57,7 @@ pub const CategoryTracker = struct {
         const self: *CategoryTracker = @ptrCast(@alignCast(ctx));
         if (new_len > buf.len) {
             const grow = new_len - buf.len;
-            if (self.used + grow > self.budget) return false;
+            if (grow > self.budget -| self.used) return false;
         }
         const ok = self.inner.vtable.resize(self.inner.ptr, buf, alignment, new_len, ret_addr);
         if (ok) {
@@ -70,6 +72,10 @@ pub const CategoryTracker = struct {
 
     fn tracked_remap(ctx: *anyopaque, buf: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
         const self: *CategoryTracker = @ptrCast(@alignCast(ctx));
+        if (new_len > buf.len) {
+            const grow = new_len - buf.len;
+            if (grow > self.budget -| self.used) return null;
+        }
         const result = self.inner.vtable.remap(self.inner.ptr, buf, alignment, new_len, ret_addr);
         if (result != null) {
             if (new_len >= buf.len) {
@@ -233,7 +239,7 @@ pub const Engine = struct {
     }
 
     pub fn pool_remaining(self: *const Engine, p: Pool) usize {
-        return self.pool_budget(p) - self.pool_used(p);
+        return self.pool_budget(p) -| self.pool_used(p);
     }
 
     pub fn set_budget(self: *Engine, p: Pool, new_budget: usize) void {
@@ -258,15 +264,25 @@ pub const Engine = struct {
             const p: Pool = @enumFromInt(f.value);
             const used = self.pool_used(p);
             const budget = self.pool_budget(p);
-            const remaining = self.pool_remaining(p);
-            Util.engine_logger.info("  {s}: {}/{} bytes ({}/{} KiB, {} remaining)", .{
-                f.name,
-                used,
-                budget,
-                used / 1024,
-                budget / 1024,
-                remaining,
-            });
+            if (used <= budget) {
+                Util.engine_logger.info("  {s}: {}/{} bytes ({}/{} KiB, {} remaining)", .{
+                    f.name,
+                    used,
+                    budget,
+                    used / 1024,
+                    budget / 1024,
+                    budget - used,
+                });
+            } else {
+                Util.engine_logger.warn("  {s}: {}/{} bytes ({}/{} KiB, {} over budget)", .{
+                    f.name,
+                    used,
+                    budget,
+                    used / 1024,
+                    budget / 1024,
+                    used - budget,
+                });
+            }
         }
         Util.engine_logger.info("  total: {}/{} bytes ({}/{} KiB)", .{
             self.total_used(),

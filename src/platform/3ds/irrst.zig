@@ -74,7 +74,7 @@ pub const Input = struct {
 
     pub fn pollPad(input: Input) Pad.Entry {
         const pad: *const Pad = &input.shm_memory_data.pad;
-        const index = @atomicLoad(u32, &pad.index, .acquire);
+        const index = @min(@atomicLoad(u32, &pad.index, .acquire), pad.entries.len - 1);
         return pad.entries[index];
     }
 };

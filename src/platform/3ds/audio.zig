@@ -38,6 +38,7 @@ const STATUS_EXTRA_OFFSET: u32 = STATUS_CAPTURE_OFFSET + 8 * 2;
 const SHM_SIZE: usize = std.mem.alignForward(usize, STATUS_EXTRA_OFFSET + 0x3c, horizon.heap.page_size);
 const COMMAND_OFFSET: u32 = 0;
 const COMMAND_NONE: i16 = -1;
+const COMMAND_COMPLETION_POLL_COUNT: usize = 2048;
 
 const ChannelId = enum(u8) {
     _,
@@ -80,6 +81,7 @@ var audio_thread: ?Thread = null;
 var running: std.atomic.Value(u8) = std.atomic.Value(u8).init(0);
 var applet_suspended: std.atomic.Value(u8) = std.atomic.Value(u8).init(0);
 var stream_started: std.atomic.Value(u8) = std.atomic.Value(u8).init(0);
+var command_lock: std.atomic.Value(u8) = std.atomic.Value(u8).init(0);
 var initialized = false;
 
 fn init_slots() [NUM_SLOTS]Slot {
@@ -491,6 +493,11 @@ fn execute_commands(cmds: []const CsndCommand) !void {
         std.debug.panic("3DS audio command failed: CSND command list exceeds shared memory, count={} shm_len={}", .{ cmds.len, shm.len });
     }
 
+    const bytes = shm[COMMAND_OFFSET..][0 .. cmds.len * @sizeOf(CsndCommand)];
+    lock_command_buffer();
+    defer unlock_command_buffer();
+
+    lock_csnd_mutex();
     for (cmds, 0..) |cmd_value, i| {
         const off = COMMAND_OFFSET + i * @sizeOf(CsndCommand);
         const dst: *CsndCommand = @ptrCast(@alignCast(shm[off..].ptr));
@@ -501,22 +508,52 @@ fn execute_commands(cmds: []const CsndCommand) !void {
             @intCast(COMMAND_OFFSET + (i + 1) * @sizeOf(CsndCommand));
         dst.first_finished = false;
     }
-
-    const bytes = shm[COMMAND_OFFSET..][0 .. cmds.len * @sizeOf(CsndCommand)];
     flush_cache_or_panic("CSND command list", bytes);
+    unlock_csnd_mutex();
+
     try sound.sendExecuteCommands(COMMAND_OFFSET);
-    _ = horizon.invalidateProcessDataCache(.current, bytes);
+    wait_command_completion_or_panic(shm, bytes, cmds.len);
+}
+
+fn lock_command_buffer() void {
+    while (command_lock.cmpxchgWeak(0, 1, .acquire, .monotonic) != null) {
+        horizon.sleepThread(0);
+    }
+}
+
+fn unlock_command_buffer() void {
+    command_lock.store(0, .release);
+}
+
+fn lock_csnd_mutex() void {
+    const mutex: horizon.Mutex = @bitCast(snd_mutex);
+    mutex.wait(.none) catch |err| {
+        std.debug.panic("3DS audio command failed: wait CSND mutex: {s}", .{@errorName(err)});
+    };
+}
+
+fn unlock_csnd_mutex() void {
+    const mutex: horizon.Mutex = @bitCast(snd_mutex);
+    mutex.release();
+}
+
+fn wait_command_completion_or_panic(shm: []align(horizon.heap.page_size) u8, bytes: []u8, cmd_count: usize) void {
+    for (0..COMMAND_COMPLETION_POLL_COUNT) |_| {
+        invalidate_cache_or_panic("CSND command completion", bytes);
+        const first: *const CsndCommand = @ptrCast(@alignCast(shm[COMMAND_OFFSET..].ptr));
+        if (first.first_finished) return;
+        horizon.sleepThread(0);
+    }
 
     const first: *const CsndCommand = @ptrCast(@alignCast(shm[COMMAND_OFFSET..].ptr));
-    if (!first.first_finished) {
-        const second_id = if (cmds.len > 1) @tagName((@as(*const CsndCommand, @ptrCast(@alignCast(shm[COMMAND_OFFSET + @sizeOf(CsndCommand) ..].ptr)))).id) else "none";
-        std.debug.panic("CSND command chain did not mark completion; first id={s} second id={s} count={} next=0x{x}", .{
-            @tagName(first.id),
-            second_id,
-            cmds.len,
-            @as(u16, @bitCast(first.next)),
-        });
-    }
+    const second_id = if (cmd_count > 1) @tagName((@as(*const CsndCommand, @ptrCast(@alignCast(shm[COMMAND_OFFSET + @sizeOf(CsndCommand) ..].ptr)))).id) else "none";
+    std.debug.panic("CSND command chain did not mark completion after {} polls; first id={s} second id={s} count={} next=0x{x}", .{
+        COMMAND_COMPLETION_POLL_COUNT,
+        @tagName(first.id),
+        second_id,
+        cmd_count,
+        @as(u16, @bitCast(first.next)),
+    });
 }
 
 fn channel_command(id: CommandId, ch: ChannelId, payload: anytype) CsndCommand {
@@ -628,6 +665,18 @@ fn flush_cache_or_panic(comptime where: []const u8, data: []const u8) void {
     const rc = horizon.flushProcessDataCache(.current, data);
     if (!rc.isSuccess()) {
         std.debug.panic("3DS audio cache flush failed at {s}: rc=0x{x} ptr=0x{x} len={}", .{
+            where,
+            @as(u32, @bitCast(rc)),
+            @intFromPtr(data.ptr),
+            data.len,
+        });
+    }
+}
+
+fn invalidate_cache_or_panic(comptime where: []const u8, data: []u8) void {
+    const rc = horizon.invalidateProcessDataCache(.current, data);
+    if (!rc.isSuccess()) {
+        std.debug.panic("3DS audio cache invalidate failed at {s}: rc=0x{x} ptr=0x{x} len={}", .{
             where,
             @as(u32, @bitCast(rc)),
             @intFromPtr(data.ptr),
