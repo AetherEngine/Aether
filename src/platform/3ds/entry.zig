@@ -10,6 +10,12 @@ const app_root = @import("aether_user_root");
 const zitrus = @import("zitrus");
 
 const Application = zitrus.horizon.Init.Application;
+const MIN_STACK_SIZE: u32 = 768 * 1024;
+
+pub const zitrus_options = if (@hasDecl(app_root, "zitrus_options"))
+    .{ .stack_size = @max(MIN_STACK_SIZE, app_root.zitrus_options.stack_size) }
+else
+    .{ .stack_size = MIN_STACK_SIZE };
 
 pub const std_options = if (@hasDecl(app_root, "std_options")) app_root.std_options else aether.Util.std_options;
 pub const std_os_options = zitrus.std_os_options;
