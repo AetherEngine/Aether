@@ -10,7 +10,10 @@ const app_root = @import("aether_user_root");
 const zitrus = @import("zitrus");
 
 const Application = zitrus.horizon.Init.Application;
+const horizon = zitrus.horizon;
 const MIN_STACK_SIZE: u32 = 768 * 1024;
+const SOC_BUFFER_LEN: usize = 1024 * 1024;
+const log = std.log.scoped(.aether_3ds_entry);
 
 pub const zitrus_options: zitrus.ZitrusOptions = if (@hasDecl(app_root, "zitrus_options"))
     .{ .stack_size = @max(MIN_STACK_SIZE, app_root.zitrus_options.stack_size) }
@@ -30,6 +33,12 @@ pub fn main(init: Application) !void {
 
     try zitrus.horizon.Io.global.initStorage(init.srv, .fs, 0);
     defer zitrus.horizon.Io.global.deinitFilesystem();
+
+    var network = NetworkContext.init(init.srv, init.base.gpa) catch |err| blk: {
+        log.warn("3DS network init skipped: {s}", .{@errorName(err)});
+        break :blk null;
+    };
+    defer if (network) |*ctx| ctx.deinit();
 
     zitrus.horizon.Io.global.mountSelfRomFs("romfs") catch {};
     zitrus.horizon.Io.global.mountArchive("sdmc", .sdmc, .empty, &.{}) catch {};
@@ -99,3 +108,41 @@ fn finishMain(result: anytype) !void {
         else => @compileError("unsupported 3DS Aether app main return type"),
     }
 }
+
+const NetworkContext = struct {
+    soc: horizon.services.SocketUser,
+    memory: horizon.MemoryBlock,
+    buffer: []align(horizon.heap.page_size) u8,
+    alloc: std.mem.Allocator,
+
+    fn init(srv: horizon.ServiceManager, alloc: std.mem.Allocator) !NetworkContext {
+        const soc = try horizon.services.SocketUser.open(srv);
+        errdefer soc.close();
+
+        const buffer = try alloc.alignedAlloc(u8, .fromByteUnits(horizon.heap.page_size), SOC_BUFFER_LEN);
+        errdefer alloc.free(buffer);
+
+        const memory: horizon.MemoryBlock = try .create(buffer.ptr, buffer.len, .none, .rw);
+        errdefer memory.close();
+
+        try soc.sendInitialize(memory, buffer.len);
+        errdefer soc.sendDeinitialize();
+
+        try horizon.Io.global.initNetwork(.{ .soc = soc, .extra = .unowned });
+
+        return .{
+            .soc = soc,
+            .memory = memory,
+            .buffer = buffer,
+            .alloc = alloc,
+        };
+    }
+
+    fn deinit(self: *NetworkContext) void {
+        horizon.Io.global.deinitNetwork();
+        self.soc.sendDeinitialize();
+        self.memory.close();
+        self.alloc.free(self.buffer);
+        self.soc.close();
+    }
+};
