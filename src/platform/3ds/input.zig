@@ -2,6 +2,7 @@ const std = @import("std");
 const zitrus = @import("zitrus");
 const app_3ds = @import("app.zig");
 const core = @import("../../core/input/input.zig");
+const audio = @import("../audio.zig");
 const gfx = @import("../gfx.zig");
 
 const horizon = zitrus.horizon;
@@ -11,7 +12,8 @@ const SoftwareKeyboard = horizon.services.Applet.Application.SoftwareKeyboard;
 
 const IR_UPDATE_MS = 10;
 const STICK_MAX: f32 = 0x9C;
-const MAX_OSK_BYTES = 1024;
+const MAX_OSK_TEXT_UNITS = 1024;
+const MAX_OSK_UTF8_BYTES = MAX_OSK_TEXT_UNITS * 4;
 const DEFAULT_OSK_BYTES = 256;
 const axis_count = @typeInfo(core.Axis).@"enum".fields.len;
 
@@ -19,6 +21,8 @@ var input_alloc: std.mem.Allocator = undefined;
 var ir_service: ?IrRst = null;
 var ir_input: ?IrRst.Input = null;
 var ir_started: bool = false;
+var prev_pad: Hid.Pad.State = std.mem.zeroes(Hid.Pad.State);
+var have_prev_pad: bool = false;
 var prev_axes: [axis_count]f32 = @splat(0.0);
 var prev_touch_down: bool = false;
 var prev_touch_pos: core.Vec2 = .{};
@@ -66,14 +70,16 @@ pub fn apply_cursor_mode(mode: core.CursorMode) void {
 
 pub fn begin_text_input_session(target: core.TextInputTarget, options: core.TextInputOptions) anyerror!void {
     const app = app_3ds.currentApplication() orelse return error.NoCurrentApplication;
-    var initial_buf: [MAX_OSK_BYTES]u8 = undefined;
+    var initial_buf: [MAX_OSK_UTF8_BYTES]u8 = undefined;
     const initial = copy_current_text_for_osk(&initial_buf, options);
 
     var buttons = [_]SoftwareKeyboard.Config.Button{
-        .{ .label = .default, .submits_text = true },
+        .button(.utf8("Cancel"), .none),
+        .button(.utf8("OK"), .submits),
     };
     const hint = valid_utf8_prefix(target.id, SoftwareKeyboard.State.max_hint_text_len - 1);
 
+    const osk_alloc = app.base.gpa;
     var swkbd = try SoftwareKeyboard.normal(.{
         .max_length = osk_max_length(options.max_bytes),
         .buttons = &buttons,
@@ -81,24 +87,40 @@ pub fn begin_text_input_session(target: core.TextInputTarget, options: core.Text
         .hint = if (hint.len == 0) .default else .utf8(hint),
         .features = .{ .multiline = options.multiline },
         .dictionary = &.{},
-    }, input_alloc);
-    defer swkbd.deinit(input_alloc);
+    }, osk_alloc);
+    defer swkbd.deinit(osk_alloc);
 
     var released_surface = false;
+    var suspended_audio = false;
     const capture = if (@hasDecl(gfx.Surface, "suspend_for_applet")) blk: {
         const capture = try gfx.surface.suspend_for_applet();
         released_surface = true;
         break :blk capture;
     } else try app.gsp.sendImportDisplayCaptureInfo();
-    defer if (released_surface) gfx.surface.resume_from_applet();
+    audio.Api.suspend_for_applet();
+    suspended_audio = true;
+    defer {
+        if (released_surface) gfx.surface.resume_from_applet();
+        if (suspended_audio) audio.Api.resume_from_applet();
+    }
 
+    release_touch_if_down();
     const result = try swkbd.start(app.app, app.apt, .app, app.srv, capture);
+    if (released_surface) {
+        gfx.surface.resume_from_applet();
+        released_surface = false;
+    }
+    if (suspended_audio) {
+        audio.Api.resume_from_applet();
+        suspended_audio = false;
+    }
 
     switch (result) {
         .right => {
-            var out_buf: [MAX_OSK_BYTES]u8 = undefined;
+            var out_buf: [MAX_OSK_UTF8_BYTES]u8 = undefined;
             const len = std.unicode.utf16LeToUtf8(&out_buf, swkbd.writtenText()) catch 0;
-            core.write_text_session_buffer(out_buf[0..len], .submitted);
+            const text = clamp_utf8_to_max_bytes(out_buf[0..len], options.max_bytes);
+            core.write_text_session_buffer(text, .submitted);
         },
         else => core.write_text_session_buffer(initial, .cancelled),
     }
@@ -129,18 +151,24 @@ fn init_ir() void {
 }
 
 fn pump_buttons(entry: Hid.Pad.Entry) void {
-    deliver_button(entry.pressed.a, entry.released.a, .A);
-    deliver_button(entry.pressed.b, entry.released.b, .B);
-    deliver_button(entry.pressed.x, entry.released.x, .X);
-    deliver_button(entry.pressed.y, entry.released.y, .Y);
-    deliver_button(entry.pressed.l, entry.released.l, .LButton);
-    deliver_button(entry.pressed.r, entry.released.r, .RButton);
-    deliver_button(entry.pressed.select, entry.released.select, .Back);
-    deliver_button(entry.pressed.start, entry.released.start, .Start);
-    deliver_button(entry.pressed.up, entry.released.up, .DpadUp);
-    deliver_button(entry.pressed.right, entry.released.right, .DpadRight);
-    deliver_button(entry.pressed.down, entry.released.down, .DpadDown);
-    deliver_button(entry.pressed.left, entry.released.left, .DpadLeft);
+    const current = entry.current;
+    const previous = if (have_prev_pad) prev_pad else std.mem.zeroes(Hid.Pad.State);
+
+    diff_button(current.a, previous.a, .A);
+    diff_button(current.b, previous.b, .B);
+    diff_button(current.x, previous.x, .X);
+    diff_button(current.y, previous.y, .Y);
+    diff_button(current.l, previous.l, .LButton);
+    diff_button(current.r, previous.r, .RButton);
+    diff_button(current.select, previous.select, .Back);
+    diff_button(current.start, previous.start, .Start);
+    diff_button(current.up, previous.up, .DpadUp);
+    diff_button(current.right, previous.right, .DpadRight);
+    diff_button(current.down, previous.down, .DpadDown);
+    diff_button(current.left, previous.left, .DpadLeft);
+
+    prev_pad = current;
+    have_prev_pad = true;
 }
 
 fn pump_left_stick(entry: Hid.Pad.Entry) void {
@@ -220,9 +248,9 @@ fn release_touch_if_down() void {
     prev_touch_pos = .{};
 }
 
-fn deliver_button(pressed: bool, released: bool, button: core.Button) void {
-    if (pressed) core.deliver_gamepad_button(button, .pressed);
-    if (released) core.deliver_gamepad_button(button, .released);
+fn diff_button(current: bool, previous: bool, button: core.Button) void {
+    if (current == previous) return;
+    core.deliver_gamepad_button(button, if (current) .pressed else .released);
 }
 
 fn deliver_axis(axis: core.Axis, value: f32) void {
@@ -239,15 +267,23 @@ fn normalize_stick(raw: i16) f32 {
 
 fn copy_current_text_for_osk(dst: []u8, options: core.TextInputOptions) []const u8 {
     const session = core.current_text_session() orelse return "";
-    const limit = @min(options.max_bytes orelse DEFAULT_OSK_BYTES, MAX_OSK_BYTES - 1);
+    const limit = @min(osk_text_limit(options.max_bytes), dst.len - 1);
     const text = valid_utf8_prefix(session.buffer.items, limit);
     @memcpy(dst[0..text.len], text);
     return dst[0..text.len];
 }
 
 fn osk_max_length(limit: ?usize) u16 {
-    const max = @min(limit orelse DEFAULT_OSK_BYTES, MAX_OSK_BYTES - 1);
-    return @intCast(max + 1);
+    return @intCast(osk_text_limit(limit) + 1);
+}
+
+fn osk_text_limit(limit: ?usize) usize {
+    return @min(limit orelse DEFAULT_OSK_BYTES, MAX_OSK_TEXT_UNITS - 1);
+}
+
+fn clamp_utf8_to_max_bytes(text: []const u8, limit: ?usize) []const u8 {
+    const max = limit orelse return text;
+    return valid_utf8_prefix(text, @min(max, text.len));
 }
 
 fn valid_utf8_prefix(text: []const u8, limit: usize) []const u8 {
@@ -269,6 +305,8 @@ fn reset_state() void {
     ir_service = null;
     ir_input = null;
     ir_started = false;
+    prev_pad = std.mem.zeroes(Hid.Pad.State);
+    have_prev_pad = false;
     prev_axes = @splat(0.0);
     prev_touch_down = false;
     prev_touch_pos = .{};
