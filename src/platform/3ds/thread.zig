@@ -36,7 +36,6 @@ pub fn spawn(cfg: api.Config, comptime func: anytype, args: anytype) !Handle {
     const Args = @TypeOf(args);
     const Wrapped = struct {
         fn run(prio: api.Priority, fn_args: Args) void {
-            app.Debug.installDefaultExceptionHandler();
             current_prio = prio;
             const Ret = @typeInfo(@TypeOf(func)).@"fn".return_type.?;
             switch (@typeInfo(Ret)) {

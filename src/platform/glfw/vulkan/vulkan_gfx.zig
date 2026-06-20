@@ -18,7 +18,8 @@ const Rendering = @import("../../../rendering/rendering.zig");
 const vertex = Rendering.vertex;
 const Mesh = Rendering.mesh;
 const Texture = Rendering.Texture;
-const shaders = @import("aether_shaders");
+const basic_vert align(@alignOf(u32)) = @embedFile("aether_basic_vert").*;
+const basic_frag align(@alignOf(u32)) = @embedFile("aether_basic_frag").*;
 
 const Context = @import("context.zig");
 const Swapchain = @import("swapchain.zig");
@@ -761,8 +762,8 @@ fn flush_camera_if_dirty() void {
 }
 
 fn init_pipeline(layout: vertex.VertexLayout) !PipelineData {
-    const vs: [:0]align(4) const u8 = &shaders.basic_vert;
-    const fs: [:0]align(4) const u8 = &shaders.basic_frag;
+    const vs: [:0]align(4) const u8 = &basic_vert;
+    const fs: [:0]align(4) const u8 = &basic_frag;
 
     const set_layouts = [_]vk.DescriptorSetLayout{ descriptor_set_layout, tex_set_layout };
 

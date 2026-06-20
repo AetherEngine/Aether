@@ -12,7 +12,8 @@ const vertex = Rendering.vertex;
 const Mesh = Rendering.mesh;
 const Texture = Rendering.Texture;
 const gfx = @import("../gfx.zig");
-const shader_data = @import("aether_shaders");
+const basic_vert align(@alignOf(u32)) = @embedFile("aether_basic_vert").*;
+const basic_frag align(@alignOf(u32)) = @embedFile("aether_basic_frag").*;
 
 const dk = @import("deko.zig");
 const Context = @import("context.zig");
@@ -471,8 +472,8 @@ pub fn destroy_texture(handle: Texture.Handle) void {
 pub fn force_texture_resident(_: Texture.Handle) void {}
 
 fn init_pipeline(layout: vertex.VertexLayout) !PipelineData {
-    const vertex_code: [:0]align(4) const u8 = &shader_data.basic_vert;
-    const fragment_code: [:0]align(4) const u8 = &shader_data.basic_frag;
+    const vertex_code: [:0]align(4) const u8 = &basic_vert;
+    const fragment_code: [:0]align(4) const u8 = &basic_frag;
 
     var data = PipelineData{
         .vertex_shader = undefined,

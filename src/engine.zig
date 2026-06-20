@@ -38,6 +38,16 @@ pub const CategoryTracker = struct {
     fn tracked_free(ctx: *anyopaque, buf: []u8, alignment: std.mem.Alignment, ret_addr: usize) void {
         const self: *CategoryTracker = @ptrCast(@alignCast(ctx));
         self.inner.vtable.free(self.inner.ptr, buf, alignment, ret_addr);
+        if (buf.len > self.used) {
+            Util.engine_logger.err("memory tracker underflow in {s}: used={} free_len={} ptr=0x{x} ret=0x{x}", .{
+                self.name,
+                self.used,
+                buf.len,
+                @intFromPtr(buf.ptr),
+                ret_addr,
+            });
+            logger.flush();
+        }
         self.used -= buf.len;
     }
 
@@ -298,7 +308,7 @@ pub const Engine = struct {
         var clock = std.Io.Clock.boot;
         const fps_window_us: i64 = @intCast(US_PER_S);
 
-        const report_fps = options.config.gfx != .headless and !options.config.flush_logs;
+        const report_fps = options.config.gfx != .headless;
 
         const trace_loop = self.debug_trace_loops > 0;
         const trace_loop_index = self.debug_trace_loop_index + 1;

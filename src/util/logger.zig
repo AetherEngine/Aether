@@ -6,6 +6,7 @@ var log_buffer: [4096]u8 = @splat(0);
 var file_log: std.Io.File = undefined;
 var file_writer: std.Io.File.Writer = undefined;
 var writer: *std.Io.Writer = undefined;
+var log_io: std.Io = undefined;
 var file_logging = false;
 var log_lock: std.atomic.Value(bool) = .init(false);
 
@@ -17,6 +18,13 @@ fn lock() void {
 
 fn unlock() void {
     log_lock.store(false, .release);
+}
+
+fn flushFile(sync_to_storage: bool) void {
+    if (!file_logging) return;
+
+    writer.flush() catch {};
+    if (sync_to_storage) file_log.sync(log_io) catch {};
 }
 
 /// PSP has no per-user data dir concept; the log sits at CWD (which is
@@ -32,23 +40,22 @@ pub fn init(io: std.Io, data_dir: anytype) !void {
     }
     file_writer = file_log.writer(io, &log_buffer);
     writer = &file_writer.interface;
+    log_io = io;
     file_logging = true;
 }
 
 pub fn deinit(io: std.Io) void {
     if (!file_logging) return;
-    writer.flush() catch {};
+    flushFile(true);
     file_log.close(io);
     file_logging = false;
 }
 
 pub fn flush() void {
-    if (options.config.flush_logs) return;
-
     lock();
     defer unlock();
 
-    if (file_logging) writer.flush() catch {};
+    flushFile(options.config.flush_logs);
 }
 
 pub fn aether_log_fn(
@@ -66,7 +73,7 @@ pub fn aether_log_fn(
 
     if (file_logging) {
         writer.print(prefix ++ format ++ "\n", args) catch {};
-        if (options.config.flush_logs) writer.flush() catch {};
+        if (options.config.flush_logs) flushFile(true);
     }
     std.debug.print(prefix ++ format ++ "\n", args);
 }

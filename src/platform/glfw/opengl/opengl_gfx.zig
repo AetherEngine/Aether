@@ -12,7 +12,8 @@ const Mesh = Rendering.mesh;
 const vertex = Rendering.vertex;
 const Texture = Rendering.Texture;
 const GLFWSurface = @import("../surface.zig");
-const shaders = @import("aether_shaders");
+const basic_vert align(@alignOf(u32)) = @embedFile("aether_basic_vert").*;
+const basic_frag align(@alignOf(u32)) = @embedFile("aether_basic_frag").*;
 
 var render_alloc: std.mem.Allocator = undefined;
 var render_io: std.Io = undefined;
@@ -196,8 +197,8 @@ fn init_pipeline(layout: vertex.VertexLayout) !PipelineData {
         gl.VertexArrayAttribBinding(vao, a.location, a.binding);
     }
 
-    const v_shader: [:0]align(4) const u8 = &shaders.basic_vert;
-    const f_shader: [:0]align(4) const u8 = &shaders.basic_frag;
+    const v_shader: [:0]align(4) const u8 = &basic_vert;
+    const f_shader: [:0]align(4) const u8 = &basic_frag;
     const program = try shader.Shader.init(v_shader, f_shader);
 
     return .{

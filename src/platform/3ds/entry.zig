@@ -13,7 +13,7 @@ const Application = zitrus.horizon.Init.Application;
 
 pub const std_options = if (@hasDecl(app_root, "std_options")) app_root.std_options else aether.Util.std_options;
 pub const std_os_options = zitrus.std_os_options;
-pub const panic = std.debug.FullPanic(zitrus.horizon.debug.defaultPanic);
+pub const panic = std.debug.FullPanic(debug.handlePanic);
 pub const debug = @import("debug.zig");
 pub const std_options_debug_threaded_io = null;
 pub const std_options_debug_io: std.Io = zitrus.horizon.Io.debug_io;
@@ -31,10 +31,12 @@ pub fn main(init: Application) !void {
     zitrus.horizon.Io.global.mountSelfRomFs("romfs") catch {};
     zitrus.horizon.Io.global.mountArchive("sdmc", .sdmc, .empty, &.{}) catch {};
 
-    var arena = std.heap.ArenaAllocator.init(init.base.gpa);
+    const linear_gpa = zitrus.horizon.heap.linear_page_allocator;
+
+    var arena = std.heap.ArenaAllocator.init(linear_gpa);
     defer arena.deinit();
 
-    var environ_map = std.process.Environ.Map.init(init.base.gpa);
+    var environ_map = std.process.Environ.Map.init(linear_gpa);
     defer environ_map.deinit();
 
     const process_init: std.process.Init = .{
@@ -46,7 +48,7 @@ pub fn main(init: Application) !void {
                 .{ .vector = &.{} },
         },
         .arena = &arena,
-        .gpa = init.base.gpa,
+        .gpa = linear_gpa,
         .io = init.base.io,
         .environ_map = &environ_map,
         .preopens = .empty,
