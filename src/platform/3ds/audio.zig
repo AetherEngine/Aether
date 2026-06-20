@@ -21,8 +21,9 @@ const DEVICE_SAMPLE_RATE: u32 = 44_100;
 const DEVICE_CHANNELS: usize = 1;
 const NUM_SLOTS: usize = 16;
 const SAMPLES_PER_PAGE: usize = 512;
-const RING_PAGE_COUNT: usize = 8;
-const LEAD_PAGE_COUNT: usize = 4;
+const RING_PAGE_COUNT: usize = 16;
+const LEAD_PAGE_COUNT: usize = 8;
+const READ_BUF_SIZE: usize = SAMPLES_PER_PAGE * 2 * @sizeOf(i16);
 const OUTPUT_PAGE_BYTES: usize = SAMPLES_PER_PAGE * DEVICE_CHANNELS * @sizeOf(i16);
 const TOTAL_OUTPUT_BYTES: usize = OUTPUT_PAGE_BYTES * RING_PAGE_COUNT;
 const RING_SAMPLES: usize = SAMPLES_PER_PAGE * RING_PAGE_COUNT;
@@ -63,6 +64,7 @@ const Slot = struct {
     phase_fp: u64 = 0,
     current_left: i16 = 0,
     current_right: i16 = 0,
+    read_buf: [READ_BUF_SIZE]u8 = undefined,
 };
 
 var slots: [NUM_SLOTS]Slot = init_slots();
@@ -279,14 +281,15 @@ fn audio_thread_fn() void {
 
         const played_samples = samples_since(start_ns);
         if (played_samples > written_samples) {
-            if (any_active_slots()) {
-                std.debug.panic("3DS audio underrun: played={} written={} page={} lead_target={}", .{
-                    played_samples,
-                    written_samples,
-                    next_page,
-                    lead_target_samples,
-                });
-            }
+            if (any_active_slots()) std.log.warn("3DS audio underrun: played={} written={} page={} lead_target={}", .{
+                played_samples,
+                written_samples,
+                next_page,
+                lead_target_samples,
+            });
+            reset_looping_output() catch |err| {
+                std.debug.panic("3DS audio underrun recovery failed: {s}", .{@errorName(err)});
+            };
             start_ns = horizon.time.getSystemNanoseconds();
             written_samples = RING_SAMPLES;
             next_page = 0;
@@ -294,12 +297,13 @@ fn audio_thread_fn() void {
             continue;
         }
 
-        const queued_samples = written_samples - played_samples;
-        if (queued_samples <= lead_target_samples) {
+        while (written_samples - played_samples <= lead_target_samples) {
             fill_output_page(next_page);
             written_samples += SAMPLES_PER_PAGE;
             next_page = (next_page + 1) % RING_PAGE_COUNT;
-        } else {
+        }
+
+        if (written_samples - played_samples > lead_target_samples) {
             horizon.sleepThread(sleep_ns);
         }
     }
@@ -310,42 +314,91 @@ fn fill_output_page(index: usize) void {
     const start = index * OUTPUT_PAGE_BYTES;
     const buf = data[start..][0..OUTPUT_PAGE_BYTES];
     const out: [*]i16 = @ptrCast(@alignCast(buf.ptr));
+    var accum: [SAMPLES_PER_PAGE]i32 = @splat(0);
+
+    for (&slots) |*slot| {
+        var state: SlotState = @enumFromInt(slot.state.load(.acquire));
+        if (state == .pending) {
+            state = .active;
+            slot.state.store(@intFromEnum(SlotState.active), .release);
+        }
+        if (state != .active) continue;
+
+        const gain: f32 = @bitCast(slot.gain.load(.acquire));
+        const pan: f32 = @bitCast(slot.pan.load(.acquire));
+        const left_gain = gain * std.math.clamp(1.0 - pan, 0.0, 1.0);
+        const right_gain = gain * std.math.clamp(1.0 + pan, 0.0, 1.0);
+        const left_vol: i32 = @intFromFloat(std.math.clamp(left_gain, 0.0, 1.0) * 32768.0);
+        const right_vol: i32 = @intFromFloat(std.math.clamp(right_gain, 0.0, 1.0) * 32768.0);
+
+        if (can_bulk_mix(slot)) {
+            mix_slot_page(slot, &accum, left_vol, right_vol);
+        } else {
+            mix_slot_page_resampled(slot, &accum, left_vol, right_vol);
+        }
+    }
 
     for (0..SAMPLES_PER_PAGE) |frame| {
-        var left_acc: i32 = 0;
-        var right_acc: i32 = 0;
-
-        for (&slots) |*slot| {
-            var state: SlotState = @enumFromInt(slot.state.load(.acquire));
-            if (state == .pending) {
-                if (read_next_sample(slot)) {
-                    state = .active;
-                    slot.state.store(@intFromEnum(SlotState.active), .release);
-                } else {
-                    state = .finished;
-                    slot.state.store(@intFromEnum(SlotState.finished), .release);
-                }
-            }
-            if (state != .active) continue;
-
-            const gain: f32 = @bitCast(slot.gain.load(.acquire));
-            const pan: f32 = @bitCast(slot.pan.load(.acquire));
-            const left_gain = gain * std.math.clamp(1.0 - pan, 0.0, 1.0);
-            const right_gain = gain * std.math.clamp(1.0 + pan, 0.0, 1.0);
-            const left_vol: i32 = @intFromFloat(std.math.clamp(left_gain, 0.0, 1.0) * 32768.0);
-            const right_vol: i32 = @intFromFloat(std.math.clamp(right_gain, 0.0, 1.0) * 32768.0);
-
-            left_acc += (@as(i32, slot.current_left) * left_vol) >> 15;
-            right_acc += (@as(i32, slot.current_right) * right_vol) >> 15;
-
-            advance_sample(slot);
-        }
-
-        const mono = clamp_i16(@divTrunc(left_acc + right_acc, 2));
-        out[frame] = mono;
+        out[frame] = clamp_i16(accum[frame]);
     }
 
     flush_cache_or_panic("mixed output", buf);
+}
+
+fn can_bulk_mix(slot: *const Slot) bool {
+    return slot.format.sample_rate == DEVICE_SAMPLE_RATE and slot.step_fp == FP_ONE;
+}
+
+fn mix_slot_page(slot: *Slot, accum: *[SAMPLES_PER_PAGE]i32, left_vol: i32, right_vol: i32) void {
+    const fmt = slot.format;
+    const frame_size = fmt.frame_size();
+    const bytes_needed: usize = SAMPLES_PER_PAGE * frame_size;
+    if (bytes_needed > READ_BUF_SIZE) {
+        slot.state.store(@intFromEnum(SlotState.finished), .release);
+        return;
+    }
+
+    const read_buf = slot.read_buf[0..bytes_needed];
+    const bytes_read = slot.stream.reader.readSliceShort(read_buf) catch {
+        slot.state.store(@intFromEnum(SlotState.finished), .release);
+        return;
+    };
+    const frames_read = bytes_read / frame_size;
+
+    if (fmt.channels == 1) {
+        const mono_vol = @divTrunc(left_vol + right_vol, 2);
+        for (0..frames_read) |frame| {
+            const s: i32 = std.mem.readInt(i16, read_buf[frame * 2 ..][0..2], .little);
+            accum[frame] += (s * mono_vol) >> 15;
+        }
+    } else {
+        for (0..frames_read) |frame| {
+            const l: i32 = std.mem.readInt(i16, read_buf[frame * 4 ..][0..2], .little);
+            const r: i32 = std.mem.readInt(i16, read_buf[frame * 4 + 2 ..][0..2], .little);
+            const left = (l * left_vol) >> 15;
+            const right = (r * right_vol) >> 15;
+            accum[frame] += @divTrunc(left + right, 2);
+        }
+    }
+
+    if (bytes_read < bytes_needed) {
+        slot.state.store(@intFromEnum(SlotState.finished), .release);
+    }
+}
+
+fn mix_slot_page_resampled(slot: *Slot, accum: *[SAMPLES_PER_PAGE]i32, left_vol: i32, right_vol: i32) void {
+    if (!read_next_sample(slot)) {
+        slot.state.store(@intFromEnum(SlotState.finished), .release);
+        return;
+    }
+
+    for (0..SAMPLES_PER_PAGE) |frame| {
+        const left = (@as(i32, slot.current_left) * left_vol) >> 15;
+        const right = (@as(i32, slot.current_right) * right_vol) >> 15;
+        accum[frame] += @divTrunc(left + right, 2);
+        advance_sample(slot);
+        if (@as(SlotState, @enumFromInt(slot.state.load(.acquire))) == .finished) return;
+    }
 }
 
 fn advance_sample(slot: *Slot) void {
@@ -399,6 +452,16 @@ fn start_looping_output() !void {
         .address1 = physical_addr,
         .size = TOTAL_OUTPUT_BYTES,
     })});
+}
+
+fn reset_looping_output() !void {
+    stop_channel();
+    if (output_data) |data| @memset(data, 0);
+    for (0..RING_PAGE_COUNT) |page| {
+        fill_output_page(page);
+    }
+    try start_looping_output();
+    stream_started.store(1, .release);
 }
 
 fn stop_channel() void {
