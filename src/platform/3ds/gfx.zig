@@ -397,6 +397,8 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize) void {
     var uniforms = matrix_uniforms(model, &pending_state.view, &pending_state.proj);
     cmd.bindFloatUniforms(.vertex, 0, &uniforms);
 
+    bind_draw_texture_state(cmd);
+
     const buffers = [_]mango.Buffer{mesh.buffer};
     const offsets = [_]u32{0};
     cmd.bindVertexBuffersSlice(0, &buffers, &offsets);
@@ -539,7 +541,6 @@ fn begin_screen_recording(screen: gfx.Surface.Screen) !mango.CommandBuffer {
     try cmd.begin();
     cmd.bindShaders(&.{.vertex}, &.{basic_shader});
     set_default_graphics_state(cmd, screen);
-    bind_draw_texture_state(cmd);
     cmd.beginRendering(.{
         .color_attachment = render_target(screen).view,
         .depth_stencil_attachment = .null,
