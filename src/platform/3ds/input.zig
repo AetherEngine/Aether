@@ -174,8 +174,8 @@ fn pump_buttons(entry: Hid.Pad.Entry) void {
 }
 
 fn pump_left_stick(entry: Hid.Pad.Entry) void {
-    var x = normalize_stick(entry.circle.y);
-    var y = -normalize_stick(entry.circle.x);
+    var x = normalize_stick(entry.circle.x);
+    var y = -normalize_stick(entry.circle.y);
 
     if (x == 0.0) {
         if (entry.current.circle_pad_right) x = 1.0;
@@ -200,8 +200,8 @@ fn pump_ir() void {
     };
 
     const entry = input.pollPad();
-    var x = normalize_stick(entry.c_stick.y);
-    var y = -normalize_stick(entry.c_stick.x);
+    var x = normalize_stick(entry.c_stick.x);
+    var y = -normalize_stick(entry.c_stick.y);
 
     if (x == 0.0) {
         if (entry.current.c_stick_right) x = 1.0;
@@ -257,8 +257,8 @@ fn diff_button(current: bool, previous: bool, button: core.Button) void {
 
 fn deliver_axis(axis: core.Axis, value: f32) void {
     const idx = @intFromEnum(axis);
-    if (prev_axes[idx] == value) return;
-    core.deliver_gamepad_axis(axis, value);
+    const prev = prev_axes[idx];
+    if (value != 0.0 or prev != 0.0) core.deliver_gamepad_axis(axis, value);
     prev_axes[idx] = value;
 }
 

@@ -50,25 +50,65 @@ pub fn Mesh(comptime V: type) type {
             try self.vertices.appendSlice(alloc, verts);
         }
 
-        pub inline fn add_tri(self: *Self, alloc: std.mem.Allocator, a: V, b: V, c: V) !void {
+        pub fn clear_retaining_capacity(self: *Self) void {
+            self.vertices.clearRetainingCapacity();
+            self.indices.clearRetainingCapacity();
+        }
+
+        pub fn clear_and_free(self: *Self, alloc: std.mem.Allocator) void {
+            self.vertices.clearAndFree(alloc);
+            self.indices.clearAndFree(alloc);
+        }
+
+        pub fn ensure_tri_capacity(self: *Self, alloc: std.mem.Allocator, count: usize) !void {
+            const add_verts = count * 3;
             if (indexing_enabled) {
-                if (self.vertices.items.len > std.math.maxInt(Index) - 2) return error.IndexOverflow;
-                const base: Index = @intCast(self.vertices.items.len);
-                try self.vertices.appendSlice(alloc, &.{ a, b, c });
-                try self.indices.appendSlice(alloc, &.{ base, base + 1, base + 2 });
+                if (self.vertices.items.len + add_verts > @as(usize, std.math.maxInt(Index)) + 1) return error.IndexOverflow;
+                try self.indices.ensureTotalCapacity(alloc, self.indices.items.len + count * 3);
+            }
+            try self.vertices.ensureTotalCapacity(alloc, self.vertices.items.len + add_verts);
+        }
+
+        pub fn ensure_quad_capacity(self: *Self, alloc: std.mem.Allocator, count: usize) !void {
+            if (indexing_enabled) {
+                const add_verts = count * 4;
+                if (self.vertices.items.len + add_verts > @as(usize, std.math.maxInt(Index)) + 1) return error.IndexOverflow;
+                try self.vertices.ensureTotalCapacity(alloc, self.vertices.items.len + add_verts);
+                try self.indices.ensureTotalCapacity(alloc, self.indices.items.len + count * 6);
             } else {
-                try self.vertices.appendSlice(alloc, &.{ a, b, c });
+                try self.vertices.ensureTotalCapacity(alloc, self.vertices.items.len + count * 6);
             }
         }
 
+        pub inline fn add_tri(self: *Self, alloc: std.mem.Allocator, a: V, b: V, c: V) !void {
+            try self.ensure_tri_capacity(alloc, 1);
+            self.add_tri_assume_capacity(a, b, c);
+        }
+
         pub inline fn add_quad(self: *Self, alloc: std.mem.Allocator, a: V, b: V, c: V, d: V) !void {
+            try self.ensure_quad_capacity(alloc, 1);
+            self.add_quad_assume_capacity(a, b, c, d);
+        }
+
+        pub inline fn add_tri_assume_capacity(self: *Self, a: V, b: V, c: V) void {
             if (indexing_enabled) {
-                if (self.vertices.items.len > std.math.maxInt(Index) - 3) return error.IndexOverflow;
+                std.debug.assert(self.vertices.items.len <= std.math.maxInt(Index) - 2);
                 const base: Index = @intCast(self.vertices.items.len);
-                try self.vertices.appendSlice(alloc, &.{ a, b, c, d });
-                try self.indices.appendSlice(alloc, &.{ base, base + 1, base + 2, base, base + 2, base + 3 });
+                self.vertices.appendSliceAssumeCapacity(&.{ a, b, c });
+                self.indices.appendSliceAssumeCapacity(&.{ base, base + 1, base + 2 });
             } else {
-                try self.vertices.appendSlice(alloc, &.{ a, b, c, a, c, d });
+                self.vertices.appendSliceAssumeCapacity(&.{ a, b, c });
+            }
+        }
+
+        pub inline fn add_quad_assume_capacity(self: *Self, a: V, b: V, c: V, d: V) void {
+            if (indexing_enabled) {
+                std.debug.assert(self.vertices.items.len <= std.math.maxInt(Index) - 3);
+                const base: Index = @intCast(self.vertices.items.len);
+                self.vertices.appendSliceAssumeCapacity(&.{ a, b, c, d });
+                self.indices.appendSliceAssumeCapacity(&.{ base, base + 1, base + 2, base, base + 2, base + 3 });
+            } else {
+                self.vertices.appendSliceAssumeCapacity(&.{ a, b, c, a, c, d });
             }
         }
 
