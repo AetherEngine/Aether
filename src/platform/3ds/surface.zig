@@ -66,11 +66,7 @@ pub fn init(self: *Self, _: u32, _: u32, _: [:0]const u8, _: bool, sync: bool, _
         self.queues.set(family, self.device.getQueue(family));
     }
 
-    try self.init_swapchain(&self.top);
-    errdefer self.deinit_swapchain(&self.top);
-
-    try self.init_swapchain(&self.bottom);
-    errdefer self.deinit_swapchain(&self.bottom);
+    try self.init_swapchains();
 }
 
 pub fn deinit(self: *Self) void {
@@ -119,6 +115,42 @@ pub fn update(_: *Self) bool {
 }
 
 pub fn draw(_: *Self) void {}
+
+pub fn set_vsync(self: *Self, sync: bool) !void {
+    if (self.sync == sync) return;
+    if (self.device == .null) {
+        self.sync = sync;
+        return;
+    }
+
+    self.device.waitIdle();
+
+    const old_sync = self.sync;
+    const top_surface = self.top.surface;
+    const bottom_surface = self.bottom.surface;
+
+    self.deinit_swapchain(&self.bottom);
+    self.deinit_swapchain(&self.top);
+    self.top = .{ .surface = top_surface };
+    self.bottom = .{ .surface = bottom_surface };
+    self.sync = sync;
+
+    self.init_swapchains() catch |err| {
+        self.sync = old_sync;
+        self.top = .{ .surface = top_surface };
+        self.bottom = .{ .surface = bottom_surface };
+        self.init_swapchains() catch |restore_err| {
+            std.log.err("3DS Mango swapchain restore failed after vsync toggle: {s}", .{@errorName(restore_err)});
+        };
+        return err;
+    };
+}
+
+fn init_swapchains(self: *Self) !void {
+    try self.init_swapchain(&self.top);
+    errdefer self.deinit_swapchain(&self.top);
+    try self.init_swapchain(&self.bottom);
+}
 
 pub fn get_width(_: *Self) u32 {
     return VIRTUAL_WIDTH;

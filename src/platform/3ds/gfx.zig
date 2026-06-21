@@ -39,6 +39,9 @@ const MeshData = struct {
     buffer: mango.Buffer = .null,
     memory: mango.DeviceMemory = .null,
     size: u32 = 0,
+    capacity: u32 = 0,
+    source_page: usize = 0,
+    source_offset: usize = 0,
 };
 
 const BufferData = struct {
@@ -55,6 +58,11 @@ const TextureData = struct {
     alive: bool = false,
 };
 
+const PendingTextureUpload = struct {
+    handle: Texture.Handle,
+    data: []align(16) u8,
+};
+
 const RenderTarget = struct {
     color_memory: mango.DeviceMemory = .null,
     depth_memory: mango.DeviceMemory = .null,
@@ -62,6 +70,12 @@ const RenderTarget = struct {
     depth_image: mango.Image = .null,
     color_view: mango.ImageView = .null,
     depth_view: mango.ImageView = .null,
+};
+
+const CombinerMode = enum {
+    invalid,
+    primary,
+    texture,
 };
 
 pub const ShaderState = struct {
@@ -99,6 +113,15 @@ const ScreenState = struct {
     command_buffer: mango.CommandBuffer = .null,
     recording: bool = false,
     render_open: bool = false,
+    bound_vertex_buffer: mango.Buffer = .null,
+    bound_texture: Texture.Handle = std.math.maxInt(Texture.Handle),
+    combiner_mode: CombinerMode = .invalid,
+
+    fn reset_cache(state: *ScreenState) void {
+        state.bound_vertex_buffer = .null;
+        state.bound_texture = std.math.maxInt(Texture.Handle);
+        state.combiner_mode = .invalid;
+    }
 };
 
 var render_alloc: std.mem.Allocator = undefined;
@@ -106,6 +129,11 @@ var render_io: std.Io = undefined;
 
 var meshes = Util.CircularBuffer(MeshData, 8192).init();
 var texture_slots = Util.CircularBuffer(TextureData, MAX_TEXTURES).init();
+var retired_mesh_buffers = Util.CircularBuffer(mango.Buffer, 8192).init();
+var retired_textures = Util.CircularBuffer(TextureData, MAX_TEXTURES * 2).init();
+var retired_mesh_buffer_overflow: std.ArrayList(mango.Buffer) = .empty;
+var retired_texture_overflow: std.ArrayList(TextureData) = .empty;
+var pending_texture_uploads = Util.CircularBuffer(PendingTextureUpload, MAX_TEXTURES * 2).init();
 
 pub var draw_state = DrawState{
     .mat = Mat4.identity(),
@@ -116,6 +144,7 @@ var pending_state = ShaderState{
     .proj = Mat4.identity(),
 };
 var projection_transform: Mat4 = Mat4.identity();
+var projection_uniform_rows: [4][4]f32 = mat4_to_uniform_rows(Mat4.identity());
 
 var initialized = false;
 var clear_color: [4]u8 = .{ 0, 0, 0, 255 };
@@ -130,8 +159,10 @@ var command_pool: mango.CommandPool = .null;
 var command_buffers: [COMMAND_BUFFER_COUNT]mango.CommandBuffer = @splat(.null);
 var top_frame_semaphore: mango.Semaphore = .null;
 var bottom_frame_semaphore: mango.Semaphore = .null;
+var texture_upload_semaphore: mango.Semaphore = .null;
 var top_next_sync_value: u64 = 0;
 var bottom_next_sync_value: u64 = 0;
+var texture_upload_next_sync_value: u64 = 0;
 var top_frame_wait: u64 = 0;
 var bottom_frame_wait: u64 = 0;
 var top_wait: u64 = 0;
@@ -189,8 +220,14 @@ pub fn init() anyerror!void {
         gfx.surface.device.destroySemaphore(bottom_frame_semaphore, null);
         bottom_frame_semaphore = .null;
     }
+    texture_upload_semaphore = try gfx.surface.device.createSemaphore(.initial_zero, null);
+    errdefer {
+        gfx.surface.device.destroySemaphore(texture_upload_semaphore, null);
+        texture_upload_semaphore = .null;
+    }
     top_next_sync_value = 0;
     bottom_next_sync_value = 0;
+    texture_upload_next_sync_value = 0;
     top_frame_wait = 0;
     bottom_frame_wait = 0;
     top_wait = 0;
@@ -203,9 +240,10 @@ pub fn init() anyerror!void {
     errdefer destroy_render_target(&bottom_target);
 
     init_projection_transform();
+    update_projection_uniform_rows();
 
     initialized = true;
-    set_vsync(vsync_enabled);
+    set_vsync(gfx.sync);
 }
 
 pub fn deinit() void {
@@ -214,6 +252,12 @@ pub fn deinit() void {
     submit_state_reset();
     destroy_all_meshes();
     destroy_all_textures();
+    destroy_pending_texture_uploads();
+    collect_retired_resources();
+    retired_mesh_buffer_overflow.deinit(render_alloc);
+    retired_mesh_buffer_overflow = .empty;
+    retired_texture_overflow.deinit(render_alloc);
+    retired_texture_overflow = .empty;
     cleanup_renderer_resources();
     initialized = false;
     bottom_presented = false;
@@ -230,6 +274,7 @@ pub fn set_clear_color(r: f32, g: f32, b: f32, a: f32) void {
 }
 
 pub fn set_alpha_blend(enabled: bool) void {
+    if (draw_state.alpha_blend_enabled == @intFromBool(enabled)) return;
     draw_state.alpha_blend_enabled = @intFromBool(enabled);
     const state = screen_state(current_screen);
     if (initialized and state.recording) {
@@ -239,7 +284,12 @@ pub fn set_alpha_blend(enabled: bool) void {
 }
 
 pub fn set_depth_write(enabled: bool) void {
+    if (depth_write_enabled == enabled) return;
     depth_write_enabled = enabled;
+    const state = screen_state(current_screen);
+    if (initialized and state.recording) {
+        state.command_buffer.setDepthWriteEnable(depth_write_enabled);
+    }
 }
 
 pub fn set_fog(enabled: bool, start: f32, end: f32, r: f32, g: f32, b: f32) void {
@@ -252,15 +302,30 @@ pub fn set_fog(enabled: bool, start: f32, end: f32, r: f32, g: f32, b: f32) void
 pub fn set_clip_planes(_: bool) void {}
 
 pub fn set_culling(enabled: bool) void {
+    if (culling_enabled == enabled) return;
     culling_enabled = enabled;
+    const state = screen_state(current_screen);
+    if (initialized and state.recording) {
+        state.command_buffer.setCullMode(if (culling_enabled) .back else .none);
+    }
 }
 
 pub fn set_uv_offset(u: f32, v: f32) void {
+    if (draw_state.uv_offset[0] == u and draw_state.uv_offset[1] == v) return;
     draw_state.uv_offset = .{ u, v };
+    const state = screen_state(current_screen);
+    if (initialized and state.recording) {
+        upload_uv_uniform(state.command_buffer);
+    }
 }
 
 pub fn set_proj_matrix(m: *const Mat4) void {
     pending_state.proj = m.*;
+    update_projection_uniform_rows();
+    const state = screen_state(current_screen);
+    if (initialized and state.recording) {
+        upload_projection_uniforms(state.command_buffer);
+    }
 }
 
 pub fn set_view_matrix(m: *const Mat4) void {
@@ -274,6 +339,8 @@ pub fn start_frame() bool {
         std.log.err("3DS Mango frame wait failed: {s}", .{@errorName(err)});
         return false;
     };
+    collect_retired_resources();
+    drain_pending_texture_uploads();
     submit_state_reset();
     current_screen = .top;
     bottom_touched = false;
@@ -338,7 +405,7 @@ pub fn clear_depth() void {
         std.log.err("3DS Mango depth clear recording failed: {s}", .{@errorName(err)});
         return;
     };
-    draw_depth_clear_pass(cmd);
+    draw_depth_clear_pass(cmd, screen_state(current_screen));
 }
 
 pub fn has_second_screen() bool {
@@ -355,7 +422,27 @@ pub fn switch_second_screen() void {
 }
 
 pub fn set_vsync(v: bool) void {
+    if (!initialized or gfx.surface.device == .null) {
+        vsync_enabled = v;
+        return;
+    }
+    if (vsync_enabled == v and gfx.surface.sync == v) return;
+
+    submit_state_reset();
+    wait_for_frame_sync() catch |err| {
+        std.log.err("3DS Mango frame wait before vsync toggle failed: {s}", .{@errorName(err)});
+        return;
+    };
+    gfx.surface.set_vsync(v) catch |err| {
+        std.log.err("3DS Mango swapchain vsync toggle failed: {s}", .{@errorName(err)});
+        return;
+    };
     vsync_enabled = v;
+    top_frame_wait = 0;
+    bottom_frame_wait = 0;
+    top_wait = 0;
+    bottom_wait = 0;
+    bottom_presented = false;
 }
 
 pub fn create_mesh() anyerror!Mesh.Handle {
@@ -364,14 +451,16 @@ pub fn create_mesh() anyerror!Mesh.Handle {
 
 pub fn destroy_mesh(handle: Mesh.Handle) void {
     const mesh = meshes.get_element_ptr(handle) orelse return;
-    destroy_mesh_data(mesh);
+    retire_mesh_data(mesh);
     _ = meshes.remove_element(handle);
 }
 
 pub fn update_mesh(handle: Mesh.Handle, data: []const u8) void {
     const mesh = meshes.get_element_ptr(handle) orelse return;
-    destroy_mesh_data(mesh);
-    if (data.len == 0) return;
+    if (data.len == 0) {
+        retire_mesh_data(mesh);
+        return;
+    }
 
     if (!is_linear_range(data)) {
         std.log.err("3DS Mango mesh update received non-linear memory; use std.process.Init.gpa for mesh storage", .{});
@@ -382,8 +471,23 @@ pub fn update_mesh(handle: Mesh.Handle, data: []const u8) void {
         return;
     }
 
+    const source_page = data_page(data);
+    const source_offset = page_offset(data);
+    if (mesh.buffer != .null and
+        mesh.source_page == source_page and
+        mesh.source_offset == source_offset and
+        data.len <= mesh.capacity)
+    {
+        _ = horizon.flushProcessDataCache(.current, data);
+        mesh.size = @intCast(data.len);
+        return;
+    }
+
+    retire_mesh_data(mesh);
+
+    const capacity: u32 = @intCast(data.len);
     const buffer = gfx.surface.device.createBuffer(.{
-        .size = .size(@intCast(data.len)),
+        .size = .size(capacity),
         .usage = .{ .vertex_buffer = true },
     }, null) catch |err| {
         std.log.err("3DS Mango buffer creation failed: {s}", .{@errorName(err)});
@@ -391,7 +495,7 @@ pub fn update_mesh(handle: Mesh.Handle, data: []const u8) void {
     };
 
     const memory = external_memory(data);
-    gfx.surface.device.bindBufferMemory(buffer, memory, .size(@intCast(page_offset(data)))) catch |err| {
+    gfx.surface.device.bindBufferMemory(buffer, memory, .size(@intCast(source_offset))) catch |err| {
         std.log.err("3DS Mango buffer bind failed: {s}", .{@errorName(err)});
         gfx.surface.device.destroyBuffer(buffer, null);
         return;
@@ -402,6 +506,9 @@ pub fn update_mesh(handle: Mesh.Handle, data: []const u8) void {
         .buffer = buffer,
         .memory = memory,
         .size = @intCast(data.len),
+        .capacity = capacity,
+        .source_page = source_page,
+        .source_offset = source_offset,
     };
 }
 
@@ -418,14 +525,17 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize) void {
         return;
     };
 
-    var uniforms = matrix_uniforms(model, &pending_state.view, &pending_state.proj);
-    cmd.bindFloatUniforms(.vertex, 0, &uniforms);
+    upload_modelview_uniforms(cmd, model, &pending_state.view);
 
-    bind_draw_texture_state(cmd);
+    const state = screen_state(current_screen);
+    bind_draw_texture_state(state, cmd);
 
-    const buffers = [_]mango.Buffer{mesh.buffer};
-    const offsets = [_]u32{0};
-    cmd.bindVertexBuffersSlice(0, &buffers, &offsets);
+    if (state.bound_vertex_buffer != mesh.buffer) {
+        const buffers = [_]mango.Buffer{mesh.buffer};
+        const offsets = [_]u32{0};
+        cmd.bindVertexBuffersSlice(0, &buffers, &offsets);
+        state.bound_vertex_buffer = mesh.buffer;
+    }
     cmd.draw(@intCast(count), 0);
 }
 
@@ -454,6 +564,19 @@ pub fn update_texture(handle: Texture.Handle, data: []align(16) u8) void {
     const texture = texture_slots.get_element_ptr(handle) orelse return;
     if (!texture.alive) return;
     if (data.len < @as(usize, texture.width) * @as(usize, texture.height) * 4) return;
+
+    if (gfx.frame_active) {
+        queue_pending_texture_upload(handle, data) catch |err| {
+            std.log.err("3DS Mango texture update queue failed: {s}", .{@errorName(err)});
+        };
+        return;
+    }
+
+    wait_for_frame_sync() catch |err| {
+        std.log.err("3DS Mango texture update wait failed: {s}", .{@errorName(err)});
+        return;
+    };
+    collect_retired_resources();
     upload_texture_pixels(texture, data) catch |err| {
         std.log.err("3DS Mango texture upload failed: {s}", .{@errorName(err)});
     };
@@ -470,7 +593,8 @@ pub fn bind_texture(handle: Texture.Handle) void {
 
 pub fn destroy_texture(handle: Texture.Handle) void {
     const texture = texture_slots.get_element_ptr(handle) orelse return;
-    destroy_texture_data(texture);
+    drop_pending_texture_uploads(handle);
+    retire_texture_data(texture);
     _ = texture_slots.remove_element(handle);
     if (current_texture == handle) current_texture = 0;
 }
@@ -621,20 +745,23 @@ fn begin_screen_recording(screen: gfx.Surface.Screen, reset_depth_on_begin: bool
 
     const cmd = state.command_buffer;
     try cmd.begin();
+    state.reset_cache();
     cmd.bindShaders(&.{.vertex}, &.{basic_shader});
-    set_default_graphics_state(cmd, screen);
+    set_default_graphics_state(cmd, screen, state);
+    upload_projection_uniforms(cmd);
+    upload_static_uniforms(cmd);
     cmd.beginRendering(.{
         .color_attachment = render_target(screen).color_view,
         .depth_stencil_attachment = render_target(screen).depth_view,
     });
-    if (reset_depth_on_begin) draw_depth_clear_pass(cmd);
+    if (reset_depth_on_begin) draw_depth_clear_pass(cmd, state);
 
     state.recording = true;
     state.render_open = true;
     return cmd;
 }
 
-fn draw_depth_clear_pass(cmd: mango.CommandBuffer) void {
+fn draw_depth_clear_pass(cmd: mango.CommandBuffer, state: *ScreenState) void {
     if (depth_clear_geometry.buffer == .null) return;
 
     var uniforms = depth_clear_uniforms();
@@ -645,9 +772,10 @@ fn draw_depth_clear_pass(cmd: mango.CommandBuffer) void {
     cmd.setDepthWriteEnable(true);
     cmd.setAlphaTestEnable(false);
     cmd.setCullMode(.none);
-    bind_primary_color_state(cmd);
+    bind_primary_color_state(state, cmd);
     cmd.bindFloatUniforms(.vertex, 0, &uniforms);
     cmd.bindVertexBuffersSlice(0, &.{depth_clear_geometry.buffer}, &.{0});
+    state.bound_vertex_buffer = depth_clear_geometry.buffer;
     cmd.draw(6, 0);
     cmd.setColorWriteMask(.rgba);
     cmd.setBlendEquation(normal_blend_equation());
@@ -655,6 +783,8 @@ fn draw_depth_clear_pass(cmd: mango.CommandBuffer) void {
     cmd.setDepthWriteEnable(depth_write_enabled);
     apply_alpha_test_state(cmd);
     cmd.setCullMode(if (culling_enabled) .back else .none);
+    upload_projection_uniforms(cmd);
+    upload_static_uniforms(cmd);
 }
 
 fn depth_clear_uniforms() [11][4]f32 {
@@ -724,7 +854,7 @@ fn blit_screen_to_swapchain(screen: gfx.Surface.Screen, wait_value: u64) !u64 {
     return signal_value;
 }
 
-fn set_default_graphics_state(cmd: mango.CommandBuffer, screen: gfx.Surface.Screen) void {
+fn set_default_graphics_state(cmd: mango.CommandBuffer, screen: gfx.Surface.Screen, state: *ScreenState) void {
     const dims = screen_dimensions(screen);
     const rect = mango.Rect2D{
         .offset = .{ .x = 0, .y = 0 },
@@ -740,7 +870,7 @@ fn set_default_graphics_state(cmd: mango.CommandBuffer, screen: gfx.Surface.Scre
         .max_depth = 1.0,
     });
     cmd.setScissor(.inside(rect));
-    bind_primary_color_state(cmd);
+    bind_primary_color_state(state, cmd);
     cmd.setBlendEquation(normal_blend_equation());
     cmd.setColorWriteMask(.rgba);
     cmd.setDepthTestEnable(true);
@@ -760,25 +890,37 @@ fn set_default_graphics_state(cmd: mango.CommandBuffer, screen: gfx.Surface.Scre
     cmd.setLightingEnable(false);
 }
 
-fn bind_draw_texture_state(cmd: mango.CommandBuffer) void {
+fn bind_draw_texture_state(state: *ScreenState, cmd: mango.CommandBuffer) void {
     const texture = texture_slots.get_element(current_texture) orelse {
-        bind_primary_color_state(cmd);
+        bind_primary_color_state(state, cmd);
         return;
     };
     if (!texture.alive or texture.view == .null or texture_sampler == .null) {
-        bind_primary_color_state(cmd);
+        bind_primary_color_state(state, cmd);
         return;
     }
-    cmd.bindCombinedImageSamplers(0, &.{.{
-        .image = texture.view,
-        .sampler = texture_sampler,
-    }});
-    cmd.setTextureCombiners(&texture_combiners, &texture_combiner_sources);
+    if (state.bound_texture != current_texture) {
+        cmd.bindCombinedImageSamplers(0, &.{.{
+            .image = texture.view,
+            .sampler = texture_sampler,
+        }});
+        state.bound_texture = current_texture;
+    }
+    if (state.combiner_mode != .texture) {
+        cmd.setTextureCombiners(&texture_combiners, &texture_combiner_sources);
+        state.combiner_mode = .texture;
+    }
 }
 
-fn bind_primary_color_state(cmd: mango.CommandBuffer) void {
-    cmd.bindCombinedImageSamplers(0, &.{mango.CombinedImageSampler.none});
-    cmd.setTextureCombiners(&primary_color_combiners, &texture_combiner_sources);
+fn bind_primary_color_state(state: *ScreenState, cmd: mango.CommandBuffer) void {
+    if (state.bound_texture != 0) {
+        cmd.bindCombinedImageSamplers(0, &.{mango.CombinedImageSampler.none});
+        state.bound_texture = 0;
+    }
+    if (state.combiner_mode != .primary) {
+        cmd.setTextureCombiners(&primary_color_combiners, &texture_combiner_sources);
+        state.combiner_mode = .primary;
+    }
 }
 
 fn apply_alpha_test_state(cmd: mango.CommandBuffer) void {
@@ -864,16 +1006,35 @@ fn texture_color_combiner() mango.TextureCombinerUnit {
     };
 }
 
-fn matrix_uniforms(model: *const Mat4, view: *const Mat4, proj: *const Mat4) [11][4]f32 {
-    var uniforms: [11][4]f32 = undefined;
-    const projection = mat4_to_uniform_rows(Mat4.mul(proj.*, projection_transform));
-    const model_view = mat4_to_uniform_rows(Mat4.mul(model.*, view.*));
-    for (projection, 0..) |row, i| uniforms[i] = row;
-    for (model_view, 0..) |row, i| uniforms[i + 4] = row;
-    uniforms[8] = POS_SCALE;
-    uniforms[9] = .{ UV_SCALE[0], UV_SCALE[1], draw_state.uv_offset[0], draw_state.uv_offset[1] };
-    uniforms[10] = COLOR_SCALE;
-    return uniforms;
+fn update_projection_uniform_rows() void {
+    projection_uniform_rows = mat4_to_uniform_rows(Mat4.mul(pending_state.proj, projection_transform));
+}
+
+fn upload_projection_uniforms(cmd: mango.CommandBuffer) void {
+    cmd.bindFloatUniforms(.vertex, 0, &projection_uniform_rows);
+}
+
+fn upload_modelview_uniforms(cmd: mango.CommandBuffer, model: *const Mat4, view: *const Mat4) void {
+    var rows = mat4_to_uniform_rows(Mat4.mul(model.*, view.*));
+    cmd.bindFloatUniforms(.vertex, 4, &rows);
+}
+
+fn upload_static_uniforms(cmd: mango.CommandBuffer) void {
+    var uniforms = [_][4]f32{
+        POS_SCALE,
+        uv_uniform_row(),
+        COLOR_SCALE,
+    };
+    cmd.bindFloatUniforms(.vertex, 8, &uniforms);
+}
+
+fn upload_uv_uniform(cmd: mango.CommandBuffer) void {
+    var uniform = [_][4]f32{uv_uniform_row()};
+    cmd.bindFloatUniforms(.vertex, 9, &uniform);
+}
+
+fn uv_uniform_row() [4]f32 {
+    return .{ UV_SCALE[0], UV_SCALE[1], draw_state.uv_offset[0], draw_state.uv_offset[1] };
 }
 
 fn mat4_to_uniform_rows(mat: Mat4) [4][4]f32 {
@@ -947,6 +1108,146 @@ fn reset_screen_state(state: *ScreenState) void {
     }
     state.recording = false;
     state.render_open = false;
+    state.reset_cache();
+}
+
+fn queue_pending_texture_upload(handle: Texture.Handle, data: []align(16) u8) !void {
+    const texture = texture_slots.get_element(handle) orelse return;
+    if (!texture.alive) return;
+
+    const byte_count = texture_byte_count(texture.width, texture.height);
+    const copy = try render_alloc.alignedAlloc(u8, .fromByteUnits(16), byte_count);
+    errdefer render_alloc.free(copy);
+    @memcpy(copy, data[0..byte_count]);
+
+    _ = pending_texture_uploads.add_element(.{
+        .handle = handle,
+        .data = copy,
+    }) orelse return error.PendingTextureQueueFull;
+}
+
+fn drain_pending_texture_uploads() void {
+    for (pending_texture_uploads.buffer[1..]) |*maybe_upload| {
+        if (maybe_upload.*) |upload| {
+            if (texture_slots.get_element_ptr(upload.handle)) |texture| {
+                if (texture.alive) {
+                    upload_texture_pixels(texture, upload.data) catch |err| {
+                        std.log.err("3DS Mango pending texture upload failed: {s}", .{@errorName(err)});
+                    };
+                }
+            }
+            render_alloc.free(upload.data);
+            maybe_upload.* = null;
+        }
+    }
+    pending_texture_uploads.clear();
+}
+
+fn drop_pending_texture_uploads(handle: Texture.Handle) void {
+    for (pending_texture_uploads.buffer[1..], 1..) |*maybe_upload, i| {
+        if (maybe_upload.*) |upload| {
+            if (upload.handle == handle) {
+                render_alloc.free(upload.data);
+                maybe_upload.* = null;
+                _ = pending_texture_uploads.remove_element(i);
+            }
+        }
+    }
+}
+
+fn destroy_pending_texture_uploads() void {
+    for (pending_texture_uploads.buffer[1..]) |*maybe_upload| {
+        if (maybe_upload.*) |upload| {
+            render_alloc.free(upload.data);
+            maybe_upload.* = null;
+        }
+    }
+    pending_texture_uploads.clear();
+}
+
+fn retire_mesh_data(mesh: *MeshData) void {
+    const buffer = mesh.buffer;
+    mesh.* = .{};
+    if (buffer == .null or gfx.surface.device == .null) return;
+
+    if (retired_mesh_buffers.add_element(buffer) == null) {
+        if (gfx.frame_active) {
+            retired_mesh_buffer_overflow.append(render_alloc, buffer) catch |err| {
+                std.log.err("3DS Mango retired mesh overflow allocation failed; leaking buffer: {s}", .{@errorName(err)});
+            };
+            return;
+        }
+        collect_retired_resources_after_sync();
+        if (retired_mesh_buffers.add_element(buffer) == null) {
+            gfx.surface.device.waitIdle();
+            destroy_mesh_buffer(buffer);
+        }
+    }
+}
+
+fn retire_texture_data(texture: *TextureData) void {
+    const retired = texture.*;
+    texture.* = .{};
+    if (retired.memory == .null and retired.image == .null and retired.view == .null) return;
+    if (gfx.surface.device == .null) return;
+
+    if (retired_textures.add_element(retired) == null) {
+        if (gfx.frame_active) {
+            retired_texture_overflow.append(render_alloc, retired) catch |err| {
+                std.log.err("3DS Mango retired texture overflow allocation failed; leaking texture: {s}", .{@errorName(err)});
+            };
+            return;
+        }
+        collect_retired_resources_after_sync();
+        if (retired_textures.add_element(retired) == null) {
+            gfx.surface.device.waitIdle();
+            var immediate = retired;
+            destroy_texture_data(&immediate);
+        }
+    }
+}
+
+fn collect_retired_resources_after_sync() void {
+    if (gfx.surface.device == .null) return;
+    if (gfx.frame_active) {
+        gfx.surface.device.waitIdle();
+    } else {
+        wait_for_frame_sync() catch |err| {
+            std.log.err("3DS Mango retired resource wait failed: {s}", .{@errorName(err)});
+            gfx.surface.device.waitIdle();
+        };
+    }
+    collect_retired_resources();
+}
+
+fn collect_retired_resources() void {
+    if (gfx.surface.device == .null) return;
+
+    for (retired_mesh_buffers.buffer[1..]) |*maybe_buffer| {
+        if (maybe_buffer.*) |buffer| {
+            destroy_mesh_buffer(buffer);
+            maybe_buffer.* = null;
+        }
+    }
+    retired_mesh_buffers.clear();
+
+    for (retired_mesh_buffer_overflow.items) |buffer| {
+        destroy_mesh_buffer(buffer);
+    }
+    retired_mesh_buffer_overflow.clearRetainingCapacity();
+
+    for (retired_textures.buffer[1..]) |*maybe_texture| {
+        if (maybe_texture.*) |*texture| {
+            destroy_texture_data(texture);
+            maybe_texture.* = null;
+        }
+    }
+    retired_textures.clear();
+
+    for (retired_texture_overflow.items) |*texture| {
+        destroy_texture_data(texture);
+    }
+    retired_texture_overflow.clearRetainingCapacity();
 }
 
 fn cleanup_renderer_resources() void {
@@ -971,6 +1272,10 @@ fn cleanup_renderer_resources() void {
     if (bottom_frame_semaphore != .null) {
         gfx.surface.device.destroySemaphore(bottom_frame_semaphore, null);
         bottom_frame_semaphore = .null;
+    }
+    if (texture_upload_semaphore != .null) {
+        gfx.surface.device.destroySemaphore(texture_upload_semaphore, null);
+        texture_upload_semaphore = .null;
     }
     if (top_frame_semaphore != .null) {
         gfx.surface.device.destroySemaphore(top_frame_semaphore, null);
@@ -1006,9 +1311,15 @@ fn destroy_all_textures() void {
 
 fn destroy_mesh_data(mesh: *MeshData) void {
     if (mesh.buffer != .null and gfx.surface.device != .null) {
-        gfx.surface.device.destroyBuffer(mesh.buffer, null);
+        destroy_mesh_buffer(mesh.buffer);
     }
     mesh.* = .{};
+}
+
+fn destroy_mesh_buffer(buffer: mango.Buffer) void {
+    if (buffer != .null and gfx.surface.device != .null) {
+        gfx.surface.device.destroyBuffer(buffer, null);
+    }
 }
 
 fn destroy_buffer_data(data: *BufferData) void {
@@ -1201,6 +1512,7 @@ fn upload_texture_pixels(texture: *TextureData, data: []const u8) !void {
     }, null);
     defer gfx.surface.device.destroyBuffer(texture_buffer, null);
     try gfx.surface.device.bindBufferMemory(texture_buffer, texture.memory, .size(0));
+
     const mapped = try gfx.surface.device.mapMemory(staging_memory, .size(0), .whole);
     defer gfx.surface.device.unmapMemory(staging_memory);
     convert_texture_data_tiled_abgr(mapped[0..byte_count], data[0..byte_count], texture.width, texture.height);
@@ -1209,14 +1521,18 @@ fn upload_texture_pixels(texture: *TextureData, data: []const u8) !void {
         .offset = .size(0),
         .size = .size(byte_count),
     }});
+
+    texture_upload_next_sync_value += 1;
+    const signal_op = mango.SemaphoreQueueOperation.init(texture_upload_semaphore, texture_upload_next_sync_value);
     try gfx.surface.queues.get(.transfer).copyBuffer(.{
         .src_buffer = staging_buffer,
         .src_offset = .size(0),
         .dst_buffer = texture_buffer,
         .dst_offset = .size(0),
         .size = .size(byte_count),
+        .signal_semaphore = &signal_op,
     });
-    gfx.surface.device.waitIdle();
+    try gfx.surface.device.waitSemaphores(.init(&.{texture_upload_semaphore}, &.{texture_upload_next_sync_value}), FRAME_SYNC_TIMEOUT_NS);
 }
 
 fn destroy_texture_data(texture: *TextureData) void {
@@ -1293,6 +1609,10 @@ fn external_memory(data: []const u8) mango.DeviceMemory {
 
 fn page_offset(data: []const u8) usize {
     return @intFromPtr(data.ptr) & (PAGE_SIZE - 1);
+}
+
+fn data_page(data: []const u8) usize {
+    return std.mem.alignBackward(usize, @intFromPtr(data.ptr), PAGE_SIZE);
 }
 
 fn is_linear_range(data: []const u8) bool {
