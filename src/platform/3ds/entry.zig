@@ -15,7 +15,7 @@ const MIN_STACK_SIZE: u32 = 768 * 1024;
 const SOC_BUFFER_LEN: usize = 1024 * 1024;
 const log = std.log.scoped(.aether_3ds_entry);
 
-pub const zitrus_options: zitrus.ZitrusOptions = if (@hasDecl(app_root, "zitrus_options"))
+pub const zitrus_options = if (@hasDecl(app_root, "zitrus_options"))
     .{ .stack_size = @max(MIN_STACK_SIZE, app_root.zitrus_options.stack_size) }
 else
     .{ .stack_size = MIN_STACK_SIZE };

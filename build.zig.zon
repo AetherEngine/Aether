@@ -91,8 +91,9 @@
             .hash = "zsflt-0.0.1-_pCibQ4wAABnfZskVOk2Y14F056VNJtuqVpAEzUNBGfl",
         },
         .zitrus = .{
-            .url = "git+https://codeberg.org/GasInfinity/zitrus#195b7968221e509ff11a8b79167352d347ee98ee",
-            .hash = "zitrus-0.0.0-Ewix9Ec4HABJWzZgjz17mSNilgWmi6Ag3DROjhKPChf5",
+            // .url = "git+https://codeberg.org/GasInfinity/zitrus#195b7968221e509ff11a8b79167352d347ee98ee",
+            // .hash = "zitrus-0.0.0-Ewix9Ec4HABJWzZgjz17mSNilgWmi6Ag3DROjhKPChf5",
+            .path = "../zitrus",
         },
     },
     .paths = .{

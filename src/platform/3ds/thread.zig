@@ -31,7 +31,11 @@ fn priority_from_3ds(v: u6) api.Priority {
 }
 
 pub fn spawn(cfg: api.Config, comptime func: anytype, args: anytype) !Handle {
-    const alloc = cfg.allocator orelse return error.AllocatorRequired;
+    _ = cfg.allocator;
+    const thread_alloc = if (app.currentApplication()) |init|
+        init.base.gpa
+    else
+        return error.NoCurrentApplication;
 
     const Args = @TypeOf(args);
     const Wrapped = struct {
@@ -49,7 +53,7 @@ pub fn spawn(cfg: api.Config, comptime func: anytype, args: anytype) !Handle {
     };
 
     return try ThreadImpl.spawnOptions(
-        .{ .stack_size = cfg.stack_size, .allocator = alloc },
+        .{ .stack_size = cfg.stack_size, .allocator = thread_alloc },
         Wrapped.run,
         .{ cfg.priority, args },
         .{ .priority = priority_to_3ds(cfg.priority), .processor = .any },
