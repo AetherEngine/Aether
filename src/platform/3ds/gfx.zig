@@ -21,10 +21,10 @@ const pica = zitrus.hardware.pica;
 
 const MAX_TEXTURES = 256;
 const PAGE_SIZE = 4096;
-const SCREEN_WIDTH: u32 = 800;
+const SCREEN_WIDTH: u32 = 400;
 const SCREEN_HEIGHT: u32 = 240;
 const SCREEN_TOP_WIDTH = 240;
-const SCREEN_TOP_HEIGHT = 800;
+const SCREEN_TOP_HEIGHT = 400;
 const SCREEN_BOTTOM_WIDTH = 240;
 const SCREEN_BOTTOM_HEIGHT = 320;
 const COMMAND_BUFFER_COUNT = 2;
@@ -36,6 +36,13 @@ const UV_SCALE: [4]f32 = .{ snorm16_scale(), snorm16_scale(), 0.0, 0.0 };
 const COLOR_SCALE: [4]f32 = .{ unorm8_scale(), unorm8_scale(), unorm8_scale(), unorm8_scale() };
 
 const MeshData = struct {
+    vertex: MeshBufferData = .{},
+    index: MeshBufferData = .{},
+    vertex_count: usize = 0,
+    index_count: usize = 0,
+};
+
+const MeshBufferData = struct {
     buffer: mango.Buffer = .null,
     memory: mango.DeviceMemory = .null,
     size: u32 = 0,
@@ -455,68 +462,32 @@ pub fn destroy_mesh(handle: Mesh.Handle) void {
     _ = meshes.remove_element(handle);
 }
 
-pub fn update_mesh(handle: Mesh.Handle, data: []const u8) void {
+pub fn update_mesh(handle: Mesh.Handle, data: []const u8, indices: []const Mesh.Index) void {
     const mesh = meshes.get_element_ptr(handle) orelse return;
     if (data.len == 0) {
         retire_mesh_data(mesh);
         return;
     }
 
-    if (!is_linear_range(data)) {
-        std.log.err("3DS Mango mesh update received non-linear memory; use std.process.Init.gpa for mesh storage", .{});
-        return;
-    }
-    if (data.len > std.math.maxInt(u32)) {
-        std.log.err("3DS Mango mesh update too large: {} bytes", .{data.len});
-        return;
-    }
-
-    const source_page = data_page(data);
-    const source_offset = page_offset(data);
-    if (mesh.buffer != .null and
-        mesh.source_page == source_page and
-        mesh.source_offset == source_offset and
-        data.len <= mesh.capacity)
-    {
-        _ = horizon.flushProcessDataCache(.current, data);
-        mesh.size = @intCast(data.len);
-        return;
-    }
-
     retire_mesh_data(mesh);
-
-    const capacity: u32 = @intCast(data.len);
-    const buffer = gfx.surface.device.createBuffer(.{
-        .size = .size(capacity),
-        .usage = .{ .vertex_buffer = true },
-    }, null) catch |err| {
-        std.log.err("3DS Mango buffer creation failed: {s}", .{@errorName(err)});
-        return;
-    };
-
-    const memory = external_memory(data);
-    gfx.surface.device.bindBufferMemory(buffer, memory, .size(@intCast(source_offset))) catch |err| {
-        std.log.err("3DS Mango buffer bind failed: {s}", .{@errorName(err)});
-        gfx.surface.device.destroyBuffer(buffer, null);
-        return;
-    };
-
-    _ = horizon.flushProcessDataCache(.current, data);
-    mesh.* = .{
-        .buffer = buffer,
-        .memory = memory,
-        .size = @intCast(data.len),
-        .capacity = capacity,
-        .source_page = source_page,
-        .source_offset = source_offset,
-    };
+    mesh.vertex = create_mesh_buffer_data(data, .{ .vertex_buffer = true }, "vertex") orelse return;
+    const index_bytes = std.mem.sliceAsBytes(indices);
+    if (index_bytes.len > 0) {
+        mesh.index = create_mesh_buffer_data(index_bytes, .{ .index_buffer = true }, "index") orelse {
+            retire_mesh_data(mesh);
+            return;
+        };
+    }
+    mesh.vertex_count = data.len / vertex.Layout.stride;
+    mesh.index_count = indices.len;
 }
 
-pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize) void {
+pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
     const mesh = meshes.get_element_ptr(handle) orelse return;
-    if (mesh.buffer == .null or count == 0) return;
-    if (count > std.math.maxInt(usize) / vertex.Layout.stride) return;
-    if (count * vertex.Layout.stride > mesh.size) return;
+    if (mesh.vertex.buffer == .null or mesh.vertex_count == 0) return;
+    if (mesh.vertex_count > std.math.maxInt(usize) / vertex.Layout.stride) return;
+    if (mesh.vertex_count * vertex.Layout.stride > mesh.vertex.size) return;
+    if (mesh.index_count > 0 and mesh.index.buffer == .null) return;
 
     draw_state.mat = model.*;
 
@@ -530,13 +501,57 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize) void {
     const state = screen_state(current_screen);
     bind_draw_texture_state(state, cmd);
 
-    if (state.bound_vertex_buffer != mesh.buffer) {
-        const buffers = [_]mango.Buffer{mesh.buffer};
+    if (state.bound_vertex_buffer != mesh.vertex.buffer) {
+        const buffers = [_]mango.Buffer{mesh.vertex.buffer};
         const offsets = [_]u32{0};
         cmd.bindVertexBuffersSlice(0, &buffers, &offsets);
-        state.bound_vertex_buffer = mesh.buffer;
+        state.bound_vertex_buffer = mesh.vertex.buffer;
     }
-    cmd.draw(@intCast(count), 0);
+    if (mesh.index_count > 0) {
+        cmd.bindIndexBuffer(mesh.index.buffer, 0, .u16);
+        cmd.drawIndexed(@intCast(mesh.index_count), 0, 0);
+    } else {
+        cmd.draw(@intCast(mesh.vertex_count), 0);
+    }
+}
+
+fn create_mesh_buffer_data(data: []const u8, usage: mango.BufferCreateInfo.Usage, label: []const u8) ?MeshBufferData {
+    if (!is_linear_range(data)) {
+        std.log.err("3DS Mango {s} mesh update received non-linear memory; use std.process.Init.gpa for mesh storage", .{label});
+        return null;
+    }
+    if (data.len > std.math.maxInt(u32)) {
+        std.log.err("3DS Mango {s} mesh update too large: {} bytes", .{ label, data.len });
+        return null;
+    }
+
+    const source_page = data_page(data);
+    const source_offset = page_offset(data);
+    const capacity: u32 = @intCast(data.len);
+    const buffer = gfx.surface.device.createBuffer(.{
+        .size = .size(capacity),
+        .usage = usage,
+    }, null) catch |err| {
+        std.log.err("3DS Mango {s} buffer creation failed: {s}", .{ label, @errorName(err) });
+        return null;
+    };
+
+    const memory = external_memory(data);
+    gfx.surface.device.bindBufferMemory(buffer, memory, .size(@intCast(source_offset))) catch |err| {
+        std.log.err("3DS Mango {s} buffer bind failed: {s}", .{ label, @errorName(err) });
+        gfx.surface.device.destroyBuffer(buffer, null);
+        return null;
+    };
+
+    _ = horizon.flushProcessDataCache(.current, data);
+    return .{
+        .buffer = buffer,
+        .memory = memory,
+        .size = @intCast(data.len),
+        .capacity = capacity,
+        .source_page = source_page,
+        .source_offset = source_offset,
+    };
 }
 
 pub fn create_texture(width: u32, height: u32, data: []align(16) u8) anyerror!Texture.Handle {
@@ -1166,10 +1181,17 @@ fn destroy_pending_texture_uploads() void {
 }
 
 fn retire_mesh_data(mesh: *MeshData) void {
-    const buffer = mesh.buffer;
+    const vertex_buffer = mesh.vertex.buffer;
+    const index_buffer = mesh.index.buffer;
     mesh.* = .{};
-    if (buffer == .null or gfx.surface.device == .null) return;
+    if (gfx.surface.device == .null) return;
 
+    retire_mesh_buffer(vertex_buffer);
+    retire_mesh_buffer(index_buffer);
+}
+
+fn retire_mesh_buffer(buffer: mango.Buffer) void {
+    if (buffer == .null) return;
     if (retired_mesh_buffers.add_element(buffer) == null) {
         if (gfx.frame_active) {
             retired_mesh_buffer_overflow.append(render_alloc, buffer) catch |err| {
@@ -1310,8 +1332,9 @@ fn destroy_all_textures() void {
 }
 
 fn destroy_mesh_data(mesh: *MeshData) void {
-    if (mesh.buffer != .null and gfx.surface.device != .null) {
-        destroy_mesh_buffer(mesh.buffer);
+    if (gfx.surface.device != .null) {
+        destroy_mesh_buffer(mesh.vertex.buffer);
+        destroy_mesh_buffer(mesh.index.buffer);
     }
     mesh.* = .{};
 }

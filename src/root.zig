@@ -23,6 +23,7 @@ pub const Platform = options.@"build.Platform";
 pub const Gfx = options.@"build.Gfx";
 pub const platform: Platform = options.config.platform;
 pub const gfx: Gfx = options.config.gfx;
+pub const mesh_indexing: bool = options.config.mesh_indexing;
 
 comptime {
     if (platform != .wasm) std.testing.refAllDecls(@This());

@@ -65,6 +65,9 @@ pub const Config = struct {
     /// Flush the file log after every message. Useful for diagnosing hard
     /// hangs on consoles where normal shutdown never reaches logger.deinit.
     flush_logs: bool = false,
+    /// When enabled, mesh helpers emit index buffers and backends draw through
+    /// indexed paths when an index buffer is uploaded.
+    mesh_indexing: bool = true,
 
     pub fn resolve(target: std.Build.ResolvedTarget, overrides: Overrides) Config {
         const plat: Platform = blk: {
@@ -97,17 +100,20 @@ pub const Config = struct {
             .wasi => .webgl,
             else => .default,
         };
+        const resolved_gfx = overrides.gfx orelse default_gfx;
+        const default_mesh_indexing = plat != .psp and resolved_gfx != .headless;
 
         const default_audio: Audio = .default;
 
         return .{
             .platform = plat,
-            .gfx = overrides.gfx orelse default_gfx,
+            .gfx = resolved_gfx,
             .audio = overrides.audio orelse default_audio,
             .psp_display_mode = overrides.psp_display_mode orelse .rgba8888,
             .psp_mipmaps = overrides.psp_mipmaps orelse false,
             .use_cwd = overrides.use_cwd orelse false,
             .flush_logs = overrides.flush_logs orelse false,
+            .mesh_indexing = overrides.mesh_indexing orelse default_mesh_indexing,
         };
     }
 
@@ -118,6 +124,7 @@ pub const Config = struct {
         psp_mipmaps: ?bool = null,
         use_cwd: ?bool = null,
         flush_logs: ?bool = null,
+        mesh_indexing: ?bool = null,
         /// Promotes an `aarch64-freestanding-none` target to the
         /// `nintendo_switch` platform. No effect when null/false.
         nintendo_switch: ?bool = null,
@@ -1429,6 +1436,7 @@ pub fn build(b: *std.Build) void {
         .psp_mipmaps = b.option(bool, "psp-mipmaps", "PSP: generate mip levels for VRAM-resident textures (default: false)"),
         .use_cwd = b.option(bool, "use-cwd", "Force resources+data dirs to CWD (debug/CI convenience; default: false)"),
         .flush_logs = b.option(bool, "flush-logs", "Flush aether.log after every log message (debugging hard hangs; default: false)"),
+        .mesh_indexing = b.option(bool, "mesh-indexing", "Enable mesh index buffers (default: on except PSP/headless; override works on all backends)"),
         .nintendo_switch = b.option(bool, "nintendo-switch", "Build for Nintendo Switch (requires -Dtarget=aarch64-freestanding-none and devkitA64/libnx)"),
     };
 

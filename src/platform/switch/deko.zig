@@ -46,6 +46,8 @@ pub const DkBufExtents = c.DkBufExtents;
 pub const DkCopyBuf = c.DkCopyBuf;
 pub const DkImageRect = c.DkImageRect;
 pub const DkSampler = c.DkSampler;
+pub const DkIdxFormat = c.DkIdxFormat;
+pub const IdxFormatUint16 = c.DkIdxFormat_Uint16;
 
 // Zig demotes deko3d's C bitfield structs to opaque types during @cImport.
 // Keep only these raw ABI mirrors locally so state setup remains explicit.
@@ -85,6 +87,7 @@ pub const dkCmdBufSignalFence = c.dkCmdBufSignalFence;
 pub const dkCmdBufBarrier = c.dkCmdBufBarrier;
 pub const dkCmdBufBindVtxBufferState = c.dkCmdBufBindVtxBufferState;
 pub const dkCmdBufBindVtxBuffers = c.dkCmdBufBindVtxBuffers;
+pub const dkCmdBufBindIdxBuffer = c.dkCmdBufBindIdxBuffer;
 pub const dkCmdBufBindUniformBuffers = c.dkCmdBufBindUniformBuffers;
 pub const dkCmdBufSetViewports = c.dkCmdBufSetViewports;
 pub const dkCmdBufSetScissors = c.dkCmdBufSetScissors;
@@ -99,6 +102,7 @@ pub const dkCmdBufBindImageDescriptorSet = c.dkCmdBufBindImageDescriptorSet;
 pub const dkCmdBufBindSamplerDescriptorSet = c.dkCmdBufBindSamplerDescriptorSet;
 pub const dkCmdBufBindTextures = c.dkCmdBufBindTextures;
 pub const dkCmdBufDraw = c.dkCmdBufDraw;
+pub const dkCmdBufDrawIndexed = c.dkCmdBufDrawIndexed;
 pub const dkQueueCreate = c.dkQueueCreate;
 pub const dkQueueDestroy = c.dkQueueDestroy;
 pub const dkQueueIsInErrorState = c.dkQueueIsInErrorState;
