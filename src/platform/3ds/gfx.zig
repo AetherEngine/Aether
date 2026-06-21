@@ -30,6 +30,7 @@ const SCREEN_BOTTOM_HEIGHT = 320;
 const COMMAND_BUFFER_COUNT = 2;
 const FRAME_SYNC_TIMEOUT_NS = 2 * std.time.ns_per_s;
 const TEX_BPP = 4;
+const ALPHA_TEST_REFERENCE: u8 = 25;
 const POS_SCALE: [4]f32 = .{ snorm16_scale(), snorm16_scale(), snorm16_scale(), 1.0 };
 const UV_SCALE: [4]f32 = .{ snorm16_scale(), snorm16_scale(), 0.0, 0.0 };
 const COLOR_SCALE: [4]f32 = .{ unorm8_scale(), unorm8_scale(), unorm8_scale(), unorm8_scale() };
@@ -38,6 +39,11 @@ const MeshData = struct {
     buffer: mango.Buffer = .null,
     memory: mango.DeviceMemory = .null,
     size: u32 = 0,
+};
+
+const BufferData = struct {
+    buffer: mango.Buffer = .null,
+    memory: mango.DeviceMemory = .null,
 };
 
 const TextureData = struct {
@@ -50,9 +56,12 @@ const TextureData = struct {
 };
 
 const RenderTarget = struct {
-    memory: mango.DeviceMemory = .null,
-    image: mango.Image = .null,
-    view: mango.ImageView = .null,
+    color_memory: mango.DeviceMemory = .null,
+    depth_memory: mango.DeviceMemory = .null,
+    color_image: mango.Image = .null,
+    depth_image: mango.Image = .null,
+    color_view: mango.ImageView = .null,
+    depth_view: mango.ImageView = .null,
 };
 
 pub const ShaderState = struct {
@@ -131,6 +140,7 @@ var top_state = ScreenState{};
 var bottom_state = ScreenState{};
 var top_target = RenderTarget{};
 var bottom_target = RenderTarget{};
+var depth_clear_geometry = BufferData{};
 var basic_shader: mango.Shader = .null;
 var vertex_input: mango.VertexInputLayout = .null;
 var texture_sampler: mango.Sampler = .null;
@@ -156,6 +166,7 @@ pub fn init() anyerror!void {
 
     basic_shader = try gfx.surface.device.createShader(.init(.psh, &basic_vert, "main"), null);
     vertex_input = try create_vertex_input();
+    depth_clear_geometry = try create_depth_clear_geometry();
     texture_sampler = try gfx.surface.device.createSampler(.{
         .mag_filter = .nearest,
         .min_filter = .nearest,
@@ -220,6 +231,11 @@ pub fn set_clear_color(r: f32, g: f32, b: f32, a: f32) void {
 
 pub fn set_alpha_blend(enabled: bool) void {
     draw_state.alpha_blend_enabled = @intFromBool(enabled);
+    const state = screen_state(current_screen);
+    if (initialized and state.recording) {
+        state.command_buffer.setBlendEquation(normal_blend_equation());
+        apply_alpha_test_state(state.command_buffer);
+    }
 }
 
 pub fn set_depth_write(enabled: bool) void {
@@ -315,7 +331,15 @@ pub fn end_frame() void {
     if (update_bottom) bottom_frame_wait = @max(bottom_frame_wait, bottom_wait);
 }
 
-pub fn clear_depth() void {}
+pub fn clear_depth() void {
+    if (!initialized or gfx.surface.device == .null) return;
+
+    const cmd = begin_screen_recording(current_screen, false) catch |err| {
+        std.log.err("3DS Mango depth clear recording failed: {s}", .{@errorName(err)});
+        return;
+    };
+    draw_depth_clear_pass(cmd);
+}
 
 pub fn has_second_screen() bool {
     return true;
@@ -389,7 +413,7 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize) void {
 
     draw_state.mat = model.*;
 
-    const cmd = begin_screen_recording(current_screen) catch |err| {
+    const cmd = begin_screen_recording(current_screen, true) catch |err| {
         std.log.err("3DS Mango command recording failed: {s}", .{@errorName(err)});
         return;
     };
@@ -455,17 +479,23 @@ pub fn force_texture_resident(_: Texture.Handle) void {}
 
 fn wait_for_frame_sync() !void {
     if (top_frame_wait != 0) {
-        gfx.surface.device.waitSemaphores(.init(&.{top_frame_semaphore}, &.{top_frame_wait}), FRAME_SYNC_TIMEOUT_NS) catch |err| {
+        wait_for_screen_sync(.top, top_frame_wait) catch |err| {
             std.log.err("3DS Mango top frame semaphore wait stalled: target={} next={}", .{ top_frame_wait, top_next_sync_value });
             return err;
         };
     }
     if (bottom_frame_wait != 0) {
-        gfx.surface.device.waitSemaphores(.init(&.{bottom_frame_semaphore}, &.{bottom_frame_wait}), FRAME_SYNC_TIMEOUT_NS) catch |err| {
+        wait_for_screen_sync(.bottom, bottom_frame_wait) catch |err| {
             std.log.err("3DS Mango bottom frame semaphore wait stalled: target={} next={}", .{ bottom_frame_wait, bottom_next_sync_value });
             return err;
         };
     }
+}
+
+fn wait_for_screen_sync(screen: gfx.Surface.Screen, wait_value: u64) !void {
+    if (wait_value == 0) return;
+    const semaphore = screen_semaphore(screen);
+    try gfx.surface.device.waitSemaphores(.init(&.{semaphore}, &.{wait_value}), FRAME_SYNC_TIMEOUT_NS);
 }
 
 fn screen_semaphore(screen: gfx.Surface.Screen) mango.Semaphore {
@@ -496,10 +526,11 @@ fn queue_clear_screen(screen: gfx.Surface.Screen, wait_value: u64) !u64 {
     else
         .init(semaphore, wait_value);
     const signal_op = mango.SemaphoreQueueOperation.init(semaphore, signal_value);
-    try gfx.surface.queues.get(.fill).clearColorImage(.{
+    const fill_queue = gfx.surface.queues.get(.fill);
+    try fill_queue.clearColorImage(.{
         .wait_semaphore = if (wait_op) |*op| op else null,
         .subresource_range = .full,
-        .image = render_target(screen).image,
+        .image = render_target(screen).color_image,
         .color = clear_color,
         .signal_semaphore = &signal_op,
     });
@@ -533,7 +564,58 @@ fn create_vertex_input() !mango.VertexInputLayout {
     return gfx.surface.device.createVertexInputLayout(.init(&bindings, &attributes, &.{}), null);
 }
 
-fn begin_screen_recording(screen: gfx.Surface.Screen) !mango.CommandBuffer {
+fn create_depth_clear_geometry() !BufferData {
+    const clear_vertices = [_]vertex.Vertex{
+        depth_clear_vertex(-1.0, -1.0),
+        depth_clear_vertex(1.0, -1.0),
+        depth_clear_vertex(1.0, 1.0),
+        depth_clear_vertex(-1.0, -1.0),
+        depth_clear_vertex(1.0, 1.0),
+        depth_clear_vertex(-1.0, 1.0),
+    };
+    const bytes = std.mem.asBytes(&clear_vertices);
+
+    var data = BufferData{};
+    data.memory = try gfx.surface.device.allocateMemory(.{
+        .allocation_size = .size(@intCast(bytes.len)),
+        .memory_type = .fcram_cached,
+    }, null);
+    errdefer {
+        gfx.surface.device.freeMemory(data.memory, null);
+        data.memory = .null;
+    }
+
+    data.buffer = try gfx.surface.device.createBuffer(.{
+        .size = .size(@intCast(bytes.len)),
+        .usage = .{ .vertex_buffer = true },
+    }, null);
+    errdefer {
+        gfx.surface.device.destroyBuffer(data.buffer, null);
+        data.buffer = .null;
+    }
+    try gfx.surface.device.bindBufferMemory(data.buffer, data.memory, .size(0));
+
+    const mapped = try gfx.surface.device.mapMemory(data.memory, .size(0), .whole);
+    defer gfx.surface.device.unmapMemory(data.memory);
+    @memcpy(mapped[0..bytes.len], bytes);
+    try gfx.surface.device.flushMappedMemoryRanges(&.{.{
+        .memory = data.memory,
+        .offset = .size(0),
+        .size = .size(@intCast(bytes.len)),
+    }});
+
+    return data;
+}
+
+fn depth_clear_vertex(x: f32, y: f32) vertex.Vertex {
+    return .{
+        .pos = .{ float_to_snorm16(x), float_to_snorm16(y), -32767 },
+        .color = 0,
+        .uv = .{ 0, 0 },
+    };
+}
+
+fn begin_screen_recording(screen: gfx.Surface.Screen, reset_depth_on_begin: bool) !mango.CommandBuffer {
     const state = screen_state(screen);
     if (state.recording) return state.command_buffer;
 
@@ -542,13 +624,48 @@ fn begin_screen_recording(screen: gfx.Surface.Screen) !mango.CommandBuffer {
     cmd.bindShaders(&.{.vertex}, &.{basic_shader});
     set_default_graphics_state(cmd, screen);
     cmd.beginRendering(.{
-        .color_attachment = render_target(screen).view,
-        .depth_stencil_attachment = .null,
+        .color_attachment = render_target(screen).color_view,
+        .depth_stencil_attachment = render_target(screen).depth_view,
     });
+    if (reset_depth_on_begin) draw_depth_clear_pass(cmd);
 
     state.recording = true;
     state.render_open = true;
     return cmd;
+}
+
+fn draw_depth_clear_pass(cmd: mango.CommandBuffer) void {
+    if (depth_clear_geometry.buffer == .null) return;
+
+    var uniforms = depth_clear_uniforms();
+    cmd.setColorWriteMask(.{});
+    cmd.setBlendEquation(keep_destination_blend_equation());
+    cmd.setDepthTestEnable(true);
+    cmd.setDepthCompareOp(.always);
+    cmd.setDepthWriteEnable(true);
+    cmd.setAlphaTestEnable(false);
+    cmd.setCullMode(.none);
+    bind_primary_color_state(cmd);
+    cmd.bindFloatUniforms(.vertex, 0, &uniforms);
+    cmd.bindVertexBuffersSlice(0, &.{depth_clear_geometry.buffer}, &.{0});
+    cmd.draw(6, 0);
+    cmd.setColorWriteMask(.rgba);
+    cmd.setBlendEquation(normal_blend_equation());
+    cmd.setDepthCompareOp(.lt);
+    cmd.setDepthWriteEnable(depth_write_enabled);
+    apply_alpha_test_state(cmd);
+    cmd.setCullMode(if (culling_enabled) .back else .none);
+}
+
+fn depth_clear_uniforms() [11][4]f32 {
+    var uniforms: [11][4]f32 = undefined;
+    const identity = mat4_to_uniform_rows(Mat4.identity());
+    for (identity, 0..) |row, i| uniforms[i] = row;
+    for (identity, 0..) |row, i| uniforms[i + 4] = row;
+    uniforms[8] = POS_SCALE;
+    uniforms[9] = .{ UV_SCALE[0], UV_SCALE[1], draw_state.uv_offset[0], draw_state.uv_offset[1] };
+    uniforms[10] = COLOR_SCALE;
+    return uniforms;
 }
 
 fn queue_submit_screen(screen: gfx.Surface.Screen, wait_value: u64) !u64 {
@@ -567,7 +684,17 @@ fn queue_submit_screen(screen: gfx.Surface.Screen, wait_value: u64) !u64 {
         cmd.endRendering();
         state.render_open = false;
     }
-    try cmd.end();
+    cmd.end() catch |err| {
+        state.recording = false;
+        cmd.reset(.none);
+        return err;
+    };
+    errdefer {
+        // Leave the screen state reusable if queue submission rejects the
+        // executable buffer before the GPU sees it.
+        state.recording = false;
+        cmd.reset(.none);
+    }
     try gfx.surface.queues.get(.submit).submit(.{
         .wait_semaphore = if (wait_op) |*op| op else null,
         .command_buffer = cmd,
@@ -588,7 +715,7 @@ fn blit_screen_to_swapchain(screen: gfx.Surface.Screen, wait_value: u64) !u64 {
     try gfx.surface.acquire(screen);
     try gfx.surface.queues.get(.transfer).blitImage(.{
         .wait_semaphore = if (wait_op) |*op| op else null,
-        .src_image = render_target(screen).image,
+        .src_image = render_target(screen).color_image,
         .dst_image = gfx.surface.current_image(screen),
         .src_subresource = .full,
         .dst_subresource = .full,
@@ -614,24 +741,15 @@ fn set_default_graphics_state(cmd: mango.CommandBuffer, screen: gfx.Surface.Scre
     });
     cmd.setScissor(.inside(rect));
     bind_primary_color_state(cmd);
-    cmd.setBlendEquation(.{
-        .src_color_factor = .src_alpha,
-        .dst_color_factor = .one_minus_src_alpha,
-        .color_op = .add,
-        .src_alpha_factor = .one,
-        .dst_alpha_factor = .one_minus_src_alpha,
-        .alpha_op = .add,
-    });
+    cmd.setBlendEquation(normal_blend_equation());
     cmd.setColorWriteMask(.rgba);
-    cmd.setDepthTestEnable(false);
-    cmd.setDepthCompareOp(.le);
+    cmd.setDepthTestEnable(true);
+    cmd.setDepthCompareOp(.lt);
     cmd.setDepthWriteEnable(depth_write_enabled);
     cmd.setDepthBias(0.0);
     cmd.setLogicOpEnable(false);
     cmd.setLogicOp(.copy);
-    cmd.setAlphaTestEnable(false);
-    cmd.setAlphaTestCompareOp(.always);
-    cmd.setAlphaTestReference(0);
+    apply_alpha_test_state(cmd);
     cmd.setStencilTestEnable(false);
     cmd.setStencilOp(.keep, .keep, .keep, .always);
     cmd.setStencilCompareMask(0xff);
@@ -661,6 +779,41 @@ fn bind_draw_texture_state(cmd: mango.CommandBuffer) void {
 fn bind_primary_color_state(cmd: mango.CommandBuffer) void {
     cmd.bindCombinedImageSamplers(0, &.{mango.CombinedImageSampler.none});
     cmd.setTextureCombiners(&primary_color_combiners, &texture_combiner_sources);
+}
+
+fn apply_alpha_test_state(cmd: mango.CommandBuffer) void {
+    cmd.setAlphaTestEnable(draw_state.alpha_blend_enabled != 0);
+    cmd.setAlphaTestCompareOp(.gt);
+    cmd.setAlphaTestReference(ALPHA_TEST_REFERENCE);
+}
+
+fn normal_blend_equation() mango.ColorBlendEquation {
+    return if (draw_state.alpha_blend_enabled != 0) .{
+        .src_color_factor = .src_alpha,
+        .dst_color_factor = .one_minus_src_alpha,
+        .color_op = .add,
+        .src_alpha_factor = .one,
+        .dst_alpha_factor = .one_minus_src_alpha,
+        .alpha_op = .add,
+    } else .{
+        .src_color_factor = .one,
+        .dst_color_factor = .zero,
+        .color_op = .add,
+        .src_alpha_factor = .one,
+        .dst_alpha_factor = .zero,
+        .alpha_op = .add,
+    };
+}
+
+fn keep_destination_blend_equation() mango.ColorBlendEquation {
+    return .{
+        .src_color_factor = .zero,
+        .dst_color_factor = .one,
+        .color_op = .add,
+        .src_alpha_factor = .zero,
+        .dst_alpha_factor = .one,
+        .alpha_op = .add,
+    };
 }
 
 const primary_color_combiners: [6]mango.TextureCombinerUnit = .{
@@ -801,6 +954,7 @@ fn cleanup_renderer_resources() void {
 
     destroy_render_target(&bottom_target);
     destroy_render_target(&top_target);
+    destroy_buffer_data(&depth_clear_geometry);
 
     if (vertex_input != .null) {
         gfx.surface.device.destroyVertexInputLayout(vertex_input, null);
@@ -857,21 +1011,44 @@ fn destroy_mesh_data(mesh: *MeshData) void {
     mesh.* = .{};
 }
 
+fn destroy_buffer_data(data: *BufferData) void {
+    if (gfx.surface.device != .null) {
+        if (data.buffer != .null) {
+            gfx.surface.device.destroyBuffer(data.buffer, null);
+        }
+        if (data.memory != .null) {
+            gfx.surface.device.freeMemory(data.memory, null);
+        }
+    }
+    data.* = .{};
+}
+
 fn create_render_target(screen: gfx.Surface.Screen) !RenderTarget {
     const dims = screen_dimensions(screen);
-    const byte_count = @as(u32, dims.width) * @as(u32, dims.height) * 4;
+    const pixel_count = @as(usize, dims.width) * @as(usize, dims.height);
+    const color_byte_count: u32 = @intCast(mango.Format.a8b8g8r8_unorm.scale(pixel_count));
+    const depth_byte_count: u32 = @intCast(mango.Format.d24_unorm_s8_uint.scale(pixel_count));
 
     var target = RenderTarget{};
-    target.memory = try gfx.surface.device.allocateMemory(.{
-        .allocation_size = .size(byte_count),
+    target.color_memory = try gfx.surface.device.allocateMemory(.{
+        .allocation_size = .size(color_byte_count),
         .memory_type = .vram_a,
     }, null);
     errdefer {
-        gfx.surface.device.freeMemory(target.memory, null);
-        target.memory = .null;
+        gfx.surface.device.freeMemory(target.color_memory, null);
+        target.color_memory = .null;
     }
 
-    target.image = try gfx.surface.device.createImage(.{
+    target.depth_memory = try gfx.surface.device.allocateMemory(.{
+        .allocation_size = .size(depth_byte_count),
+        .memory_type = .vram_b,
+    }, null);
+    errdefer {
+        gfx.surface.device.freeMemory(target.depth_memory, null);
+        target.depth_memory = .null;
+    }
+
+    target.color_image = try gfx.surface.device.createImage(.{
         .flags = .{},
         .type = .@"2d",
         .tiling = .optimal,
@@ -885,21 +1062,51 @@ fn create_render_target(screen: gfx.Surface.Screen) !RenderTarget {
         .array_layers = .@"1",
     }, null);
     errdefer {
-        gfx.surface.device.destroyImage(target.image, null);
-        target.image = .null;
+        gfx.surface.device.destroyImage(target.color_image, null);
+        target.color_image = .null;
     }
 
-    try gfx.surface.device.bindImageMemory(target.image, target.memory, .size(0));
+    try gfx.surface.device.bindImageMemory(target.color_image, target.color_memory, .size(0));
 
-    target.view = try gfx.surface.device.createImageView(.{
+    target.depth_image = try gfx.surface.device.createImage(.{
+        .flags = .{},
+        .type = .@"2d",
+        .tiling = .optimal,
+        .usage = .{
+            .depth_stencil_attachment = true,
+        },
+        .extent = dims,
+        .format = .d24_unorm_s8_uint,
+        .mip_levels = .@"1",
+        .array_layers = .@"1",
+    }, null);
+    errdefer {
+        gfx.surface.device.destroyImage(target.depth_image, null);
+        target.depth_image = .null;
+    }
+
+    try gfx.surface.device.bindImageMemory(target.depth_image, target.depth_memory, .size(0));
+
+    target.color_view = try gfx.surface.device.createImageView(.{
         .type = .@"2d",
         .format = .a8b8g8r8_unorm,
-        .image = target.image,
+        .image = target.color_image,
         .subresource_range = .full,
     }, null);
     errdefer {
-        gfx.surface.device.destroyImageView(target.view, null);
-        target.view = .null;
+        gfx.surface.device.destroyImageView(target.color_view, null);
+        target.color_view = .null;
+    }
+
+    target.depth_view = try gfx.surface.device.createImageView(.{
+        .type = .@"2d",
+        .format = .d24_unorm_s8_uint,
+        .image = target.depth_image,
+        .subresource_range = .full,
+    }, null);
+    errdefer {
+        gfx.surface.device.destroyImageView(target.depth_view, null);
+        target.depth_view = .null;
     }
 
     return target;
@@ -907,14 +1114,23 @@ fn create_render_target(screen: gfx.Surface.Screen) !RenderTarget {
 
 fn destroy_render_target(target: *RenderTarget) void {
     if (gfx.surface.device != .null) {
-        if (target.view != .null) {
-            gfx.surface.device.destroyImageView(target.view, null);
+        if (target.depth_view != .null) {
+            gfx.surface.device.destroyImageView(target.depth_view, null);
         }
-        if (target.image != .null) {
-            gfx.surface.device.destroyImage(target.image, null);
+        if (target.color_view != .null) {
+            gfx.surface.device.destroyImageView(target.color_view, null);
         }
-        if (target.memory != .null) {
-            gfx.surface.device.freeMemory(target.memory, null);
+        if (target.depth_image != .null) {
+            gfx.surface.device.destroyImage(target.depth_image, null);
+        }
+        if (target.color_image != .null) {
+            gfx.surface.device.destroyImage(target.color_image, null);
+        }
+        if (target.depth_memory != .null) {
+            gfx.surface.device.freeMemory(target.depth_memory, null);
+        }
+        if (target.color_memory != .null) {
+            gfx.surface.device.freeMemory(target.color_memory, null);
         }
     }
     target.* = .{};
@@ -1088,6 +1304,10 @@ fn is_linear_range(data: []const u8) bool {
 
 fn float_to_u8(v: f32) u8 {
     return @intFromFloat(std.math.clamp(v, 0.0, 1.0) * 255.0);
+}
+
+fn float_to_snorm16(v: f32) i16 {
+    return @intFromFloat(std.math.clamp(v, -1.0, 1.0) * 32767.0);
 }
 
 fn unorm8_scale() f32 {
