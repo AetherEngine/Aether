@@ -25,8 +25,8 @@ extern "aether_host" fn aether_webgl_end_frame() void;
 extern "aether_host" fn aether_webgl_clear_depth() void;
 extern "aether_host" fn aether_webgl_create_mesh() u32;
 extern "aether_host" fn aether_webgl_destroy_mesh(handle: u32) void;
-extern "aether_host" fn aether_webgl_update_mesh(handle: u32, ptr: [*]const u8, len: usize) void;
-extern "aether_host" fn aether_webgl_draw_mesh(handle: u32, model_ptr: *const f32, count: usize) void;
+extern "aether_host" fn aether_webgl_update_mesh(handle: u32, vertex_ptr: [*]const u8, vertex_len: usize, index_ptr: [*]const u8, index_len: usize) void;
+extern "aether_host" fn aether_webgl_draw_mesh(handle: u32, model_ptr: *const f32) void;
 extern "aether_host" fn aether_webgl_create_texture(width: u32, height: u32, ptr: [*]const u8, len: usize) u32;
 extern "aether_host" fn aether_webgl_update_texture(handle: u32, ptr: [*]const u8, len: usize) void;
 extern "aether_host" fn aether_webgl_bind_texture(handle: u32) void;
@@ -127,14 +127,15 @@ pub fn destroy_mesh(handle: Mesh.Handle) void {
     _ = meshes.remove_element(handle);
 }
 
-pub fn update_mesh(handle: Mesh.Handle, data: []const u8) void {
+pub fn update_mesh(handle: Mesh.Handle, data: []const u8, indices: []const Mesh.Index) void {
     const host_handle = meshes.get_element(handle) orelse return;
-    aether_webgl_update_mesh(host_handle, data.ptr, data.len);
+    const index_bytes = std.mem.sliceAsBytes(indices);
+    aether_webgl_update_mesh(host_handle, data.ptr, data.len, index_bytes.ptr, index_bytes.len);
 }
 
-pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize) void {
+pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
     const host_handle = meshes.get_element(handle) orelse return;
-    aether_webgl_draw_mesh(host_handle, model.ptr(), count);
+    aether_webgl_draw_mesh(host_handle, model.ptr());
 }
 
 pub fn create_texture(width: u32, height: u32, data: []align(16) u8) anyerror!Texture.Handle {

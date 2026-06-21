@@ -40,6 +40,9 @@ const PipelineData = struct {
 
 const MeshInternal = struct {
     vbo: gl.uint,
+    ebo: gl.uint,
+    vertex_count: usize = 0,
+    index_count: usize = 0,
 };
 
 pub fn init() anyerror!void {
@@ -216,11 +219,17 @@ fn deinit_pipeline(pl: *PipelineData) void {
 
 pub fn create_mesh() anyerror!Mesh.Handle {
     var vbo: gl.uint = 0;
-    gl.CreateBuffers(1, @ptrCast(&vbo));
+    var ebo: gl.uint = 0;
+    var buffers = [_]gl.uint{ 0, 0 };
+    gl.CreateBuffers(2, @ptrCast(&buffers));
+    vbo = buffers[0];
+    ebo = buffers[1];
     gl.NamedBufferData(vbo, 0, null, gl.STATIC_DRAW);
+    gl.NamedBufferData(ebo, 0, null, gl.STATIC_DRAW);
 
     const mesh_idx = meshes.add_element(.{
         .vbo = vbo,
+        .ebo = ebo,
     }) orelse return error.OutOfMeshes;
 
     return @intCast(mesh_idx);
@@ -228,29 +237,44 @@ pub fn create_mesh() anyerror!Mesh.Handle {
 
 pub fn destroy_mesh(handle: Mesh.Handle) void {
     var mesh = meshes.get_element(handle) orelse return;
-    gl.DeleteBuffers(1, @ptrCast(&mesh.vbo));
+    var buffers = [_]gl.uint{ mesh.vbo, mesh.ebo };
+    gl.DeleteBuffers(2, @ptrCast(&buffers));
     mesh.vbo = 0;
+    mesh.ebo = 0;
 
     _ = meshes.remove_element(handle);
 }
 
-pub fn update_mesh(handle: Mesh.Handle, data: []const u8) void {
-    const mesh = meshes.get_element(handle) orelse return;
+pub fn update_mesh(handle: Mesh.Handle, data: []const u8, indices: []const Mesh.Index) void {
+    var mesh = meshes.get_element(handle) orelse return;
 
     gl.NamedBufferData(mesh.vbo, @intCast(data.len), null, gl.STATIC_DRAW);
     gl.NamedBufferSubData(mesh.vbo, 0, @intCast(data.len), data.ptr);
+    const index_bytes = std.mem.sliceAsBytes(indices);
+    gl.NamedBufferData(mesh.ebo, @intCast(index_bytes.len), null, gl.STATIC_DRAW);
+    if (index_bytes.len > 0) gl.NamedBufferSubData(mesh.ebo, 0, @intCast(index_bytes.len), index_bytes.ptr);
+
+    mesh.vertex_count = data.len / vertex.Layout.stride;
+    mesh.index_count = indices.len;
+    meshes.update_element(handle, mesh);
 }
 
-pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize) void {
+pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
     if (!pipeline_initialized) return;
     const mesh = meshes.get_element(handle) orelse return;
     const pl = &pipeline;
+    if (mesh.vertex_count == 0) return;
 
     shader.update_per_object(model);
     gl.BindVertexArray(pl.vao);
     gl.UseProgram(pl.program.shader_program);
     gl.VertexArrayVertexBuffer(pl.vao, 0, mesh.vbo, 0, @intCast(pl.layout.stride));
-    gl.DrawArrays(gl.TRIANGLES, 0, @intCast(count));
+    if (mesh.index_count > 0) {
+        gl.VertexArrayElementBuffer(pl.vao, mesh.ebo);
+        gl.DrawElements(gl.TRIANGLES, @intCast(mesh.index_count), gl.UNSIGNED_SHORT, 0);
+    } else {
+        gl.DrawArrays(gl.TRIANGLES, 0, @intCast(mesh.vertex_count));
+    }
 }
 
 pub fn create_texture(width: u32, height: u32, data: []align(16) u8) anyerror!Texture.Handle {

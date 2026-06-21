@@ -577,9 +577,11 @@ const host = {
   aether_webgl_create_mesh() {
     const handle = nextMeshHandle++;
     const buffer = gl.createBuffer();
+    const indexBuffer = gl.createBuffer();
     const vao = gl.createVertexArray();
     gl.bindVertexArray(vao);
     gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer);
     gl.enableVertexAttribArray(0);
     gl.enableVertexAttribArray(1);
     gl.enableVertexAttribArray(2);
@@ -587,7 +589,7 @@ const host = {
     gl.vertexAttribPointer(1, 4, gl.UNSIGNED_BYTE, true, 16, 8);
     gl.vertexAttribPointer(2, 2, gl.SHORT, true, 16, 12);
     gl.bindVertexArray(null);
-    meshes.set(handle, { buffer, vao });
+    meshes.set(handle, { buffer, indexBuffer, vao, vertexCount: 0, indexCount: 0 });
     return handle;
   },
   aether_webgl_destroy_mesh(handle) {
@@ -595,22 +597,34 @@ const host = {
     if (!mesh) return;
     gl.deleteVertexArray(mesh.vao);
     gl.deleteBuffer(mesh.buffer);
+    gl.deleteBuffer(mesh.indexBuffer);
     meshes.delete(handle);
   },
-  aether_webgl_update_mesh(handle, ptr, len) {
+  aether_webgl_update_mesh(handle, vertexPtr, vertexLen, indexPtr, indexLen) {
     const mesh = meshes.get(handle);
     if (!mesh) return;
     gl.bindBuffer(gl.ARRAY_BUFFER, mesh.buffer);
-    gl.bufferData(gl.ARRAY_BUFFER, copyBytes(ptr, len), gl.STATIC_DRAW);
+    gl.bufferData(gl.ARRAY_BUFFER, copyBytes(vertexPtr, vertexLen), gl.STATIC_DRAW);
+    gl.bindVertexArray(mesh.vao);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, mesh.indexBuffer);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, copyBytes(indexPtr, indexLen), gl.STATIC_DRAW);
+    gl.bindVertexArray(null);
+    mesh.vertexCount = vertexLen / 16;
+    mesh.indexCount = indexLen / 2;
   },
-  aether_webgl_draw_mesh(handle, modelPtr, count) {
+  aether_webgl_draw_mesh(handle, modelPtr) {
     const mesh = meshes.get(handle);
     if (!mesh) return;
+    if (mesh.vertexCount === 0) return;
     gl.useProgram(program);
     uploadPerObjectUbo(modelPtr);
     gl.bindVertexArray(mesh.vao);
     if (currentTexture) gl.bindTexture(gl.TEXTURE_2D, currentTexture);
-    gl.drawArrays(gl.TRIANGLES, 0, count);
+    if (mesh.indexCount > 0) {
+      gl.drawElements(gl.TRIANGLES, mesh.indexCount, gl.UNSIGNED_SHORT, 0);
+    } else {
+      gl.drawArrays(gl.TRIANGLES, 0, mesh.vertexCount);
+    }
   },
   aether_webgl_create_texture(width, height, ptr, len) {
     const handle = nextTextureHandle++;

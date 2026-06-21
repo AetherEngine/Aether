@@ -42,11 +42,19 @@ const PipelineData = struct {
 const MAX_FRAMES = 3;
 
 const MeshData = struct {
+    vertex: MeshBufferSet = .{},
+    index: MeshBufferSet = .{},
+    vertex_count: usize = 0,
+    index_count: usize = 0,
+    built: bool = false,
+};
+
+const MeshBufferSet = struct {
     buffers: [MAX_FRAMES]vk.Buffer = @splat(.null_handle),
     memories: [MAX_FRAMES]vk.DeviceMemory = @splat(.null_handle),
     mapped: [MAX_FRAMES]?[*]u8 = @splat(null),
     capacity: usize = 0,
-    built: bool = false,
+    size: usize = 0,
 };
 
 pub const ShaderState = struct {
@@ -990,83 +998,49 @@ pub fn create_mesh() anyerror!Mesh.Handle {
 }
 
 pub fn destroy_mesh(handle: Mesh.Handle) void {
-    const m_data = meshes.get_element(handle) orelse return;
+    var m_data = meshes.get_element(handle) orelse return;
 
-    if (m_data.built) {
-        for (0..MAX_FRAMES) |i| {
-            if (m_data.buffers[i] != .null_handle) {
-                gc.defer_destroy_buffer(m_data.buffers[i], m_data.memories[i]) catch unreachable;
-            }
-        }
-    }
+    destroy_mesh_buffer_set(&m_data.vertex);
+    destroy_mesh_buffer_set(&m_data.index);
 
     _ = meshes.remove_element(handle);
 }
 
-pub fn update_mesh(handle: Mesh.Handle, data: []const u8) void {
+pub fn update_mesh(handle: Mesh.Handle, data: []const u8, indices: []const Mesh.Index) void {
     var m_data = meshes.get_element(handle) orelse return;
 
     if (data.len == 0) {
         m_data.built = false;
+        m_data.vertex.size = 0;
+        m_data.index.size = 0;
+        m_data.vertex_count = 0;
+        m_data.index_count = 0;
         meshes.update_element(handle, m_data);
         return;
     }
 
-    // Grow buffers if the current allocation is too small.
-    if (data.len > m_data.capacity) {
-        // Defer-destroy old buffers.
-        for (0..MAX_FRAMES) |i| {
-            if (m_data.buffers[i] != .null_handle) {
-                gc.defer_destroy_buffer(m_data.buffers[i], m_data.memories[i]) catch unreachable;
-            }
-        }
+    ensure_mesh_buffer_set(&m_data.vertex, data.len, .{ .vertex_buffer_bit = true });
+    copy_mesh_buffer_set(&m_data.vertex, data);
 
-        // Round up to next power of two (minimum 256 bytes).
-        var new_cap: usize = 256;
-        while (new_cap < data.len) new_cap *= 2;
-
-        for (0..MAX_FRAMES) |i| {
-            m_data.buffers[i] = context.logical_device.createBuffer(&.{
-                .size = new_cap,
-                .usage = .{ .vertex_buffer_bit = true },
-                .sharing_mode = .exclusive,
-            }, null) catch unreachable;
-
-            const mem_reqs = context.logical_device.getBufferMemoryRequirements(m_data.buffers[i]);
-
-            // Prefer device-local + host-visible (resizable BAR), fall back to host-visible only.
-            m_data.memories[i] = context.allocate_gpu_buffer(mem_reqs, .{
-                .host_visible_bit = true,
-                .host_coherent_bit = true,
-                .device_local_bit = true,
-            }) catch context.allocate_gpu_buffer(mem_reqs, .{
-                .host_visible_bit = true,
-                .host_coherent_bit = true,
-            }) catch unreachable;
-
-            context.logical_device.bindBufferMemory(m_data.buffers[i], m_data.memories[i], 0) catch unreachable;
-
-            const mapped_data = context.logical_device.mapMemory(m_data.memories[i], 0, vk.WHOLE_SIZE, .{}) catch unreachable;
-            m_data.mapped[i] = @ptrCast(@alignCast(mapped_data));
-        }
-
-        m_data.capacity = new_cap;
-    }
-
-    // Copy vertex data into all frame slots so every frame has current data.
-    for (0..MAX_FRAMES) |i| {
-        @memcpy(m_data.mapped[i].?[0..data.len], data);
+    const index_bytes = std.mem.sliceAsBytes(indices);
+    if (index_bytes.len > 0) {
+        ensure_mesh_buffer_set(&m_data.index, index_bytes.len, .{ .index_buffer_bit = true });
+        copy_mesh_buffer_set(&m_data.index, index_bytes);
+    } else {
+        m_data.index.size = 0;
     }
 
     m_data.built = true;
+    m_data.vertex_count = data.len / vertex.Layout.stride;
+    m_data.index_count = indices.len;
     meshes.update_element(handle, m_data);
 }
 
-pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize) void {
+pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
     draw_state.mat = model.*;
 
     const m_data = meshes.get_element(handle) orelse return;
-    if (!m_data.built or count == 0) return;
+    if (!m_data.built or m_data.vertex_count == 0) return;
     if (render_pipeline.pipeline == .null_handle) return;
     const p_data = &render_pipeline;
 
@@ -1083,11 +1057,67 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize) void {
     command_buffer.setPrimitiveTopology(.triangle_list);
 
     const offset = [_]vk.DeviceSize{0};
-    const frame_buf = m_data.buffers[swapchain.image_index];
+    const frame_buf = m_data.vertex.buffers[swapchain.image_index];
     if (frame_buf == .null_handle) return;
     command_buffer.bindVertexBuffers(0, @ptrCast(&frame_buf), &offset);
     command_buffer.pushConstants(p_data.layout, .{ .vertex_bit = true, .fragment_bit = true }, 0, @sizeOf(DrawState), &draw_state);
-    command_buffer.draw(@intCast(count), 1, 0, 0);
+    if (m_data.index_count > 0) {
+        const index_buf = m_data.index.buffers[swapchain.image_index];
+        if (index_buf == .null_handle) return;
+        command_buffer.bindIndexBuffer(index_buf, 0, .uint16);
+        command_buffer.drawIndexed(@intCast(m_data.index_count), 1, 0, 0, 0);
+    } else {
+        command_buffer.draw(@intCast(m_data.vertex_count), 1, 0, 0);
+    }
+}
+
+fn ensure_mesh_buffer_set(set: *MeshBufferSet, needed: usize, usage: vk.BufferUsageFlags) void {
+    if (needed <= set.capacity) return;
+
+    destroy_mesh_buffer_set(set);
+
+    var new_cap: usize = 256;
+    while (new_cap < needed) new_cap *= 2;
+
+    for (0..MAX_FRAMES) |i| {
+        set.buffers[i] = context.logical_device.createBuffer(&.{
+            .size = new_cap,
+            .usage = usage,
+            .sharing_mode = .exclusive,
+        }, null) catch unreachable;
+
+        const mem_reqs = context.logical_device.getBufferMemoryRequirements(set.buffers[i]);
+        set.memories[i] = context.allocate_gpu_buffer(mem_reqs, .{
+            .host_visible_bit = true,
+            .host_coherent_bit = true,
+            .device_local_bit = true,
+        }) catch context.allocate_gpu_buffer(mem_reqs, .{
+            .host_visible_bit = true,
+            .host_coherent_bit = true,
+        }) catch unreachable;
+
+        context.logical_device.bindBufferMemory(set.buffers[i], set.memories[i], 0) catch unreachable;
+        const mapped_data = context.logical_device.mapMemory(set.memories[i], 0, vk.WHOLE_SIZE, .{}) catch unreachable;
+        set.mapped[i] = @ptrCast(@alignCast(mapped_data));
+    }
+
+    set.capacity = new_cap;
+}
+
+fn copy_mesh_buffer_set(set: *MeshBufferSet, data: []const u8) void {
+    for (0..MAX_FRAMES) |i| {
+        @memcpy(set.mapped[i].?[0..data.len], data);
+    }
+    set.size = data.len;
+}
+
+fn destroy_mesh_buffer_set(set: *MeshBufferSet) void {
+    for (0..MAX_FRAMES) |i| {
+        if (set.buffers[i] != .null_handle) {
+            gc.defer_destroy_buffer(set.buffers[i], set.memories[i]) catch unreachable;
+        }
+    }
+    set.* = .{};
 }
 
 pub fn create_texture(width: u32, height: u32, data: []align(16) u8) anyerror!Texture.Handle {

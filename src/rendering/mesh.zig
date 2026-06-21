@@ -1,10 +1,13 @@
 const std = @import("std");
+const options = @import("options");
 const Mat4 = @import("../math/math.zig").Mat4;
 const Util = @import("../util/util.zig");
 const Platform = @import("../platform/platform.zig");
 const gfx = Platform.gfx;
 
 pub const Handle = u32;
+pub const Index = u16;
+pub const indexing_enabled = options.config.mesh_indexing;
 
 /// A generic mesh parameterised by vertex type `V`.
 ///
@@ -20,16 +23,24 @@ pub fn Mesh(comptime V: type) type {
 
         handle: Handle,
         vertices: std.ArrayList(Vertex),
+        indices: std.ArrayList(Index),
 
         pub fn new(alloc: std.mem.Allocator) !Self {
+            const handle = try gfx.api.create_mesh();
+            errdefer gfx.api.destroy_mesh(handle);
+            var vertices = try std.ArrayList(V).initCapacity(alloc, 32);
+            errdefer vertices.deinit(alloc);
+            const indices = try std.ArrayList(Index).initCapacity(alloc, 32);
             return .{
-                .handle = try gfx.api.create_mesh(),
-                .vertices = try std.ArrayList(V).initCapacity(alloc, 32),
+                .handle = handle,
+                .vertices = vertices,
+                .indices = indices,
             };
         }
 
         pub fn deinit(self: *Self, alloc: std.mem.Allocator) void {
             gfx.api.destroy_mesh(self.handle);
+            self.indices.deinit(alloc);
             self.vertices.deinit(alloc);
             self.handle = 0;
         }
@@ -39,8 +50,30 @@ pub fn Mesh(comptime V: type) type {
             try self.vertices.appendSlice(alloc, verts);
         }
 
+        pub inline fn add_tri(self: *Self, alloc: std.mem.Allocator, a: V, b: V, c: V) !void {
+            if (indexing_enabled) {
+                if (self.vertices.items.len > std.math.maxInt(Index) - 2) return error.IndexOverflow;
+                const base: Index = @intCast(self.vertices.items.len);
+                try self.vertices.appendSlice(alloc, &.{ a, b, c });
+                try self.indices.appendSlice(alloc, &.{ base, base + 1, base + 2 });
+            } else {
+                try self.vertices.appendSlice(alloc, &.{ a, b, c });
+            }
+        }
+
+        pub inline fn add_quad(self: *Self, alloc: std.mem.Allocator, a: V, b: V, c: V, d: V) !void {
+            if (indexing_enabled) {
+                if (self.vertices.items.len > std.math.maxInt(Index) - 3) return error.IndexOverflow;
+                const base: Index = @intCast(self.vertices.items.len);
+                try self.vertices.appendSlice(alloc, &.{ a, b, c, d });
+                try self.indices.appendSlice(alloc, &.{ base, base + 1, base + 2, base, base + 2, base + 3 });
+            } else {
+                try self.vertices.appendSlice(alloc, &.{ a, b, c, a, c, d });
+            }
+        }
+
         /// Push the current vertex data to the GPU. Call after any `append` or
-        /// direct modification of `vertices.items`.
+        /// direct modification of `vertices.items` or `indices.items`.
         pub fn update(self: *Self) void {
             if (gfx.validate_mesh_updates_outside_frame and gfx.frame_active) {
                 @panic("Rendering.Mesh.update called during an active frame; rebuild/upload meshes during update, not draw");
@@ -48,6 +81,7 @@ pub fn Mesh(comptime V: type) type {
             gfx.api.update_mesh(
                 self.handle,
                 std.mem.sliceAsBytes(self.vertices.items),
+                if (indexing_enabled) self.indices.items else &.{},
             );
         }
 
@@ -55,8 +89,34 @@ pub fn Mesh(comptime V: type) type {
             gfx.api.draw_mesh(
                 self.handle,
                 mat,
-                self.vertices.items.len,
             );
         }
     };
+}
+
+test "mesh triangle and quad helpers build expected geometry" {
+    const TestVertex = extern struct { id: u32 };
+    const TestMesh = Mesh(TestVertex);
+    const alloc = std.testing.allocator;
+
+    var mesh: TestMesh = .{
+        .handle = 0,
+        .vertices = try std.ArrayList(TestVertex).initCapacity(alloc, 0),
+        .indices = try std.ArrayList(Index).initCapacity(alloc, 0),
+    };
+    defer mesh.indices.deinit(alloc);
+    defer mesh.vertices.deinit(alloc);
+
+    try mesh.add_tri(alloc, .{ .id = 0 }, .{ .id = 1 }, .{ .id = 2 });
+    try mesh.add_quad(alloc, .{ .id = 3 }, .{ .id = 4 }, .{ .id = 5 }, .{ .id = 6 });
+
+    if (indexing_enabled) {
+        try std.testing.expectEqual(@as(usize, 7), mesh.vertices.items.len);
+        try std.testing.expectEqualSlices(Index, &.{ 0, 1, 2, 3, 4, 5, 3, 5, 6 }, mesh.indices.items);
+    } else {
+        try std.testing.expectEqual(@as(usize, 9), mesh.vertices.items.len);
+        try std.testing.expectEqual(@as(usize, 0), mesh.indices.items.len);
+        try std.testing.expectEqual(@as(u32, 3), mesh.vertices.items[3].id);
+        try std.testing.expectEqual(@as(u32, 5), mesh.vertices.items[7].id);
+    }
 }

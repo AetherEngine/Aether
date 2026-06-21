@@ -913,6 +913,10 @@ fn init_pipeline(layout: vertex.VertexLayout) PipelineData {
 const MeshData = struct {
     data: ?[*]const u8,
     len: usize,
+    indices: ?[*]const u8,
+    index_len: usize,
+    vertex_count: usize,
+    index_count: usize,
 };
 
 var meshes = Util.CircularBuffer(MeshData, 2048).init();
@@ -921,6 +925,10 @@ pub fn create_mesh() anyerror!Mesh.Handle {
     const handle = meshes.add_element(.{
         .data = null,
         .len = 0,
+        .indices = null,
+        .index_len = 0,
+        .vertex_count = 0,
+        .index_count = 0,
     }) orelse return error.OutOfMeshes;
 
     return @intCast(handle);
@@ -930,20 +938,27 @@ pub fn destroy_mesh(handle: Mesh.Handle) void {
     _ = meshes.remove_element(handle);
 }
 
-pub fn update_mesh(handle: Mesh.Handle, data: []const u8) void {
+pub fn update_mesh(handle: Mesh.Handle, data: []const u8, indices: []const Mesh.Index) void {
     var mesh = meshes.get_element(handle) orelse return;
+    const index_bytes = std.mem.sliceAsBytes(indices);
 
     mesh.data = data.ptr;
     mesh.len = data.len;
+    mesh.indices = if (indices.len > 0) index_bytes.ptr else null;
+    mesh.index_len = index_bytes.len;
+    mesh.vertex_count = data.len / vertex.Layout.stride;
+    mesh.index_count = indices.len;
     sdk.kernel.dcache_writeback_range(data.ptr, @intCast(data.len));
+    if (index_bytes.len > 0) sdk.kernel.dcache_writeback_range(index_bytes.ptr, @intCast(index_bytes.len));
 
     meshes.update_element(handle, mesh);
 }
 
-pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize) void {
+pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
     const mesh = meshes.get_element(handle) orelse return;
-    const pl = &render_pipeline;
+    var pl = render_pipeline;
     const data = mesh.data orelse return;
+    if (mesh.vertex_count == 0) return;
 
     must(cmd.world_matrix(mat4_as_floats(model)));
 
@@ -955,9 +970,16 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize) void {
         must(cmd.texture_scale(1.0, 1.0));
     }
 
+    if (mesh.index_count > 0) {
+        const index_data = mesh.indices orelse return;
+        pl.vertex_type.index = .Index16Bit;
+        must(cmd.index_address(@intFromPtr(index_data)));
+    } else {
+        pl.vertex_type.index = .None;
+    }
     must(cmd.vertex_type(@as(u24, @bitCast(pl.vertex_type))));
     must(cmd.vertex_address(@intFromPtr(data)));
-    must(cmd.primitive(.triangles, @intCast(count)));
+    must(cmd.primitive(.triangles, @intCast(if (mesh.index_count > 0) mesh.index_count else mesh.vertex_count)));
     advance_stall();
 }
 

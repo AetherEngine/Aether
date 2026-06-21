@@ -44,8 +44,8 @@ pub fn create_mesh() anyerror!Mesh.Handle {
 }
 
 pub fn destroy_mesh(_: Mesh.Handle) void {}
-pub fn update_mesh(_: Mesh.Handle, _: []const u8) void {}
-pub fn draw_mesh(_: Mesh.Handle, _: *const Mat4, _: usize) void {}
+pub fn update_mesh(_: Mesh.Handle, _: []const u8, _: []const Mesh.Index) void {}
+pub fn draw_mesh(_: Mesh.Handle, _: *const Mat4) void {}
 
 pub fn create_texture(_: u32, _: u32, _: []align(16) u8) anyerror!Texture.Handle {
     return 0;

@@ -34,8 +34,8 @@ pub const Interface = struct {
 
     create_mesh: fn () anyerror!Mesh.Handle,
     destroy_mesh: fn (Mesh.Handle) void,
-    update_mesh: fn (Mesh.Handle, []const u8) void,
-    draw_mesh: fn (Mesh.Handle, *const Mat4, usize) void,
+    update_mesh: fn (Mesh.Handle, []const u8, []const Mesh.Index) void,
+    draw_mesh: fn (Mesh.Handle, *const Mat4) void,
 
     create_texture: fn (u32, u32, []align(16) u8) anyerror!Texture.Handle,
     update_texture: fn (Texture.Handle, []align(16) u8) void,

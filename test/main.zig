@@ -83,23 +83,6 @@ fn vertex(x: f32, y: f32, color: u32, u: f32, v: f32) Vertex {
     };
 }
 
-fn appendTriangle(
-    alloc: std.mem.Allocator,
-    mesh: *MyMesh,
-    a: [2]f32,
-    b: [2]f32,
-    c: [2]f32,
-    ca: u32,
-    cb: u32,
-    cc: u32,
-) !void {
-    try mesh.append(alloc, &.{
-        vertex(a[0], a[1], ca, 0.5, 0.0),
-        vertex(b[0], b[1], cb, 0.0, 1.0),
-        vertex(c[0], c[1], cc, 1.0, 1.0),
-    });
-}
-
 fn orientedPoint(cx: f32, cy: f32, lx: f32, ly: f32, angle: f32) [2]f32 {
     const c = @cos(angle);
     const s = @sin(angle);
@@ -121,22 +104,26 @@ fn appendOrientedTriangle(
     c1: u32,
     c2: u32,
 ) !void {
-    try appendTriangle(
+    const a = orientedPoint(cx, cy, 0.0, sy, angle);
+    const b = orientedPoint(cx, cy, -sx, -sy, angle);
+    const c = orientedPoint(cx, cy, sx, -sy, angle);
+    try mesh.add_tri(
         alloc,
-        mesh,
-        orientedPoint(cx, cy, 0.0, sy, angle),
-        orientedPoint(cx, cy, -sx, -sy, angle),
-        orientedPoint(cx, cy, sx, -sy, angle),
-        c0,
-        c1,
-        c2,
+        vertex(a[0], a[1], c0, 0.5, 0.0),
+        vertex(b[0], b[1], c1, 0.0, 1.0),
+        vertex(c[0], c[1], c2, 1.0, 1.0),
     );
 }
 
 fn buildBatchA(alloc: std.mem.Allocator, mesh: *MyMesh) !void {
     try mesh.vertices.ensureTotalCapacity(alloc, BATCH_A_TRIANGLES * 3);
 
-    try appendTriangle(alloc, mesh, .{ -0.44, -0.40 }, .{ 0.44, -0.40 }, .{ 0.0, 0.52 }, BatchAColors[0], BatchAColors[3], BatchAColors[5]);
+    try mesh.add_tri(
+        alloc,
+        vertex(-0.44, -0.40, BatchAColors[0], 0.5, 0.0),
+        vertex(0.44, -0.40, BatchAColors[3], 0.0, 1.0),
+        vertex(0.0, 0.52, BatchAColors[5], 1.0, 1.0),
+    );
 
     const spoke_count = 36;
     for (0..spoke_count) |i| {
@@ -149,15 +136,11 @@ fn buildBatchA(alloc: std.mem.Allocator, mesh: *MyMesh) !void {
         const left = [2]f32{ @cos(angle - half_width) * base_radius, @sin(angle - half_width) * base_radius };
         const right = [2]f32{ @cos(angle + half_width) * base_radius, @sin(angle + half_width) * base_radius };
 
-        try appendTriangle(
+        try mesh.add_tri(
             alloc,
-            mesh,
-            tip,
-            left,
-            right,
-            BatchAColors[i % BatchAColors.len],
-            BatchAColors[(i + 2) % BatchAColors.len],
-            BatchAColors[(i + 4) % BatchAColors.len],
+            vertex(tip[0], tip[1], BatchAColors[i % BatchAColors.len], 0.5, 0.0),
+            vertex(left[0], left[1], BatchAColors[(i + 2) % BatchAColors.len], 0.0, 1.0),
+            vertex(right[0], right[1], BatchAColors[(i + 4) % BatchAColors.len], 1.0, 1.0),
         );
     }
 
