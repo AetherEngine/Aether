@@ -36,7 +36,8 @@ extern "aether_host" fn aether_canvas_height() u32;
 
 var render_alloc: std.mem.Allocator = undefined;
 var render_io: std.Io = undefined;
-var meshes = Util.CircularBuffer(u32, MAX_MESHES).init();
+var meshes = Util.ResourceTable(u32, MAX_MESHES, Mesh.Handle).init();
+var textures = Util.ResourceTable(u32, 4096, Texture.Handle).init();
 
 pub fn setup(alloc: std.mem.Allocator, io: std.Io) void {
     render_alloc = alloc;
@@ -117,43 +118,49 @@ pub fn set_vsync(_: bool) void {}
 pub fn create_mesh() anyerror!Mesh.Handle {
     const host_handle = aether_webgl_create_mesh();
     if (host_handle == 0) return error.OutOfMeshes;
-    const idx = meshes.add_element(host_handle) orelse return error.OutOfMeshes;
-    return @intCast(idx);
+    return meshes.add(host_handle) orelse return error.OutOfMeshes;
 }
 
 pub fn destroy_mesh(handle: Mesh.Handle) void {
-    const host_handle = meshes.get_element(handle) orelse return;
+    const host_handle = meshes.get(handle) orelse return;
     aether_webgl_destroy_mesh(host_handle);
-    _ = meshes.remove_element(handle);
+    _ = meshes.remove(handle);
 }
 
 pub fn update_mesh(handle: Mesh.Handle, data: []const u8, indices: []const Mesh.Index) void {
-    const host_handle = meshes.get_element(handle) orelse return;
+    const host_handle = meshes.get(handle) orelse return;
     const index_bytes = std.mem.sliceAsBytes(indices);
     aether_webgl_update_mesh(host_handle, data.ptr, data.len, index_bytes.ptr, index_bytes.len);
 }
 
 pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
-    const host_handle = meshes.get_element(handle) orelse return;
+    const host_handle = meshes.get(handle) orelse return;
     aether_webgl_draw_mesh(host_handle, model.ptr());
 }
 
 pub fn create_texture(width: u32, height: u32, data: []align(16) u8) anyerror!Texture.Handle {
     const handle = aether_webgl_create_texture(width, height, data.ptr, data.len);
     if (handle == 0) return error.TextureCreateFailed;
-    return handle;
+    return textures.add(handle) orelse {
+        aether_webgl_destroy_texture(handle);
+        return error.OutOfTextures;
+    };
 }
 
 pub fn update_texture(handle: Texture.Handle, data: []align(16) u8) void {
-    aether_webgl_update_texture(handle, data.ptr, data.len);
+    const host_handle = textures.get(handle) orelse return;
+    aether_webgl_update_texture(host_handle, data.ptr, data.len);
 }
 
 pub fn bind_texture(handle: Texture.Handle) void {
-    aether_webgl_bind_texture(handle);
+    const host_handle = textures.get(handle) orelse return;
+    aether_webgl_bind_texture(host_handle);
 }
 
 pub fn destroy_texture(handle: Texture.Handle) void {
-    aether_webgl_destroy_texture(handle);
+    const host_handle = textures.get(handle) orelse return;
+    aether_webgl_destroy_texture(host_handle);
+    _ = textures.remove(handle);
 }
 
 pub fn force_texture_resident(_: Texture.Handle) void {}

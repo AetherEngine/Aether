@@ -121,9 +121,9 @@ var tex_set: vk.DescriptorSet = .null_handle;
 var tex_sampler: vk.Sampler = .null_handle;
 
 const TextureRec = struct { image: vk.Image, memory: vk.DeviceMemory, view: vk.ImageView, width: u32, height: u32 };
-var textures = Util.CircularBuffer(TextureRec, TEXTURE_CAP).init();
+var textures = Util.ResourceTable(TextureRec, TEXTURE_CAP, Texture.Handle).init();
 
-var meshes = Util.CircularBuffer(MeshData, 8192).init();
+var meshes = Util.ResourceTable(MeshData, 8192, Mesh.Handle).init();
 var render_pipeline: PipelineData = .{};
 
 var swap_state: Swapchain.PresentState = .optimal;
@@ -993,21 +993,20 @@ fn deinit_pipeline(pd: *PipelineData) void {
 }
 
 pub fn create_mesh() anyerror!Mesh.Handle {
-    const m_handle = meshes.add_element(.{}) orelse return error.OutOfMeshes;
-    return @intCast(m_handle);
+    return meshes.add(.{}) orelse return error.OutOfMeshes;
 }
 
 pub fn destroy_mesh(handle: Mesh.Handle) void {
-    var m_data = meshes.get_element(handle) orelse return;
+    var m_data = meshes.get(handle) orelse return;
 
     destroy_mesh_buffer_set(&m_data.vertex);
     destroy_mesh_buffer_set(&m_data.index);
 
-    _ = meshes.remove_element(handle);
+    _ = meshes.remove(handle);
 }
 
 pub fn update_mesh(handle: Mesh.Handle, data: []const u8, indices: []const Mesh.Index) void {
-    var m_data = meshes.get_element(handle) orelse return;
+    var m_data = meshes.get(handle) orelse return;
 
     if (data.len == 0) {
         m_data.built = false;
@@ -1015,7 +1014,7 @@ pub fn update_mesh(handle: Mesh.Handle, data: []const u8, indices: []const Mesh.
         m_data.index.size = 0;
         m_data.vertex_count = 0;
         m_data.index_count = 0;
-        meshes.update_element(handle, m_data);
+        _ = meshes.update(handle, m_data);
         return;
     }
 
@@ -1033,13 +1032,13 @@ pub fn update_mesh(handle: Mesh.Handle, data: []const u8, indices: []const Mesh.
     m_data.built = true;
     m_data.vertex_count = data.len / vertex.Layout.stride;
     m_data.index_count = indices.len;
-    meshes.update_element(handle, m_data);
+    _ = meshes.update(handle, m_data);
 }
 
 pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
     draw_state.mat = model.*;
 
-    const m_data = meshes.get_element(handle) orelse return;
+    const m_data = meshes.get(handle) orelse return;
     if (!m_data.built or m_data.vertex_count == 0) return;
     if (render_pipeline.pipeline == .null_handle) return;
     const p_data = &render_pipeline;
@@ -1260,14 +1259,20 @@ pub fn create_texture(width: u32, height: u32, data: []align(16) u8) anyerror!Te
     }, null);
 
     const rec = TextureRec{ .image = image, .memory = memory, .view = view, .width = width, .height = height };
-    const handle_opt = textures.add_element(rec);
+    const handle_opt = textures.add(rec);
     if (handle_opt == null) {
         context.logical_device.destroyImageView(view, null);
         context.logical_device.destroyImage(image, null);
         context.logical_device.freeMemory(memory, null);
         return error.OutOfTextures;
     }
-    const idx: u32 = @intCast(handle_opt.?);
+    const handle = handle_opt.?;
+    const idx: u32 = @intCast(textures.raw_index(handle) orelse {
+        context.logical_device.destroyImageView(view, null);
+        context.logical_device.destroyImage(image, null);
+        context.logical_device.freeMemory(memory, null);
+        return error.OutOfTextures;
+    });
 
     // Write sampler once at binding 0, elem 0
     const samp_info = vk.DescriptorImageInfo{
@@ -1306,11 +1311,11 @@ pub fn create_texture(width: u32, height: u32, data: []align(16) u8) anyerror!Te
     const writes = [_]vk.WriteDescriptorSet{ write_sampler, write_image };
     context.logical_device.updateDescriptorSets(&writes, null);
 
-    return idx;
+    return handle;
 }
 
 pub fn update_texture(handle: Texture.Handle, data: []align(16) u8) void {
-    const rec = textures.get_element(handle) orelse return;
+    const rec = textures.get(handle) orelse return;
 
     const byte_count = data.len;
 
@@ -1418,11 +1423,12 @@ pub fn update_texture(handle: Texture.Handle, data: []align(16) u8) void {
 }
 
 pub fn bind_texture(handle: Texture.Handle) void {
-    draw_state.tex_id = handle;
+    draw_state.tex_id = @intCast(textures.raw_index(handle) orelse return);
 }
 
 pub fn destroy_texture(handle: Texture.Handle) void {
-    const rec = textures.get_element(handle) orelse return;
+    const rec = textures.get(handle) orelse return;
+    const idx: u32 = @intCast(textures.raw_index(handle) orelse return);
 
     // Null out the image slot in the bindless array (binding 1).
     // Binding 0 is a single shared sampler (element 0 only) -- don't touch it here.
@@ -1434,7 +1440,7 @@ pub fn destroy_texture(handle: Texture.Handle) void {
     const clear_image = vk.WriteDescriptorSet{
         .dst_set = tex_set,
         .dst_binding = 1,
-        .dst_array_element = handle,
+        .dst_array_element = idx,
         .descriptor_count = 1,
         .descriptor_type = .sampled_image,
         .p_image_info = @ptrCast(&null_img),
@@ -1449,7 +1455,7 @@ pub fn destroy_texture(handle: Texture.Handle) void {
     context.logical_device.destroyImage(rec.image, null);
     context.logical_device.freeMemory(rec.memory, null);
 
-    _ = textures.remove_element(handle);
+    _ = textures.remove(handle);
 }
 
 pub fn force_texture_resident(_: Texture.Handle) void {}

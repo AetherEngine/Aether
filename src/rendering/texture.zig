@@ -8,7 +8,8 @@ const options = @import("options");
 const psp_gfx = if (builtin.os.tag == .psp) @import("../platform/psp/psp_gfx_ge.zig") else struct {};
 const use_streaming_file_reader = options.config.platform == .nintendo_switch;
 
-pub const Handle = u32;
+pub const TextureHandleTag = enum {};
+pub const Handle = Util.Handle(TextureHandleTag);
 
 const Texture = @This();
 

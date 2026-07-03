@@ -5,7 +5,8 @@ const Util = @import("../util/util.zig");
 const Platform = @import("../platform/platform.zig");
 const gfx = Platform.gfx;
 
-pub const Handle = u32;
+pub const MeshHandleTag = enum {};
+pub const Handle = Util.Handle(MeshHandleTag);
 pub const Index = u16;
 pub const indexing_enabled = options.config.mesh_indexing;
 
@@ -42,7 +43,7 @@ pub fn Mesh(comptime V: type) type {
             gfx.api.destroy_mesh(self.handle);
             self.indices.deinit(alloc);
             self.vertices.deinit(alloc);
-            self.handle = 0;
+            self.handle = .none;
         }
 
         /// Append a slice of vertices, growing the buffer as needed.
@@ -140,7 +141,7 @@ test "mesh triangle and quad helpers build expected geometry" {
     const alloc = std.testing.allocator;
 
     var mesh: TestMesh = .{
-        .handle = 0,
+        .handle = .none,
         .vertices = try std.ArrayList(TestVertex).initCapacity(alloc, 0),
         .indices = try std.ArrayList(Index).initCapacity(alloc, 0),
     };

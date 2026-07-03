@@ -919,10 +919,10 @@ const MeshData = struct {
     index_count: usize,
 };
 
-var meshes = Util.CircularBuffer(MeshData, 2048).init();
+var meshes = Util.ResourceTable(MeshData, 2048, Mesh.Handle).init();
 
 pub fn create_mesh() anyerror!Mesh.Handle {
-    const handle = meshes.add_element(.{
+    return meshes.add(.{
         .data = null,
         .len = 0,
         .indices = null,
@@ -930,16 +930,14 @@ pub fn create_mesh() anyerror!Mesh.Handle {
         .vertex_count = 0,
         .index_count = 0,
     }) orelse return error.OutOfMeshes;
-
-    return @intCast(handle);
 }
 
 pub fn destroy_mesh(handle: Mesh.Handle) void {
-    _ = meshes.remove_element(handle);
+    _ = meshes.remove(handle);
 }
 
 pub fn update_mesh(handle: Mesh.Handle, data: []const u8, indices: []const Mesh.Index) void {
-    var mesh = meshes.get_element(handle) orelse return;
+    var mesh = meshes.get(handle) orelse return;
     const index_bytes = std.mem.sliceAsBytes(indices);
 
     mesh.data = data.ptr;
@@ -951,11 +949,11 @@ pub fn update_mesh(handle: Mesh.Handle, data: []const u8, indices: []const Mesh.
     sdk.kernel.dcache_writeback_range(data.ptr, @intCast(data.len));
     if (index_bytes.len > 0) sdk.kernel.dcache_writeback_range(index_bytes.ptr, @intCast(index_bytes.len));
 
-    meshes.update_element(handle, mesh);
+    _ = meshes.update(handle, mesh);
 }
 
 pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
-    const mesh = meshes.get_element(handle) orelse return;
+    const mesh = meshes.get(handle) orelse return;
     var pl = render_pipeline;
     const data = mesh.data orelse return;
     if (mesh.vertex_count == 0) return;
@@ -1067,8 +1065,8 @@ pub fn swizzled_offset(x: u32, y: u32, width: u32) usize {
     return block_start + local_y * 16 + local_x;
 }
 
-var textures = Util.CircularBuffer(TextureData, 64).init();
-var bound_texture: Texture.Handle = 0;
+var textures = Util.ResourceTable(TextureData, 64, Texture.Handle).init();
+var bound_texture: Texture.Handle = .none;
 
 pub fn create_texture(width: u32, height: u32, data: []align(16) u8) anyerror!Texture.Handle {
     const width_bytes = width * tex_bpp;
@@ -1080,7 +1078,7 @@ pub fn create_texture(width: u32, height: u32, data: []align(16) u8) anyerror!Te
 
     sdk.kernel.dcache_writeback_range(data.ptr, @intCast(data.len));
 
-    const handle = textures.add_element(.{
+    return textures.add(.{
         .width = width,
         .height = height,
         .data = data.ptr,
@@ -1091,15 +1089,13 @@ pub fn create_texture(width: u32, height: u32, data: []align(16) u8) anyerror!Te
         .mip_count = 0,
         .mips = undefined,
     }) orelse return error.OutOfTextures;
-
-    return @intCast(handle);
 }
 
 // The incoming `data` slice is the caller's RAM buffer and is already in the
 // correct (swizzled or linear) layout thanks to Rendering.Texture.set_pixel
 // routing writes through pixel_offset. We must NOT swizzle again here.
 pub fn update_texture(handle: Texture.Handle, data: []align(16) u8) void {
-    const tex = textures.get_element(handle) orelse return;
+    const tex = textures.get(handle) orelse return;
 
     if (tex.in_vram) {
         // The GE is sampling from VRAM; mirror the RAM buffer over it.
@@ -1115,7 +1111,7 @@ pub fn update_texture(handle: Texture.Handle, data: []align(16) u8) void {
 
 pub fn bind_texture(handle: Texture.Handle) void {
     bound_texture = handle;
-    const tex = textures.get_element(handle) orelse return;
+    const tex = textures.get(handle) orelse return;
 
     const layout: ge_list.TextureDataLayout = if (tex.swizzled) .swizzled else .linear;
 
@@ -1141,7 +1137,7 @@ pub fn bind_texture(handle: Texture.Handle) void {
 }
 
 pub fn destroy_texture(handle: Texture.Handle) void {
-    if (textures.get_element(handle)) |tex| {
+    if (textures.get(handle)) |tex| {
         if (tex.in_vram) {
             if (tex.vram_data) |data| vram_free(data);
         }
@@ -1153,7 +1149,7 @@ pub fn destroy_texture(handle: Texture.Handle) void {
             vram_free(raw_ptr[0..size]);
         }
     }
-    _ = textures.remove_element(handle);
+    _ = textures.remove(handle);
 }
 
 fn vram_pixel_format() gu_types.GuPixelFormat {
@@ -1348,7 +1344,7 @@ fn generate_resident_mips(tex: *TextureData) void {
 }
 
 pub fn force_texture_resident(handle: Texture.Handle) void {
-    var tex = textures.get_element(handle) orelse return;
+    var tex = textures.get(handle) orelse return;
     if (tex.in_vram) return;
 
     const size = tex.width * tex.height * tex_bpp;
@@ -1364,5 +1360,5 @@ pub fn force_texture_resident(handle: Texture.Handle) void {
 
     generate_resident_mips(&tex);
 
-    textures.update_element(handle, tex);
+    _ = textures.update(handle, tex);
 }
