@@ -1,9 +1,11 @@
 const std = @import("std");
 const Vec3 = @import("../math/math.zig").Vec3;
+const Util = @import("../util/util.zig");
 const stream_mod = @import("stream.zig");
 const Stream = stream_mod.Stream;
 
-pub const SoundHandle = u32;
+pub const SoundHandleTag = enum {};
+pub const SoundHandle = Util.Handle(SoundHandleTag);
 
 pub const Priority = enum(u8) {
     low,
@@ -43,7 +45,7 @@ pub fn Mixer(comptime Backend: type) type {
         };
 
         var voices: [MAX_VOICES]?VirtualVoice = @splat(null);
-        var next_handle: SoundHandle = 1;
+        var voice_generations: [MAX_VOICES]u8 = @splat(1);
         var listener_pos: Vec3 = Vec3.zero();
         var listener_fwd: Vec3 = Vec3.new(0, 0, -1);
         var listener_up: Vec3 = Vec3.new(0, 1, 0);
@@ -58,7 +60,7 @@ pub fn Mixer(comptime Backend: type) type {
             for (0..MAX_VOICES) |i| {
                 if (voices[i] != null) {
                     if (voices[i].?.slot) |s| Backend.stop_slot(s);
-                    voices[i] = null;
+                    release_voice(i);
                 }
             }
             Backend.deinit();
@@ -87,7 +89,7 @@ pub fn Mixer(comptime Backend: type) type {
         pub fn stop(handle: SoundHandle) void {
             if (find_index(handle)) |i| {
                 if (voices[i].?.slot) |s| Backend.stop_slot(s);
-                voices[i] = null;
+                release_voice(i);
             }
         }
 
@@ -119,7 +121,7 @@ pub fn Mixer(comptime Backend: type) type {
                 if (voices[i] != null) {
                     if (voices[i].?.slot) |s| {
                         if (!Backend.is_slot_active(s)) {
-                            voices[i] = null;
+                            release_voice(i);
                         }
                     }
                 }
@@ -201,9 +203,7 @@ pub fn Mixer(comptime Backend: type) type {
                 if (voices[i] == null) break i;
             } else return error.TooManyVoices;
 
-            const handle = next_handle;
-            next_handle +%= 1;
-            if (next_handle == 0) next_handle = 1;
+            const handle = make_handle(vi);
 
             voices[vi] = .{
                 .stream = stream,
@@ -220,10 +220,22 @@ pub fn Mixer(comptime Backend: type) type {
         }
 
         fn find_index(handle: SoundHandle) ?usize {
-            for (0..MAX_VOICES) |i| {
-                if (voices[i] != null and voices[i].?.handle == handle) return i;
-            }
+            const raw = handle.raw_index();
+            if (raw == 0 or raw > MAX_VOICES) return null;
+            const i = raw - 1;
+            if (voice_generations[i] != handle.generation) return null;
+            if (voices[i] != null and voices[i].?.handle == handle) return i;
             return null;
+        }
+
+        fn make_handle(index: usize) SoundHandle {
+            return SoundHandle.from_index(index + 1, voice_generations[index]);
+        }
+
+        fn release_voice(index: usize) void {
+            voices[index] = null;
+            voice_generations[index] +%= 1;
+            if (voice_generations[index] == 0) voice_generations[index] = 1;
         }
 
         fn find_free_slot(used: *const [MAX_SLOTS]bool, limit: usize) ?u8 {

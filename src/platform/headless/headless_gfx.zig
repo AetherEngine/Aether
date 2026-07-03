@@ -40,7 +40,7 @@ pub fn switch_second_screen() void {
 pub fn set_vsync(_: bool) void {}
 
 pub fn create_mesh() anyerror!Mesh.Handle {
-    return 0;
+    return Mesh.Handle.none;
 }
 
 pub fn destroy_mesh(_: Mesh.Handle) void {}
@@ -48,7 +48,7 @@ pub fn update_mesh(_: Mesh.Handle, _: []const u8, _: []const Mesh.Index) void {}
 pub fn draw_mesh(_: Mesh.Handle, _: *const Mat4) void {}
 
 pub fn create_texture(_: u32, _: u32, _: []align(16) u8) anyerror!Texture.Handle {
-    return 0;
+    return Texture.Handle.none;
 }
 
 pub fn update_texture(_: Texture.Handle, _: []align(16) u8) void {}

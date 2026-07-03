@@ -4,6 +4,8 @@ const logger = @import("logger.zig");
 const memory = @import("memory.zig");
 
 pub const CircularBuffer = @import("circular_buffer.zig").CircularBuffer;
+pub const Handle = @import("handle.zig").Handle;
+pub const ResourceTable = @import("handle.zig").ResourceTable;
 pub const Image = @import("image.zig");
 pub const MemoryConfig = memory.MemoryConfig;
 pub const Pool = memory.Pool;

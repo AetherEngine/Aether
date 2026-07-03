@@ -26,7 +26,8 @@ pub fn setup(alloc: std.mem.Allocator, io: std.Io) void {
 var procs: gl.ProcTable = undefined;
 var last_width: u32 = 0;
 var last_height: u32 = 0;
-var meshes = Util.CircularBuffer(MeshInternal, 8192).init();
+var meshes = Util.ResourceTable(MeshInternal, 8192, Mesh.Handle).init();
+var textures = Util.ResourceTable(gl.uint, 8192, Texture.Handle).init();
 var alpha_blend_enabled: bool = true;
 var cull_face_enabled: bool = true;
 var pipeline: PipelineData = undefined;
@@ -227,26 +228,26 @@ pub fn create_mesh() anyerror!Mesh.Handle {
     gl.NamedBufferData(vbo, 0, null, gl.STATIC_DRAW);
     gl.NamedBufferData(ebo, 0, null, gl.STATIC_DRAW);
 
-    const mesh_idx = meshes.add_element(.{
+    const mesh_handle = meshes.add(.{
         .vbo = vbo,
         .ebo = ebo,
     }) orelse return error.OutOfMeshes;
 
-    return @intCast(mesh_idx);
+    return mesh_handle;
 }
 
 pub fn destroy_mesh(handle: Mesh.Handle) void {
-    var mesh = meshes.get_element(handle) orelse return;
+    var mesh = meshes.get(handle) orelse return;
     var buffers = [_]gl.uint{ mesh.vbo, mesh.ebo };
     gl.DeleteBuffers(2, @ptrCast(&buffers));
     mesh.vbo = 0;
     mesh.ebo = 0;
 
-    _ = meshes.remove_element(handle);
+    _ = meshes.remove(handle);
 }
 
 pub fn update_mesh(handle: Mesh.Handle, data: []const u8, indices: []const Mesh.Index) void {
-    var mesh = meshes.get_element(handle) orelse return;
+    var mesh = meshes.get(handle) orelse return;
 
     gl.NamedBufferData(mesh.vbo, @intCast(data.len), null, gl.STATIC_DRAW);
     gl.NamedBufferSubData(mesh.vbo, 0, @intCast(data.len), data.ptr);
@@ -256,12 +257,12 @@ pub fn update_mesh(handle: Mesh.Handle, data: []const u8, indices: []const Mesh.
 
     mesh.vertex_count = data.len / vertex.Layout.stride;
     mesh.index_count = indices.len;
-    meshes.update_element(handle, mesh);
+    _ = meshes.update(handle, mesh);
 }
 
 pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
     if (!pipeline_initialized) return;
-    const mesh = meshes.get_element(handle) orelse return;
+    const mesh = meshes.get(handle) orelse return;
     const pl = &pipeline;
     if (mesh.vertex_count == 0) return;
 
@@ -288,23 +289,30 @@ pub fn create_texture(width: u32, height: u32, data: []align(16) u8) anyerror!Te
     gl.TextureParameteri(tex, gl.TEXTURE_WRAP_T, gl.REPEAT);
     gl.GenerateTextureMipmap(tex);
 
-    return tex;
+    return textures.add(tex) orelse {
+        gl.DeleteTextures(1, @ptrCast(&tex));
+        return error.OutOfTextures;
+    };
 }
 
 pub fn update_texture(handle: Texture.Handle, data: []align(16) u8) void {
+    const tex = textures.get(handle) orelse return;
     var w: gl.int = 0;
     var h: gl.int = 0;
-    gl.GetTextureLevelParameteriv(handle, 0, gl.TEXTURE_WIDTH, @ptrCast(&w));
-    gl.GetTextureLevelParameteriv(handle, 0, gl.TEXTURE_HEIGHT, @ptrCast(&h));
-    gl.TextureSubImage2D(handle, 0, 0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, data.ptr);
+    gl.GetTextureLevelParameteriv(tex, 0, gl.TEXTURE_WIDTH, @ptrCast(&w));
+    gl.GetTextureLevelParameteriv(tex, 0, gl.TEXTURE_HEIGHT, @ptrCast(&h));
+    gl.TextureSubImage2D(tex, 0, 0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, data.ptr);
 }
 
 pub fn bind_texture(handle: Texture.Handle) void {
-    gl.BindTextureUnit(2, handle);
+    const tex = textures.get(handle) orelse return;
+    gl.BindTextureUnit(2, tex);
 }
 
 pub fn destroy_texture(handle: Texture.Handle) void {
-    gl.DeleteTextures(1, @ptrCast(&handle));
+    var tex = textures.get(handle) orelse return;
+    gl.DeleteTextures(1, @ptrCast(&tex));
+    _ = textures.remove(handle);
 }
 
 pub fn force_texture_resident(_: Texture.Handle) void {}

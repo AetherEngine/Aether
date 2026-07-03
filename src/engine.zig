@@ -393,6 +393,8 @@ pub const Engine = struct {
             }
             const tick_start_ns = clock.now(self.io).toNanoseconds();
             try Core.state_machine.tick(self);
+            try Core.state_machine.commit_pending(self);
+            if (!self.running) return;
             const tick_end_ns = clock.now(self.io).toNanoseconds();
             tick_cost_ns = saturatingAddI64(tick_cost_ns, elapsedNsBetween(tick_start_ns, tick_end_ns));
             self.run_loop.tick_accum -= tick_us;
@@ -445,6 +447,8 @@ pub const Engine = struct {
                 });
             }
             try Core.state_machine.update(self, UPDATE_DT_S, &budget);
+            try Core.state_machine.commit_pending(self);
+            if (!self.running) return;
             pre_update_elapsed_ns = 0;
             self.run_loop.update_accum -= UPDATE_US;
             update_steps += 1;
@@ -502,6 +506,8 @@ pub const Engine = struct {
             }
             Platform.gfx.api.end_frame();
             Platform.gfx.frame_active = false;
+            try Core.state_machine.commit_pending(self);
+            if (!self.running) return;
             if (trace_loop) {
                 Util.engine_logger.info("trace: engine loop {d} end_frame end", .{trace_loop_index});
             }

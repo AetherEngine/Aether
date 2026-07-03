@@ -129,8 +129,8 @@ var image_descriptor_count: u32 = 1;
 var image_descriptors_dirty = true;
 var image_descriptor_table_indices: [Swapchain.MAX_FRAMES]u32 = @splat(0);
 
-var meshes = Util.CircularBuffer(MeshData, 8192).init();
-var texture_slots = Util.CircularBuffer(TextureData, MAX_TEXTURES).init();
+var meshes = Util.ResourceTable(MeshData, 8192, Mesh.Handle).init();
+var texture_slots = Util.ResourceTable(TextureData, MAX_TEXTURES, Texture.Handle).init();
 var retired_texture_slots: std.ArrayList(RetiredTextureSlot) = .empty;
 var render_pipeline: PipelineData = undefined;
 var render_pipeline_initialized = false;
@@ -150,7 +150,7 @@ var vsync_enabled = true;
 var depth_write_enabled = true;
 var culling_enabled = true;
 var alpha_blend_enabled = true;
-var current_texture: Texture.Handle = 0;
+var current_texture: Texture.Handle = .none;
 var next_uniform_slot: u32 = 0;
 var frame_draw_calls: u32 = 0;
 var frame_vertex_count: u32 = 0;
@@ -305,18 +305,17 @@ pub fn set_vsync(v: bool) void {
 }
 
 pub fn create_mesh() anyerror!Mesh.Handle {
-    const mesh = meshes.add_element(.{}) orelse return error.OutOfMeshes;
-    return @intCast(mesh);
+    return meshes.add(.{}) orelse return error.OutOfMeshes;
 }
 
 pub fn destroy_mesh(handle: Mesh.Handle) void {
-    const mesh = meshes.get_element_ptr(handle) orelse return;
+    const mesh = meshes.get_ptr(handle) orelse return;
     destroy_mesh_data(mesh, true);
-    _ = meshes.remove_element(handle);
+    _ = meshes.remove(handle);
 }
 
 pub fn update_mesh(handle: Mesh.Handle, data: []const u8, indices: []const Mesh.Index) void {
-    const mesh = meshes.get_element_ptr(handle) orelse return;
+    const mesh = meshes.get_ptr(handle) orelse return;
 
     update_mesh_upload(&mesh.vertex, data);
     update_mesh_upload(&mesh.index, std.mem.sliceAsBytes(indices));
@@ -327,7 +326,8 @@ pub fn update_mesh(handle: Mesh.Handle, data: []const u8, indices: []const Mesh.
 
 pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
     if (!initialized or !render_pipeline_initialized or !swapchain.recording) return;
-    const mesh = meshes.get_element_ptr(handle) orelse return;
+    const mesh = meshes.get_ptr(handle) orelse return;
+    const mesh_id = handle.raw_index();
     const frame_index = swapchain.frame_index;
     if (mesh.dirty) {
         if (upload_mesh(mesh, frame_index) catch return) {
@@ -339,14 +339,14 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
     if (buffer.mem_block == null or buffer.size == 0 or mesh.vertex_count == 0) return;
     const vertex_stride = vertex.Layout.stride;
     if (mesh.vertex_count > std.math.maxInt(usize) / vertex_stride) {
-        Util.engine_logger.err("Switch draw rejected: vertex byte count overflow mesh={d} count={d} stride={d}", .{ handle, mesh.vertex_count, vertex_stride });
+        Util.engine_logger.err("Switch draw rejected: vertex byte count overflow mesh={d} count={d} stride={d}", .{ mesh_id, mesh.vertex_count, vertex_stride });
         return;
     }
     const required_vertex_bytes = mesh.vertex_count * vertex_stride;
     if (required_vertex_bytes > buffer.size) {
         Util.engine_logger.err(
             "Switch draw rejected: mesh={d} count={d} stride={d} requires={d} available={d} frame={d} image={d}",
-            .{ handle, mesh.vertex_count, vertex_stride, required_vertex_bytes, buffer.size, frame_index, swapchain.image_index },
+            .{ mesh_id, mesh.vertex_count, vertex_stride, required_vertex_bytes, buffer.size, frame_index, swapchain.image_index },
         );
         return;
     }
@@ -354,7 +354,7 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
     const draw_count = if (mesh.index_count > 0) mesh.index_count else mesh.vertex_count;
 
     ensure_image_descriptors_current();
-    const texture_id = resolve_texture_handle(draw_state.tex_id);
+    const texture_id = resolve_texture_index(draw_state.tex_id);
 
     context.mark_gpu_draw(
         swapchain.command_buffer,
@@ -362,7 +362,7 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
         @intCast(frame_index),
         @intCast(swapchain.image_index),
         frame_draw_calls,
-        @intCast(handle),
+        @intCast(mesh_id),
         @intCast(draw_count),
         texture_id,
         buffer.size,
@@ -393,7 +393,7 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
         @intCast(frame_index),
         @intCast(swapchain.image_index),
         frame_draw_calls,
-        @intCast(handle),
+        @intCast(mesh_id),
         @intCast(draw_count),
         texture_id,
         buffer.size,
@@ -410,7 +410,7 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
         @intCast(frame_index),
         @intCast(swapchain.image_index),
         frame_draw_calls,
-        @intCast(handle),
+        @intCast(mesh_id),
         @intCast(draw_count),
         texture_id,
         buffer.size,
@@ -426,12 +426,11 @@ pub fn create_texture(width: u32, height: u32, data: []align(16) u8) anyerror!Te
     if (data.len < @as(usize, width) * @as(usize, height) * 4) return error.TextureDataTooSmall;
     collect_retired_texture_slots();
 
-    const handle_usize = texture_slots.add_element(.{}) orelse return error.OutOfTextures;
-    const handle: Texture.Handle = @intCast(handle_usize);
-    const tex = texture_slots.get_element_ptr(handle) orelse return error.OutOfTextures;
+    const handle = texture_slots.add(.{}) orelse return error.OutOfTextures;
+    const tex = texture_slots.get_ptr(handle) orelse return error.OutOfTextures;
     errdefer {
         destroy_texture_data(tex, false);
-        _ = texture_slots.remove_element(handle);
+        _ = texture_slots.remove(handle);
     }
 
     try create_texture_image(tex, width, height);
@@ -441,25 +440,26 @@ pub fn create_texture(width: u32, height: u32, data: []align(16) u8) anyerror!Te
 }
 
 pub fn update_texture(handle: Texture.Handle, data: []align(16) u8) void {
-    const tex = texture_slots.get_element_ptr(handle) orelse return;
+    const tex = texture_slots.get_ptr(handle) orelse return;
     if (!tex.alive) return;
     if (data.len < @as(usize, tex.width) * @as(usize, tex.height) * 4) return;
     upload_texture_pixels(handle, tex, data) catch return;
 }
 
 pub fn bind_texture(handle: Texture.Handle) void {
-    const tex = texture_slots.get_element(handle) orelse return;
+    const tex = texture_slots.get(handle) orelse return;
     if (!tex.alive) return;
     current_texture = handle;
-    draw_state.tex_id = handle;
+    draw_state.tex_id = @intCast(texture_slots.raw_index(handle) orelse 0);
 }
 
 pub fn destroy_texture(handle: Texture.Handle) void {
-    const tex = texture_slots.get_element_ptr(handle) orelse return;
+    const tex = texture_slots.get_ptr(handle) orelse return;
     if (!tex.alive) return;
+    const texture_id: u32 = @intCast(texture_slots.raw_index(handle) orelse return);
     destroy_texture_data(tex, true);
-    image_descriptors[handle] = fallback_image_descriptor();
-    if (image_descriptor_count == handle + 1) recompute_image_descriptor_count();
+    image_descriptors[texture_id] = fallback_image_descriptor();
+    if (image_descriptor_count == texture_id + 1) recompute_image_descriptor_count();
     image_descriptors_dirty = true;
     tex.alive = false;
     retired_texture_slots.append(render_alloc, .{
@@ -467,10 +467,10 @@ pub fn destroy_texture(handle: Texture.Handle) void {
         .retire_after_completed_frames = gc.completed_frames + Swapchain.MAX_FRAMES,
     }) catch {
         context.wait_idle("texture slot retirement fallback");
-        _ = texture_slots.remove_element(handle);
+        _ = texture_slots.remove(handle);
     };
     if (current_texture == handle) {
-        current_texture = 0;
+        current_texture = .none;
         draw_state.tex_id = 0;
     }
 }
@@ -500,9 +500,9 @@ fn collect_retired_texture_slots() void {
     var write: usize = 0;
     for (retired_texture_slots.items) |retired| {
         if (retired.retire_after_completed_frames <= gc.completed_frames) {
-            if (texture_slots.get_element(retired.handle)) |tex| {
+            if (texture_slots.get(retired.handle)) |tex| {
                 if (!tex.alive) {
-                    _ = texture_slots.remove_element(retired.handle);
+                    _ = texture_slots.remove(retired.handle);
                 }
             }
         } else {
@@ -612,7 +612,7 @@ fn publish_image_descriptors_for_frame(frame_index: usize) void {
     var published: [MAX_TEXTURES]dk.DkImageDescriptor = undefined;
     const count: usize = @intCast(image_descriptor_count);
     for (published[0..count], 0..) |*descriptor, index| {
-        if (is_texture_handle_live(index)) {
+        if (is_texture_index_live(@intCast(index))) {
             descriptor.* = image_descriptors[index];
         } else {
             descriptor.* = fallback_image_descriptor();
@@ -632,9 +632,10 @@ fn fallback_image_descriptor() dk.DkImageDescriptor {
     return image_descriptors[0];
 }
 
-fn is_texture_handle_live(handle: usize) bool {
-    if (handle == 0) return !image_descriptor_is_zero(&image_descriptors[0]);
-    const tex = texture_slots.get_element(handle) orelse return false;
+fn is_texture_index_live(index: u32) bool {
+    if (index == 0) return !image_descriptor_is_zero(&image_descriptors[0]);
+    if (index >= texture_slots.slots.len) return false;
+    const tex = texture_slots.slots[index] orelse return false;
     return tex.alive;
 }
 
@@ -645,8 +646,8 @@ fn image_descriptor_is_zero(descriptor: *const dk.DkImageDescriptor) bool {
     return true;
 }
 
-fn resolve_texture_handle(handle: Texture.Handle) u32 {
-    if (is_texture_handle_live(handle)) return @intCast(handle);
+fn resolve_texture_index(index: u32) u32 {
+    if (is_texture_index_live(index)) return index;
     return 0;
 }
 
@@ -674,7 +675,8 @@ fn ensure_image_descriptors_current() void {
 fn create_fallback_texture() !void {
     var white align(16) = [_]u8{ 0xFF, 0xFF, 0xFF, 0xFF };
     current_texture = try create_texture(1, 1, &white);
-    image_descriptors[0] = image_descriptors[current_texture];
+    const current_index = texture_slots.raw_index(current_texture) orelse return error.OutOfTextures;
+    image_descriptors[0] = image_descriptors[current_index];
     image_descriptors_dirty = true;
     draw_state.tex_id = 0;
 }
@@ -896,7 +898,7 @@ fn destroy_all_meshes() void {
 }
 
 fn destroy_all_textures() void {
-    for (&texture_slots.buffer) |*slot| {
+    for (&texture_slots.slots) |*slot| {
         if (slot.*) |*tex| destroy_texture_data(tex, false);
         slot.* = null;
     }
@@ -905,13 +907,13 @@ fn destroy_all_textures() void {
     image_descriptors = @splat(.{ ._storage = @splat(0) });
     image_descriptor_count = 1;
     image_descriptors_dirty = true;
-    current_texture = 0;
+    current_texture = .none;
     draw_state.tex_id = 0;
 }
 
 fn recompute_image_descriptor_count() void {
     var count: u32 = 1;
-    for (texture_slots.buffer, 0..) |slot, index| {
+    for (texture_slots.slots, 0..) |slot, index| {
         if (slot) |tex| {
             if (tex.alive) count = @max(count, @as(u32, @intCast(index + 1)));
         }

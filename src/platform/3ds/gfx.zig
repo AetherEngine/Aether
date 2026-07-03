@@ -121,12 +121,12 @@ const ScreenState = struct {
     recording: bool = false,
     render_open: bool = false,
     bound_vertex_buffer: mango.Buffer = .null,
-    bound_texture: Texture.Handle = std.math.maxInt(Texture.Handle),
+    bound_texture: Texture.Handle = .none,
     combiner_mode: CombinerMode = .invalid,
 
     fn reset_cache(state: *ScreenState) void {
         state.bound_vertex_buffer = .null;
-        state.bound_texture = std.math.maxInt(Texture.Handle);
+        state.bound_texture = .none;
         state.combiner_mode = .invalid;
     }
 };
@@ -134,8 +134,8 @@ const ScreenState = struct {
 var render_alloc: std.mem.Allocator = undefined;
 var render_io: std.Io = undefined;
 
-var meshes = Util.CircularBuffer(MeshData, 8192).init();
-var texture_slots = Util.CircularBuffer(TextureData, MAX_TEXTURES).init();
+var meshes = Util.ResourceTable(MeshData, 8192, Mesh.Handle).init();
+var texture_slots = Util.ResourceTable(TextureData, MAX_TEXTURES, Texture.Handle).init();
 var retired_mesh_buffers = Util.CircularBuffer(mango.Buffer, 8192).init();
 var retired_textures = Util.CircularBuffer(TextureData, MAX_TEXTURES * 2).init();
 var retired_mesh_buffer_overflow: std.ArrayList(mango.Buffer) = .empty;
@@ -161,7 +161,7 @@ var bottom_presented = false;
 var vsync_enabled = true;
 var depth_write_enabled = true;
 var culling_enabled = true;
-var current_texture: Texture.Handle = 0;
+var current_texture: Texture.Handle = .none;
 var command_pool: mango.CommandPool = .null;
 var command_buffers: [COMMAND_BUFFER_COUNT]mango.CommandBuffer = @splat(.null);
 var top_frame_semaphore: mango.Semaphore = .null;
@@ -453,17 +453,17 @@ pub fn set_vsync(v: bool) void {
 }
 
 pub fn create_mesh() anyerror!Mesh.Handle {
-    return meshes.add_element(.{}) orelse error.OutOfMeshSlots;
+    return meshes.add(.{}) orelse error.OutOfMeshSlots;
 }
 
 pub fn destroy_mesh(handle: Mesh.Handle) void {
-    const mesh = meshes.get_element_ptr(handle) orelse return;
+    const mesh = meshes.get_ptr(handle) orelse return;
     retire_mesh_data(mesh);
-    _ = meshes.remove_element(handle);
+    _ = meshes.remove(handle);
 }
 
 pub fn update_mesh(handle: Mesh.Handle, data: []const u8, indices: []const Mesh.Index) void {
-    const mesh = meshes.get_element_ptr(handle) orelse return;
+    const mesh = meshes.get_ptr(handle) orelse return;
     if (data.len == 0) {
         retire_mesh_data(mesh);
         return;
@@ -483,7 +483,7 @@ pub fn update_mesh(handle: Mesh.Handle, data: []const u8, indices: []const Mesh.
 }
 
 pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
-    const mesh = meshes.get_element_ptr(handle) orelse return;
+    const mesh = meshes.get_ptr(handle) orelse return;
     if (mesh.vertex.buffer == .null or mesh.vertex_count == 0) return;
     if (mesh.vertex_count > std.math.maxInt(usize) / vertex.Layout.stride) return;
     if (mesh.vertex_count * vertex.Layout.stride > mesh.vertex.size) return;
@@ -558,11 +558,11 @@ pub fn create_texture(width: u32, height: u32, data: []align(16) u8) anyerror!Te
     if (!valid_texture_dimensions(width, height)) return error.UnsupportedTextureSize;
     if (data.len < @as(usize, width) * @as(usize, height) * 4) return error.TextureDataTooSmall;
 
-    const handle = texture_slots.add_element(.{}) orelse return error.OutOfTextureSlots;
-    const texture = texture_slots.get_element_ptr(handle) orelse return error.OutOfTextureSlots;
+    const handle = texture_slots.add(.{}) orelse return error.OutOfTextureSlots;
+    const texture = texture_slots.get_ptr(handle) orelse return error.OutOfTextureSlots;
     errdefer {
         destroy_texture_data(texture);
-        _ = texture_slots.remove_element(handle);
+        _ = texture_slots.remove(handle);
     }
 
     texture.* = .{
@@ -572,11 +572,11 @@ pub fn create_texture(width: u32, height: u32, data: []align(16) u8) anyerror!Te
     try create_texture_resources(texture);
     try upload_texture_pixels(texture, data);
     texture.alive = true;
-    return @intCast(handle);
+    return handle;
 }
 
 pub fn update_texture(handle: Texture.Handle, data: []align(16) u8) void {
-    const texture = texture_slots.get_element_ptr(handle) orelse return;
+    const texture = texture_slots.get_ptr(handle) orelse return;
     if (!texture.alive) return;
     if (data.len < @as(usize, texture.width) * @as(usize, texture.height) * 4) return;
 
@@ -598,20 +598,20 @@ pub fn update_texture(handle: Texture.Handle, data: []align(16) u8) void {
 }
 
 pub fn bind_texture(handle: Texture.Handle) void {
-    if (handle != 0) {
-        const texture = texture_slots.get_element(handle) orelse return;
+    if (!handle.is_null()) {
+        const texture = texture_slots.get(handle) orelse return;
         if (!texture.alive) return;
     }
     current_texture = handle;
-    draw_state.tex_id = @intCast(handle);
+    draw_state.tex_id = @intCast(texture_slots.raw_index(handle) orelse 0);
 }
 
 pub fn destroy_texture(handle: Texture.Handle) void {
-    const texture = texture_slots.get_element_ptr(handle) orelse return;
+    const texture = texture_slots.get_ptr(handle) orelse return;
     drop_pending_texture_uploads(handle);
     retire_texture_data(texture);
-    _ = texture_slots.remove_element(handle);
-    if (current_texture == handle) current_texture = 0;
+    _ = texture_slots.remove(handle);
+    if (current_texture == handle) current_texture = .none;
 }
 
 pub fn force_texture_resident(_: Texture.Handle) void {}
@@ -906,7 +906,7 @@ fn set_default_graphics_state(cmd: mango.CommandBuffer, screen: gfx.Surface.Scre
 }
 
 fn bind_draw_texture_state(state: *ScreenState, cmd: mango.CommandBuffer) void {
-    const texture = texture_slots.get_element(current_texture) orelse {
+    const texture = texture_slots.get(current_texture) orelse {
         bind_primary_color_state(state, cmd);
         return;
     };
@@ -928,9 +928,9 @@ fn bind_draw_texture_state(state: *ScreenState, cmd: mango.CommandBuffer) void {
 }
 
 fn bind_primary_color_state(state: *ScreenState, cmd: mango.CommandBuffer) void {
-    if (state.bound_texture != 0) {
+    if (!state.bound_texture.is_null()) {
         cmd.bindCombinedImageSamplers(0, &.{mango.CombinedImageSampler.none});
-        state.bound_texture = 0;
+        state.bound_texture = .none;
     }
     if (state.combiner_mode != .primary) {
         cmd.setTextureCombiners(&primary_color_combiners, &texture_combiner_sources);
@@ -1127,7 +1127,7 @@ fn reset_screen_state(state: *ScreenState) void {
 }
 
 fn queue_pending_texture_upload(handle: Texture.Handle, data: []align(16) u8) !void {
-    const texture = texture_slots.get_element(handle) orelse return;
+    const texture = texture_slots.get(handle) orelse return;
     if (!texture.alive) return;
 
     const byte_count = texture_byte_count(texture.width, texture.height);
@@ -1144,7 +1144,7 @@ fn queue_pending_texture_upload(handle: Texture.Handle, data: []align(16) u8) !v
 fn drain_pending_texture_uploads() void {
     for (pending_texture_uploads.buffer[1..]) |*maybe_upload| {
         if (maybe_upload.*) |upload| {
-            if (texture_slots.get_element_ptr(upload.handle)) |texture| {
+            if (texture_slots.get_ptr(upload.handle)) |texture| {
                 if (texture.alive) {
                     upload_texture_pixels(texture, upload.data) catch |err| {
                         std.log.err("3DS Mango pending texture upload failed: {s}", .{@errorName(err)});
@@ -1322,12 +1322,12 @@ fn destroy_all_meshes() void {
 }
 
 fn destroy_all_textures() void {
-    for (texture_slots.buffer[1..]) |*maybe_texture| {
+    for (texture_slots.slots[1..]) |*maybe_texture| {
         if (maybe_texture.*) |*texture| destroy_texture_data(texture);
         maybe_texture.* = null;
     }
     texture_slots.clear();
-    current_texture = 0;
+    current_texture = .none;
     draw_state.tex_id = 0;
 }
 
