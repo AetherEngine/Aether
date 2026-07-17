@@ -1,17 +1,40 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const options = @import("options");
 
 var log_buffer: [4096]u8 = @splat(0);
 var file_log: std.Io.File = undefined;
 var file_writer: std.Io.File.Writer = undefined;
 var writer: *std.Io.Writer = undefined;
+var log_io: std.Io = undefined;
+var file_logging = false;
+var log_lock: std.atomic.Value(bool) = .init(false);
+
+pub const Error = std.Io.File.OpenError;
+
+fn lock() void {
+    while (log_lock.cmpxchgWeak(false, true, .acquire, .monotonic) != null) {
+        std.atomic.spinLoopHint();
+    }
+}
+
+fn unlock() void {
+    log_lock.store(false, .release);
+}
+
+fn flushFile(sync_to_storage: bool) void {
+    if (!file_logging) return;
+
+    writer.flush() catch {};
+    if (sync_to_storage) file_log.sync(log_io) catch {};
+}
 
 /// PSP has no per-user data dir concept; the log sits at CWD (which is
 /// where the EBOOT lives) regardless of what `data_dir` points at. Every
 /// other platform routes through the engine-resolved data dir so
 /// Finder-launched `.app` bundles don't try to write into read-only
 /// bundle internals.
-pub fn init(io: std.Io, data_dir: std.Io.Dir) !void {
+pub fn init(io: std.Io, data_dir: anytype) Error!void {
     if (builtin.os.tag == .psp) {
         file_log = try std.Io.Dir.cwd().createFile(io, "ms0:/aether.log", .{ .truncate = true });
     } else {
@@ -19,11 +42,22 @@ pub fn init(io: std.Io, data_dir: std.Io.Dir) !void {
     }
     file_writer = file_log.writer(io, &log_buffer);
     writer = &file_writer.interface;
+    log_io = io;
+    file_logging = true;
 }
 
 pub fn deinit(io: std.Io) void {
-    writer.flush() catch {};
+    if (!file_logging) return;
+    flushFile(true);
     file_log.close(io);
+    file_logging = false;
+}
+
+pub fn flush() void {
+    lock();
+    defer unlock();
+
+    flushFile(options.config.flush_logs);
 }
 
 pub fn aether_log_fn(
@@ -32,10 +66,16 @@ pub fn aether_log_fn(
     comptime format: []const u8,
     args: anytype,
 ) void {
+    lock();
+    defer unlock();
+
     const scope_prefix = "(" ++ @tagName(scope) ++ ") ";
 
     const prefix = scope_prefix ++ "[" ++ comptime level.asText() ++ "]: ";
 
-    writer.print(prefix ++ format ++ "\n", args) catch {};
+    if (file_logging) {
+        writer.print(prefix ++ format ++ "\n", args) catch {};
+        if (options.config.flush_logs) flushFile(true);
+    }
     std.debug.print(prefix ++ format ++ "\n", args);
 }

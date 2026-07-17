@@ -1,17 +1,22 @@
 const std = @import("std");
-const Util = @import("../../../util/util.zig");
 const glfw = @import("glfw");
 const gl = @import("gl");
+const gfx_api = @import("../../gfx_api.zig");
 const Mat4 = @import("../../../math/math.zig").Mat4;
+const Util = @import("../../../util/util.zig");
 
 const shader = @import("shader.zig");
 const gfx = @import("../../gfx.zig");
 
 const Rendering = @import("../../../rendering/rendering.zig");
 const Mesh = Rendering.mesh;
-const Pipeline = Rendering.Pipeline;
+const vertex = Rendering.vertex;
 const Texture = Rendering.Texture;
 const GLFWSurface = @import("../surface.zig");
+const basic_vert align(@alignOf(u32)) = @embedFile("aether_basic_vert").*;
+const basic_frag align(@alignOf(u32)) = @embedFile("aether_basic_frag").*;
+
+pub const mesh_source_mode = Mesh.SourceMode.uploaded_copy;
 
 var render_alloc: std.mem.Allocator = undefined;
 var render_io: std.Io = undefined;
@@ -24,23 +29,27 @@ pub fn setup(alloc: std.mem.Allocator, io: std.Io) void {
 var procs: gl.ProcTable = undefined;
 var last_width: u32 = 0;
 var last_height: u32 = 0;
-var pipelines = Util.CircularBuffer(PipelineData, 16).init();
-var meshes = Util.CircularBuffer(MeshInternal, 8192).init();
+var meshes = Util.ResourceTable(MeshInternal, 8192, Mesh.Handle).init();
+var textures = Util.ResourceTable(gl.uint, 8192, Texture.Handle).init();
 var alpha_blend_enabled: bool = true;
 var cull_face_enabled: bool = true;
+var pipeline: PipelineData = undefined;
+var pipeline_initialized: bool = false;
 
 const PipelineData = struct {
-    layout: Pipeline.VertexLayout,
+    layout: vertex.VertexLayout,
     vao: gl.uint,
     program: shader.Shader,
 };
 
 const MeshInternal = struct {
-    pipeline: Pipeline.Handle,
     vbo: gl.uint,
+    ebo: gl.uint,
+    vertex_count: usize = 0,
+    index_count: usize = 0,
 };
 
-pub fn init() anyerror!void {
+pub fn init() gfx_api.InitError!void {
     if (!procs.init(glfw.getProcAddress)) @panic("Failed to initialize OpenGL");
     gl.makeProcTableCurrent(&procs);
 
@@ -59,15 +68,22 @@ pub fn init() anyerror!void {
     gl.BlendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     gl.LineWidth(5.0);
 
-    try shader.init();
+    shader.init() catch return error.PipelineCreationFailed;
+    errdefer shader.deinit();
+
     shader.state.proj = Mat4.identity();
     shader.state.view = Mat4.identity();
     shader.update_ubo();
 
+    pipeline = init_pipeline(vertex.Layout) catch return error.PipelineCreationFailed;
+    pipeline_initialized = true;
 }
 
 pub fn deinit() void {
-
+    if (pipeline_initialized) {
+        deinit_pipeline(&pipeline);
+        pipeline_initialized = false;
+    }
     shader.deinit();
 
     gl.makeProcTableCurrent(null);
@@ -148,6 +164,14 @@ pub fn clear_depth() void {
     gl.Clear(gl.DEPTH_BUFFER_BIT);
 }
 
+pub fn has_second_screen() bool {
+    return false;
+}
+
+pub fn switch_second_screen() void {
+    std.debug.panic("opengl gfx: switch_second_screen called but this backend has no second screen", .{});
+}
+
 pub fn set_vsync(v: bool) void {
     glfw.swapInterval(@intFromBool(v));
 }
@@ -162,11 +186,19 @@ pub fn set_view_matrix(mat: *const Mat4) void {
     shader.update_ubo();
 }
 
-pub fn create_pipeline(layout: Pipeline.VertexLayout, v_shader: ?[:0]align(4) const u8, f_shader: ?[:0]align(4) const u8) anyerror!Pipeline.Handle {
-    if (v_shader == null or f_shader == null) {
-        return error.InvalidShader;
-    }
+pub fn set_render_state(state: *const Rendering.RenderState) void {
+    set_alpha_blend(state.blend == .alpha);
+    set_depth_write(state.depth_write);
+    set_culling(state.cull);
+    set_clip_planes(state.clip_planes);
+    set_uv_offset(state.uv_offset[0], state.uv_offset[1]);
+    set_fog(state.fog.enabled, state.fog.start, state.fog.end, state.fog.color[0], state.fog.color[1], state.fog.color[2]);
+    set_proj_matrix(&state.proj);
+    set_view_matrix(&state.view);
+    bind_texture(if (state.texture.is_null()) Texture.Default.handle else state.texture);
+}
 
+fn init_pipeline(layout: vertex.VertexLayout) !PipelineData {
     var vao: gl.uint = 0;
     gl.CreateVertexArrays(1, @ptrCast(&vao));
     for (layout.attributes) |a| {
@@ -184,75 +216,90 @@ pub fn create_pipeline(layout: Pipeline.VertexLayout, v_shader: ?[:0]align(4) co
         gl.VertexArrayAttribBinding(vao, a.location, a.binding);
     }
 
-    const program = try shader.Shader.init(v_shader.?, f_shader.?);
+    const v_shader: [:0]align(4) const u8 = &basic_vert;
+    const f_shader: [:0]align(4) const u8 = &basic_frag;
+    const program = try shader.Shader.init(v_shader, f_shader);
 
-    const pipeline = pipelines.add_element(.{
+    return .{
         .layout = layout,
         .vao = vao,
         .program = program,
-    }) orelse return error.OutOfPipelines;
-
-    return @intCast(pipeline);
+    };
 }
 
-pub fn bind_pipeline(pipeline: Pipeline.Handle) void {
-    const pl = pipelines.get_element(pipeline) orelse return;
-    gl.BindVertexArray(pl.vao);
-    gl.UseProgram(pl.program.shader_program);
-}
-
-pub fn destroy_pipeline(pipeline: Pipeline.Handle) void {
-    var pl = pipelines.get_element(pipeline) orelse return;
+fn deinit_pipeline(pl: *PipelineData) void {
     gl.DeleteVertexArrays(1, @ptrCast(&pl.vao));
     pl.vao = 0;
     pl.program.deinit();
-
-    _ = pipelines.remove_element(pipeline);
 }
 
-pub fn create_mesh(pipeline: Pipeline.Handle) anyerror!Mesh.Handle {
-    const pl = pipelines.get_element(pipeline).?;
+pub fn create_mesh(_: *const Mesh.Desc) gfx_api.CreateMeshError!Mesh.Handle {
     var vbo: gl.uint = 0;
-    gl.CreateBuffers(1, @ptrCast(&vbo));
+    var ebo: gl.uint = 0;
+    var buffers = [_]gl.uint{ 0, 0 };
+    gl.CreateBuffers(2, @ptrCast(&buffers));
+    vbo = buffers[0];
+    ebo = buffers[1];
     gl.NamedBufferData(vbo, 0, null, gl.STATIC_DRAW);
-    gl.VertexArrayVertexBuffer(pl.vao, 0, vbo, 0, @intCast(pl.layout.stride));
+    gl.NamedBufferData(ebo, 0, null, gl.STATIC_DRAW);
 
-    const mesh_idx = meshes.add_element(.{
-        .pipeline = pipeline,
+    const mesh_handle = meshes.add(.{
         .vbo = vbo,
+        .ebo = ebo,
     }) orelse return error.OutOfMeshes;
 
-    return @intCast(mesh_idx);
+    return mesh_handle;
 }
 
 pub fn destroy_mesh(handle: Mesh.Handle) void {
-    var mesh = meshes.get_element(handle) orelse return;
-    gl.DeleteBuffers(1, @ptrCast(&mesh.vbo));
+    if (handle.is_null()) return;
+    var mesh = meshes.get(handle) orelse Util.panic_invalid_handle("opengl gfx", "destroy_mesh", handle);
+    var buffers = [_]gl.uint{ mesh.vbo, mesh.ebo };
+    gl.DeleteBuffers(2, @ptrCast(&buffers));
     mesh.vbo = 0;
+    mesh.ebo = 0;
 
-    _ = meshes.remove_element(handle);
+    _ = meshes.remove(handle);
 }
 
-pub fn update_mesh(handle: Mesh.Handle, data: []const u8) void {
-    const mesh = meshes.get_element(handle) orelse return;
+pub fn update_mesh(handle: Mesh.Handle, desc: *const Mesh.UpdateDesc) void {
+    var mesh = meshes.get(handle) orelse Util.panic_invalid_handle("opengl gfx", "update_mesh", handle);
+    const data = desc.vertices;
+    const indices = desc.indices;
 
     gl.NamedBufferData(mesh.vbo, @intCast(data.len), null, gl.STATIC_DRAW);
     gl.NamedBufferSubData(mesh.vbo, 0, @intCast(data.len), data.ptr);
+    const index_bytes = std.mem.sliceAsBytes(indices);
+    gl.NamedBufferData(mesh.ebo, @intCast(index_bytes.len), null, gl.STATIC_DRAW);
+    if (index_bytes.len > 0) gl.NamedBufferSubData(mesh.ebo, 0, @intCast(index_bytes.len), index_bytes.ptr);
+
+    mesh.vertex_count = data.len / vertex.Layout.stride;
+    mesh.index_count = indices.len;
+    _ = meshes.update(handle, mesh);
 }
 
-pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize, primitive: Mesh.Primitive) void {
-    const mesh = meshes.get_element(handle) orelse return;
-    const pl = pipelines.get_element(mesh.pipeline) orelse return;
+pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
+    if (!pipeline_initialized) return;
+    const mesh = meshes.get(handle) orelse Util.panic_invalid_handle("opengl gfx", "draw_mesh", handle);
+    const pl = &pipeline;
+    if (mesh.vertex_count == 0) return;
 
     shader.update_per_object(model);
+    gl.BindVertexArray(pl.vao);
+    gl.UseProgram(pl.program.shader_program);
     gl.VertexArrayVertexBuffer(pl.vao, 0, mesh.vbo, 0, @intCast(pl.layout.stride));
-    gl.DrawArrays(switch (primitive) {
-        .triangles => gl.TRIANGLES,
-        .lines => gl.LINES,
-    }, 0, @intCast(count));
+    if (mesh.index_count > 0) {
+        gl.VertexArrayElementBuffer(pl.vao, mesh.ebo);
+        gl.DrawElements(gl.TRIANGLES, @intCast(mesh.index_count), gl.UNSIGNED_SHORT, 0);
+    } else {
+        gl.DrawArrays(gl.TRIANGLES, 0, @intCast(mesh.vertex_count));
+    }
 }
 
-pub fn create_texture(width: u32, height: u32, data: []align(16) u8) anyerror!Texture.Handle {
+pub fn create_texture(desc: *const Texture.UploadDesc) gfx_api.CreateTextureError!Texture.Handle {
+    const width = desc.width;
+    const height = desc.height;
+    const data = desc.pixels;
     var tex: gl.uint = 0;
     gl.CreateTextures(gl.TEXTURE_2D, 1, @ptrCast(&tex));
     gl.TextureStorage2D(tex, 1, gl.RGBA8, @intCast(width), @intCast(height));
@@ -263,23 +310,32 @@ pub fn create_texture(width: u32, height: u32, data: []align(16) u8) anyerror!Te
     gl.TextureParameteri(tex, gl.TEXTURE_WRAP_T, gl.REPEAT);
     gl.GenerateTextureMipmap(tex);
 
-    return tex;
+    return textures.add(tex) orelse {
+        gl.DeleteTextures(1, @ptrCast(&tex));
+        return error.OutOfTextures;
+    };
 }
 
 pub fn update_texture(handle: Texture.Handle, data: []align(16) u8) void {
+    const tex = textures.get(handle) orelse Util.panic_invalid_handle("opengl gfx", "update_texture", handle);
     var w: gl.int = 0;
     var h: gl.int = 0;
-    gl.GetTextureLevelParameteriv(handle, 0, gl.TEXTURE_WIDTH, @ptrCast(&w));
-    gl.GetTextureLevelParameteriv(handle, 0, gl.TEXTURE_HEIGHT, @ptrCast(&h));
-    gl.TextureSubImage2D(handle, 0, 0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, data.ptr);
+    gl.GetTextureLevelParameteriv(tex, 0, gl.TEXTURE_WIDTH, @ptrCast(&w));
+    gl.GetTextureLevelParameteriv(tex, 0, gl.TEXTURE_HEIGHT, @ptrCast(&h));
+    gl.TextureSubImage2D(tex, 0, 0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, data.ptr);
 }
 
 pub fn bind_texture(handle: Texture.Handle) void {
-    gl.BindTextureUnit(2, handle);
+    if (handle.is_null()) return;
+    const tex = textures.get(handle) orelse Util.panic_invalid_handle("opengl gfx", "bind_texture", handle);
+    gl.BindTextureUnit(2, tex);
 }
 
 pub fn destroy_texture(handle: Texture.Handle) void {
-    gl.DeleteTextures(1, @ptrCast(&handle));
+    if (handle.is_null()) return;
+    var tex = textures.get(handle) orelse Util.panic_invalid_handle("opengl gfx", "destroy_texture", handle);
+    gl.DeleteTextures(1, @ptrCast(&tex));
+    _ = textures.remove(handle);
 }
 
 pub fn force_texture_resident(_: Texture.Handle) void {}

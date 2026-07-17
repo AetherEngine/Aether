@@ -4,6 +4,8 @@ const logger = @import("logger.zig");
 const memory = @import("memory.zig");
 
 pub const CircularBuffer = @import("circular_buffer.zig").CircularBuffer;
+pub const Handle = @import("handle.zig").Handle;
+pub const ResourceTable = @import("handle.zig").ResourceTable;
 pub const Image = @import("image.zig");
 pub const MemoryConfig = memory.MemoryConfig;
 pub const Pool = memory.Pool;
@@ -18,7 +20,12 @@ comptime {
     std.testing.refAllDecls(@This());
 }
 
-pub const std_options: std.Options = .{
+pub const std_options: std.Options = if (@hasField(std.Options, "page_size_min")) .{
+    .log_level = if (builtin.mode == .Debug) .debug else .info,
+    .logFn = logger.aether_log_fn,
+    .page_size_min = if (builtin.os.tag == .freestanding) 4096 else null,
+    .page_size_max = if (builtin.os.tag == .freestanding) 4096 else null,
+} else .{
     .log_level = if (builtin.mode == .Debug) .debug else .info,
     .logFn = logger.aether_log_fn,
 };
@@ -28,4 +35,11 @@ pub const game_logger = std.log.scoped(.game);
 
 pub fn ctx_to_self(comptime T: type, ptr: *anyopaque) *T {
     return @ptrCast(@alignCast(ptr));
+}
+
+pub fn panic_invalid_handle(comptime subsystem: []const u8, comptime operation: []const u8, handle: anytype) noreturn {
+    std.debug.panic(subsystem ++ ": " ++ operation ++ ": invalid handle index={} generation={}", .{
+        handle.raw_index(),
+        handle.generation,
+    });
 }

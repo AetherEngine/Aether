@@ -7,8 +7,9 @@
 //! L0 has one bit per block (1 = free, 0 = allocated).
 //! L1 has one bit per L0 word (1 = at least one free block in that group).
 //!
-//! Over-aligned requests (alignment > BLOCK_SIZE) are handled by constraining
-//! the starting block index to a multiple of (alignment / BLOCK_SIZE).
+//! Over-aligned requests (alignment > BLOCK_SIZE) are handled by aligning the
+//! actual data pointer for each candidate run, since the pool's data base is
+//! only guaranteed to be BLOCK_SIZE-aligned.
 //!
 //! alloc -- O(1) single-block via L1->L0 descent; O(n/32) multi-block scan
 //! free  -- O(1): set bits + update summary
@@ -42,6 +43,14 @@ inline fn roundup(n: usize, a: usize) usize {
     return (n + a - 1) & ~(a - 1);
 }
 
+inline fn block_index_for_aligned_address(data: [*]u8, block_idx: u32, alignment: usize) u32 {
+    if (alignment <= BLOCK_SIZE) return block_idx;
+
+    const candidate_addr = @intFromPtr(data + @as(usize, block_idx) * BLOCK_SIZE);
+    const aligned_addr = std.mem.alignForward(usize, candidate_addr, alignment);
+    return block_idx + @as(u32, @intCast((aligned_addr - candidate_addr) / BLOCK_SIZE));
+}
+
 // -- public allocator ---------------------------------------------------------
 
 pub const PoolAlloc = struct {
@@ -55,6 +64,7 @@ pub const PoolAlloc = struct {
     hint: u32,
     used: usize,
     budget: usize,
+    last_failed_request: ?usize,
     name: []const u8,
 
     const vtable = std.mem.Allocator.VTable{
@@ -105,6 +115,7 @@ pub const PoolAlloc = struct {
             .hint = 0,
             .used = 0,
             .budget = buf.len,
+            .last_failed_request = null,
             .name = name,
         };
 
@@ -155,7 +166,29 @@ pub const PoolAlloc = struct {
     pub fn reset(self: *PoolAlloc) void {
         self.used = 0;
         self.hint = 0;
+        self.last_failed_request = null;
         self.reset_bitmaps();
+    }
+
+    pub fn capacity(self: *const PoolAlloc) usize {
+        return @as(usize, self.total_blocks) * BLOCK_SIZE;
+    }
+
+    pub fn largest_free_run(self: *const PoolAlloc) usize {
+        var largest: u32 = 0;
+        var current: u32 = 0;
+        var block: u32 = 0;
+        while (block < self.total_blocks) : (block += 1) {
+            const word = block / WORD_BITS;
+            const bit: u5 = @intCast(block & WORD_MASK);
+            if (self.l0[word] & (@as(u32, 1) << bit) != 0) {
+                current += 1;
+                largest = @max(largest, current);
+            } else {
+                current = 0;
+            }
+        }
+        return @as(usize, largest) * BLOCK_SIZE;
     }
 
     // -- internal: bit manipulation -------------------------------------------
@@ -301,13 +334,11 @@ pub const PoolAlloc = struct {
     }
 
     /// Find `blocks_needed` contiguous free blocks with alignment constraint.
-    /// `align_blocks` must be a power of 2 (1 for no constraint).
-    fn find_run(self: *PoolAlloc, blocks_needed: u32, align_blocks: u32) ?u32 {
-        if (blocks_needed == 1 and align_blocks <= 1) {
+    /// `alignment` must be a power of 2.
+    fn find_run(self: *PoolAlloc, blocks_needed: u32, alignment: usize) ?u32 {
+        if (blocks_needed == 1 and alignment <= BLOCK_SIZE) {
             return self.find_single();
         }
-
-        const align_mask = align_blocks - 1;
 
         // Scan L0 from hint, then wrap around if needed.
         var start_wi = self.hint;
@@ -331,7 +362,7 @@ pub const PoolAlloc = struct {
                     const word_base = wi * WORD_BITS;
                     if (run_len == 0) {
                         // Start a new run, aligned.
-                        run_start = (word_base + align_mask) & ~align_mask;
+                        run_start = block_index_for_aligned_address(self.data, word_base, alignment);
                         if (run_start >= word_base + WORD_BITS) {
                             // Alignment pushed past this word.
                             continue;
@@ -387,7 +418,7 @@ pub const PoolAlloc = struct {
                     // Count ones (free blocks).
                     const ones: u32 = @ctz(~remaining);
                     const candidate = word_base + bit_off;
-                    const aligned_start = (candidate + align_mask) & ~align_mask;
+                    const aligned_start = block_index_for_aligned_address(self.data, candidate, alignment);
 
                     if (aligned_start < candidate + ones) {
                         const effective = candidate + ones - aligned_start;
@@ -431,12 +462,15 @@ pub const PoolAlloc = struct {
 
         const blocks_needed: u32 = @intCast(div_ceil(n, BLOCK_SIZE));
         const align_bytes = alignment.toByteUnits();
-        const align_blocks: u32 = @intCast(@max(1, align_bytes / BLOCK_SIZE));
 
-        const block_idx = self.find_run(blocks_needed, align_blocks) orelse return null;
+        const block_idx = self.find_run(blocks_needed, align_bytes) orelse {
+            self.last_failed_request = n;
+            return null;
+        };
 
         self.clear_range(block_idx, blocks_needed);
         self.used += @as(usize, blocks_needed) * BLOCK_SIZE;
+        self.last_failed_request = null;
 
         return self.data + @as(usize, block_idx) * BLOCK_SIZE;
     }
@@ -477,11 +511,18 @@ pub const PoolAlloc = struct {
         // Grow: check if blocks immediately after are free.
         const grow = new_blocks - cur_blocks;
         const grow_start = block_idx + cur_blocks;
-        if (grow_start + grow > self.total_blocks) return false;
-        if (!self.test_range_free(grow_start, grow)) return false;
+        if (grow_start + grow > self.total_blocks) {
+            self.last_failed_request = new_len;
+            return false;
+        }
+        if (!self.test_range_free(grow_start, grow)) {
+            self.last_failed_request = new_len;
+            return false;
+        }
 
         self.clear_range(grow_start, grow);
         self.used += @as(usize, grow) * BLOCK_SIZE;
+        self.last_failed_request = null;
         return true;
     }
 
@@ -609,11 +650,12 @@ test "pool_alloc: resize shrink and grow" {
     var pa = PoolAlloc.init(buf[0..], "test");
     const ally = pa.allocator();
 
-    const a = try ally.alloc(u8, 64);
+    var a = try ally.alloc(u8, 64);
     const b = try ally.alloc(u8, 64);
 
     // Shrink: always succeeds (wastes the tail within the block)
     try testing.expect(ally.resize(a, 32));
+    a = a[0..32];
 
     // Grow with occupied next block: must fail
     try testing.expect(!ally.resize(a, 256));
@@ -621,6 +663,7 @@ test "pool_alloc: resize shrink and grow" {
     // Free the next block, now growth can absorb it
     ally.free(b);
     try testing.expect(ally.resize(a, 100));
+    a = a.ptr[0..100];
 
     ally.free(a);
     try testing.expectEqual(@as(usize, 0), pa.used);
@@ -676,12 +719,59 @@ test "pool_alloc: over-alignment" {
     try testing.expectEqual(@as(usize, 0), pa.used);
 }
 
+test "pool_alloc: over-alignment respects misaligned data base" {
+    const page_size = 4096;
+    var backing: [page_size * 4]u8 align(BLOCK_SIZE) = undefined;
+
+    var pa = PoolAlloc.init(backing[0..], "test");
+    var found_misaligned_data = false;
+    var offset: usize = 0;
+    while (offset < page_size) : (offset += BLOCK_SIZE) {
+        pa = PoolAlloc.init(backing[offset..], "test");
+        if (@intFromPtr(pa.data) % page_size != 0) {
+            found_misaligned_data = true;
+            break;
+        }
+    }
+    try testing.expect(found_misaligned_data);
+
+    const ally = pa.allocator();
+    const page_align = comptime std.mem.Alignment.fromByteUnits(page_size);
+    const raw = ally.vtable.alloc(ally.ptr, 64, page_align, 0) orelse
+        return error.TestUnexpectedResult;
+
+    try testing.expectEqual(@as(usize, 0), @intFromPtr(raw) % page_size);
+    ally.vtable.free(ally.ptr, raw[0..64], page_align, 0);
+    try testing.expectEqual(@as(usize, 0), pa.used);
+}
+
 test "pool_alloc: OOM returns error" {
     var buf: [512]u8 align(BLOCK_SIZE) = undefined;
     var pa = PoolAlloc.init(buf[0..], "test");
     const ally = pa.allocator();
 
     try testing.expectError(error.OutOfMemory, ally.alloc(u8, 4096));
+    try testing.expectEqual(@as(?usize, 4096), pa.last_failed_request);
+}
+
+test "pool_alloc: diagnostics report capacity and largest free run" {
+    var buf: [4096]u8 align(BLOCK_SIZE) = undefined;
+    var pa = PoolAlloc.init(buf[0..], "test");
+    const ally = pa.allocator();
+
+    try testing.expect(pa.capacity() <= buf.len);
+    try testing.expectEqual(pa.capacity(), pa.largest_free_run());
+
+    const a = try ally.alloc(u8, BLOCK_SIZE);
+    const b = try ally.alloc(u8, BLOCK_SIZE);
+    const c = try ally.alloc(u8, BLOCK_SIZE);
+    ally.free(b);
+
+    try testing.expect(pa.largest_free_run() < pa.capacity());
+
+    ally.free(a);
+    ally.free(c);
+    try testing.expectEqual(pa.capacity(), pa.largest_free_run());
 }
 
 test "pool_alloc: multi-block contiguous allocation" {

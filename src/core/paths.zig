@@ -24,10 +24,13 @@
 //! per project style guide they go through `std.Io` / `std.process`.
 
 const std = @import("std");
-const builtin = @import("builtin");
 const options = @import("options");
 
 const Io = std.Io;
+const NintendoIo = if (options.config.platform == .nintendo_switch)
+    @import("../platform/c_io.zig")
+else
+    void;
 
 /// Engine-owned directory handles. Cleared via `close()` at engine shutdown.
 pub const Dirs = struct {
@@ -48,6 +51,8 @@ pub const Dirs = struct {
         if (self.resources.handle != cwd_handle) self.resources.close(io);
         if (self.data.handle != cwd_handle and self.data.handle != self.resources.handle)
             self.data.close(io);
+
+        if (NintendoIo != void) NintendoIo.deinitAppDirs();
     }
 };
 
@@ -82,13 +87,16 @@ pub fn resolve(
     // and debug/CI builds where state co-located with the binary is a
     // feature, not a bug.
     if (options.config.use_cwd) {
+        if (NintendoIo != void) NintendoIo.useCwdDirs();
         return .{ .resources = Io.Dir.cwd(), .data = Io.Dir.cwd() };
     }
 
-    return switch (builtin.os.tag) {
+    return switch (options.config.platform) {
         .macos => resolve_macos(io, environ_map, app_name),
         .windows => resolve_windows(io, environ_map, app_name),
         .linux => resolve_linux(io, environ_map, app_name),
+        .nintendo_3ds => resolve_nintendo_3ds(io, app_name),
+        .nintendo_switch => resolve_nintendo(io, app_name),
         // PSP: both dirs collapse to CWD. The EBOOT and its siblings all
         // live under `ms0:/PSP/GAME/<id>/`; the runtime sets CWD there
         // before main. No separation to enforce.
@@ -98,6 +106,38 @@ pub fn resolve(
         // platform-specific code.
         else => .{ .resources = Io.Dir.cwd(), .data = Io.Dir.cwd() },
     };
+}
+
+fn resolve_nintendo_3ds(io: Io, app_name: []const u8) Error!Dirs {
+    var data_buf: [Io.Dir.max_path_bytes]u8 = undefined;
+    const data_path = std.fmt.bufPrint(&data_buf, "sdmc:/3ds/{s}", .{app_name}) catch return error.PathTooLong;
+    const cwd = Io.Dir.cwd();
+
+    const data = cwd.createDirPathOpen(io, data_path, .{ .open_options = .{ .iterate = true } }) catch
+        cwd.openDir(io, "sdmc:/", .{ .iterate = true }) catch
+        cwd;
+    errdefer if (data.handle != cwd.handle) data.close(io);
+
+    const resources = cwd.openDir(io, "romfs:/", .{}) catch data;
+
+    return .{ .resources = resources, .data = data };
+}
+
+fn resolve_nintendo(io: Io, app_name: []const u8) Error!Dirs {
+    NintendoIo.mountData();
+    errdefer NintendoIo.deinitAppDirs();
+
+    var data_buf: [Io.Dir.max_path_bytes]u8 = undefined;
+    const data_path = NintendoIo.dataRoot(&data_buf, app_name) catch return error.PathTooLong;
+    const data = try Io.Dir.cwd().createDirPathOpen(io, data_path, .{ .open_options = .{ .iterate = true } });
+    errdefer data.close(io);
+
+    const resources = if (NintendoIo.mountResources())
+        Io.Dir.cwd().openDir(io, "romfs:/", .{}) catch data
+    else
+        data;
+
+    return .{ .resources = resources, .data = data };
 }
 
 // -- macOS --------------------------------------------------------------------

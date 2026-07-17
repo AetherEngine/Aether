@@ -1,9 +1,11 @@
 const std = @import("std");
+const gfx_api = @import("../gfx_api.zig");
 const Mat4 = @import("../../math/math.zig").Mat4;
 const Rendering = @import("../../rendering/rendering.zig");
-const Pipeline = Rendering.Pipeline;
 const Mesh = Rendering.mesh;
 const Texture = Rendering.Texture;
+
+pub const mesh_source_mode = Mesh.SourceMode.uploaded_copy;
 
 var render_alloc: std.mem.Allocator = undefined;
 var render_io: std.Io = undefined;
@@ -13,7 +15,7 @@ pub fn setup(alloc: std.mem.Allocator, io: std.Io) void {
     render_io = io;
 }
 
-pub fn init() anyerror!void {}
+pub fn init() gfx_api.InitError!void {}
 pub fn deinit() void {}
 
 pub fn set_clear_color(_: f32, _: f32, _: f32, _: f32) void {}
@@ -25,6 +27,7 @@ pub fn set_culling(_: bool) void {}
 pub fn set_uv_offset(_: f32, _: f32) void {}
 pub fn set_proj_matrix(_: *const Mat4) void {}
 pub fn set_view_matrix(_: *const Mat4) void {}
+pub fn set_render_state(_: *const Rendering.RenderState) void {}
 
 pub fn start_frame() bool {
     return false;
@@ -32,25 +35,24 @@ pub fn start_frame() bool {
 
 pub fn end_frame() void {}
 pub fn clear_depth() void {}
+pub fn has_second_screen() bool {
+    return false;
+}
+pub fn switch_second_screen() void {
+    std.debug.panic("headless gfx: switch_second_screen called but this backend has no second screen", .{});
+}
 pub fn set_vsync(_: bool) void {}
 
-pub fn create_pipeline(_: Pipeline.VertexLayout, _: ?[:0]align(4) const u8, _: ?[:0]align(4) const u8) anyerror!Pipeline.Handle {
-    return 0;
-}
-
-pub fn destroy_pipeline(_: Pipeline.Handle) void {}
-pub fn bind_pipeline(_: Pipeline.Handle) void {}
-
-pub fn create_mesh(_: Pipeline.Handle) anyerror!Mesh.Handle {
-    return 0;
+pub fn create_mesh(_: *const Mesh.Desc) gfx_api.CreateMeshError!Mesh.Handle {
+    return Mesh.Handle.none;
 }
 
 pub fn destroy_mesh(_: Mesh.Handle) void {}
-pub fn update_mesh(_: Mesh.Handle, _: []const u8) void {}
-pub fn draw_mesh(_: Mesh.Handle, _: *const Mat4, _: usize, _: Mesh.Primitive) void {}
+pub fn update_mesh(_: Mesh.Handle, _: *const Mesh.UpdateDesc) void {}
+pub fn draw_mesh(_: Mesh.Handle, _: *const Mat4) void {}
 
-pub fn create_texture(_: u32, _: u32, _: []align(16) u8) anyerror!Texture.Handle {
-    return 0;
+pub fn create_texture(_: *const Texture.UploadDesc) gfx_api.CreateTextureError!Texture.Handle {
+    return Texture.Handle.none;
 }
 
 pub fn update_texture(_: Texture.Handle, _: []align(16) u8) void {}

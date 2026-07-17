@@ -1,6 +1,6 @@
 .zig-cache/
 zig-out/
 zig-pkg
-.claude
-CLAUDE.md
+AGENTS.md
 *.log
+*.wav

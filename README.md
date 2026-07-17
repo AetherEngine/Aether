@@ -3,18 +3,18 @@
 
 ## What is Aether?
 
-Aether is a game engine written in [Zig](https://ziglang.org/). It is platform-agnostic — there should be no difference running between Windows, Linux, macOS, and consoles like the PSP or the 3DS.
+Aether is a game engine written in [Zig](https://ziglang.org/). It is platform-agnostic -- there should be no difference running between Windows, Linux, macOS, and consoles like the PSP or Switch.
 
 User code is structured as hooks into the engine via a `State` interface. You implement the game logic; the engine handles the platform details.
 
 ## Features
 
-- **Cross-platform**: Windows, Linux, macOS (PSP/3DS planned)
-- **Multiple graphics backends**: OpenGL 4.5, Vulkan — selected at compile time, overridable with `-Dgfx=opengl`
+- **Cross-platform**: Windows, Linux, macOS (PSP/Switch planned)
+- **Multiple graphics backends**: OpenGL 4.5, Vulkan -- selected at compile time, overridable with `-Dgfx=opengl`
 - **Fixed-step game loop**: 144 Hz updates, 20 Hz ticks, uncapped rendering
 - **Action-based input system**: keyboard, mouse, and gamepad with callback bindings
 - **Generic mesh & pipeline API**: define vertex layouts from structs using comptime reflection
-- **Budgeted memory pools**: render, audio, game, user, and scratch — no hidden heap allocations
+- **Budgeted memory pools**: render, audio, game, user, and scratch -- no hidden heap allocations
 
 ## Requirements
 
@@ -46,11 +46,11 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     // Optional: allow overriding the graphics backend with -Dgfx=opengl
-    const overrides: Aether.Config.Overrides = .{
-        .gfx = b.option(Aether.Gfx, "gfx", "Graphics backend override (default: auto-detect from target)"),
+    const overrides: Aether.config.Config.Overrides = .{
+        .gfx = b.option(Aether.config.Gfx, "gfx", "Graphics backend override (default: auto-detect from target)"),
     };
 
-    const config = Aether.Config.resolve(target, overrides);
+    const config = Aether.config.Config.resolve(target, overrides);
 
     const ae_dep = b.dependency("engine", .{
         .target = target,
@@ -59,7 +59,7 @@ pub fn build(b: *std.Build) void {
 
     // Create a game executable -- this wires up the engine module
     // and all platform-specific dependencies (GLFW/Vulkan/OpenGL/pspsdk)
-    const exe = Aether.addGame(ae_dep.builder, b, .{
+    const exe = Aether.modules.addGame(ae_dep.builder, b, .{
         .name = "my_game",
         .root_source_file = b.path("src/main.zig"),
         .target = target,
@@ -67,13 +67,8 @@ pub fn build(b: *std.Build) void {
         .overrides = overrides,
     });
 
-    // Compile a Slang shader for the selected backend and embed it at compile time
-    Aether.addShader(ae_dep.builder, b, exe, config, "basic", .{
-        .slang = b.path("shaders/basic.slang"),
-    });
-
     // Export the artifact (produces EBOOT.PBP for PSP, install artifact otherwise)
-    Aether.exportArtifact(ae_dep.builder, b, exe, config, .{
+    Aether.packaging.exportArtifact(ae_dep.builder, b, exe, config, .{
         .title = "My Game",
     });
 
@@ -83,7 +78,7 @@ pub fn build(b: *std.Build) void {
 }
 ```
 
-The first argument to `addGame`, `addShader`, and `exportArtifact` is the
+The first argument to `modules.addGame` and `packaging.exportArtifact` is the
 dependency's builder (`ae_dep.builder`), and the second is your project's
 builder (`b`). This lets Aether resolve its own internal dependencies (GLFW,
 Vulkan, Slang, pspsdk) from its `build.zig.zon` while building artifacts that
@@ -117,21 +112,31 @@ const MyState = struct {
 };
 
 pub fn main(init: std.process.Init) !void {
-    const memory = try init.arena.allocator().alloc(u8, 32 * 1024 * 1024);
+    const memory = try init.gpa.alignedAlloc(u8, .fromByteUnits(16), 32 * 1024 * 1024);
+    defer init.gpa.free(memory);
 
     var my_state: MyState = undefined;
     var engine: ae.Engine = undefined;
-    try engine.init(init.io, memory, .{
+    try engine.init(init.io, init.environ_map, memory, &.{
         .memory = .{
             .render = 8 * 1024 * 1024,
             .audio = 2 * 1024 * 1024,
             .game = 2 * 1024 * 1024,
+            .frame = 4 * 1024 * 1024,
             .user = 16 * 1024 * 1024,
         },
         .title = "My Game",
     }, &my_state.state());
     defer engine.deinit();
-    try engine.run();
+    engine.run() catch |err| switch (err) {
+        error.StateTransitionFailed => {
+            if (engine.last_transition_failure()) |state_err| {
+                ae.Util.game_logger.err("state transition failed: {s}", .{@errorName(state_err)});
+            }
+            return error.EngineStateTransitionFailed;
+        },
+        else => return err,
+    };
 }
 ```
 
@@ -139,10 +144,12 @@ Platform and graphics backend are available as comptime constants for per-platfo
 
 ```zig
 const memory_config: ae.Util.MemoryConfig = switch (ae.platform) {
-    .psp => .{ .render = 512 * 1024, .audio = 256 * 1024, ... },
-    else => .{ .render = 8 * 1024 * 1024, .audio = 2 * 1024 * 1024, ... },
+    .psp => .{ .render = 512 * 1024, .audio = 256 * 1024, .frame = 128 * 1024, ... },
+    else => .{ .render = 8 * 1024 * 1024, .audio = 2 * 1024 * 1024, .frame = 4 * 1024 * 1024, ... },
 };
 ```
+
+Set `.frame = 0` if you want to disable the per-frame scratch allocator.
 
 ## Building
 
@@ -168,37 +175,54 @@ zig build -Doptimize=ReleaseFast
 Actions are registered by name and bound to one or more input sources:
 
 ```zig
-try ae.Core.input.register_action("jump", .button);
-try ae.Core.input.bind_action("jump", .{ .source = .{ .key = .Space } });
-try ae.Core.input.add_button_callback("jump", ctx, on_jump);
+const actions = try ae.Core.input.register_action_set("gameplay");
+const jump = try ae.Core.input.add_action(actions, "jump", .button);
+try ae.Core.input.bind_action(jump, &.{ .source = .{ .key = .Space } });
+try ae.Core.input.install_action_set(actions);
+
+if (ae.Core.input.button(jump).pressed()) {
+    // jump this frame
+}
 ```
 
 Supported sources: keyboard keys, mouse buttons, mouse scroll, mouse relative movement, and gamepad buttons/axes.
 
 ## Rendering
 
-Define a vertex type, create a pipeline, and draw meshes:
+Build editable CPU geometry in `MeshData`, upload or bind it through `Mesh`,
+and draw with an explicit render state:
 
 ```zig
-const Vertex = struct {
-    pos: [3]f32,
-    color: [4]u8,
+const Vertex = ae.Rendering.Vertex;
+const MeshData = ae.Rendering.MeshData(Vertex);
+const Mesh = ae.Rendering.Mesh(Vertex);
 
-    pub const Attributes = Rendering.Pipeline.attributes_from_struct(@This(), &.{
-        .{ .field = "pos", .location = 0 },
-        .{ .field = "color", .location = 1 },
-    });
-    pub const Layout = Rendering.Pipeline.layout_from_struct(@This(), &Attributes);
-};
+var data = try MeshData.init(render_alloc);
+defer data.deinit(render_alloc);
 
-const MyMesh = Rendering.Mesh(Vertex);
+var mesh = try Mesh.init(&.{});
+defer mesh.deinit();
+
+try data.add_tri(render_alloc, a, b, c);
+mesh.update(&data);
+
+ae.Rendering.set_state(&.{
+    .texture = texture.handle,
+    .proj = projection,
+    .view = view,
+    .depth_write = false,
+});
+mesh.draw(&model);
 ```
 
-Shaders are written in [Slang](https://shader-slang.com/) (`.slang` files), compiled at build time via `addShader`, and embedded into the binary. Vulkan consumes SPIR-V; OpenGL consumes GLSL 4.50. PSP targets ignore shaders entirely (fixed-function pipeline); the build system generates empty stubs.
+On PSP and 3DS, mesh data is borrowed directly by the backend, so keep the
+`MeshData` alive and call `mesh.update(&data)` after edits that may reallocate.
+Static textures can use the default `.cpu_access = .none`; request
+`.read_write` when you need `set_pixel` or direct CPU buffer access.
 
 ## Build API Reference
 
-### `Aether.addGame(owner, b, opts) -> *Compile`
+### `Aether.modules.addGame(owner, b, opts) -> *Compile`
 
 Creates a game executable with the engine module and platform dependencies wired up.
 
@@ -208,18 +232,9 @@ Creates a game executable with the engine module and platform dependencies wired
 | `root_source_file` | `LazyPath` | Path to your main source file |
 | `target` | `ResolvedTarget` | Build target |
 | `optimize` | `OptimizeMode` | Optimization level (default: `.Debug`) |
-| `overrides` | `Config.Overrides` | Graphics/display mode overrides (default: `.{}`) |
+| `overrides` | `config.Config.Overrides` | Graphics/display mode overrides (default: `.{}`) |
 
-### `Aether.addShader(owner, b, exe, config, name, paths)`
-
-Compiles a Slang shader for the selected backend and embeds it into the executable. Vulkan gets SPIR-V, OpenGL gets GLSL 4.50, and PSP targets get empty stubs.
-
-| Option | Type | Description |
-|--------|------|-------------|
-| `name` | `[]const u8` | Shader name (used for `@embedFile` lookup) |
-| `paths.slang` | `LazyPath` | Path to the `.slang` source file |
-
-### `Aether.exportArtifact(owner, b, exe, config, opts)`
+### `Aether.packaging.exportArtifact(owner, b, exe, config, opts)`
 
 Exports the build artifact. For PSP targets, produces an `EBOOT.PBP`. For desktop, installs the artifact normally.
 
@@ -231,16 +246,16 @@ Exports the build artifact. For PSP targets, produces an `EBOOT.PBP`. For deskto
 | `pic0`, `pic1` | `?LazyPath` | PSP background images (optional) |
 | `snd0` | `?LazyPath` | PSP startup sound (optional) |
 
-### `Aether.Config.resolve(target, overrides) -> Config`
+### `Aether.config.Config.resolve(target, overrides) -> Config`
 
-Resolves the full engine configuration (platform, graphics backend, audio, input) from the build target and any user overrides. Pass the result to `addShader` and `exportArtifact`.
+Resolves the full engine configuration (platform, graphics backend, audio, input) from the build target and any user overrides. Pass the result to `packaging.exportArtifact`.
 
-### `Aether.Config.Overrides`
+### `Aether.config.Config.Overrides`
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `gfx` | `?Gfx` | Graphics backend override (`null` = auto-detect) |
-| `psp_display_mode` | `?PspDisplayMode` | PSP display mode (`null` = `rgba8888`) |
+| `gfx` | `?config.Gfx` | Graphics backend override (`null` = auto-detect) |
+| `psp_display_mode` | `?config.PspDisplayMode` | PSP display mode (`null` = `rgba8888`) |
 
 ## License
 

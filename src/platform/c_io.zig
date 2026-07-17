@@ -1,0 +1,1854 @@
+const std = @import("std");
+const options = @import("options");
+
+const Io = std.Io;
+const Dir = Io.Dir;
+const File = Io.File;
+const net = Io.net;
+
+const platform_time = switch (options.config.platform) {
+    .nintendo_switch => @import("switch/time.zig"),
+    else => @compileError("platform/c_io.zig is only wired for Nintendo targets"),
+};
+const platform_paths = switch (options.config.platform) {
+    .nintendo_switch => @import("switch/paths.zig"),
+    else => unreachable,
+};
+
+const nintendo_c = @import("nintendo_c.zig");
+const c = nintendo_c.c;
+const switch_c = nintendo_c.switch_c;
+const log = std.log.scoped(.aether_io);
+const max_path_bytes = 1024;
+const async_stack_size = 2 * 1024 * 1024;
+const NintendoThread = switch_c.Thread;
+
+const AT_FDCWD: c_int = -2;
+const O_RDONLY: c_int = c.O_RDONLY;
+const O_WRONLY: c_int = c.O_WRONLY;
+const O_RDWR: c_int = c.O_RDWR;
+const O_CREAT: c_int = c.O_CREAT;
+const O_TRUNC: c_int = c.O_TRUNC;
+const O_EXCL: c_int = c.O_EXCL;
+const O_BINARY: c_int = c.O_BINARY;
+const O_CLOEXEC: c_int = c.O_CLOEXEC;
+const O_NOFOLLOW: c_int = c.O_NOFOLLOW;
+const SEEK_SET: c_int = c.SEEK_SET;
+const SEEK_CUR: c_int = c.SEEK_CUR;
+const SEEK_END: c_int = c.SEEK_END;
+
+var read_fd: c_int = -1;
+var write_fd: c_int = -1;
+var stderr_writer: File.Writer = undefined;
+var stderr_writer_initialized = false;
+var empty_stderr_buffer: [0]u8 = .{};
+var resources_mounted = false;
+var data_mounted = false;
+var atomic_counter: u64 = 0x6165_7468_6572_0000;
+var async_debug_stage: std.atomic.Value(u32) = .init(0);
+var net_init_state: std.atomic.Value(u32) = .init(0);
+
+const max_dynamic_dirs = 32;
+const DirSlot = struct {
+    used: bool = false,
+    path: [max_path_bytes:0]u8 = @splat(0),
+    len: usize = 0,
+};
+var dir_slots: [max_dynamic_dirs]DirSlot = [_]DirSlot{.{}} ** max_dynamic_dirs;
+
+const vtable: Io.VTable = blk: {
+    var v = Io.failing.vtable.*;
+    v.crashHandler = crashHandler;
+    v.async = nintendo_async.async;
+    v.concurrent = nintendo_async.concurrent;
+    v.await = nintendo_async.await;
+    v.cancel = nintendo_async.cancel;
+    v.groupAsync = Io.noGroupAsync;
+    v.recancel = recancel;
+    v.swapCancelProtection = swapCancelProtection;
+    v.checkCancel = checkCancel;
+    v.operate = operate;
+    v.dirCreateDir = dirCreateDir;
+    v.dirCreateDirPath = dirCreateDirPath;
+    v.dirCreateDirPathOpen = dirCreateDirPathOpen;
+    v.dirOpenDir = dirOpenDir;
+    v.dirAccess = dirAccess;
+    v.dirCreateFile = dirCreateFile;
+    v.dirCreateFileAtomic = dirCreateFileAtomic;
+    v.dirOpenFile = dirOpenFile;
+    v.dirClose = dirClose;
+    v.dirRead = dirRead;
+    v.dirDeleteFile = dirDeleteFile;
+    v.dirDeleteDir = dirDeleteDir;
+    v.dirRename = dirRename;
+    v.dirRenamePreserve = dirRenamePreserve;
+    v.fileStat = fileStat;
+    v.fileLength = fileLength;
+    v.fileClose = fileClose;
+    v.fileWritePositional = fileWritePositional;
+    v.fileReadPositional = fileReadPositional;
+    v.fileSeekBy = fileSeekBy;
+    v.fileSeekTo = fileSeekTo;
+    v.fileSync = fileSync;
+    v.fileIsTty = fileIsTty;
+    v.fileEnableAnsiEscapeCodes = fileEnableAnsiEscapeCodes;
+    v.fileSupportsAnsiEscapeCodes = fileSupportsAnsiEscapeCodes;
+    v.fileSetLength = fileSetLength;
+    v.lockStderr = lockStderr;
+    v.tryLockStderr = tryLockStderr;
+    v.unlockStderr = unlockStderr;
+    v.processCurrentPath = processCurrentPath;
+    v.processSetCurrentPath = processSetCurrentPath;
+    v.now = now;
+    v.clockResolution = clockResolution;
+    v.sleep = sleep;
+    v.random = random;
+    v.netListenIp = netListenIp;
+    v.netAccept = netAccept;
+    v.netBindIp = netBindIp;
+    v.netConnectIp = netConnectIp;
+    v.netListenUnix = netListenUnix;
+    v.netConnectUnix = netConnectUnix;
+    v.netSocketCreatePair = netSocketCreatePair;
+    v.netSend = netSend;
+    v.netRead = netRead;
+    v.netWrite = netWrite;
+    v.netClose = netClose;
+    v.netShutdown = netShutdown;
+    v.netInterfaceNameResolve = netInterfaceNameResolve;
+    v.netInterfaceName = netInterfaceName;
+    v.netLookup = netLookup;
+    break :blk v;
+};
+
+pub fn io() Io {
+    return .{ .userdata = null, .vtable = &vtable };
+}
+
+pub fn cwd() Dir {
+    return .{ .handle = AT_FDCWD };
+}
+
+pub fn debugAsyncStage() u32 {
+    return async_debug_stage.load(.acquire);
+}
+
+fn setAsyncDebugStage(stage: u32) void {
+    async_debug_stage.store(stage, .release);
+}
+
+pub fn mountData() void {
+    data_mounted = platform_paths.mountData();
+}
+
+pub fn mountResources() bool {
+    resources_mounted = platform_paths.mountResources();
+    return resources_mounted;
+}
+
+pub fn dataRoot(buffer: []u8, app_name: []const u8) error{NameTooLong}![]const u8 {
+    return platform_paths.dataRoot(buffer, app_name);
+}
+
+pub fn deinitAppDirs() void {
+    for (&dir_slots) |*slot| slot.used = false;
+    if (resources_mounted) {
+        platform_paths.unmountResources();
+        resources_mounted = false;
+    }
+    if (data_mounted) {
+        platform_paths.unmountData();
+        data_mounted = false;
+    }
+}
+
+pub fn useCwdDirs() void {
+    deinitAppDirs();
+}
+
+pub fn deinitNetworking() void {
+    if (net_init_state.swap(0, .acq_rel) != 2) return;
+    switch_c.socketExit();
+}
+
+fn crashHandler(_: ?*anyopaque) void {}
+
+fn recancel(_: ?*anyopaque) void {}
+
+fn swapCancelProtection(_: ?*anyopaque, new: Io.CancelProtection) Io.CancelProtection {
+    _ = new;
+    return .unblocked;
+}
+
+fn checkCancel(_: ?*anyopaque) Io.Cancelable!void {}
+
+const nintendo_async = struct {
+    const AsyncFuture = struct {
+        thread: NintendoThread,
+        result_len: usize,
+        result_offset: usize,
+        context_offset: usize,
+        start: *const fn (context: *const anyopaque, result: *anyopaque) void,
+
+        fn result(self: *AsyncFuture) []u8 {
+            const base: [*]u8 = @ptrCast(self);
+            return base[self.result_offset..][0..self.result_len];
+        }
+
+        fn context(self: *AsyncFuture) *const anyopaque {
+            const base: [*]u8 = @ptrCast(self);
+            return @ptrCast(base + self.context_offset);
+        }
+    };
+
+    fn allocFuture(
+        result_len: usize,
+        result_alignment: std.mem.Alignment,
+        context: []const u8,
+        context_alignment: std.mem.Alignment,
+        start: *const fn (context: *const anyopaque, result: *anyopaque) void,
+    ) ?*AsyncFuture {
+        const result_storage_len = @max(result_len, 1);
+        const max_context_misalignment = context_alignment.toByteUnits() -| @alignOf(AsyncFuture);
+        const max_result_misalignment = result_alignment.toByteUnits() -| @alignOf(AsyncFuture);
+        const worst_case_context_offset = context_alignment.forward(@sizeOf(AsyncFuture) + max_context_misalignment);
+        const worst_case_result_offset = result_alignment.forward(worst_case_context_offset + context.len + max_result_misalignment);
+        const total = worst_case_result_offset + result_storage_len;
+
+        const raw = c.malloc(total) orelse return null;
+        const future: *AsyncFuture = @ptrCast(@alignCast(raw));
+        const base_addr = @intFromPtr(future);
+        const context_offset = context_alignment.forward(base_addr + @sizeOf(AsyncFuture)) - base_addr;
+        const result_offset = result_alignment.forward(base_addr + context_offset + context.len) - base_addr;
+        future.* = .{
+            .thread = undefined,
+            .result_len = result_len,
+            .result_offset = result_offset,
+            .context_offset = context_offset,
+            .start = start,
+        };
+
+        const base: [*]u8 = @ptrCast(future);
+        @memcpy(base[context_offset..][0..context.len], context);
+        return future;
+    }
+
+    fn freeFuture(future: *AsyncFuture) void {
+        c.free(future);
+    }
+
+    fn entry(raw: ?*anyopaque) callconv(.c) void {
+        setAsyncDebugStage(10);
+        const raw_ptr = raw orelse {
+            setAsyncDebugStage(901);
+            return;
+        };
+        setAsyncDebugStage(11);
+        const raw_addr = @intFromPtr(raw_ptr);
+        const future_align = @alignOf(AsyncFuture);
+        if (raw_addr % future_align != 0) {
+            setAsyncDebugStage(902);
+            return;
+        }
+        setAsyncDebugStage(12);
+        const future: *AsyncFuture = @ptrCast(@alignCast(raw_ptr));
+        setAsyncDebugStage(13);
+        const result_len = future.result_len;
+        _ = result_len;
+        setAsyncDebugStage(14);
+        const result_offset = future.result_offset;
+        _ = result_offset;
+        setAsyncDebugStage(15);
+        const context_offset = future.context_offset;
+        _ = context_offset;
+        setAsyncDebugStage(16);
+        const start = future.start;
+        setAsyncDebugStage(17);
+        const context = future.context();
+        setAsyncDebugStage(18);
+        const result = future.result().ptr;
+        setAsyncDebugStage(19);
+        start(context, result);
+        setAsyncDebugStage(20);
+    }
+
+    fn spawn(future: *AsyncFuture) bool {
+        const priority = workerPriority();
+        const create_result = switch_c.threadCreate(
+            &future.thread,
+            entry,
+            future,
+            null,
+            async_stack_size,
+            priority,
+            -2,
+        );
+        if (create_result != 0) {
+            log.err("switch async threadCreate failed rc={d}", .{create_result});
+            return false;
+        }
+        const start_result = switch_c.threadStart(&future.thread);
+        if (start_result != 0) {
+            log.err("switch async threadStart failed rc={d}", .{start_result});
+            _ = switch_c.threadClose(&future.thread);
+            return false;
+        }
+        return true;
+    }
+
+    fn workerPriority() c_int {
+        var priority: switch_c.s32 = 0x2c;
+        const rc = switch_c.svcGetThreadPriority(&priority, switch_c.threadGetCurHandle());
+        _ = rc;
+        const worker_priority = @min(priority + 1, 0x3f);
+        return worker_priority;
+    }
+
+    fn async(
+        _: ?*anyopaque,
+        result: []u8,
+        result_alignment: std.mem.Alignment,
+        context: []const u8,
+        context_alignment: std.mem.Alignment,
+        start: *const fn (context: *const anyopaque, result: *anyopaque) void,
+    ) ?*Io.AnyFuture {
+        const future = allocFuture(result.len, result_alignment, context, context_alignment, start) orelse {
+            log.err("nintendo async allocFuture failed; running inline", .{});
+            start(context.ptr, result.ptr);
+            return null;
+        };
+        setAsyncDebugStage(1);
+        if (!spawn(future)) {
+            log.err("nintendo async spawn failed; running inline", .{});
+            freeFuture(future);
+            start(context.ptr, result.ptr);
+            return null;
+        }
+        return @ptrCast(future);
+    }
+
+    fn concurrent(
+        _: ?*anyopaque,
+        result_len: usize,
+        result_alignment: std.mem.Alignment,
+        context: []const u8,
+        context_alignment: std.mem.Alignment,
+        start: *const fn (context: *const anyopaque, result: *anyopaque) void,
+    ) Io.ConcurrentError!*Io.AnyFuture {
+        const future = allocFuture(result_len, result_alignment, context, context_alignment, start) orelse
+            return error.ConcurrencyUnavailable;
+        errdefer freeFuture(future);
+        setAsyncDebugStage(1);
+        if (!spawn(future)) return error.ConcurrencyUnavailable;
+        return @ptrCast(future);
+    }
+
+    fn await(
+        _: ?*anyopaque,
+        any_future: *Io.AnyFuture,
+        result: []u8,
+        result_alignment: std.mem.Alignment,
+    ) void {
+        _ = result_alignment;
+        const future: *AsyncFuture = @ptrCast(@alignCast(any_future));
+        const wait_result = switch_c.threadWaitForExit(&future.thread);
+        if (wait_result != 0) log.err("switch async threadWaitForExit rc={d}", .{wait_result});
+        const close_result = switch_c.threadClose(&future.thread);
+        if (close_result != 0) log.err("switch async threadClose rc={d}", .{close_result});
+        @memcpy(result, future.result());
+        freeFuture(future);
+    }
+
+    fn cancel(
+        userdata: ?*anyopaque,
+        any_future: *Io.AnyFuture,
+        result: []u8,
+        result_alignment: std.mem.Alignment,
+    ) void {
+        await(userdata, any_future, result, result_alignment);
+    }
+};
+
+fn operate(_: ?*anyopaque, operation: Io.Operation) Io.Cancelable!Io.Operation.Result {
+    return switch (operation) {
+        .file_read_streaming => |op| .{ .file_read_streaming = fileReadStreaming(op.file, op.data) },
+        .file_write_streaming => |op| .{ .file_write_streaming = fileWriteStreaming(op.file, op.header, op.data, op.splat) },
+        .device_io_control => unsupported("device_io_control"),
+        .net_receive => |op| .{ .net_receive = netReceive(op.socket_handle, op.message_buffer, op.data_buffer, op.flags) },
+    };
+}
+
+fn ensureNetworking() error{ NetworkDown, SystemResources }!void {
+    while (true) {
+        switch (net_init_state.load(.acquire)) {
+            2 => return,
+            1 => {
+                switch_c.svcSleepThread(1_000_000);
+                continue;
+            },
+            else => {},
+        }
+
+        if (net_init_state.cmpxchgStrong(0, 1, .acq_rel, .acquire) != null) continue;
+        const result = initNetworking();
+        if (result) {
+            net_init_state.store(2, .release);
+            return;
+        } else |err| {
+            net_init_state.store(0, .release);
+            return err;
+        }
+    }
+}
+
+fn initNetworking() error{ NetworkDown, SystemResources }!void {
+    if (switch_c.socketInitialize(null) != 0) return error.NetworkDown;
+}
+
+fn netListenIp(_: ?*anyopaque, address: *const net.IpAddress, opts: net.IpAddress.ListenOptions) net.IpAddress.ListenError!net.Socket {
+    try ensureNetworking();
+    const fd = try openSocket(address, opts.mode, opts.protocol);
+    errdefer _ = c.close(fd);
+    if (opts.reuse_address) try setSocketOption(fd, c.SOL_SOCKET, c.SO_REUSEADDR, 1);
+    var storage = try sockaddrFromIp4(address);
+    var len = sockaddrLen(&storage);
+    try bindSocket(fd, &storage, len);
+    try listenSocket(fd, opts.kernel_backlog);
+    try getSockName(fd, &storage, &len);
+    return .{ .handle = fd, .address = ip4FromSockaddr(&storage) };
+}
+
+fn netAccept(_: ?*anyopaque, listen_fd: net.Socket.Handle, options_arg: net.Server.AcceptOptions) net.Server.AcceptError!net.Socket {
+    _ = options_arg;
+    try ensureNetworking();
+    var storage: c.struct_sockaddr_in = undefined;
+    var len: c.socklen_t = @sizeOf(c.struct_sockaddr_in);
+    while (true) {
+        const fd = c.accept(listen_fd, sockaddrPtr(&storage), &len);
+        if (fd >= 0) return .{ .handle = fd, .address = ip4FromSockaddr(&storage) };
+        switch (errno()) {
+            c.EINTR => continue,
+            c.EAGAIN => return error.WouldBlock,
+            c.ECONNABORTED => return error.ConnectionAborted,
+            c.EINVAL => return error.SocketNotListening,
+            c.EMFILE => return error.ProcessFdQuotaExceeded,
+            c.ENFILE => return error.SystemFdQuotaExceeded,
+            c.ENOBUFS, c.ENOMEM => return error.SystemResources,
+            c.ENETDOWN => return error.NetworkDown,
+            else => return error.Unexpected,
+        }
+    }
+}
+
+fn netBindIp(_: ?*anyopaque, address: *const net.IpAddress, opts: net.IpAddress.BindOptions) net.IpAddress.BindError!net.Socket {
+    try ensureNetworking();
+    const fd = try openSocket(address, opts.mode, opts.protocol);
+    errdefer _ = c.close(fd);
+    if (opts.allow_broadcast) try setSocketOption(fd, c.SOL_SOCKET, c.SO_BROADCAST, 1);
+    var storage = try sockaddrFromIp4(address);
+    var len = sockaddrLen(&storage);
+    try bindSocket(fd, &storage, len);
+    try getSockName(fd, &storage, &len);
+    return .{ .handle = fd, .address = ip4FromSockaddr(&storage) };
+}
+
+fn netConnectIp(_: ?*anyopaque, address: *const net.IpAddress, opts: net.IpAddress.ConnectOptions) net.IpAddress.ConnectError!net.Socket {
+    if (opts.timeout != .none) return error.OptionUnsupported;
+    try ensureNetworking();
+    const fd = try openSocket(address, opts.mode, opts.protocol);
+    errdefer _ = c.close(fd);
+    var storage = try sockaddrFromIp4(address);
+    var len = sockaddrLen(&storage);
+    try connectSocket(fd, &storage, len);
+    try getSockName(fd, &storage, &len);
+    return .{ .handle = fd, .address = ip4FromSockaddr(&storage) };
+}
+
+fn netListenUnix(_: ?*anyopaque, _: *const net.UnixAddress, _: net.UnixAddress.ListenOptions) net.UnixAddress.ListenError!net.Socket.Handle {
+    return error.AddressFamilyUnsupported;
+}
+
+fn netConnectUnix(_: ?*anyopaque, _: *const net.UnixAddress) net.UnixAddress.ConnectError!net.Socket.Handle {
+    return error.AddressFamilyUnsupported;
+}
+
+fn netSocketCreatePair(_: ?*anyopaque, _: net.Socket.CreatePairOptions) net.Socket.CreatePairError![2]net.Socket {
+    return error.OperationUnsupported;
+}
+
+fn netSend(_: ?*anyopaque, handle: net.Socket.Handle, messages: []net.OutgoingMessage, flags: net.SendFlags) struct { ?net.Socket.SendError, usize } {
+    ensureNetworking() catch |err| return .{ err, 0 };
+    const send_flags = sendFlags(flags);
+    for (messages, 0..) |*message, i| {
+        var storage = sockaddrFromIp4(message.address) catch |err| return .{ err, i };
+        const n = c.sendto(handle, message.data_ptr, message.data_len, send_flags, sockaddrConstPtr(&storage), sockaddrLen(&storage));
+        if (n < 0) return .{ sendError(errno()), i };
+        message.data_len = @intCast(n);
+    }
+    return .{ null, messages.len };
+}
+
+fn netReceive(
+    handle: net.Socket.Handle,
+    messages: []net.IncomingMessage,
+    data: []u8,
+    flags: net.ReceiveFlags,
+) struct { ?net.Socket.ReceiveError, usize } {
+    ensureNetworking() catch |err| return .{ err, 0 };
+    if (messages.len == 0) return .{ null, 0 };
+    var storage: c.struct_sockaddr_in = undefined;
+    var len: c.socklen_t = @sizeOf(c.struct_sockaddr_in);
+    const n = c.recvfrom(handle, data.ptr, data.len, receiveFlags(flags), sockaddrPtr(&storage), &len);
+    if (n < 0) return .{ receiveError(errno()), 0 };
+    messages[0] = .{
+        .from = ip4FromSockaddr(&storage),
+        .data = data[0..@intCast(n)],
+        .control = messages[0].control,
+        .flags = .{
+            .eor = false,
+            .trunc = false,
+            .ctrunc = false,
+            .oob = flags.oob,
+            .errqueue = false,
+        },
+    };
+    return .{ null, 1 };
+}
+
+fn netRead(_: ?*anyopaque, fd: net.Socket.Handle, data: [][]u8) net.Stream.Reader.Error!usize {
+    try ensureNetworking();
+    for (data) |buf| {
+        if (buf.len == 0) continue;
+        while (true) {
+            const n = c.recv(fd, buf.ptr, buf.len, c.MSG_NOSIGNAL);
+            if (n >= 0) return @intCast(n);
+            switch (errno()) {
+                c.EINTR => continue,
+                else => return streamReadError(errno()),
+            }
+        }
+    }
+    return 0;
+}
+
+fn netWrite(
+    _: ?*anyopaque,
+    fd: net.Socket.Handle,
+    header: []const u8,
+    data: []const []const u8,
+    splat: usize,
+) net.Stream.Writer.Error!usize {
+    try ensureNetworking();
+    var total: usize = 0;
+    sendStreamSegment(fd, header, &total) catch |err| return if (total != 0) total else err;
+    if (data.len == 0) return total;
+    for (data[0 .. data.len - 1]) |bytes| {
+        sendStreamSegment(fd, bytes, &total) catch |err| return if (total != 0) total else err;
+    }
+    const pattern = data[data.len - 1];
+    for (0..splat) |_| {
+        sendStreamSegment(fd, pattern, &total) catch |err| return if (total != 0) total else err;
+    }
+    return total;
+}
+
+fn netClose(_: ?*anyopaque, handles: []const net.Socket.Handle) void {
+    for (handles) |handle| _ = c.close(handle);
+}
+
+fn netShutdown(_: ?*anyopaque, handle: net.Socket.Handle, how: net.ShutdownHow) net.ShutdownError!void {
+    try ensureNetworking();
+    const c_how: c_int = switch (how) {
+        .recv => c.SHUT_RD,
+        .send => c.SHUT_WR,
+        .both => c.SHUT_RDWR,
+    };
+    while (true) {
+        if (c.shutdown(handle, c_how) == 0) return;
+        switch (errno()) {
+            c.EINTR => continue,
+            c.ENOTCONN => return error.SocketUnconnected,
+            c.ENOBUFS, c.ENOMEM => return error.SystemResources,
+            c.ENETDOWN => return error.NetworkDown,
+            c.ECONNABORTED => return error.ConnectionAborted,
+            c.ECONNRESET => return error.ConnectionResetByPeer,
+            else => return error.Unexpected,
+        }
+    }
+}
+
+fn netInterfaceNameResolve(_: ?*anyopaque, _: *const net.Interface.Name) net.Interface.Name.ResolveError!net.Interface {
+    return error.InterfaceNotFound;
+}
+
+fn netInterfaceName(_: ?*anyopaque, _: net.Interface) net.Interface.NameError!net.Interface.Name {
+    return error.InterfaceNotFound;
+}
+
+fn netLookup(_: ?*anyopaque, host_name: net.HostName, resolved: *Io.Queue(net.HostName.LookupResult), opts: net.HostName.LookupOptions) net.HostName.LookupError!void {
+    defer resolved.close(io());
+    try ensureNetworking();
+
+    var name_buf: [net.HostName.max_len:0]u8 = undefined;
+    @memcpy(name_buf[0..host_name.bytes.len], host_name.bytes);
+    name_buf[host_name.bytes.len] = 0;
+    const name_c = name_buf[0..host_name.bytes.len :0];
+
+    var port_buf: [8]u8 = undefined;
+    const port_c = std.fmt.bufPrintZ(&port_buf, "{d}", .{opts.port}) catch unreachable;
+
+    var hints: c.struct_addrinfo = std.mem.zeroes(c.struct_addrinfo);
+    hints.ai_flags = c.AI_NUMERICSERV | if (opts.canonical_name_buffer != null) c.AI_CANONNAME else 0;
+    hints.ai_family = c.AF_INET;
+    hints.ai_socktype = c.SOCK_STREAM;
+    hints.ai_protocol = c.IPPROTO_TCP;
+
+    var result: ?*c.struct_addrinfo = null;
+    const rc = c.getaddrinfo(name_c.ptr, port_c.ptr, &hints, &result);
+    if (rc != 0) return lookupError(rc);
+    defer if (result) |r| c.freeaddrinfo(r);
+
+    var it = result;
+    var canonical_name: ?[*:0]const u8 = null;
+    var found_address = false;
+    while (it) |info| : (it = info.ai_next) {
+        if (info.ai_addr == null or info.ai_family != c.AF_INET) continue;
+        const addr = ip4FromSockaddr(@ptrCast(@alignCast(info.ai_addr.?)));
+        resolved.putOne(io(), .{ .address = addr }) catch |err| switch (err) {
+            error.Closed => unreachable,
+            error.Canceled => return error.Canceled,
+        };
+        found_address = true;
+        if (canonical_name == null and info.ai_canonname != null) canonical_name = info.ai_canonname;
+    }
+    if (!found_address) return error.NoAddressReturned;
+    if (canonical_name) |name| {
+        if (copyCanonicalName(opts.canonical_name_buffer, std.mem.sliceTo(name, 0))) |canon| {
+            resolved.putOne(io(), .{ .canonical_name = canon }) catch |err| switch (err) {
+                error.Closed => unreachable,
+                error.Canceled => return error.Canceled,
+            };
+        }
+    }
+}
+
+fn dirCreateDir(
+    _: ?*anyopaque,
+    dir: Dir,
+    sub_path: []const u8,
+    permissions: Dir.Permissions,
+) Dir.CreateDirError!void {
+    var path_buffer: [max_path_bytes:0]u8 = undefined;
+    const path = try rootedPathForDir(&path_buffer, dir, sub_path);
+    const mode = permissionsMode(permissions, 0o777);
+    if (c.mkdir(path.ptr, mode) == 0) return;
+    return createDirError(errno());
+}
+
+fn dirCreateDirPath(
+    _: ?*anyopaque,
+    dir: Dir,
+    sub_path: []const u8,
+    permissions: Dir.Permissions,
+) Dir.CreateDirPathError!Dir.CreatePathStatus {
+    return createDirPathAt(dir, sub_path, permissions);
+}
+
+fn dirCreateDirPathOpen(
+    userdata: ?*anyopaque,
+    dir: Dir,
+    sub_path: []const u8,
+    permissions: Dir.Permissions,
+    open_options: Dir.OpenOptions,
+) Dir.CreateDirPathOpenError!Dir {
+    _ = try dirCreateDirPath(userdata, dir, sub_path, permissions);
+    return dirOpenDir(userdata, dir, sub_path, open_options);
+}
+
+fn dirOpenDir(_: ?*anyopaque, dir: Dir, sub_path: []const u8, options_arg: Dir.OpenOptions) Dir.OpenError!Dir {
+    if (!options_arg.access_sub_paths) unsupported("dirOpenDir without sub-path access");
+
+    var path_buffer: [max_path_bytes:0]u8 = undefined;
+    const path = try rootedPathForDir(&path_buffer, dir, sub_path);
+    const stream = c.opendir(path.ptr) orelse return dirOpenError(errno());
+    _ = c.closedir(stream);
+
+    return registerDir(path);
+}
+
+fn dirAccess(_: ?*anyopaque, dir: Dir, sub_path: []const u8, opts: Dir.AccessOptions) Dir.AccessError!void {
+    if (!opts.follow_symlinks) unsupported("dirAccess without symlink following");
+
+    var path_buffer: [max_path_bytes:0]u8 = undefined;
+    const path = try rootedPathForDir(&path_buffer, dir, sub_path);
+    const fd = c.open(path.ptr, O_BINARY | O_RDONLY | O_CLOEXEC, @as(c.mode_t, 0));
+    if (fd < 0) return accessError(errno());
+    _ = c.close(fd);
+}
+
+fn dirOpenFile(_: ?*anyopaque, dir: Dir, sub_path: []const u8, flags: Dir.OpenFileOptions) File.OpenError!File {
+    if (flags.lock != .none) return error.FileLocksUnsupported;
+    if (flags.path_only) unsupported("path-only file open");
+    if (!flags.allow_ctty) {}
+
+    const role: FileRole = switch (flags.mode) {
+        .read_only => .read,
+        .write_only => .write,
+        .read_write => .read_write,
+    };
+
+    var path_buffer: [max_path_bytes:0]u8 = undefined;
+    var open_flags: c_int = O_BINARY | O_CLOEXEC | switch (flags.mode) {
+        .read_only => O_RDONLY,
+        .write_only => O_WRONLY,
+        .read_write => O_RDWR,
+    };
+    if (!flags.follow_symlinks) open_flags |= O_NOFOLLOW;
+
+    const path = try rootedPathForDir(&path_buffer, dir, sub_path);
+    const fd = c.open(path.ptr, open_flags, @as(c.mode_t, 0));
+    if (fd < 0) return openError(errno());
+    errdefer _ = c.close(fd);
+    return registerFile(fd, role);
+}
+
+fn dirCreateFile(_: ?*anyopaque, dir: Dir, sub_path: []const u8, flags: Dir.CreateFileOptions) File.OpenError!File {
+    if (flags.lock != .none) return error.FileLocksUnsupported;
+
+    var path_buffer: [max_path_bytes:0]u8 = undefined;
+    var open_flags: c_int = O_BINARY | O_CLOEXEC | if (flags.read) O_RDWR else O_WRONLY;
+    open_flags |= O_CREAT;
+    if (flags.truncate) open_flags |= O_TRUNC;
+    if (flags.exclusive) open_flags |= O_EXCL;
+
+    const mode = permissionsMode(flags.permissions, 0o666);
+    const path = try rootedPathForDir(&path_buffer, dir, sub_path);
+    const fd = c.open(path.ptr, open_flags, mode);
+    if (fd < 0) return openError(errno());
+    errdefer _ = c.close(fd);
+    return registerFile(fd, if (flags.read) .read_write else .write);
+}
+
+fn dirCreateFileAtomic(
+    userdata: ?*anyopaque,
+    dir: Dir,
+    sub_path: []const u8,
+    opts: Dir.CreateFileAtomicOptions,
+) Dir.CreateFileAtomicError!File.Atomic {
+    var target_dir = dir;
+    var close_target_dir = false;
+    var dest_sub_path = sub_path;
+    errdefer if (close_target_dir) target_dir.close(io());
+
+    if (std.fs.path.dirname(sub_path)) |parent| {
+        target_dir = if (opts.make_path)
+            dirCreateDirPathOpen(userdata, dir, parent, .default_dir, .{}) catch |err| return createFileAtomicDirError(err)
+        else
+            dirOpenDir(userdata, dir, parent, .{}) catch |err| return createFileAtomicDirError(err);
+        close_target_dir = true;
+        dest_sub_path = std.fs.path.basename(sub_path);
+    } else if (opts.make_path) {
+        _ = opts.make_path;
+    }
+
+    var attempts: u8 = 0;
+    while (attempts < 16) : (attempts += 1) {
+        atomic_counter +%= 1;
+        const basename_hex = atomic_counter;
+        const tmp_sub_path = std.fmt.hex(basename_hex);
+        const file = dirCreateFile(userdata, target_dir, &tmp_sub_path, .{
+            .read = true,
+            .exclusive = true,
+            .permissions = opts.permissions,
+        }) catch |err| switch (err) {
+            error.PathAlreadyExists => continue,
+            error.FileTooBig, error.IsDir, error.DeviceBusy, error.FileLocksUnsupported, error.PipeBusy => return error.Unexpected,
+            else => |e| return @errorCast(e),
+        };
+        errdefer file.close(io());
+
+        const result: File.Atomic = .{
+            .file = file,
+            .file_basename_hex = basename_hex,
+            .file_open = true,
+            .file_exists = true,
+            .dir = target_dir,
+            .close_dir_on_deinit = close_target_dir,
+            .dest_sub_path = dest_sub_path,
+        };
+        close_target_dir = false;
+        return result;
+    }
+
+    return error.SystemResources;
+}
+
+fn dirClose(_: ?*anyopaque, dirs: []const Dir) void {
+    for (dirs) |dir| {
+        if (dirSlotIndex(dir)) |i| dir_slots[i].used = false;
+    }
+}
+
+fn dirRead(_: ?*anyopaque, reader: *Dir.Reader, out: []Dir.Entry) Dir.Reader.Error!usize {
+    const Header = extern struct {
+        pos: c_long,
+    };
+    const header_end = @sizeOf(Header);
+    if (reader.index < header_end) {
+        reader.index = header_end;
+        reader.end = header_end;
+        const header: *Header = @ptrCast(@alignCast(reader.buffer.ptr));
+        header.* = .{ .pos = 0 };
+    }
+
+    const header: *Header = @ptrCast(@alignCast(reader.buffer.ptr));
+    if (reader.state == .reset) {
+        header.pos = 0;
+        reader.state = .reading;
+    }
+    if (reader.state == .finished) return 0;
+
+    var path_buffer: [max_path_bytes:0]u8 = undefined;
+    const root = dirRoot(reader.dir);
+    const path = zPath(&path_buffer, if (root.len == 0) "." else root) catch return error.Unexpected;
+    const stream = c.opendir(path.ptr) orelse return dirReadError(errno());
+    var stream_open = true;
+    defer if (stream_open) {
+        _ = c.closedir(stream);
+    };
+
+    const dir_dev = c.devoptab_list[@intCast(stream.*.dirData.*.device)];
+    const dirnext = dir_dev.*.dirnext_r.?;
+    const reent = c.__syscall_getreent();
+    var direct_name: [Dir.max_name_bytes + 1]u8 = @splat(0);
+    var direct_stat: c.struct_stat = undefined;
+    var skipped: c_long = 0;
+    while (skipped < header.pos) : (skipped += 1) {
+        if (dirnext(reent, stream.*.dirData, &direct_name, &direct_stat) != 0) {
+            reader.state = .finished;
+            return 0;
+        }
+    }
+
+    var count: usize = 0;
+    var name_end = reader.buffer.len;
+    while (count < out.len) {
+        @memset(&direct_name, 0);
+        direct_stat = undefined;
+        if (dirnext(reent, stream.*.dirData, &direct_name, &direct_stat) != 0) {
+            reader.state = .finished;
+            return count;
+        }
+        header.pos += 1;
+        const name = std.mem.span(@as([*:0]const u8, @ptrCast(&direct_name)));
+        const kind = statKind(direct_stat.st_mode);
+        const inode: File.INode = @intCast(direct_stat.st_ino);
+        if (std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) continue;
+        if (name.len + 1 > name_end - header_end) {
+            if (count == 0) return error.Unexpected;
+            break;
+        }
+
+        name_end -= name.len + 1;
+        @memcpy(reader.buffer[name_end..][0..name.len], name);
+        reader.buffer[name_end + name.len] = 0;
+        out[count] = .{
+            .name = reader.buffer[name_end .. name_end + name.len],
+            .kind = kind,
+            .inode = inode,
+        };
+        count += 1;
+    }
+
+    stream_open = false;
+    _ = c.closedir(stream);
+    return count;
+}
+
+fn dirDeleteFile(_: ?*anyopaque, dir: Dir, sub_path: []const u8) Dir.DeleteFileError!void {
+    var path_buffer: [max_path_bytes:0]u8 = undefined;
+    const path = try rootedPathForDir(&path_buffer, dir, sub_path);
+    if (c.unlink(path.ptr) == 0) return;
+    return deleteFileError(errno());
+}
+
+fn dirDeleteDir(_: ?*anyopaque, dir: Dir, sub_path: []const u8) Dir.DeleteDirError!void {
+    var path_buffer: [max_path_bytes:0]u8 = undefined;
+    const path = try rootedPathForDir(&path_buffer, dir, sub_path);
+    if (c.rmdir(path.ptr) == 0) return;
+    return deleteDirError(errno());
+}
+
+fn dirRename(
+    _: ?*anyopaque,
+    old_dir: Dir,
+    old_sub_path: []const u8,
+    new_dir: Dir,
+    new_sub_path: []const u8,
+) Dir.RenameError!void {
+    var old_path_buffer: [max_path_bytes:0]u8 = undefined;
+    var new_path_buffer: [max_path_bytes:0]u8 = undefined;
+    const old_path = try rootedPathForDir(&old_path_buffer, old_dir, old_sub_path);
+    const new_path = try rootedPathForDir(&new_path_buffer, new_dir, new_sub_path);
+    if (c.rename(old_path.ptr, new_path.ptr) == 0) return;
+    return renameError(errno());
+}
+
+fn dirRenamePreserve(
+    userdata: ?*anyopaque,
+    old_dir: Dir,
+    old_sub_path: []const u8,
+    new_dir: Dir,
+    new_sub_path: []const u8,
+) Dir.RenamePreserveError!void {
+    dirAccess(userdata, new_dir, new_sub_path, .{}) catch |err| switch (err) {
+        error.FileNotFound => {},
+        else => |e| return @errorCast(e),
+    };
+    if (dirAccess(userdata, new_dir, new_sub_path, .{})) |_| return error.PathAlreadyExists else |err| switch (err) {
+        error.FileNotFound => {},
+        else => |e| return @errorCast(e),
+    }
+    return dirRename(userdata, old_dir, old_sub_path, new_dir, new_sub_path) catch |err| switch (err) {
+        error.DiskQuota, error.IsDir, error.LinkQuotaExceeded, error.NoDevice, error.PipeBusy, error.AntivirusInterference, error.HardwareFailure => return error.Unexpected,
+        else => |e| return @errorCast(e),
+    };
+}
+
+fn fileStat(_: ?*anyopaque, file: File) File.StatError!File.Stat {
+    return .{
+        .inode = zero(File.INode),
+        .nlink = zero(File.NLink),
+        .size = try fileLength(null, file),
+        .permissions = .default_file,
+        .kind = .file,
+        .atime = null,
+        .mtime = now(null, .real),
+        .ctime = now(null, .real),
+        .block_size = 1,
+    };
+}
+
+fn fileLength(_: ?*anyopaque, file: File) File.LengthError!u64 {
+    const fd = fdForRegular(file);
+    const current = c.lseek(fd, 0, SEEK_CUR);
+    if (current < 0) return seekToLengthError();
+    const end = c.lseek(fd, 0, SEEK_END);
+    if (end < 0) return seekToLengthError();
+    _ = c.lseek(fd, current, SEEK_SET);
+    return @intCast(end);
+}
+
+fn fileClose(_: ?*anyopaque, files: []const File) void {
+    for (files) |file| {
+        if (isStderrFile(file)) continue;
+        if (@sizeOf(File.Handle) != 0) {
+            const fd = fdFromFileHandle(file);
+            if (fd > 2) _ = c.close(fd);
+            continue;
+        }
+        if (read_fd >= 0 and read_fd == write_fd) {
+            _ = c.close(read_fd);
+            read_fd = -1;
+            write_fd = -1;
+        } else if (read_fd >= 0) {
+            _ = c.close(read_fd);
+            read_fd = -1;
+        } else if (write_fd >= 0) {
+            _ = c.close(write_fd);
+            write_fd = -1;
+        }
+    }
+}
+
+fn fileReadPositional(
+    _: ?*anyopaque,
+    file: File,
+    data: []const []u8,
+    offset: u64,
+) File.ReadPositionalError!usize {
+    const fd = fdForRead(file);
+    try seekToOffset(fd, offset);
+
+    var total: usize = 0;
+    for (data) |buf| {
+        var remaining = buf;
+        while (remaining.len > 0) {
+            const n = c.read(fd, remaining.ptr, remaining.len);
+            if (n < 0) return readError();
+            if (n == 0) return total;
+            const amt: usize = @intCast(n);
+            total += amt;
+            remaining = remaining[amt..];
+            if (amt == 0) return total;
+        }
+    }
+    return total;
+}
+
+fn fileReadStreaming(file: File, data: []const []u8) Io.Operation.FileReadStreaming.Result {
+    const fd = fdForRead(file);
+    var total: usize = 0;
+    for (data) |buf| {
+        var remaining = buf;
+        while (remaining.len > 0) {
+            const n = c.read(fd, remaining.ptr, remaining.len);
+            if (n < 0) return readStreamingError();
+            if (n == 0) return if (total == 0) error.EndOfStream else total;
+            const amt: usize = @intCast(n);
+            total += amt;
+            remaining = remaining[amt..];
+        }
+    }
+    return total;
+}
+
+fn fileWritePositional(
+    _: ?*anyopaque,
+    file: File,
+    header: []const u8,
+    data: []const []const u8,
+    splat: usize,
+    offset: u64,
+) File.WritePositionalError!usize {
+    const fd = fdForWrite(file);
+    try seekToOffset(fd, offset);
+    return writeVectors(fd, header, data, splat);
+}
+
+fn fileWriteStreaming(file: File, header: []const u8, data: []const []const u8, splat: usize) Io.Operation.FileWriteStreaming.Result {
+    return writeVectors(fdForWrite(file), header, data, splat) catch |err| switch (err) {
+        error.Canceled => unreachable,
+        error.Unseekable => error.InputOutput,
+        else => |e| @errorCast(e),
+    };
+}
+
+fn fileSeekBy(_: ?*anyopaque, file: File, relative_offset: i64) File.SeekError!void {
+    if (c.lseek(fdForRegular(file), @intCast(relative_offset), SEEK_CUR) < 0) return seekError();
+}
+
+fn fileSeekTo(_: ?*anyopaque, file: File, absolute_offset: u64) File.SeekError!void {
+    try seekToOffset(fdForRegular(file), absolute_offset);
+}
+
+fn fileSync(_: ?*anyopaque, file: File) File.SyncError!void {
+    if (isStderrFile(file)) return;
+    if (c.fsync(fdForRegular(file)) < 0) return syncError();
+}
+
+fn fileIsTty(_: ?*anyopaque, _: File) Io.Cancelable!bool {
+    return false;
+}
+
+fn fileEnableAnsiEscapeCodes(_: ?*anyopaque, _: File) File.EnableAnsiEscapeCodesError!void {
+    return error.NotTerminalDevice;
+}
+
+fn fileSupportsAnsiEscapeCodes(_: ?*anyopaque, _: File) Io.Cancelable!bool {
+    return false;
+}
+
+fn fileSetLength(_: ?*anyopaque, file: File, length: u64) File.SetLengthError!void {
+    if (length > std.math.maxInt(c.off_t)) return error.FileTooBig;
+    if (c.ftruncate(fdForRegular(file), @intCast(length)) < 0) return setLengthError();
+}
+
+fn lockStderr(_: ?*anyopaque, terminal_mode: ?Io.Terminal.Mode) Io.Cancelable!Io.LockedStderr {
+    if (!stderr_writer_initialized) {
+        var stderr_file: File = .{
+            .handle = if (@sizeOf(File.Handle) == 0) {} else @as(File.Handle, @intCast(2)),
+            .flags = .{ .nonblocking = true },
+        };
+        stderr_file.flags.nonblocking = true;
+        stderr_writer = stderr_file.writerStreaming(io(), &empty_stderr_buffer);
+        stderr_writer_initialized = true;
+    }
+    return .{
+        .file_writer = &stderr_writer,
+        .terminal_mode = terminal_mode orelse .no_color,
+    };
+}
+
+fn tryLockStderr(userdata: ?*anyopaque, terminal_mode: ?Io.Terminal.Mode) Io.Cancelable!?Io.LockedStderr {
+    return try lockStderr(userdata, terminal_mode);
+}
+
+fn unlockStderr(_: ?*anyopaque) void {
+    if (stderr_writer_initialized) stderr_writer.interface.flush() catch {};
+}
+
+fn processCurrentPath(_: ?*anyopaque, buffer: []u8) std.process.CurrentPathError!usize {
+    if (buffer.len == 0) return error.NameTooLong;
+    const ptr = c.getcwd(buffer.ptr, buffer.len) orelse return currentPathError();
+    _ = ptr;
+    return std.mem.indexOfScalar(u8, buffer, 0) orelse error.NameTooLong;
+}
+
+fn processSetCurrentPath(_: ?*anyopaque, path: []const u8) std.process.SetCurrentPathError!void {
+    var path_buffer: [max_path_bytes:0]u8 = undefined;
+    const z = zPath(&path_buffer, path) catch |err| switch (err) {
+        error.NameTooLong => return error.NameTooLong,
+        error.BadPathName => return error.BadPathName,
+    };
+    if (c.chdir(z.ptr) < 0) return setCurrentPathError();
+}
+
+fn now(_: ?*anyopaque, clock: Io.Clock) Io.Timestamp {
+    return platform_time.now(clock);
+}
+
+fn clockResolution(_: ?*anyopaque, clock: Io.Clock) Io.Clock.ResolutionError!Io.Duration {
+    return platform_time.clockResolution(clock);
+}
+
+fn sleep(_: ?*anyopaque, timeout: Io.Timeout) Io.Cancelable!void {
+    return platform_time.sleep(timeout);
+}
+
+fn random(_: ?*anyopaque, buffer: []u8) void {
+    @memset(buffer, 0);
+}
+
+const FileRole = enum { read, write, read_write };
+
+fn createDirPathAt(dir: Dir, sub_path: []const u8, permissions: Dir.Permissions) Dir.CreateDirPathError!Dir.CreatePathStatus {
+    if (sub_path.len == 0) return error.BadPathName;
+
+    var path_buffer: [max_path_bytes:0]u8 = undefined;
+    const full = rootedPathForDir(&path_buffer, dir, sub_path) catch |err| return err;
+    const full_len = full.len;
+    const full_ptr = path_buffer[0..].ptr;
+    const mode = permissionsMode(permissions, 0o777);
+
+    var status: Dir.CreatePathStatus = .existed;
+    const start = pathRootEnd(full);
+    var i = start;
+    while (i < full_len) : (i += 1) {
+        if (path_buffer[i] != '/') continue;
+        if (i == start) continue;
+        path_buffer[i] = 0;
+        if (try createSingleDirPath(full_ptr, mode) == .created) status = .created;
+        path_buffer[i] = '/';
+    }
+    if (try createSingleDirPath(full_ptr, mode) == .created) status = .created;
+    return status;
+}
+
+fn createSingleDirPath(path: [*:0]const u8, mode: c.mode_t) Dir.CreateDirPathError!Dir.CreatePathStatus {
+    if (c.mkdir(path, mode) == 0) return .created;
+    switch (errno()) {
+        17 => return .existed,
+        1 => return error.PermissionDenied,
+        2 => return error.FileNotFound,
+        6 => return error.NoDevice,
+        12 => return error.SystemResources,
+        13 => return error.AccessDenied,
+        20 => return error.NotDir,
+        28 => return error.NoSpaceLeft,
+        30 => return error.ReadOnlyFileSystem,
+        91 => return error.NameTooLong,
+        92 => return error.SymLinkLoop,
+        else => return error.Unexpected,
+    }
+}
+
+fn registerFile(fd: c_int, role: FileRole) File {
+    if (@sizeOf(File.Handle) == 0) {
+        switch (role) {
+            .read => {
+                if (read_fd >= 0) unsupported("more than one regular read file");
+                read_fd = fd;
+            },
+            .write => {
+                if (write_fd >= 0) unsupported("more than one regular write file");
+                write_fd = fd;
+            },
+            .read_write => {
+                if (read_fd >= 0) unsupported("more than one regular read file");
+                if (write_fd >= 0) unsupported("more than one regular write file");
+                read_fd = fd;
+                write_fd = fd;
+            },
+        }
+        return .{ .handle = {}, .flags = .{ .nonblocking = false } };
+    }
+    return .{
+        .handle = @intCast(fd),
+        .flags = .{ .nonblocking = false },
+    };
+}
+
+fn fdForRead(file: File) c_int {
+    if (@sizeOf(File.Handle) != 0) return fdFromFileHandle(file);
+    if (read_fd < 0) unsupported("read from unopened regular file");
+    return read_fd;
+}
+
+fn fdForWrite(file: File) c_int {
+    if (isStderrFile(file)) return 2;
+    if (@sizeOf(File.Handle) != 0) return fdFromFileHandle(file);
+    if (write_fd < 0) unsupported("write to unopened regular file");
+    return write_fd;
+}
+
+fn fdForRegular(file: File) c_int {
+    if (isStderrFile(file)) unsupported("regular file operation on stderr");
+    if (@sizeOf(File.Handle) != 0) return fdFromFileHandle(file);
+    if (read_fd >= 0) return read_fd;
+    if (write_fd >= 0) return write_fd;
+    unsupported("regular file operation with no open file");
+}
+
+fn fdFromFileHandle(file: File) c_int {
+    return @intCast(file.handle);
+}
+
+fn fdFromDirHandle(dir: Dir) c_int {
+    return @intCast(dir.handle);
+}
+
+fn permissionsMode(permissions: File.Permissions, default: c.mode_t) c.mode_t {
+    if (@bitSizeOf(File.Permissions) == 0) return default;
+    return @intCast(@intFromEnum(permissions));
+}
+
+fn isStderrFile(file: File) bool {
+    return file.flags.nonblocking;
+}
+
+fn registerDir(path: []const u8) Dir.OpenError!Dir {
+    for (&dir_slots, 0..) |*slot, i| {
+        if (slot.used) continue;
+        if (path.len >= max_path_bytes) return error.NameTooLong;
+        @memcpy(slot.path[0..path.len], path);
+        slot.path[path.len] = 0;
+        slot.len = path.len;
+        slot.used = true;
+        return .{ .handle = @intCast(i + 3) };
+    }
+    return error.SystemResources;
+}
+
+fn dirSlotIndex(dir: Dir) ?usize {
+    const handle = fdFromDirHandle(dir);
+    if (handle < 3) return null;
+    const index: usize = @intCast(handle - 3);
+    if (index >= dir_slots.len or !dir_slots[index].used) return null;
+    return index;
+}
+
+fn dirRoot(dir: Dir) []const u8 {
+    if (fdFromDirHandle(dir) == AT_FDCWD) return "";
+    const index = dirSlotIndex(dir) orelse unsupported("closed Nintendo dir handle");
+    return dir_slots[index].path[0..dir_slots[index].len];
+}
+
+fn rootedPath(buf: *[max_path_bytes:0]u8, path: []const u8, root: []const u8) error{ NameTooLong, BadPathName }![:0]const u8 {
+    if (isAbsoluteOrDevicePath(path) or root.len == 0) return zPath(buf, path);
+    if (std.mem.indexOfScalar(u8, path, 0) != null) return error.BadPathName;
+
+    const needs_sep = !std.mem.endsWith(u8, root, "/") and !std.mem.startsWith(u8, path, "/");
+    const len = root.len + @intFromBool(needs_sep) + path.len;
+    if (len >= max_path_bytes) return error.NameTooLong;
+
+    var i: usize = 0;
+    @memcpy(buf[i..][0..root.len], root);
+    i += root.len;
+    if (needs_sep) {
+        buf[i] = '/';
+        i += 1;
+    }
+    @memcpy(buf[i..][0..path.len], path);
+    buf[len] = 0;
+    return buf[0..len :0];
+}
+
+fn rootedPathForDir(buf: *[max_path_bytes:0]u8, dir: Dir, path: []const u8) error{ NameTooLong, BadPathName }![:0]const u8 {
+    return rootedPath(buf, path, dirRoot(dir));
+}
+
+fn statKind(mode: c.mode_t) File.Kind {
+    if (c.S_ISBLK(mode)) return .block_device;
+    if (c.S_ISCHR(mode)) return .character_device;
+    if (c.S_ISDIR(mode)) return .directory;
+    if (c.S_ISFIFO(mode)) return .named_pipe;
+    if (c.S_ISLNK(mode)) return .sym_link;
+    if (c.S_ISREG(mode)) return .file;
+    if (c.S_ISSOCK(mode)) return .unix_domain_socket;
+    return .unknown;
+}
+
+fn seekToOffset(fd: c_int, offset: u64) File.SeekError!void {
+    if (offset > std.math.maxInt(c.off_t)) return error.Unseekable;
+    if (c.lseek(fd, @intCast(offset), SEEK_SET) < 0) return seekError();
+}
+
+fn writeVectors(fd: c_int, header: []const u8, data: []const []const u8, splat: usize) File.WritePositionalError!usize {
+    var total: usize = 0;
+    total += try writeOne(fd, header);
+    for (0..splat) |_| {
+        for (data) |buf| {
+            total += try writeOne(fd, buf);
+        }
+    }
+    return total;
+}
+
+fn writeOne(fd: c_int, bytes: []const u8) File.WritePositionalError!usize {
+    var remaining = bytes;
+    var total: usize = 0;
+    while (remaining.len > 0) {
+        const n = c.write(fd, remaining.ptr, remaining.len);
+        if (n < 0) return writeError();
+        if (n == 0) return total;
+        const amt: usize = @intCast(n);
+        total += amt;
+        remaining = remaining[amt..];
+    }
+    return total;
+}
+
+fn zPath(buf: *[max_path_bytes:0]u8, path: []const u8) error{ NameTooLong, BadPathName }![:0]const u8 {
+    if (path.len >= max_path_bytes) return error.NameTooLong;
+    if (std.mem.indexOfScalar(u8, path, 0) != null) return error.BadPathName;
+    @memcpy(buf[0..path.len], path);
+    buf[path.len] = 0;
+    return buf[0..path.len :0];
+}
+
+fn isAbsoluteOrDevicePath(path: []const u8) bool {
+    if (path.len == 0) return false;
+    if (path[0] == '/') return true;
+    const colon = std.mem.indexOfScalar(u8, path, ':') orelse return false;
+    const slash = std.mem.indexOfAny(u8, path, "/\\") orelse path.len;
+    return colon < slash;
+}
+
+fn pathRootEnd(path: []const u8) usize {
+    if (std.mem.indexOfScalar(u8, path, ':')) |colon| {
+        if (colon + 1 < path.len and path[colon + 1] == '/') return colon + 2;
+        return colon + 1;
+    }
+    return if (path.len > 0 and path[0] == '/') 1 else 0;
+}
+
+fn createFileAtomicDirError(err: anyerror) Dir.CreateFileAtomicError {
+    return switch (err) {
+        error.PathAlreadyExists, error.NotDir => error.NotDir,
+        error.FileTooBig, error.IsDir, error.DeviceBusy, error.FileLocksUnsupported => error.Unexpected,
+        else => @errorCast(err),
+    };
+}
+
+fn sockaddrFromIp4(address: *const net.IpAddress) error{AddressFamilyUnsupported}!c.struct_sockaddr_in {
+    const ip4 = switch (address.*) {
+        .ip4 => |ip4| ip4,
+        .ip6 => return error.AddressFamilyUnsupported,
+    };
+    var storage: c.struct_sockaddr_in = std.mem.zeroes(c.struct_sockaddr_in);
+    if (@hasField(c.struct_sockaddr_in, "sin_len")) storage.sin_len = @sizeOf(c.struct_sockaddr_in);
+    storage.sin_family = c.AF_INET;
+    storage.sin_port = c.htons(ip4.port);
+    storage.sin_addr.s_addr = @bitCast(ip4.bytes);
+    return storage;
+}
+
+fn ip4FromSockaddr(storage: *const c.struct_sockaddr_in) net.IpAddress {
+    return .{ .ip4 = .{
+        .bytes = @bitCast(storage.sin_addr.s_addr),
+        .port = c.ntohs(storage.sin_port),
+    } };
+}
+
+fn sockaddrPtr(storage: *c.struct_sockaddr_in) *c.struct_sockaddr {
+    return @ptrCast(storage);
+}
+
+fn sockaddrConstPtr(storage: *const c.struct_sockaddr_in) *const c.struct_sockaddr {
+    return @ptrCast(storage);
+}
+
+fn sockaddrLen(_: *const c.struct_sockaddr_in) c.socklen_t {
+    return @sizeOf(c.struct_sockaddr_in);
+}
+
+fn openSocket(
+    address: *const net.IpAddress,
+    mode: net.Socket.Mode,
+    maybe_protocol: ?net.Protocol,
+) error{
+    AddressFamilyUnsupported,
+    ProtocolUnsupportedBySystem,
+    ProtocolUnsupportedByAddressFamily,
+    SocketModeUnsupported,
+    ProcessFdQuotaExceeded,
+    SystemFdQuotaExceeded,
+    SystemResources,
+    NetworkDown,
+    OptionUnsupported,
+    Unexpected,
+}!c_int {
+    switch (address.*) {
+        .ip4 => {},
+        .ip6 => return error.AddressFamilyUnsupported,
+    }
+    const socket_type: c_int = switch (mode) {
+        .stream => c.SOCK_STREAM,
+        .dgram => c.SOCK_DGRAM,
+        else => return error.SocketModeUnsupported,
+    };
+    const protocol: c_int = if (maybe_protocol) |protocol| switch (protocol) {
+        .tcp => c.IPPROTO_TCP,
+        .udp => c.IPPROTO_UDP,
+        else => return error.ProtocolUnsupportedBySystem,
+    } else switch (mode) {
+        .stream => c.IPPROTO_TCP,
+        .dgram => c.IPPROTO_UDP,
+        else => unreachable,
+    };
+
+    while (true) {
+        const fd = c.socket(c.AF_INET, socket_type, protocol);
+        if (fd >= 0) return fd;
+        switch (errno()) {
+            c.EINTR => continue,
+            c.EAFNOSUPPORT => return error.AddressFamilyUnsupported,
+            c.EINVAL => return error.ProtocolUnsupportedBySystem,
+            c.EMFILE => return error.ProcessFdQuotaExceeded,
+            c.ENFILE => return error.SystemFdQuotaExceeded,
+            c.ENOBUFS, c.ENOMEM => return error.SystemResources,
+            c.EPROTONOSUPPORT => return error.ProtocolUnsupportedByAddressFamily,
+            c.EPROTOTYPE => return error.SocketModeUnsupported,
+            c.ENETDOWN => return error.NetworkDown,
+            else => return error.Unexpected,
+        }
+    }
+}
+
+fn bindSocket(fd: c_int, storage: *const c.struct_sockaddr_in, len: c.socklen_t) net.IpAddress.BindError!void {
+    while (true) {
+        if (c.bind(fd, sockaddrConstPtr(storage), len) == 0) return;
+        switch (errno()) {
+            c.EINTR => continue,
+            c.EADDRINUSE => return error.AddressInUse,
+            c.EADDRNOTAVAIL => return error.AddressUnavailable,
+            c.EAFNOSUPPORT => return error.AddressFamilyUnsupported,
+            c.ENOMEM => return error.SystemResources,
+            c.ENETDOWN => return error.NetworkDown,
+            else => return error.Unexpected,
+        }
+    }
+}
+
+fn connectSocket(fd: c_int, storage: *const c.struct_sockaddr_in, len: c.socklen_t) net.IpAddress.ConnectError!void {
+    while (true) {
+        if (c.connect(fd, sockaddrConstPtr(storage), len) == 0) return;
+        switch (errno()) {
+            c.EINTR => continue,
+            c.EADDRNOTAVAIL => return error.AddressUnavailable,
+            c.EAFNOSUPPORT => return error.AddressFamilyUnsupported,
+            c.EAGAIN, c.EINPROGRESS => return error.WouldBlock,
+            c.EALREADY => return error.ConnectionPending,
+            c.ECONNREFUSED => return error.ConnectionRefused,
+            c.ECONNRESET => return error.ConnectionResetByPeer,
+            c.EHOSTUNREACH => return error.HostUnreachable,
+            c.ENETUNREACH => return error.NetworkUnreachable,
+            c.ETIMEDOUT => return error.Timeout,
+            c.EACCES => return error.AccessDenied,
+            c.ENETDOWN => return error.NetworkDown,
+            c.ENOBUFS, c.ENOMEM => return error.SystemResources,
+            else => return error.Unexpected,
+        }
+    }
+}
+
+fn listenSocket(fd: c_int, backlog: u31) net.IpAddress.ListenError!void {
+    while (true) {
+        if (c.listen(fd, @intCast(backlog)) == 0) return;
+        switch (errno()) {
+            c.EINTR => continue,
+            c.EADDRINUSE => return error.AddressInUse,
+            c.ENOBUFS, c.ENOMEM => return error.SystemResources,
+            c.ENETDOWN => return error.NetworkDown,
+            else => return error.Unexpected,
+        }
+    }
+}
+
+fn getSockName(fd: c_int, storage: *c.struct_sockaddr_in, len: *c.socklen_t) error{ SystemResources, Unexpected }!void {
+    while (true) {
+        if (c.getsockname(fd, sockaddrPtr(storage), len) == 0) return;
+        switch (errno()) {
+            c.EINTR => continue,
+            c.ENOBUFS, c.ENOMEM => return error.SystemResources,
+            else => return error.Unexpected,
+        }
+    }
+}
+
+fn setSocketOption(fd: c_int, level: c_int, opt: c_int, value: c_int) error{Unexpected}!void {
+    var option = value;
+    while (true) {
+        if (c.setsockopt(fd, level, opt, &option, @sizeOf(c_int)) == 0) return;
+        switch (errno()) {
+            c.EINTR => continue,
+            else => return error.Unexpected,
+        }
+    }
+}
+
+fn sendFlags(flags: net.SendFlags) c_int {
+    return @as(c_int, if (flags.dont_route) c.MSG_DONTROUTE else 0) |
+        @as(c_int, if (flags.oob) c.MSG_OOB else 0) |
+        @as(c_int, if (@hasDecl(c, "MSG_EOR") and flags.eor) c.MSG_EOR else 0) |
+        @as(c_int, if (@hasDecl(c, "MSG_FASTOPEN") and flags.fastopen) c.MSG_FASTOPEN else 0) |
+        @as(c_int, if (@hasDecl(c, "MSG_NOSIGNAL")) c.MSG_NOSIGNAL else 0);
+}
+
+fn receiveFlags(flags: net.ReceiveFlags) c_int {
+    return @as(c_int, if (flags.oob) c.MSG_OOB else 0) |
+        @as(c_int, if (flags.peek) c.MSG_PEEK else 0) |
+        @as(c_int, if (@hasDecl(c, "MSG_TRUNC") and flags.trunc) c.MSG_TRUNC else 0) |
+        @as(c_int, if (@hasDecl(c, "MSG_NOSIGNAL")) c.MSG_NOSIGNAL else 0);
+}
+
+fn sendStreamSegment(fd: c_int, bytes: []const u8, total: *usize) net.Stream.Writer.Error!void {
+    if (bytes.len == 0) return;
+    while (true) {
+        const n = c.send(fd, bytes.ptr, bytes.len, if (@hasDecl(c, "MSG_NOSIGNAL")) c.MSG_NOSIGNAL else 0);
+        if (n >= 0) {
+            total.* += @intCast(n);
+            return;
+        }
+        switch (errno()) {
+            c.EINTR => continue,
+            else => return streamWriteError(errno()),
+        }
+    }
+}
+
+fn copyCanonicalName(buffer: ?*[net.HostName.max_len]u8, name: []const u8) ?net.HostName {
+    const dest_buf = buffer orelse return null;
+    const end = if (name.len > 0 and name[name.len - 1] == '.') name.len - 1 else name.len;
+    if (end > dest_buf.len) return null;
+    @memcpy(dest_buf[0..end], name[0..end]);
+    return net.HostName.init(dest_buf[0..end]) catch null;
+}
+
+fn errno() c_int {
+    return c.__errno().*;
+}
+
+fn sendError(code: c_int) net.Socket.SendError {
+    return switch (code) {
+        c.EACCES => error.AccessDenied,
+        c.EALREADY => error.FastOpenAlreadyInProgress,
+        c.ECONNREFUSED => error.ConnectionRefused,
+        c.ECONNRESET => error.ConnectionResetByPeer,
+        c.EMSGSIZE => error.MessageOversize,
+        c.ENOBUFS, c.ENOMEM => error.SystemResources,
+        c.EPIPE, c.ENOTCONN => error.SocketUnconnected,
+        c.EAFNOSUPPORT => error.AddressFamilyUnsupported,
+        c.EHOSTUNREACH => error.HostUnreachable,
+        c.ENETUNREACH => error.NetworkUnreachable,
+        c.ENETDOWN => error.NetworkDown,
+        else => error.Unexpected,
+    };
+}
+
+fn receiveError(code: c_int) net.Socket.ReceiveError {
+    return switch (code) {
+        c.EMFILE => error.ProcessFdQuotaExceeded,
+        c.ENFILE => error.SystemFdQuotaExceeded,
+        c.ENOBUFS, c.ENOMEM => error.SystemResources,
+        c.ENOTCONN, c.EPIPE => error.SocketUnconnected,
+        c.EMSGSIZE => error.MessageOversize,
+        c.ECONNRESET => error.ConnectionResetByPeer,
+        c.ENETDOWN => error.NetworkDown,
+        else => error.Unexpected,
+    };
+}
+
+fn streamReadError(code: c_int) net.Stream.Reader.Error {
+    return switch (code) {
+        c.ENOBUFS, c.ENOMEM => error.SystemResources,
+        c.ENOTCONN, c.EPIPE => error.SocketUnconnected,
+        c.ECONNRESET => error.ConnectionResetByPeer,
+        c.ETIMEDOUT => error.Timeout,
+        c.EACCES => error.AccessDenied,
+        c.ENETDOWN => error.NetworkDown,
+        else => error.Unexpected,
+    };
+}
+
+fn streamWriteError(code: c_int) net.Stream.Writer.Error {
+    return switch (code) {
+        c.EALREADY => error.FastOpenAlreadyInProgress,
+        c.ECONNREFUSED => error.ConnectionRefused,
+        c.ECONNRESET => error.ConnectionResetByPeer,
+        c.ENOBUFS, c.ENOMEM => error.SystemResources,
+        c.EPIPE, c.ENOTCONN => error.SocketUnconnected,
+        c.EAFNOSUPPORT => error.AddressFamilyUnsupported,
+        c.EHOSTUNREACH => error.HostUnreachable,
+        c.ENETUNREACH => error.NetworkUnreachable,
+        c.ENETDOWN => error.NetworkDown,
+        else => error.Unexpected,
+    };
+}
+
+fn lookupError(code: c_int) net.HostName.LookupError {
+    return switch (code) {
+        c.EAI_FAMILY => error.AddressFamilyUnsupported,
+        c.EAI_MEMORY => error.SystemResources,
+        c.EAI_NONAME => error.UnknownHostName,
+        else => if (@hasDecl(c, "EAI_AGAIN") and code == c.EAI_AGAIN)
+            error.NameServerFailure
+        else if (@hasDecl(c, "EAI_FAIL") and code == c.EAI_FAIL)
+            error.NameServerFailure
+        else if (@hasDecl(c, "EAI_NODATA") and code == c.EAI_NODATA)
+            error.UnknownHostName
+        else
+            error.Unexpected,
+    };
+}
+
+fn createDirError(code: c_int) Dir.CreateDirError {
+    return switch (code) {
+        1 => error.PermissionDenied,
+        2 => error.FileNotFound,
+        6 => error.NoDevice,
+        12 => error.SystemResources,
+        13 => error.AccessDenied,
+        17 => error.PathAlreadyExists,
+        20 => error.NotDir,
+        28 => error.NoSpaceLeft,
+        30 => error.ReadOnlyFileSystem,
+        91 => error.NameTooLong,
+        92 => error.SymLinkLoop,
+        else => error.Unexpected,
+    };
+}
+
+fn accessError(code: c_int) Dir.AccessError {
+    return switch (code) {
+        1 => error.PermissionDenied,
+        2 => error.FileNotFound,
+        5 => error.InputOutput,
+        12 => error.SystemResources,
+        13 => error.AccessDenied,
+        16 => error.FileBusy,
+        30 => error.ReadOnlyFileSystem,
+        91 => error.NameTooLong,
+        92 => error.SymLinkLoop,
+        else => error.Unexpected,
+    };
+}
+
+fn dirOpenError(code: c_int) Dir.OpenError {
+    return switch (code) {
+        1 => error.PermissionDenied,
+        2 => error.FileNotFound,
+        6 => error.NoDevice,
+        12 => error.SystemResources,
+        13 => error.AccessDenied,
+        20 => error.NotDir,
+        23 => error.ProcessFdQuotaExceeded,
+        24 => error.SystemFdQuotaExceeded,
+        91 => error.NameTooLong,
+        92 => error.SymLinkLoop,
+        else => error.Unexpected,
+    };
+}
+
+fn openError(code: c_int) File.OpenError {
+    return switch (code) {
+        1 => error.PermissionDenied,
+        2 => error.FileNotFound,
+        6 => error.NoDevice,
+        12 => error.SystemResources,
+        13 => error.AccessDenied,
+        16 => error.DeviceBusy,
+        17 => error.PathAlreadyExists,
+        20 => error.NotDir,
+        21 => error.IsDir,
+        23 => error.SystemFdQuotaExceeded,
+        24 => error.ProcessFdQuotaExceeded,
+        26 => error.FileBusy,
+        27 => error.FileTooBig,
+        28 => error.NoSpaceLeft,
+        30 => error.ReadOnlyFileSystem,
+        91 => error.NameTooLong,
+        92 => error.SymLinkLoop,
+        else => error.Unexpected,
+    };
+}
+
+fn deleteFileError(code: c_int) Dir.DeleteFileError {
+    return switch (code) {
+        1 => error.PermissionDenied,
+        2 => error.FileNotFound,
+        12 => error.SystemResources,
+        13 => error.AccessDenied,
+        16 => error.FileBusy,
+        20 => error.NotDir,
+        21 => error.IsDir,
+        30 => error.ReadOnlyFileSystem,
+        91 => error.NameTooLong,
+        92 => error.SymLinkLoop,
+        else => error.Unexpected,
+    };
+}
+
+fn deleteDirError(code: c_int) Dir.DeleteDirError {
+    return switch (code) {
+        1 => error.PermissionDenied,
+        2 => error.FileNotFound,
+        12 => error.SystemResources,
+        13 => error.AccessDenied,
+        16 => error.FileBusy,
+        20 => error.NotDir,
+        30 => error.ReadOnlyFileSystem,
+        39 => error.DirNotEmpty,
+        91 => error.NameTooLong,
+        92 => error.SymLinkLoop,
+        else => error.Unexpected,
+    };
+}
+
+fn renameError(code: c_int) Dir.RenameError {
+    return switch (code) {
+        1 => error.PermissionDenied,
+        2 => error.FileNotFound,
+        5 => error.HardwareFailure,
+        6 => error.NoDevice,
+        12 => error.SystemResources,
+        13 => error.AccessDenied,
+        16 => error.FileBusy,
+        18 => error.CrossDevice,
+        20 => error.NotDir,
+        21 => error.IsDir,
+        28 => error.NoSpaceLeft,
+        30 => error.ReadOnlyFileSystem,
+        39 => error.DirNotEmpty,
+        91 => error.NameTooLong,
+        92 => error.SymLinkLoop,
+        else => error.Unexpected,
+    };
+}
+
+fn readError() File.ReadPositionalError {
+    return switch (errno()) {
+        5 => error.InputOutput,
+        11 => error.WouldBlock,
+        12 => error.SystemResources,
+        13 => error.AccessDenied,
+        21 => error.IsDir,
+        29 => error.Unseekable,
+        else => error.Unexpected,
+    };
+}
+
+fn readStreamingError() Io.Operation.FileReadStreaming.Error {
+    return switch (errno()) {
+        5 => error.InputOutput,
+        11 => error.WouldBlock,
+        12 => error.SystemResources,
+        13 => error.AccessDenied,
+        21 => error.IsDir,
+        else => error.Unexpected,
+    };
+}
+
+fn dirReadError(code: c_int) Dir.Reader.Error {
+    return switch (code) {
+        1 => error.PermissionDenied,
+        12 => error.SystemResources,
+        13 => error.AccessDenied,
+        else => error.Unexpected,
+    };
+}
+
+fn writeError() File.WritePositionalError {
+    return switch (errno()) {
+        5 => error.InputOutput,
+        6 => error.NoDevice,
+        11 => error.WouldBlock,
+        12 => error.SystemResources,
+        13 => error.AccessDenied,
+        27 => error.FileTooBig,
+        28 => error.NoSpaceLeft,
+        29 => error.Unseekable,
+        32 => error.BrokenPipe,
+        else => error.Unexpected,
+    };
+}
+
+fn seekError() File.SeekError {
+    return switch (errno()) {
+        13 => error.AccessDenied,
+        29 => error.Unseekable,
+        else => error.Unexpected,
+    };
+}
+
+fn seekToLengthError() File.LengthError {
+    return switch (errno()) {
+        5 => error.Unexpected,
+        13 => error.AccessDenied,
+        29 => error.Streaming,
+        else => error.Unexpected,
+    };
+}
+
+fn syncError() File.SyncError {
+    return switch (errno()) {
+        5 => error.InputOutput,
+        12 => error.Unexpected,
+        13 => error.AccessDenied,
+        28 => error.NoSpaceLeft,
+        132 => error.DiskQuota,
+        else => error.Unexpected,
+    };
+}
+
+fn setLengthError() File.SetLengthError {
+    return switch (errno()) {
+        5 => error.InputOutput,
+        13 => error.AccessDenied,
+        16 => error.FileBusy,
+        27 => error.FileTooBig,
+        29 => error.NonResizable,
+        else => error.Unexpected,
+    };
+}
+
+fn currentPathError() std.process.CurrentPathError {
+    return switch (errno()) {
+        12 => error.Unexpected,
+        91 => error.NameTooLong,
+        else => error.CurrentDirUnlinked,
+    };
+}
+
+fn setCurrentPathError() std.process.SetCurrentPathError {
+    return switch (errno()) {
+        2 => error.FileNotFound,
+        13 => error.AccessDenied,
+        20 => error.NotDir,
+        91 => error.NameTooLong,
+        else => error.Unexpected,
+    };
+}
+
+fn zero(comptime T: type) T {
+    return switch (@typeInfo(T)) {
+        .void => {},
+        .int, .comptime_int => 0,
+        else => @as(T, @intCast(0)),
+    };
+}
+
+fn unsupported(comptime name: []const u8) noreturn {
+    std.debug.panic("c std.Io baseline does not implement {s}", .{name});
+}

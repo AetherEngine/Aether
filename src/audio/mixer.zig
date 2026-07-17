@@ -1,9 +1,16 @@
 const std = @import("std");
 const Vec3 = @import("../math/math.zig").Vec3;
+const Util = @import("../util/util.zig");
 const stream_mod = @import("stream.zig");
-const Stream = stream_mod.Stream;
 
-pub const SoundHandle = u32;
+pub const SoundHandleTag = enum {};
+pub const SoundHandle = Util.Handle(SoundHandleTag);
+
+pub const SoundBufferHandle = stream_mod.SoundBufferHandle;
+pub const StreamingSoundHandle = stream_mod.StreamingSoundHandle;
+pub const SoundBufferDesc = stream_mod.SoundBufferDesc;
+pub const StreamingSoundDesc = stream_mod.StreamingSoundDesc;
+pub const SlotSource = stream_mod.SlotSource;
 
 pub const Priority = enum(u8) {
     low,
@@ -22,6 +29,45 @@ pub const PlayOptions = struct {
     max_distance: f32 = 100.0,
 };
 
+pub const CreateBufferError = error{
+    InvalidSoundData,
+    TooManySoundBuffers,
+};
+
+pub const CreateStreamError = error{
+    TooManyStreamingSounds,
+};
+
+pub const PlayError = error{
+    TooManyVoices,
+    InvalidSoundBuffer,
+    InvalidStreamingSound,
+    StreamAlreadyPlaying,
+};
+
+const OwnedBuffer = struct {
+    allocator: std.mem.Allocator,
+    bytes: []u8,
+};
+
+const SoundBufferResource = struct {
+    format: stream_mod.PcmFormat,
+    pcm: []const u8,
+    owned: ?OwnedBuffer = null,
+};
+
+const StreamingSoundResource = struct {
+    reader: *std.Io.Reader,
+    format: stream_mod.PcmFormat,
+    byte_length: ?u64,
+    active_voice: ?SoundHandle = null,
+};
+
+const VoiceSource = union(enum) {
+    buffer: SoundBufferHandle,
+    stream: StreamingSoundHandle,
+};
+
 /// Platform-independent voice scheduler. Manages a pool of virtual voices
 /// and assigns the highest-priority ones to real backend slots each tick.
 ///
@@ -29,10 +75,16 @@ pub const PlayOptions = struct {
 pub fn Mixer(comptime Backend: type) type {
     return struct {
         pub const MAX_VOICES: usize = 64;
+        pub const MAX_BUFFERS: usize = 256;
+        pub const MAX_STREAMS: usize = 64;
         const MAX_SLOTS: usize = 32;
 
+        const BufferTable = Util.ResourceTable(SoundBufferResource, MAX_BUFFERS + 1, SoundBufferHandle);
+        const StreamTable = Util.ResourceTable(StreamingSoundResource, MAX_STREAMS + 1, StreamingSoundHandle);
+
         const VirtualVoice = struct {
-            stream: Stream,
+            source: VoiceSource,
+            cursor: std.atomic.Value(usize),
             position: ?Vec3,
             volume: f32,
             priority: Priority,
@@ -42,15 +94,17 @@ pub fn Mixer(comptime Backend: type) type {
             handle: SoundHandle,
         };
 
+        var buffers = BufferTable.init();
+        var streams = StreamTable.init();
         var voices: [MAX_VOICES]?VirtualVoice = @splat(null);
-        var next_handle: SoundHandle = 1;
+        var voice_generations: [MAX_VOICES]u8 = @splat(1);
         var listener_pos: Vec3 = Vec3.zero();
         var listener_fwd: Vec3 = Vec3.new(0, 0, -1);
         var listener_up: Vec3 = Vec3.new(0, 1, 0);
 
         // -- lifecycle -------------------------------------------------------
 
-        pub fn init() !void {
+        pub fn init() @import("../platform/audio_api.zig").InitError!void {
             try Backend.init();
         }
 
@@ -58,10 +112,67 @@ pub fn Mixer(comptime Backend: type) type {
             for (0..MAX_VOICES) |i| {
                 if (voices[i] != null) {
                     if (voices[i].?.slot) |s| Backend.stop_slot(s);
-                    voices[i] = null;
+                    release_voice(i);
                 }
             }
+            for (1..MAX_BUFFERS + 1) |i| {
+                if (buffers.slots[i]) |resource| {
+                    if (resource.owned) |owned| owned.allocator.free(owned.bytes);
+                }
+            }
+            buffers.clear();
+            streams.clear();
             Backend.deinit();
+        }
+
+        // -- resources -------------------------------------------------------
+
+        pub fn create_buffer(desc: *const SoundBufferDesc) CreateBufferError!SoundBufferHandle {
+            try validate_buffer(desc.format, desc.pcm);
+            return buffers.add(.{
+                .format = desc.format,
+                .pcm = desc.pcm,
+            }) orelse error.TooManySoundBuffers;
+        }
+
+        pub fn adopt_buffer(allocator: std.mem.Allocator, bytes: []u8, format: stream_mod.PcmFormat) CreateBufferError!SoundBufferHandle {
+            try validate_buffer(format, bytes);
+            return buffers.add(.{
+                .format = format,
+                .pcm = bytes,
+                .owned = .{ .allocator = allocator, .bytes = bytes },
+            }) orelse error.TooManySoundBuffers;
+        }
+
+        pub fn adopt_parsed_wav(allocator: std.mem.Allocator, bytes: []u8, desc: *const SoundBufferDesc) CreateBufferError!SoundBufferHandle {
+            try validate_buffer(desc.format, desc.pcm);
+            return buffers.add(.{
+                .format = desc.format,
+                .pcm = desc.pcm,
+                .owned = .{ .allocator = allocator, .bytes = bytes },
+            }) orelse error.TooManySoundBuffers;
+        }
+
+        pub fn destroy_buffer(handle: SoundBufferHandle) void {
+            stop_voices_for_buffer(handle);
+            const resource = buffers.get(handle) orelse return;
+            _ = buffers.remove(handle);
+            if (resource.owned) |owned| owned.allocator.free(owned.bytes);
+        }
+
+        pub fn create_stream(desc: *const StreamingSoundDesc) CreateStreamError!StreamingSoundHandle {
+            return streams.add(.{
+                .reader = desc.reader,
+                .format = desc.format,
+                .byte_length = desc.byte_length,
+            }) orelse error.TooManyStreamingSounds;
+        }
+
+        pub fn destroy_stream(handle: StreamingSoundHandle) void {
+            if (streams.get(handle)) |resource| {
+                if (resource.active_voice) |voice| stop(voice);
+            }
+            _ = streams.remove(handle);
         }
 
         // -- listener --------------------------------------------------------
@@ -75,19 +186,23 @@ pub fn Mixer(comptime Backend: type) type {
         // -- voice control ---------------------------------------------------
 
         /// Play a non-positional sound (music, UI). Never distance-culled.
-        pub fn play(stream: Stream, opts: PlayOptions) !SoundHandle {
-            return play_internal(stream, null, opts);
+        pub fn play_buffer(buffer: SoundBufferHandle, opts: *const PlayOptions) PlayError!SoundHandle {
+            return play_internal(.{ .buffer = buffer }, null, opts);
         }
 
         /// Play a positional sound. Subject to attenuation and slot priority.
-        pub fn play_at(stream: Stream, pos: Vec3, opts: PlayOptions) !SoundHandle {
-            return play_internal(stream, pos, opts);
+        pub fn play_buffer_at(buffer: SoundBufferHandle, pos: Vec3, opts: *const PlayOptions) PlayError!SoundHandle {
+            return play_internal(.{ .buffer = buffer }, pos, opts);
+        }
+
+        pub fn play_stream(stream: StreamingSoundHandle, opts: *const PlayOptions) PlayError!SoundHandle {
+            return play_internal(.{ .stream = stream }, null, opts);
         }
 
         pub fn stop(handle: SoundHandle) void {
             if (find_index(handle)) |i| {
                 if (voices[i].?.slot) |s| Backend.stop_slot(s);
-                voices[i] = null;
+                release_voice(i);
             }
         }
 
@@ -119,7 +234,7 @@ pub fn Mixer(comptime Backend: type) type {
                 if (voices[i] != null) {
                     if (voices[i].?.slot) |s| {
                         if (!Backend.is_slot_active(s)) {
-                            voices[i] = null;
+                            release_voice(i);
                         }
                     }
                 }
@@ -175,8 +290,12 @@ pub fn Mixer(comptime Backend: type) type {
                 const vi = order[rank];
                 if (voices[vi].?.slot == null) {
                     if (scores[vi] <= 0) continue; // beyond max_distance
+                    const source = slot_source(vi) orelse {
+                        release_voice(vi);
+                        continue;
+                    };
                     if (find_free_slot(&used, max_slots)) |s| {
-                        Backend.play_slot(s, voices[vi].?.stream) catch continue;
+                        Backend.play_slot(s, source) catch continue;
                         voices[vi].?.slot = s;
                         used[s] = true;
                     }
@@ -196,17 +315,31 @@ pub fn Mixer(comptime Backend: type) type {
 
         // -- internals -------------------------------------------------------
 
-        fn play_internal(stream: Stream, pos: ?Vec3, opts: PlayOptions) !SoundHandle {
+        fn validate_buffer(format: stream_mod.PcmFormat, pcm: []const u8) CreateBufferError!void {
+            const frame_size = format.frame_size();
+            if (frame_size == 0 or pcm.len == 0 or pcm.len % frame_size != 0) return error.InvalidSoundData;
+        }
+
+        fn play_internal(source: VoiceSource, pos: ?Vec3, opts: *const PlayOptions) PlayError!SoundHandle {
+            switch (source) {
+                .buffer => |buffer| {
+                    if (buffers.get(buffer) == null) return error.InvalidSoundBuffer;
+                },
+                .stream => |stream| {
+                    const resource = streams.get_ptr(stream) orelse return error.InvalidStreamingSound;
+                    if (resource.active_voice != null) return error.StreamAlreadyPlaying;
+                },
+            }
+
             const vi = for (0..MAX_VOICES) |i| {
                 if (voices[i] == null) break i;
             } else return error.TooManyVoices;
 
-            const handle = next_handle;
-            next_handle +%= 1;
-            if (next_handle == 0) next_handle = 1;
+            const handle = make_handle(vi);
 
             voices[vi] = .{
-                .stream = stream,
+                .source = source,
+                .cursor = std.atomic.Value(usize).init(0),
                 .position = pos,
                 .volume = opts.volume,
                 .priority = opts.priority,
@@ -216,14 +349,70 @@ pub fn Mixer(comptime Backend: type) type {
                 .handle = handle,
             };
 
+            if (source == .stream) {
+                streams.get_ptr(source.stream).?.active_voice = handle;
+            }
+
             return handle;
         }
 
-        fn find_index(handle: SoundHandle) ?usize {
+        fn slot_source(index: usize) ?SlotSource {
+            const voice = &(voices[index] orelse return null);
+            return switch (voice.source) {
+                .buffer => |handle| blk: {
+                    const buffer = buffers.get(handle) orelse return null;
+                    break :blk .{ .buffer = .{
+                        .format = buffer.format,
+                        .pcm = buffer.pcm,
+                        .cursor = &voice.cursor,
+                    } };
+                },
+                .stream => |handle| blk: {
+                    const stream = streams.get(handle) orelse return null;
+                    break :blk .{ .stream = .{
+                        .reader = stream.reader,
+                        .format = stream.format,
+                        .byte_length = stream.byte_length,
+                    } };
+                },
+            };
+        }
+
+        fn stop_voices_for_buffer(handle: SoundBufferHandle) void {
             for (0..MAX_VOICES) |i| {
-                if (voices[i] != null and voices[i].?.handle == handle) return i;
+                if (voices[i]) |voice| {
+                    if (voice.source == .buffer and voice.source.buffer == handle) {
+                        if (voice.slot) |s| Backend.stop_slot(s);
+                        release_voice(i);
+                    }
+                }
             }
+        }
+
+        fn find_index(handle: SoundHandle) ?usize {
+            const raw = handle.raw_index();
+            if (raw == 0 or raw > MAX_VOICES) return null;
+            const i = raw - 1;
+            if (voice_generations[i] != handle.generation) return null;
+            if (voices[i] != null and voices[i].?.handle == handle) return i;
             return null;
+        }
+
+        fn make_handle(index: usize) SoundHandle {
+            return SoundHandle.from_index(index + 1, voice_generations[index]);
+        }
+
+        fn release_voice(index: usize) void {
+            if (voices[index]) |voice| {
+                if (voice.source == .stream) {
+                    if (streams.get_ptr(voice.source.stream)) |stream| {
+                        if (stream.active_voice == voice.handle) stream.active_voice = null;
+                    }
+                }
+            }
+            voices[index] = null;
+            voice_generations[index] +%= 1;
+            if (voice_generations[index] == 0) voice_generations[index] = 1;
         }
 
         fn find_free_slot(used: *const [MAX_SLOTS]bool, limit: usize) ?u8 {
@@ -282,4 +471,92 @@ pub fn Mixer(comptime Backend: type) type {
             return .{ .gain = gain, .pan = pan };
         }
     };
+}
+
+test "mixer buffer playback and destroy stop voices" {
+    const Backend = struct {
+        var active: [2]bool = @splat(false);
+        var last_source: ?SlotSource = null;
+
+        pub fn setup(_: std.mem.Allocator, _: std.Io) void {}
+        pub fn init() @import("../platform/audio_api.zig").InitError!void {
+            active = @splat(false);
+            last_source = null;
+        }
+        pub fn deinit() void {}
+        pub fn update() void {}
+        pub fn max_voices() u32 {
+            return active.len;
+        }
+        pub fn play_slot(slot: u8, source: SlotSource) @import("../platform/audio_api.zig").PlaySlotError!void {
+            active[slot] = true;
+            last_source = source;
+        }
+        pub fn stop_slot(slot: u8) void {
+            active[slot] = false;
+        }
+        pub fn set_slot_gain_pan(_: u8, _: f32, _: f32) void {}
+        pub fn is_slot_active(slot: u8) bool {
+            return active[slot];
+        }
+    };
+
+    const Mix = Mixer(Backend);
+    try Mix.init();
+    defer Mix.deinit();
+
+    const pcm = [_]u8{ 0, 0, 1, 0 };
+    const buffer = try Mix.create_buffer(&.{
+        .format = .{ .sample_rate = 44_100, .channels = 1, .bit_depth = 16 },
+        .pcm = &pcm,
+    });
+
+    const voice = try Mix.play_buffer(buffer, &.{});
+    Mix.update();
+    try std.testing.expect(Mix.is_playing(voice));
+    try std.testing.expect(Backend.last_source != null);
+    try std.testing.expectEqual(@as(usize, 0), Backend.last_source.?.buffer.cursor.load(.acquire));
+
+    Mix.destroy_buffer(buffer);
+    try std.testing.expect(!Mix.is_playing(voice));
+    try std.testing.expect(!Backend.active[0]);
+}
+
+test "mixer rejects stale buffers and active stream replay" {
+    const Backend = struct {
+        pub fn setup(_: std.mem.Allocator, _: std.Io) void {}
+        pub fn init() @import("../platform/audio_api.zig").InitError!void {}
+        pub fn deinit() void {}
+        pub fn update() void {}
+        pub fn max_voices() u32 {
+            return 1;
+        }
+        pub fn play_slot(_: u8, _: SlotSource) @import("../platform/audio_api.zig").PlaySlotError!void {}
+        pub fn stop_slot(_: u8) void {}
+        pub fn set_slot_gain_pan(_: u8, _: f32, _: f32) void {}
+        pub fn is_slot_active(_: u8) bool {
+            return true;
+        }
+    };
+
+    const Mix = Mixer(Backend);
+    try Mix.init();
+    defer Mix.deinit();
+
+    const pcm = [_]u8{ 0, 0 };
+    const buffer = try Mix.create_buffer(&.{
+        .format = .{ .sample_rate = 44_100, .channels = 1, .bit_depth = 16 },
+        .pcm = &pcm,
+    });
+    Mix.destroy_buffer(buffer);
+    try std.testing.expectError(error.InvalidSoundBuffer, Mix.play_buffer(buffer, &.{}));
+
+    var reader = std.Io.Reader.fixed(&pcm);
+    const stream = try Mix.create_stream(&.{
+        .reader = &reader,
+        .format = .{ .sample_rate = 44_100, .channels = 1, .bit_depth = 16 },
+        .byte_length = pcm.len,
+    });
+    _ = try Mix.play_stream(stream, &.{});
+    try std.testing.expectError(error.StreamAlreadyPlaying, Mix.play_stream(stream, &.{}));
 }

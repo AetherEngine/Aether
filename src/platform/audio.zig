@@ -6,12 +6,18 @@ const audio_api = @import("audio_api.zig");
 const mixer_mod = @import("../audio/mixer.zig");
 
 /// Comptime-selected audio backend module (slot-based PCM output).
-/// `.none` routes to the silent backend -- used by headless builds and by
-/// the macOS default while miniaudio is bugged there.
+/// `.none` routes to the silent backend -- used by headless builds and
+/// explicit `-Daudio=none` builds.
 pub const Api = if (options.config.audio == .none)
     @import("headless/headless_audio.zig")
 else if (builtin.os.tag == .psp)
     @import("psp/psp_audio.zig")
+else if (options.config.platform == .nintendo_3ds)
+    @import("3ds/audio.zig")
+else if (options.config.platform == .nintendo_switch)
+    @import("switch/switch_audio.zig")
+else if (options.config.platform == .wasm)
+    @import("wasm/browser_audio.zig")
 else
     @import("glfw/audio.zig");
 
@@ -22,7 +28,7 @@ comptime {
 /// Platform-independent voice scheduler, wired to the selected backend.
 pub const mix = mixer_mod.Mixer(Api);
 
-pub fn init(alloc: std.mem.Allocator, io: std.Io) !void {
+pub fn init(alloc: std.mem.Allocator, io: std.Io) audio_api.InitError!void {
     Api.setup(alloc, io);
     try mix.init();
 }
