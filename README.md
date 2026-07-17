@@ -122,6 +122,7 @@ pub fn main(init: std.process.Init) !void {
             .render = 8 * 1024 * 1024,
             .audio = 2 * 1024 * 1024,
             .game = 2 * 1024 * 1024,
+            .frame = 4 * 1024 * 1024,
             .user = 16 * 1024 * 1024,
         },
         .title = "My Game",
@@ -135,10 +136,12 @@ Platform and graphics backend are available as comptime constants for per-platfo
 
 ```zig
 const memory_config: ae.Util.MemoryConfig = switch (ae.platform) {
-    .psp => .{ .render = 512 * 1024, .audio = 256 * 1024, ... },
-    else => .{ .render = 8 * 1024 * 1024, .audio = 2 * 1024 * 1024, ... },
+    .psp => .{ .render = 512 * 1024, .audio = 256 * 1024, .frame = 128 * 1024, ... },
+    else => .{ .render = 8 * 1024 * 1024, .audio = 2 * 1024 * 1024, .frame = 4 * 1024 * 1024, ... },
 };
 ```
+
+Set `.frame = 0` if you want to disable the per-frame scratch allocator.
 
 ## Building
 
