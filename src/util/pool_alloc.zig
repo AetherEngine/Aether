@@ -64,6 +64,7 @@ pub const PoolAlloc = struct {
     hint: u32,
     used: usize,
     budget: usize,
+    last_failed_request: ?usize,
     name: []const u8,
 
     const vtable = std.mem.Allocator.VTable{
@@ -114,6 +115,7 @@ pub const PoolAlloc = struct {
             .hint = 0,
             .used = 0,
             .budget = buf.len,
+            .last_failed_request = null,
             .name = name,
         };
 
@@ -164,7 +166,29 @@ pub const PoolAlloc = struct {
     pub fn reset(self: *PoolAlloc) void {
         self.used = 0;
         self.hint = 0;
+        self.last_failed_request = null;
         self.reset_bitmaps();
+    }
+
+    pub fn capacity(self: *const PoolAlloc) usize {
+        return @as(usize, self.total_blocks) * BLOCK_SIZE;
+    }
+
+    pub fn largest_free_run(self: *const PoolAlloc) usize {
+        var largest: u32 = 0;
+        var current: u32 = 0;
+        var block: u32 = 0;
+        while (block < self.total_blocks) : (block += 1) {
+            const word = block / WORD_BITS;
+            const bit: u5 = @intCast(block & WORD_MASK);
+            if (self.l0[word] & (@as(u32, 1) << bit) != 0) {
+                current += 1;
+                largest = @max(largest, current);
+            } else {
+                current = 0;
+            }
+        }
+        return @as(usize, largest) * BLOCK_SIZE;
     }
 
     // -- internal: bit manipulation -------------------------------------------
@@ -439,10 +463,14 @@ pub const PoolAlloc = struct {
         const blocks_needed: u32 = @intCast(div_ceil(n, BLOCK_SIZE));
         const align_bytes = alignment.toByteUnits();
 
-        const block_idx = self.find_run(blocks_needed, align_bytes) orelse return null;
+        const block_idx = self.find_run(blocks_needed, align_bytes) orelse {
+            self.last_failed_request = n;
+            return null;
+        };
 
         self.clear_range(block_idx, blocks_needed);
         self.used += @as(usize, blocks_needed) * BLOCK_SIZE;
+        self.last_failed_request = null;
 
         return self.data + @as(usize, block_idx) * BLOCK_SIZE;
     }
@@ -483,11 +511,18 @@ pub const PoolAlloc = struct {
         // Grow: check if blocks immediately after are free.
         const grow = new_blocks - cur_blocks;
         const grow_start = block_idx + cur_blocks;
-        if (grow_start + grow > self.total_blocks) return false;
-        if (!self.test_range_free(grow_start, grow)) return false;
+        if (grow_start + grow > self.total_blocks) {
+            self.last_failed_request = new_len;
+            return false;
+        }
+        if (!self.test_range_free(grow_start, grow)) {
+            self.last_failed_request = new_len;
+            return false;
+        }
 
         self.clear_range(grow_start, grow);
         self.used += @as(usize, grow) * BLOCK_SIZE;
+        self.last_failed_request = null;
         return true;
     }
 
@@ -716,6 +751,27 @@ test "pool_alloc: OOM returns error" {
     const ally = pa.allocator();
 
     try testing.expectError(error.OutOfMemory, ally.alloc(u8, 4096));
+    try testing.expectEqual(@as(?usize, 4096), pa.last_failed_request);
+}
+
+test "pool_alloc: diagnostics report capacity and largest free run" {
+    var buf: [4096]u8 align(BLOCK_SIZE) = undefined;
+    var pa = PoolAlloc.init(buf[0..], "test");
+    const ally = pa.allocator();
+
+    try testing.expect(pa.capacity() <= buf.len);
+    try testing.expectEqual(pa.capacity(), pa.largest_free_run());
+
+    const a = try ally.alloc(u8, BLOCK_SIZE);
+    const b = try ally.alloc(u8, BLOCK_SIZE);
+    const c = try ally.alloc(u8, BLOCK_SIZE);
+    ally.free(b);
+
+    try testing.expect(pa.largest_free_run() < pa.capacity());
+
+    ally.free(a);
+    ally.free(c);
+    try testing.expectEqual(pa.capacity(), pa.largest_free_run());
 }
 
 test "pool_alloc: multi-block contiguous allocation" {
