@@ -6,7 +6,7 @@
 
 const std = @import("std");
 const audio_api = @import("../audio_api.zig");
-const Stream = @import("../../audio/stream.zig").Stream;
+const SlotSource = @import("../../audio/stream.zig").SlotSource;
 const PcmFormat = @import("../../audio/stream.zig").PcmFormat;
 const c = @import("../nintendo_c.zig").switch_c;
 
@@ -31,7 +31,7 @@ const Slot = struct {
     state: SlotState = .inactive,
     gain: f32 = 0,
     pan: f32 = 0,
-    stream: Stream = undefined,
+    source: SlotSource = undefined,
     format: PcmFormat = .{ .sample_rate = 44_100, .channels = 1, .bit_depth = 16 },
     step_fp: u64 = FP_ONE,
     phase_fp: u64 = 0,
@@ -130,14 +130,15 @@ pub fn max_voices() u32 {
     return NUM_SLOTS;
 }
 
-pub fn play_slot(slot: u8, stream: Stream) audio_api.PlaySlotError!void {
+pub fn play_slot(slot: u8, source: SlotSource) audio_api.PlaySlotError!void {
     if (slot >= NUM_SLOTS) return error.InvalidArgs;
-    if (!format_supported(stream.format)) return error.UnsupportedFormat;
+    const format = source_format(source);
+    if (!format_supported(format)) return error.UnsupportedFormat;
 
     const i: usize = slot;
-    slots[i].stream = stream;
-    slots[i].format = stream.format;
-    slots[i].step_fp = (@as(u64, stream.format.sample_rate) << 32) / DEVICE_SAMPLE_RATE;
+    slots[i].source = source;
+    slots[i].format = format;
+    slots[i].step_fp = (@as(u64, format.sample_rate) << 32) / DEVICE_SAMPLE_RATE;
     slots[i].phase_fp = 0;
     slots[i].current_left = 0;
     slots[i].current_right = 0;
@@ -213,7 +214,7 @@ fn read_next_sample(slot: *Slot) bool {
     const frame_size = slot.format.frame_size();
     if (frame_size > tmp.len) return false;
 
-    slot.stream.reader.readSliceAll(tmp[0..frame_size]) catch return false;
+    read_source_exact(&slot.source, tmp[0..frame_size]) catch return false;
 
     if (slot.format.channels == 1) {
         const s = std.mem.readInt(i16, tmp[0..2], .little);
@@ -229,6 +230,25 @@ fn read_next_sample(slot: *Slot) bool {
 
 fn clamp_i16(v: i32) i16 {
     return @intCast(std.math.clamp(v, std.math.minInt(i16), std.math.maxInt(i16)));
+}
+
+fn source_format(source: SlotSource) PcmFormat {
+    return switch (source) {
+        .buffer => |buffer| buffer.format,
+        .stream => |stream| stream.format,
+    };
+}
+
+fn read_source_exact(source: *SlotSource, dst: []u8) std.Io.Reader.Error!void {
+    switch (source.*) {
+        .buffer => |buffer| {
+            const cursor = buffer.cursor.load(.acquire);
+            if (dst.len > buffer.pcm.len -| cursor) return error.EndOfStream;
+            @memcpy(dst, buffer.pcm[cursor..][0..dst.len]);
+            buffer.cursor.store(cursor + dst.len, .release);
+        },
+        .stream => |stream| try stream.reader.readSliceAll(dst),
+    }
 }
 
 fn free_output() void {

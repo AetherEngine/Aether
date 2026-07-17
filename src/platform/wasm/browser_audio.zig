@@ -1,6 +1,6 @@
 const std = @import("std");
 const audio_api = @import("../audio_api.zig");
-const Stream = @import("../../audio/stream.zig").Stream;
+const SlotSource = @import("../../audio/stream.zig").SlotSource;
 
 const MAX_SLOTS = 32;
 
@@ -37,16 +37,26 @@ pub fn max_voices() u32 {
     return MAX_SLOTS;
 }
 
-pub fn play_slot(slot: u8, stream: Stream) audio_api.PlaySlotError!void {
+pub fn play_slot(slot: u8, source: SlotSource) audio_api.PlaySlotError!void {
     if (slot >= MAX_SLOTS) return;
 
-    const len = stream.byte_length orelse return error.UnknownStreamLength;
-    const data = std.heap.wasm_allocator.alloc(u8, @intCast(len)) catch return error.OutOfMemory;
-    defer std.heap.wasm_allocator.free(data);
-    stream.reader.readSliceAll(data) catch return error.AudioHostRejectedStream;
+    switch (source) {
+        .buffer => |buffer| {
+            if (!aether_audio_play_slot(slot, buffer.pcm.ptr, buffer.pcm.len, buffer.format.sample_rate, buffer.format.channels, buffer.format.bit_depth)) {
+                return error.AudioHostRejectedStream;
+            }
+            buffer.cursor.store(buffer.pcm.len, .release);
+        },
+        .stream => |stream| {
+            const len = stream.byte_length orelse return error.AudioHostRejectedStream;
+            const data = std.heap.wasm_allocator.alloc(u8, @intCast(len)) catch return error.OutOfMemory;
+            defer std.heap.wasm_allocator.free(data);
+            stream.reader.readSliceAll(data) catch return error.AudioHostRejectedStream;
 
-    if (!aether_audio_play_slot(slot, data.ptr, data.len, stream.format.sample_rate, stream.format.channels, stream.format.bit_depth)) {
-        return error.AudioHostRejectedStream;
+            if (!aether_audio_play_slot(slot, data.ptr, data.len, stream.format.sample_rate, stream.format.channels, stream.format.bit_depth)) {
+                return error.AudioHostRejectedStream;
+            }
+        },
     }
 }
 
