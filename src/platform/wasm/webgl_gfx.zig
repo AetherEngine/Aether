@@ -9,6 +9,7 @@ const basic_vert align(@alignOf(u32)) = @embedFile("aether_basic_vert").*;
 const basic_frag align(@alignOf(u32)) = @embedFile("aether_basic_frag").*;
 
 const MAX_MESHES = 8192;
+pub const mesh_source_mode = Mesh.SourceMode.uploaded_copy;
 
 extern "aether_host" fn aether_webgl_init(vert_ptr: [*]const u8, vert_len: usize, frag_ptr: [*]const u8, frag_len: usize) bool;
 extern "aether_host" fn aether_webgl_deinit() void;
@@ -90,6 +91,18 @@ pub fn set_view_matrix(mat: *const Mat4) void {
     aether_webgl_set_view_matrix(mat.ptr());
 }
 
+pub fn set_render_state(state: *const Rendering.RenderState) void {
+    set_alpha_blend(state.blend == .alpha);
+    set_depth_write(state.depth_write);
+    set_culling(state.cull);
+    set_clip_planes(state.clip_planes);
+    set_uv_offset(state.uv_offset[0], state.uv_offset[1]);
+    set_fog(state.fog.enabled, state.fog.start, state.fog.end, state.fog.color[0], state.fog.color[1], state.fog.color[2]);
+    set_proj_matrix(&state.proj);
+    set_view_matrix(&state.view);
+    bind_texture(if (state.texture.is_null()) Texture.Default.handle else state.texture);
+}
+
 pub fn start_frame() bool {
     const width = aether_canvas_width();
     const height = aether_canvas_height();
@@ -115,7 +128,7 @@ pub fn switch_second_screen() void {
 
 pub fn set_vsync(_: bool) void {}
 
-pub fn create_mesh() anyerror!Mesh.Handle {
+pub fn create_mesh(_: *const Mesh.Desc) anyerror!Mesh.Handle {
     const host_handle = aether_webgl_create_mesh();
     if (host_handle == 0) return error.OutOfMeshes;
     return meshes.add(host_handle) orelse return error.OutOfMeshes;
@@ -127,8 +140,10 @@ pub fn destroy_mesh(handle: Mesh.Handle) void {
     _ = meshes.remove(handle);
 }
 
-pub fn update_mesh(handle: Mesh.Handle, data: []const u8, indices: []const Mesh.Index) void {
+pub fn update_mesh(handle: Mesh.Handle, desc: *const Mesh.UpdateDesc) void {
     const host_handle = meshes.get(handle) orelse return;
+    const data = desc.vertices;
+    const indices = desc.indices;
     const index_bytes = std.mem.sliceAsBytes(indices);
     aether_webgl_update_mesh(host_handle, data.ptr, data.len, index_bytes.ptr, index_bytes.len);
 }
@@ -138,7 +153,10 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
     aether_webgl_draw_mesh(host_handle, model.ptr());
 }
 
-pub fn create_texture(width: u32, height: u32, data: []align(16) u8) anyerror!Texture.Handle {
+pub fn create_texture(desc: *const Texture.UploadDesc) anyerror!Texture.Handle {
+    const width = desc.width;
+    const height = desc.height;
+    const data = desc.pixels;
     const handle = aether_webgl_create_texture(width, height, data.ptr, data.len);
     if (handle == 0) return error.TextureCreateFailed;
     return textures.add(handle) orelse {

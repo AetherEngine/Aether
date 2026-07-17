@@ -173,22 +173,36 @@ Supported sources: keyboard keys, mouse buttons, mouse scroll, mouse relative mo
 
 ## Rendering
 
-Define a vertex type, create a pipeline, and draw meshes:
+Build editable CPU geometry in `MeshData`, upload or bind it through `Mesh`,
+and draw with an explicit render state:
 
 ```zig
-const Vertex = struct {
-    pos: [3]f32,
-    color: [4]u8,
+const Vertex = ae.Rendering.Vertex;
+const MeshData = ae.Rendering.MeshData(Vertex);
+const Mesh = ae.Rendering.Mesh(Vertex);
 
-    pub const Attributes = Rendering.Pipeline.attributes_from_struct(@This(), &.{
-        .{ .field = "pos", .location = 0 },
-        .{ .field = "color", .location = 1 },
-    });
-    pub const Layout = Rendering.Pipeline.layout_from_struct(@This(), &Attributes);
-};
+var data = try MeshData.init(render_alloc);
+defer data.deinit(render_alloc);
+
+var mesh = try Mesh.init(&.{});
+defer mesh.deinit();
+
+try data.add_tri(render_alloc, a, b, c);
+mesh.update(&data);
+
+ae.Rendering.set_state(&.{
+    .texture = texture.handle,
+    .proj = projection,
+    .view = view,
+    .depth_write = false,
+});
+mesh.draw(&model);
 ```
 
-Aether owns its built-in pipeline shaders as backend internals. Downstream games create pipelines from vertex layouts; the selected backend compiles and embeds the shader code it needs.
+On PSP and 3DS, mesh data is borrowed directly by the backend, so keep the
+`MeshData` alive and call `mesh.update(&data)` after edits that may reallocate.
+Static textures can use the default `.cpu_access = .none`; request
+`.read_write` when you need `set_pixel` or direct CPU buffer access.
 
 ## Build API Reference
 
