@@ -165,9 +165,13 @@ Actions are registered by name and bound to one or more input sources:
 
 ```zig
 const actions = try ae.Core.input.register_action_set("gameplay");
-try ae.Core.input.add_action(actions, "jump", .button);
-try ae.Core.input.bind_action(actions, "jump", &.{ .source = .{ .key = .Space } });
+const jump = try ae.Core.input.add_action(actions, "jump", .button);
+try ae.Core.input.bind_action(jump, &.{ .source = .{ .key = .Space } });
 try ae.Core.input.install_action_set(actions);
+
+if (ae.Core.input.button(jump).pressed()) {
+    // jump this frame
+}
 ```
 
 Supported sources: keyboard keys, mouse buttons, mouse scroll, mouse relative movement, and gamepad buttons/axes.
