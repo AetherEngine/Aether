@@ -11,6 +11,8 @@ const options = @import("options");
 
 pub const Pool = memory.Pool;
 pub const MemoryConfig = memory.MemoryConfig;
+pub const MemoryProfile = memory.MemoryProfile;
+pub const MemoryDiagnostics = memory.MemoryDiagnostics;
 
 // -- category tracker (wrapper allocator with per-category accounting) --------
 
@@ -18,6 +20,9 @@ pub const CategoryTracker = struct {
     inner: std.mem.Allocator,
     used: usize,
     budget: usize,
+    high_water: usize,
+    allocation_count: usize,
+    last_failed_request: ?usize,
     name: []const u8,
 
     const vtab = std.mem.Allocator.VTable{
@@ -29,9 +34,18 @@ pub const CategoryTracker = struct {
 
     fn tracked_alloc(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
         const self: *CategoryTracker = @ptrCast(@alignCast(ctx));
-        if (len > self.budget -| self.used) return null;
-        const result = self.inner.vtable.alloc(self.inner.ptr, len, alignment, ret_addr) orelse return null;
+        if (len > self.budget -| self.used) {
+            self.last_failed_request = len;
+            return null;
+        }
+        const result = self.inner.vtable.alloc(self.inner.ptr, len, alignment, ret_addr) orelse {
+            self.last_failed_request = len;
+            return null;
+        };
         self.used += len;
+        self.high_water = @max(self.high_water, self.used);
+        self.allocation_count += 1;
+        self.last_failed_request = null;
         return result;
     }
 
@@ -51,21 +65,38 @@ pub const CategoryTracker = struct {
             return;
         }
         self.used -= buf.len;
+        if (self.allocation_count > 0) {
+            self.allocation_count -= 1;
+        } else {
+            Util.engine_logger.err("memory tracker allocation count underflow in {s}: ptr=0x{x} ret=0x{x}", .{
+                self.name,
+                @intFromPtr(buf.ptr),
+                ret_addr,
+            });
+            logger.flush();
+        }
     }
 
     fn tracked_resize(ctx: *anyopaque, buf: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) bool {
         const self: *CategoryTracker = @ptrCast(@alignCast(ctx));
         if (new_len > buf.len) {
             const grow = new_len - buf.len;
-            if (grow > self.budget -| self.used) return false;
+            if (grow > self.budget -| self.used) {
+                self.last_failed_request = new_len;
+                return false;
+            }
         }
         const ok = self.inner.vtable.resize(self.inner.ptr, buf, alignment, new_len, ret_addr);
         if (ok) {
             if (new_len >= buf.len) {
                 self.used += new_len - buf.len;
+                self.high_water = @max(self.high_water, self.used);
             } else {
                 self.used -= buf.len - new_len;
             }
+            self.last_failed_request = null;
+        } else {
+            self.last_failed_request = new_len;
         }
         return ok;
     }
@@ -74,15 +105,22 @@ pub const CategoryTracker = struct {
         const self: *CategoryTracker = @ptrCast(@alignCast(ctx));
         if (new_len > buf.len) {
             const grow = new_len - buf.len;
-            if (grow > self.budget -| self.used) return null;
+            if (grow > self.budget -| self.used) {
+                self.last_failed_request = new_len;
+                return null;
+            }
         }
         const result = self.inner.vtable.remap(self.inner.ptr, buf, alignment, new_len, ret_addr);
         if (result != null) {
             if (new_len >= buf.len) {
                 self.used += new_len - buf.len;
+                self.high_water = @max(self.high_water, self.used);
             } else {
                 self.used -= buf.len - new_len;
             }
+            self.last_failed_request = null;
+        } else {
+            self.last_failed_request = new_len;
         }
         return result;
     }
@@ -106,6 +144,7 @@ pub const Engine = struct {
     dirs: Core.paths.Dirs,
     debug_trace_loops: u8,
     debug_trace_loop_index: u32,
+    current_memory_profile: ?[]const u8,
     run_loop: RunLoop,
 
     const RunLoop = struct {
@@ -129,6 +168,7 @@ pub const Engine = struct {
 
     pub const Config = struct {
         memory: MemoryConfig,
+        memory_profile_name: ?[]const u8 = null,
         width: u32 = 1280,
         height: u32 = 720,
         title: [:0]const u8 = "Aether",
@@ -167,6 +207,7 @@ pub const Engine = struct {
         self.state = state.*;
         self.debug_trace_loops = 0;
         self.debug_trace_loop_index = 0;
+        self.current_memory_profile = config.memory_profile_name;
         self.run_loop = .{};
 
         self.pool = memory.PoolAlloc.init(mem, "main");
@@ -177,6 +218,9 @@ pub const Engine = struct {
                 .inner = inner,
                 .used = 0,
                 .budget = @field(config.memory, f.name),
+                .high_water = 0,
+                .allocation_count = 0,
+                .last_failed_request = null,
                 .name = f.name,
             };
         }
@@ -242,8 +286,66 @@ pub const Engine = struct {
         return self.pool_budget(p) -| self.pool_used(p);
     }
 
-    pub fn set_budget(self: *Engine, p: Pool, new_budget: usize) void {
+    pub const MemoryError = error{
+        BudgetBelowCurrentUsage,
+        TotalBudgetExceedsBackingMemory,
+    };
+
+    pub fn pool_high_water(self: *const Engine, p: Pool) usize {
+        return self.trackers[@intFromEnum(p)].high_water;
+    }
+
+    pub fn pool_allocation_count(self: *const Engine, p: Pool) usize {
+        return self.trackers[@intFromEnum(p)].allocation_count;
+    }
+
+    pub fn pool_last_failed_request(self: *const Engine, p: Pool) ?usize {
+        return self.trackers[@intFromEnum(p)].last_failed_request;
+    }
+
+    pub fn set_budget(self: *Engine, p: Pool, new_budget: usize) MemoryError!void {
+        if (new_budget < self.pool_used(p)) return error.BudgetBelowCurrentUsage;
         self.trackers[@intFromEnum(p)].budget = new_budget;
+    }
+
+    pub fn apply_memory_profile(self: *Engine, profile: *const MemoryProfile) MemoryError!void {
+        if (profile.budgets.total() > self.pool.budget) return error.TotalBudgetExceedsBackingMemory;
+
+        inline for (std.meta.fields(Pool)) |f| {
+            const p: Pool = @enumFromInt(f.value);
+            const new_budget = @field(profile.budgets, f.name);
+            if (new_budget < self.pool_used(p)) return error.BudgetBelowCurrentUsage;
+        }
+
+        inline for (std.meta.fields(Pool)) |f| {
+            const p: Pool = @enumFromInt(f.value);
+            self.trackers[@intFromEnum(p)].budget = @field(profile.budgets, f.name);
+        }
+        self.current_memory_profile = profile.name;
+    }
+
+    pub fn memory_diagnostics(self: *const Engine) MemoryDiagnostics {
+        var pools: [memory.POOL_COUNT]memory.PoolDiagnostics = undefined;
+        inline for (std.meta.fields(Pool), 0..) |f, i| {
+            const tracker = self.trackers[i];
+            pools[i] = .{
+                .name = f.name,
+                .used = tracker.used,
+                .budget = tracker.budget,
+                .remaining_budget = tracker.budget -| tracker.used,
+                .high_water = tracker.high_water,
+                .allocation_count = tracker.allocation_count,
+                .last_failed_request = tracker.last_failed_request,
+            };
+        }
+        return .{
+            .profile_name = self.current_memory_profile,
+            .pools = pools,
+            .physical_used = self.pool.used,
+            .physical_capacity = self.pool.capacity(),
+            .physical_largest_free_run = self.pool.largest_free_run(),
+            .total_budget = self.total_budget(),
+        };
     }
 
     pub fn total_used(self: *const Engine) usize {
@@ -259,36 +361,52 @@ pub const Engine = struct {
     }
 
     pub fn report(self: *const Engine) void {
+        const diagnostics = self.memory_diagnostics();
         Util.engine_logger.info("--- memory pools ---", .{});
-        inline for (std.meta.fields(Pool)) |f| {
-            const p: Pool = @enumFromInt(f.value);
-            const used = self.pool_used(p);
-            const budget = self.pool_budget(p);
+        if (diagnostics.profile_name) |name| {
+            Util.engine_logger.info("  profile: {s}", .{name});
+        }
+        inline for (std.meta.fields(Pool), 0..) |_, i| {
+            const diag = diagnostics.pools[i];
+            const used = diag.used;
+            const budget = diag.budget;
             if (used <= budget) {
-                Util.engine_logger.info("  {s}: {}/{} bytes ({}/{} KiB, {} remaining)", .{
-                    f.name,
+                Util.engine_logger.info("  {s}: {}/{} bytes ({}/{} KiB, {} remaining, high={}, allocs={})", .{
+                    diag.name,
                     used,
                     budget,
                     used / 1024,
                     budget / 1024,
-                    budget - used,
+                    diag.remaining_budget,
+                    diag.high_water,
+                    diag.allocation_count,
                 });
             } else {
-                Util.engine_logger.warn("  {s}: {}/{} bytes ({}/{} KiB, {} over budget)", .{
-                    f.name,
+                Util.engine_logger.warn("  {s}: {}/{} bytes ({}/{} KiB, {} over budget, high={}, allocs={})", .{
+                    diag.name,
                     used,
                     budget,
                     used / 1024,
                     budget / 1024,
                     used - budget,
+                    diag.high_water,
+                    diag.allocation_count,
                 });
             }
+            if (diag.last_failed_request) |bytes| {
+                Util.engine_logger.warn("    last failed request: {} bytes", .{bytes});
+            }
         }
-        Util.engine_logger.info("  total: {}/{} bytes ({}/{} KiB)", .{
+        Util.engine_logger.info("  total budget: {}/{} bytes ({}/{} KiB)", .{
             self.total_used(),
             self.total_budget(),
             self.total_used() / 1024,
             self.total_budget() / 1024,
+        });
+        Util.engine_logger.info("  physical: used={} capacity={} largest_free_run={}", .{
+            diagnostics.physical_used,
+            diagnostics.physical_capacity,
+            diagnostics.physical_largest_free_run,
         });
         Util.engine_logger.info("--------------------", .{});
     }
