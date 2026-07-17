@@ -43,6 +43,10 @@ pub const ActionValue = action_mod.ActionValue;
 pub const Action = action_mod.Action;
 pub const ActionSet = action_mod.ActionSet;
 pub const ActionSetHandle = action_mod.ActionSetHandle;
+pub const ActionHandle = action_mod.ActionHandle;
+pub const ButtonQuery = action_mod.ButtonQuery;
+pub const AxisQuery = action_mod.AxisQuery;
+pub const Vector2Query = action_mod.Vector2Query;
 
 pub const CursorMode = context_mod.CursorMode;
 pub const InputContext = context_mod.InputContext;
@@ -167,9 +171,12 @@ pub fn deinit() void {
     capture_session_state = null;
 
     for (registry.items) |*set| {
-        var it = set.actions.iterator();
-        while (it.next()) |entry| entry.value_ptr.bindings.deinit(alloc);
+        for (set.actions.keys(), set.actions.values()) |name, *action| {
+            action.bindings.deinit(alloc);
+            alloc.free(name);
+        }
         set.actions.deinit(alloc);
+        alloc.free(set.name);
     }
     registry.deinit(alloc);
 
@@ -202,16 +209,16 @@ pub fn deliver_text(text: []const u8) void {
     last_mode = .keyboard_mouse;
 }
 
-pub fn deliver_mouse_button(button: MouseButton, edge: ButtonState, position: Vec2) void {
+pub fn deliver_mouse_button(mouse_button: MouseButton, edge: ButtonState, position: Vec2) void {
     device.pointer_position = position;
     if (edge == .pressed) {
-        device.mouse_buttons.insert(button);
-        _ = fb.append_event(.{ .mouse_button_down = .{ .button = button, .position = position } }) catch return;
-        capture_on_down(.{ .mouse_button = button }, current_modifiers, false);
+        device.mouse_buttons.insert(mouse_button);
+        _ = fb.append_event(.{ .mouse_button_down = .{ .button = mouse_button, .position = position } }) catch return;
+        capture_on_down(.{ .mouse_button = mouse_button }, current_modifiers, false);
     } else {
-        device.mouse_buttons.remove(button);
-        _ = fb.append_event(.{ .mouse_button_up = .{ .button = button, .position = position } }) catch return;
-        capture_on_release(.{ .mouse_button = button });
+        device.mouse_buttons.remove(mouse_button);
+        _ = fb.append_event(.{ .mouse_button_up = .{ .button = mouse_button, .position = position } }) catch return;
+        capture_on_release(.{ .mouse_button = mouse_button });
     }
     last_mode = .keyboard_mouse;
 }
@@ -234,26 +241,26 @@ pub fn deliver_mouse_wheel(delta: Vec2) void {
     if (delta.x != 0 or delta.y != 0) last_mode = .keyboard_mouse;
 }
 
-pub fn deliver_gamepad_button(button: Button, edge: ButtonState) void {
+pub fn deliver_gamepad_button(gamepad_button: Button, edge: ButtonState) void {
     if (edge == .pressed) {
-        device.gamepad_buttons.insert(button);
-        _ = fb.append_event(.{ .gamepad_button_down = .{ .button = button } }) catch return;
+        device.gamepad_buttons.insert(gamepad_button);
+        _ = fb.append_event(.{ .gamepad_button_down = .{ .button = gamepad_button } }) catch return;
         last_mode = .gamepad;
-        capture_on_down(.{ .gamepad_button = button }, current_modifiers, false);
+        capture_on_down(.{ .gamepad_button = gamepad_button }, current_modifiers, false);
     } else {
-        device.gamepad_buttons.remove(button);
-        _ = fb.append_event(.{ .gamepad_button_up = .{ .button = button } }) catch return;
-        capture_on_release(.{ .gamepad_button = button });
+        device.gamepad_buttons.remove(gamepad_button);
+        _ = fb.append_event(.{ .gamepad_button_up = .{ .button = gamepad_button } }) catch return;
+        capture_on_release(.{ .gamepad_button = gamepad_button });
     }
 }
 
-pub fn deliver_gamepad_axis(axis: Axis, value: f32) void {
-    const prev = device.axis(axis);
-    device.set_axis(axis, value);
-    _ = fb.append_event(.{ .gamepad_axis_changed = .{ .axis = axis, .value = value } }) catch return;
+pub fn deliver_gamepad_axis(gamepad_axis: Axis, value: f32) void {
+    const prev = device.axis(gamepad_axis);
+    device.set_axis(gamepad_axis, value);
+    _ = fb.append_event(.{ .gamepad_axis_changed = .{ .axis = gamepad_axis, .value = value } }) catch return;
     if (@abs(value) > config.axis_activity_threshold) last_mode = .gamepad;
 
-    capture_on_axis_change(.{ .gamepad_axis = axis }, prev, value);
+    capture_on_axis_change(.{ .gamepad_axis = gamepad_axis }, prev, value);
 }
 
 pub fn deliver_focus_change(gained: bool) void {
@@ -317,24 +324,29 @@ pub fn frame_events() []const RawEvent {
 // -- ActionApi ----------------------------------------------------------------
 
 pub fn register_action_set(name: []const u8) ActionSetError!ActionSetHandle {
-    try registry.append(alloc, .{ .name = name, .actions = .empty, .installed = false });
+    const owned_name = try alloc.dupe(u8, name);
+    errdefer alloc.free(owned_name);
+    try registry.append(alloc, .{ .name = owned_name, .actions = .empty, .installed = false });
     return @enumFromInt(registry.items.len - 1);
 }
 
-pub fn add_action(set: ActionSetHandle, name: []const u8, kind: ActionKind) ActionSetError!void {
+pub fn add_action(set: ActionSetHandle, name: []const u8, kind: ActionKind) ActionSetError!ActionHandle {
     const s = set_ptr(set) orelse return error.UnknownActionSet;
-    if (action_ptr(s, name) != null) return error.ActionAlreadyExists;
-    try s.actions.put(alloc, name, .{
+    if (s.actions.getIndex(name) != null) return error.ActionAlreadyExists;
+
+    const owned_name = try alloc.dupe(u8, name);
+    errdefer alloc.free(owned_name);
+    try s.actions.put(alloc, owned_name, .{
         .kind = kind,
         .bindings = .empty,
         .current_value = Action.zero(kind),
         .previous_value = Action.zero(kind),
     });
+    return ActionHandle.from_parts(set, s.actions.count() - 1);
 }
 
-pub fn bind_action(set: ActionSetHandle, action_name: []const u8, b: *const Binding) ActionSetError!void {
-    const s = set_ptr(set) orelse return error.UnknownActionSet;
-    const a = action_ptr(s, action_name) orelse return error.ActionNotFound;
+pub fn bind_action(action: ActionHandle, b: *const Binding) ActionSetError!void {
+    const a = action_ptr(action) orelse return error.ActionNotFound;
     if (a.kind == .vector2 and b.component == .none) return error.Vector2BindingNeedsComponent;
     try a.bindings.append(alloc, b.*);
 }
@@ -352,38 +364,60 @@ pub fn uninstall_action_set(set: ActionSetHandle) ActionSetError!void {
     s.installed = false;
 }
 
-pub fn get_action(name: []const u8) ?ActionValue {
-    const top = stack.top() orelse return null;
-    const s = set_ptr(top.actions) orelse return null;
-    if (!s.installed) return null;
-    const a = action_ptr(s, name) orelse return null;
+pub fn find_action(set: ActionSetHandle, name: []const u8) ?ActionHandle {
+    const s = set_ptr(set) orelse return null;
+    const index = s.actions.getIndex(name) orelse return null;
+    return ActionHandle.from_parts(set, index);
+}
+
+pub fn action_name(action: ActionHandle) ?[]const u8 {
+    const s = set_ptr(action.set()) orelse return null;
+    if (action.action_index >= s.actions.count()) return null;
+    return s.actions.keys()[action.action_index];
+}
+
+pub fn action_kind(action: ActionHandle) ?ActionKind {
+    const a = action_ptr(action) orelse return null;
+    return a.kind;
+}
+
+pub fn get_action(action: ActionHandle) ?ActionValue {
+    const a = active_action_ptr(action) orelse return null;
     return a.current_value;
 }
 
-pub fn get_action_button(name: []const u8) ButtonState {
-    return switch (get_action(name) orelse return .released) {
-        .button => |b| b,
-        else => .released,
+pub fn button(action: ActionHandle) ButtonQuery {
+    const a = active_action_ptr(action) orelse return .{};
+    if (a.kind != .button) return .{};
+    return .{
+        .current = a.current_value.button,
+        .previous = a.previous_value.button,
     };
 }
 
-pub fn get_action_axis(name: []const u8) f32 {
-    return switch (get_action(name) orelse return 0.0) {
-        .axis => |v| v,
-        else => 0.0,
+pub fn axis(action: ActionHandle) AxisQuery {
+    const a = active_action_ptr(action) orelse return .{};
+    if (a.kind != .axis) return .{};
+    return .{
+        .current = a.current_value.axis,
+        .previous = a.previous_value.axis,
     };
 }
 
-pub fn get_action_vector2(name: []const u8) [2]f32 {
-    return switch (get_action(name) orelse return .{ 0, 0 }) {
-        .vector2 => |v| v,
-        else => .{ 0, 0 },
+pub fn vector2(action: ActionHandle) Vector2Query {
+    const a = active_action_ptr(action) orelse return .{};
+    if (a.kind != .vector2) return .{};
+    return .{
+        .current = a.current_value.vector2,
+        .previous = a.previous_value.vector2,
     };
 }
 
-pub fn active_action_set() ?*const ActionSet {
+pub fn active_action_set() ?ActionSetHandle {
     const top = stack.top() orelse return null;
-    return set_ptr_or_null(top.actions);
+    const s = set_ptr(top.actions) orelse return null;
+    if (!s.installed) return null;
+    return top.actions;
 }
 
 // -- ContextStackApi ----------------------------------------------------------
@@ -391,6 +425,7 @@ pub fn active_action_set() ?*const ActionSet {
 pub fn push_context(ctx: *const InputContext) ContextError!void {
     const s = set_ptr(ctx.actions) orelse return error.UnknownActionSet;
     if (!s.installed) return error.ActionSetNotInstalled;
+    action_mod.sync_set(s, &device);
     try stack.push(ctx.*);
 }
 
@@ -401,6 +436,7 @@ pub fn pop_context() ContextError!InputContext {
 pub fn replace_top(ctx: *const InputContext) ContextError!InputContext {
     const s = set_ptr(ctx.actions) orelse return error.UnknownActionSet;
     if (!s.installed) return error.ActionSetNotInstalled;
+    action_mod.sync_set(s, &device);
     return try stack.replace_top(ctx.*);
 }
 
@@ -525,14 +561,21 @@ fn set_ptr_or_null(handle: ActionSetHandle) ?*ActionSet {
     return set_ptr(handle);
 }
 
-fn action_ptr(set: *ActionSet, name: []const u8) ?*Action {
-    if (set.actions.getPtr(name)) |action| return action;
+fn action_ptr(action: ActionHandle) ?*Action {
+    if (action.is_null()) return null;
+    const set = set_ptr(action.set()) orelse return null;
+    if (action.action_index >= set.actions.count()) return null;
+    return &set.actions.values()[action.action_index];
+}
 
-    var it = set.actions.iterator();
-    while (it.next()) |entry| {
-        if (std.mem.eql(u8, entry.key_ptr.*, name)) return entry.value_ptr;
-    }
-    return null;
+fn active_action_ptr(action: ActionHandle) ?*Action {
+    if (action.is_null()) return null;
+    const top = stack.top() orelse return null;
+    if (@intFromEnum(top.actions) != action.set_index) return null;
+    const set = set_ptr(top.actions) orelse return null;
+    if (!set.installed) return null;
+    if (action.action_index >= set.actions.count()) return null;
+    return &set.actions.values()[action.action_index];
 }
 
 fn route_text_to_session(text: []const u8) void {
@@ -596,6 +639,102 @@ fn capture_on_axis_change(src: BindingSource, prev: f32, now: f32) void {
         s.result.display_len = capture_session_mod.format_label(&s.result.display_buf, src, current_modifiers);
         s.status = .captured;
     }
+}
+
+test "action handles drive button edges" {
+    try init(std.testing.allocator);
+    defer deinit();
+
+    const gameplay = try register_action_set("gameplay");
+    const jump = try add_action(gameplay, "jump", .button);
+    try bind_action(jump, &.{ .source = .{ .key = .Space } });
+    try install_action_set(gameplay);
+    try push_context(&.{
+        .name = "gameplay",
+        .cursor_mode = .visible,
+        .actions = gameplay,
+    });
+
+    try std.testing.expectEqualStrings("jump", action_name(jump).?);
+    try std.testing.expectEqual(ActionKind.button, action_kind(jump).?);
+    try std.testing.expectEqual(jump, find_action(gameplay, "jump").?);
+    try std.testing.expect(!button(jump).down());
+
+    deliver_key_down(.Space, .{}, false);
+    update();
+    try std.testing.expect(button(jump).down());
+    try std.testing.expect(button(jump).pressed());
+    try std.testing.expect(!button(jump).released());
+
+    update();
+    try std.testing.expect(button(jump).down());
+    try std.testing.expect(!button(jump).pressed());
+
+    deliver_key_up(.Space, .{});
+    update();
+    try std.testing.expect(!button(jump).down());
+    try std.testing.expect(button(jump).released());
+}
+
+test "action handles are neutral outside active context" {
+    try init(std.testing.allocator);
+    defer deinit();
+
+    const gameplay = try register_action_set("gameplay");
+    const menu = try register_action_set("menu");
+    const jump = try add_action(gameplay, "jump", .button);
+    const confirm = try add_action(menu, "confirm", .button);
+    try bind_action(jump, &.{ .source = .{ .key = .Space } });
+    try bind_action(confirm, &.{ .source = .{ .key = .Enter } });
+    try install_action_set(gameplay);
+    try install_action_set(menu);
+
+    try push_context(&.{
+        .name = "gameplay",
+        .cursor_mode = .visible,
+        .actions = gameplay,
+    });
+
+    deliver_key_down(.Enter, .{}, false);
+    update();
+    try std.testing.expect(!button(confirm).down());
+    try std.testing.expect(!button(ActionHandle.none).down());
+
+    try push_context(&.{
+        .name = "menu",
+        .cursor_mode = .visible,
+        .actions = menu,
+    });
+    try std.testing.expect(!button(confirm).pressed());
+    try std.testing.expect(button(confirm).down());
+    try std.testing.expect(!button(jump).down());
+}
+
+test "axis and vector2 handles report values and deltas" {
+    try init(std.testing.allocator);
+    defer deinit();
+
+    const gameplay = try register_action_set("gameplay");
+    const throttle = try add_action(gameplay, "throttle", .axis);
+    const move = try add_action(gameplay, "move", .vector2);
+    try bind_action(throttle, &.{ .source = .{ .gamepad_axis = .RightTrigger }, .deadzone = 0.0 });
+    try bind_action(move, &.{ .source = .{ .key = .D }, .component = .x });
+    try bind_action(move, &.{ .source = .{ .key = .W }, .component = .y });
+    try install_action_set(gameplay);
+    try push_context(&.{
+        .name = "gameplay",
+        .cursor_mode = .visible,
+        .actions = gameplay,
+    });
+
+    deliver_gamepad_axis(.RightTrigger, 0.25);
+    deliver_key_down(.D, .{}, false);
+    update();
+
+    try std.testing.expectEqual(@as(f32, 0.25), axis(throttle).value());
+    try std.testing.expectEqual(@as(f32, 0.25), axis(throttle).delta());
+    try std.testing.expectEqual([2]f32{ 1.0, 0.0 }, vector2(move).value());
+    try std.testing.expectEqual([2]f32{ 1.0, 0.0 }, vector2(move).delta());
 }
 
 // -- compile-time validation -------------------------------------------------
