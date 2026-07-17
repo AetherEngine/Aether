@@ -25,8 +25,8 @@ pub const CProcessInit = if (platform == .nintendo_switch) @import("platform/c_p
 /// Comptime-known platform and graphics backend, resolved from build options.
 /// User code can switch on these for per-platform configuration without
 /// importing the build options module directly.
-pub const Platform = options.@"build.Platform";
-pub const Gfx = options.@"build.Gfx";
+pub const Platform = @TypeOf(options.config.platform);
+pub const Gfx = @TypeOf(options.config.gfx);
 pub const platform: Platform = options.config.platform;
 pub const gfx: Gfx = options.config.gfx;
 pub const mesh_indexing: bool = options.config.mesh_indexing;

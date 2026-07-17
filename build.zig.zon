@@ -97,9 +97,13 @@
         },
     },
     .paths = .{
+        "build",
         "build.zig",
         "build.zig.zon",
         "src",
+        "tools",
+        "upgrade-guide.md",
+        "web",
         "LICENSE",
         "README.md",
     },
