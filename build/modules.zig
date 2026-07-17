@@ -5,6 +5,25 @@ const tools = @import("tool_options.zig");
 
 const Config = config_mod.Config;
 
+fn installedDynamicArtifact(dep: *std.Build.Dependency, name: []const u8) ?*std.Build.Step.Compile {
+    var found: ?*std.Build.Step.Compile = null;
+
+    for (dep.builder.install_tls.step.dependencies.items) |dep_step| {
+        const install = dep_step.cast(std.Build.Step.InstallArtifact) orelse continue;
+        const artifact = install.artifact;
+        if (!std.mem.eql(u8, artifact.name, name)) continue;
+        if (!artifact.isDynamicLibrary()) continue;
+
+        if (found) |existing| {
+            if (existing == artifact) continue;
+            std.debug.panic("dynamic artifact name '{s}' is ambiguous", .{name});
+        }
+        found = artifact;
+    }
+
+    return found;
+}
+
 pub const GameOptions = struct {
     name: []const u8,
     root_source_file: std.Build.LazyPath,
@@ -122,8 +141,8 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
                 .ext_net = false,
                 .ext_ttf = false,
                 // Static SDL3 and static GLFW both embed generated Wayland
-                // protocol objects on Linux. Keep SDL dynamic there since
-                // Aether only uses its audio subsystem.
+                // protocol objects on Linux. Use dynamic SDL there until
+                // Aether can request an audio-only SDL build.
                 .c_sdl_preferred_linkage = @as(
                     std.builtin.LinkMode,
                     if (target.result.os.tag == .linux) .dynamic else .static,
@@ -133,10 +152,12 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
 
                 if (target.result.os.tag == .linux) {
                     mod.addRPathSpecial("$ORIGIN");
-                    const install_sdl3 = b.addInstallArtifact(sdl3_dep.artifact("SDL3"), .{
-                        .dest_dir = .{ .override = .bin },
-                    });
-                    b.getInstallStep().dependOn(&install_sdl3.step);
+                    if (installedDynamicArtifact(sdl3_dep, "SDL3")) |sdl3_artifact| {
+                        const install_sdl3 = b.addInstallArtifact(sdl3_artifact, .{
+                            .dest_dir = .{ .override = .bin },
+                        });
+                        b.getInstallStep().dependOn(&install_sdl3.step);
+                    }
                 }
             }
         }
