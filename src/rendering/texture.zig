@@ -39,7 +39,17 @@ pub const Error = error{
     CpuReadAccessDenied,
     CpuWriteAccessDenied,
     NoCpuPixels,
+    PixelOutOfBounds,
 };
+
+pub const CreateError = Error ||
+    std.mem.Allocator.Error ||
+    @import("../platform/gfx_api.zig").CreateTextureError;
+
+pub const LoadError = CreateError ||
+    std.Io.Reader.Error ||
+    std.Io.File.OpenError ||
+    Image.Error;
 
 pub const Desc = struct {
     width: u32,
@@ -72,14 +82,14 @@ backing: ?[]align(16) u8,
 
 /// Creates a texture from raw RGBA pixel data.
 /// The data is copied into the provided allocator.
-pub fn init(alloc: std.mem.Allocator, desc: *const Desc) !Texture {
-    return load_from_data(alloc, desc.width, desc.height, desc.pixels, .{
+pub fn init(alloc: std.mem.Allocator, desc: *const Desc) CreateError!Texture {
+    return load_from_data(alloc, desc.width, desc.height, desc.pixels, &.{
         .cpu_access = desc.cpu_access,
         .residency = desc.residency,
     });
 }
 
-pub fn load_from_data(alloc: std.mem.Allocator, width: u32, height: u32, source_pixels: []const u8, desc: LoadDesc) !Texture {
+pub fn load_from_data(alloc: std.mem.Allocator, width: u32, height: u32, source_pixels: []const u8, desc: *const LoadDesc) CreateError!Texture {
     const size = @as(usize, width) * height * tex_bpp;
     const source_size = @as(usize, width) * height * 4;
     if (source_pixels.len < source_size) return error.InsufficientData;
@@ -114,13 +124,13 @@ pub fn load_from_data(alloc: std.mem.Allocator, width: u32, height: u32, source_
 /// 8x8 solid white default texture, initialized by `init_defaults`.
 pub var Default: Texture = undefined;
 
-pub fn init_defaults(alloc: std.mem.Allocator) !void {
+pub fn init_defaults(alloc: std.mem.Allocator) CreateError!void {
     const default_pixels = comptime blk: {
         var data: [8 * 8 * 4]u8 = undefined;
         @memset(&data, 0xFF);
         break :blk data;
     };
-    Default = try load_from_data(alloc, 8, 8, &default_pixels, .{ .cpu_access = .none });
+    Default = try load_from_data(alloc, 8, 8, &default_pixels, &.{ .cpu_access = .none });
 }
 
 /// Loads a PNG from `path` (resolved against `dir`) into GPU memory.
@@ -130,7 +140,7 @@ pub fn init_defaults(alloc: std.mem.Allocator) !void {
 /// `engine.dirs.data` for user-provided ones. Do not use
 /// `std.Io.Dir.cwd()` -- CWD is not guaranteed to be the app root
 /// (Finder-launched `.app` bundles give CWD = `/`).
-pub fn load(io: std.Io, dir: anytype, alloc: std.mem.Allocator, path: []const u8, desc: LoadDesc) !Texture {
+pub fn load(io: std.Io, dir: anytype, alloc: std.mem.Allocator, path: []const u8, desc: *const LoadDesc) LoadError!Texture {
     var file = try dir.openFile(io, path, .{});
     defer file.close(io);
 
@@ -145,7 +155,7 @@ pub fn load(io: std.Io, dir: anytype, alloc: std.mem.Allocator, path: []const u8
 
 /// Loads a PNG from any reader into GPU memory.
 /// The final pixel data uses the provided allocator.
-pub fn load_from_reader(alloc: std.mem.Allocator, reader: *std.Io.Reader, desc: LoadDesc) !Texture {
+pub fn load_from_reader(alloc: std.mem.Allocator, reader: *std.Io.Reader, desc: *const LoadDesc) LoadError!Texture {
     const color_mode: Image.ColorMode = if (builtin.os.tag == .psp and options.config.psp_display_mode == .rgb565)
         .rgba4444
     else
@@ -209,6 +219,7 @@ pub fn mutable_cpu_pixels(self: *Texture) Error![]align(16) u8 {
 /// Returns the RGBA pixel at (x, y), accounting for swizzled layout and
 /// pixel format on PSP.
 pub fn get_pixel(self: *const Texture, x: u32, y: u32) Error![4]u8 {
+    if (x >= self.width or y >= self.height) return error.PixelOutOfBounds;
     const data = try self.cpu_pixels();
     const offset = pixel_offset(self, x, y);
     if (builtin.os.tag == .psp and options.config.psp_display_mode == .rgb565) {
@@ -229,6 +240,7 @@ pub fn get_pixel(self: *const Texture, x: u32, y: u32) Error![4]u8 {
 /// pixel format on PSP. Call `update()` after all modifications to push
 /// changes to the GPU.
 pub fn set_pixel(self: *Texture, x: u32, y: u32, rgba: [4]u8) Error!void {
+    if (x >= self.width or y >= self.height) return error.PixelOutOfBounds;
     const data = try self.mutable_cpu_pixels();
     const offset = pixel_offset(self, x, y);
     if (builtin.os.tag == .psp and options.config.psp_display_mode == .rgb565) {

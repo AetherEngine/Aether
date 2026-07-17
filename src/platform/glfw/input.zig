@@ -4,6 +4,7 @@
 
 const std = @import("std");
 const glfw = @import("glfw");
+const input_api = @import("../input_api.zig");
 const core = @import("../../core/input/input.zig");
 const gfx = @import("../gfx.zig");
 
@@ -31,7 +32,7 @@ pub fn setup(_: std.mem.Allocator, _: std.Io) void {
     have_applied_cursor_mode = false;
 }
 
-pub fn init() anyerror!void {
+pub fn init() input_api.InitError!void {
     const window = gfx.surface.window;
     _ = glfw.updateGamepadMappings(@embedFile("gamecontrollerdb.txt"));
     _ = glfw.setKeyCallback(window, key_callback);
@@ -85,7 +86,7 @@ pub fn apply_cursor_mode(mode: core.CursorMode) void {
     }
 }
 
-pub fn begin_text_input_session(_: core.TextInputTarget, _: core.TextInputOptions) anyerror!void {
+pub fn begin_text_input_session(_: *const core.TextInputTarget, _: *const core.TextInputOptions) input_api.TextSessionError!void {
     // GLFW backends rely on `deliver_text` from the char callback to
     // populate the session buffer -- no modal OSK to dispatch here.
 }

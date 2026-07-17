@@ -196,7 +196,7 @@ pub const Engine = struct {
         sys_io: std.Io,
         environ_map: *const std.process.Environ.Map,
         mem: []u8,
-        config: Config,
+        config: *const Config,
         state: *const Core.State,
     ) !void {
         assert(config.memory.total() <= mem.len);

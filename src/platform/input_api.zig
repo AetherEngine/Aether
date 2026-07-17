@@ -1,6 +1,15 @@
 const std = @import("std");
 const core = @import("../core/input/input.zig");
 
+pub const InitError = error{
+    OutOfMemory,
+    ContextStackFull,
+    InputInitFailed,
+    NoCurrentApplication,
+};
+
+pub const TextSessionError = core.TextSessionError;
+
 /// The contract every input backend must satisfy. Each field names a
 /// public top-level fn on the backend module and gives its exact type.
 /// Mirrors `gfx_api.Interface` so the validation pattern is identical.
@@ -9,7 +18,7 @@ const core = @import("../core/input/input.zig");
 /// `signal_frame_boundary` calls. They never poll core for state.
 pub const Interface = struct {
     setup: fn (std.mem.Allocator, std.Io) void,
-    init: fn () anyerror!void,
+    init: fn () InitError!void,
     deinit: fn () void,
 
     /// One-shot per UPDATE phase. Backends:
@@ -31,7 +40,7 @@ pub const Interface = struct {
     /// `TextInputSession` via `core.write_text_session_buffer`. On
     /// platforms without one (GLFW, headless), it is a no-op so text
     /// flows through `deliver_text` instead.
-    begin_text_input_session: fn (core.TextInputTarget, core.TextInputOptions) anyerror!void,
+    begin_text_input_session: fn (*const core.TextInputTarget, *const core.TextInputOptions) TextSessionError!void,
     end_text_input_session: fn () void,
 };
 

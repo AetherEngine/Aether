@@ -5,6 +5,7 @@
 
 const std = @import("std");
 const sdl3 = @import("sdl3");
+const audio_api = @import("../audio_api.zig");
 const Stream = @import("../../audio/stream.zig").Stream;
 const PcmFormat = @import("../../audio/stream.zig").PcmFormat;
 
@@ -56,8 +57,8 @@ var output_buf: [MAX_PERIOD_FRAMES * DEVICE_CHANNELS]f32 = undefined;
 
 pub fn setup(_: std.mem.Allocator, _: std.Io) void {}
 
-pub fn init() anyerror!void {
-    try sdl3.init(SDL_AUDIO_FLAGS);
+pub fn init() audio_api.InitError!void {
+    sdl3.init(SDL_AUDIO_FLAGS) catch return error.AudioInitFailed;
     sdl_audio_initialized = true;
     errdefer {
         sdl3.quit(SDL_AUDIO_FLAGS);
@@ -70,14 +71,14 @@ pub fn init() anyerror!void {
         .sample_rate = DEVICE_SAMPLE_RATE,
     };
 
-    const stream = try sdl3.audio.Device.default_playback.openStream(spec, anyopaque, data_callback, null);
+    const stream = sdl3.audio.Device.default_playback.openStream(spec, anyopaque, data_callback, null) catch return error.AudioInitFailed;
     device_stream = stream;
     errdefer {
         stream.deinit();
         device_stream = null;
     }
 
-    try stream.resumeDevice();
+    stream.resumeDevice() catch return error.AudioInitFailed;
 }
 
 pub fn deinit() void {
@@ -98,7 +99,7 @@ pub fn max_voices() u32 {
     return NUM_SLOTS;
 }
 
-pub fn play_slot(slot: u8, stream: Stream) anyerror!void {
+pub fn play_slot(slot: u8, stream: Stream) audio_api.PlaySlotError!void {
     if (slot >= NUM_SLOTS) return error.InvalidArgs;
     slots[slot].stream = stream;
     // Release ensures the stream write is visible to the audio thread.

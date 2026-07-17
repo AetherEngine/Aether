@@ -61,10 +61,14 @@ pub fn init(
     fullscreen: bool,
     vsync: bool,
     resizable: bool,
-) !void {
+) gfx_api.InitError!void {
     sync = vsync;
     surface = .{ .alloc = alloc };
-    try surface.init(width, height, title, fullscreen, vsync, resizable);
+    surface.init(width, height, title, fullscreen, vsync, resizable) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.VulkanNotSupported => return error.VulkanNotSupported,
+        error.SurfaceInitFailed => return error.SurfaceInitFailed,
+    };
 
     Api.setup(alloc, io);
     try Api.init();

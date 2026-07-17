@@ -3,10 +3,15 @@ const stream = @import("stream.zig");
 const PcmFormat = stream.PcmFormat;
 const Stream = stream.Stream;
 
+pub const Error = error{
+    InvalidWav,
+    UnsupportedFormat,
+} || std.Io.Reader.Error;
+
 /// Parse a WAV/RIFF header and return a `Stream` whose reader is positioned
 /// at the start of the PCM data.  Only uncompressed PCM (format tag 1) is
 /// supported.
-pub fn open(reader: *std.Io.Reader) !Stream {
+pub fn open(reader: *std.Io.Reader) Error!Stream {
     // ---- RIFF header ----
     var riff_hdr: [12]u8 = undefined;
     try reader.readSliceAll(&riff_hdr);
@@ -75,7 +80,7 @@ pub fn open(reader: *std.Io.Reader) !Stream {
     };
 }
 
-fn skip_bytes(reader: *std.Io.Reader, n: u32) !void {
+fn skip_bytes(reader: *std.Io.Reader, n: u32) Error!void {
     var remaining: usize = n;
     var buf: [256]u8 = undefined;
     while (remaining > 0) {

@@ -14,10 +14,21 @@ pub const Image = struct {
     }
 };
 
+pub const Error = error{
+    InvalidPNG,
+    UnsupportedInterlacing,
+    UnsupportedColorType,
+    InvalidFilter,
+    WriteFailed,
+} ||
+    std.mem.Allocator.Error ||
+    std.Io.Reader.Error ||
+    flate.Decompress.Error;
+
 const png_signature = "\x89PNG\r\n\x1a\n";
 
 /// Decode PNG from a reader -> RGBA8. Caller owns returned slice.
-pub fn load_png(allocator: std.mem.Allocator, reader: *std.Io.Reader) ![]u8 {
+pub fn load_png(allocator: std.mem.Allocator, reader: *std.Io.Reader) Error![]u8 {
     const img = try load_png_ex(allocator, allocator, reader, .rgba8);
     return img.data;
 }
@@ -25,7 +36,7 @@ pub fn load_png(allocator: std.mem.Allocator, reader: *std.Io.Reader) ![]u8 {
 /// Decode PNG from a reader with explicit color mode. Caller owns image.data.
 /// `scratch` is used for all temporary allocations during decoding.
 /// `render` is used for the final pixel buffer stored in `image.data`.
-pub fn load_png_ex(scratch: std.mem.Allocator, render: std.mem.Allocator, reader: *std.Io.Reader, mode: ColorMode) !Image {
+pub fn load_png_ex(scratch: std.mem.Allocator, render: std.mem.Allocator, reader: *std.Io.Reader, mode: ColorMode) Error!Image {
     const allocator = scratch;
 
     // Verify PNG signature

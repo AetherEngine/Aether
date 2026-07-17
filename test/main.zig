@@ -271,7 +271,7 @@ pub const MyState = struct {
         self.batch_a_transform = Rendering.Transform.new();
         self.batch_b_transform = Rendering.Transform.new();
 
-        self.texture = try Rendering.Texture.load(engine.io, engine.dirs.resources, render, "test.png", .{});
+        self.texture = try Rendering.Texture.load(engine.io, engine.dirs.resources, render, "test.png", &.{});
 
         try buildBatchA(render, &self.batch_a_data);
         try buildBatchB(render, &self.batch_b_data);
@@ -292,7 +292,7 @@ pub const MyState = struct {
         self.music_data = try load_wav(engine, "calm1.wav");
         self.music_reader = .fixed(self.music_data);
         const music_stream = try Audio.wav.open(&self.music_reader);
-        _ = try Audio.play(music_stream, .{ .priority = .critical });
+        _ = try Audio.play(&music_stream, &.{ .priority = .critical });
 
         // -- spatial SFX data --
         self.grass_data = try load_wav(engine, "grass1.wav");
@@ -334,7 +334,7 @@ pub const MyState = struct {
 
             self.grass_readers[i] = .fixed(self.grass_data);
             const stream = Audio.wav.open(&self.grass_readers[i]) catch return;
-            _ = Audio.play_at(stream, pos, .{
+            _ = Audio.play_at(&stream, pos, &.{
                 .ref_distance = 1.0,
                 .max_distance = 25.0,
             }) catch return;
@@ -409,7 +409,7 @@ pub fn main(init: std.process.Init) !void {
 
     var state: MyState = undefined;
     var engine: ae.Engine = undefined;
-    engine.init(init.io, init.environ_map, memory, .{
+    engine.init(init.io, init.environ_map, memory, &.{
         .memory = memory_config,
         .resizable = true,
     }, &state.state()) catch |err| switch (err) {

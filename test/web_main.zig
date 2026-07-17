@@ -25,7 +25,7 @@ export fn aether_wasm_init(width: u32, height: u32) bool {
     const memory_config = webMemoryConfig();
     memory = gpa.alignedAlloc(u8, .fromByteUnits(16), memory_config.total()) catch return false;
 
-    engine.init(std.Io.Threaded.global_single_threaded.io(), &env_map, memory, .{
+    engine.init(std.Io.Threaded.global_single_threaded.io(), &env_map, memory, &.{
         .memory = memory_config,
         .width = width,
         .height = height,

@@ -13,6 +13,7 @@ pub const wav = @import("wav.zig");
 pub const mixer_mod = @import("mixer.zig");
 pub const SoundHandle = mixer_mod.SoundHandle;
 pub const PlayOptions = mixer_mod.PlayOptions;
+pub const PlayError = mixer_mod.PlayError;
 pub const Priority = mixer_mod.Priority;
 pub const enabled = options.config.audio != .none;
 
@@ -20,11 +21,11 @@ pub const enabled = options.config.audio != .none;
 
 const mix = platform_audio.mix;
 
-pub fn play(s: Stream, opts: PlayOptions) !SoundHandle {
+pub fn play(s: *const Stream, opts: *const PlayOptions) PlayError!SoundHandle {
     return mix.play(s, opts);
 }
 
-pub fn play_at(s: Stream, pos: Vec3, opts: PlayOptions) !SoundHandle {
+pub fn play_at(s: *const Stream, pos: Vec3, opts: *const PlayOptions) PlayError!SoundHandle {
     return mix.play_at(s, pos, opts);
 }
 

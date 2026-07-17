@@ -1,6 +1,7 @@
 const std = @import("std");
 const glfw = @import("glfw");
 const gl = @import("gl");
+const gfx_api = @import("../../gfx_api.zig");
 const Mat4 = @import("../../../math/math.zig").Mat4;
 const Util = @import("../../../util/util.zig");
 
@@ -48,7 +49,7 @@ const MeshInternal = struct {
     index_count: usize = 0,
 };
 
-pub fn init() anyerror!void {
+pub fn init() gfx_api.InitError!void {
     if (!procs.init(glfw.getProcAddress)) @panic("Failed to initialize OpenGL");
     gl.makeProcTableCurrent(&procs);
 
@@ -67,14 +68,14 @@ pub fn init() anyerror!void {
     gl.BlendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     gl.LineWidth(5.0);
 
-    try shader.init();
+    shader.init() catch return error.PipelineCreationFailed;
     errdefer shader.deinit();
 
     shader.state.proj = Mat4.identity();
     shader.state.view = Mat4.identity();
     shader.update_ubo();
 
-    pipeline = try init_pipeline(vertex.Layout);
+    pipeline = init_pipeline(vertex.Layout) catch return error.PipelineCreationFailed;
     pipeline_initialized = true;
 }
 
@@ -168,7 +169,7 @@ pub fn has_second_screen() bool {
 }
 
 pub fn switch_second_screen() void {
-    unreachable;
+    std.debug.panic("opengl gfx: switch_second_screen called but this backend has no second screen", .{});
 }
 
 pub fn set_vsync(v: bool) void {
@@ -232,7 +233,7 @@ fn deinit_pipeline(pl: *PipelineData) void {
     pl.program.deinit();
 }
 
-pub fn create_mesh(_: *const Mesh.Desc) anyerror!Mesh.Handle {
+pub fn create_mesh(_: *const Mesh.Desc) gfx_api.CreateMeshError!Mesh.Handle {
     var vbo: gl.uint = 0;
     var ebo: gl.uint = 0;
     var buffers = [_]gl.uint{ 0, 0 };
@@ -251,7 +252,8 @@ pub fn create_mesh(_: *const Mesh.Desc) anyerror!Mesh.Handle {
 }
 
 pub fn destroy_mesh(handle: Mesh.Handle) void {
-    var mesh = meshes.get(handle) orelse return;
+    if (handle.is_null()) return;
+    var mesh = meshes.get(handle) orelse Util.panic_invalid_handle("opengl gfx", "destroy_mesh", handle);
     var buffers = [_]gl.uint{ mesh.vbo, mesh.ebo };
     gl.DeleteBuffers(2, @ptrCast(&buffers));
     mesh.vbo = 0;
@@ -261,7 +263,7 @@ pub fn destroy_mesh(handle: Mesh.Handle) void {
 }
 
 pub fn update_mesh(handle: Mesh.Handle, desc: *const Mesh.UpdateDesc) void {
-    var mesh = meshes.get(handle) orelse return;
+    var mesh = meshes.get(handle) orelse Util.panic_invalid_handle("opengl gfx", "update_mesh", handle);
     const data = desc.vertices;
     const indices = desc.indices;
 
@@ -278,7 +280,7 @@ pub fn update_mesh(handle: Mesh.Handle, desc: *const Mesh.UpdateDesc) void {
 
 pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
     if (!pipeline_initialized) return;
-    const mesh = meshes.get(handle) orelse return;
+    const mesh = meshes.get(handle) orelse Util.panic_invalid_handle("opengl gfx", "draw_mesh", handle);
     const pl = &pipeline;
     if (mesh.vertex_count == 0) return;
 
@@ -294,7 +296,7 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
     }
 }
 
-pub fn create_texture(desc: *const Texture.UploadDesc) anyerror!Texture.Handle {
+pub fn create_texture(desc: *const Texture.UploadDesc) gfx_api.CreateTextureError!Texture.Handle {
     const width = desc.width;
     const height = desc.height;
     const data = desc.pixels;
@@ -315,7 +317,7 @@ pub fn create_texture(desc: *const Texture.UploadDesc) anyerror!Texture.Handle {
 }
 
 pub fn update_texture(handle: Texture.Handle, data: []align(16) u8) void {
-    const tex = textures.get(handle) orelse return;
+    const tex = textures.get(handle) orelse Util.panic_invalid_handle("opengl gfx", "update_texture", handle);
     var w: gl.int = 0;
     var h: gl.int = 0;
     gl.GetTextureLevelParameteriv(tex, 0, gl.TEXTURE_WIDTH, @ptrCast(&w));
@@ -324,12 +326,14 @@ pub fn update_texture(handle: Texture.Handle, data: []align(16) u8) void {
 }
 
 pub fn bind_texture(handle: Texture.Handle) void {
-    const tex = textures.get(handle) orelse return;
+    if (handle.is_null()) return;
+    const tex = textures.get(handle) orelse Util.panic_invalid_handle("opengl gfx", "bind_texture", handle);
     gl.BindTextureUnit(2, tex);
 }
 
 pub fn destroy_texture(handle: Texture.Handle) void {
-    var tex = textures.get(handle) orelse return;
+    if (handle.is_null()) return;
+    var tex = textures.get(handle) orelse Util.panic_invalid_handle("opengl gfx", "destroy_texture", handle);
     gl.DeleteTextures(1, @ptrCast(&tex));
     _ = textures.remove(handle);
 }

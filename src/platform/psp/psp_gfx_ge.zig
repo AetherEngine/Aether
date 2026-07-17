@@ -6,6 +6,7 @@
 // gu's hidden globals.
 
 const std = @import("std");
+const gfx_api = @import("../gfx_api.zig");
 const Util = @import("../../util/util.zig");
 const Mat4 = @import("../../math/math.zig").Mat4;
 const Rendering = @import("../../rendering/rendering.zig");
@@ -545,7 +546,7 @@ fn emit_depth_range(near_value: u16, far_value: u16) void {
 
 // ---- engine state ----------------------------------------------------------
 
-pub fn init() anyerror!void {
+pub fn init() gfx_api.InitError!void {
     render_pipeline = init_pipeline(vertex.Layout);
     clear_color = 0x000000;
 
@@ -559,7 +560,7 @@ pub fn init() anyerror!void {
         .finish_func = ge_finish_callback,
         .finish_arg = &swapchain,
     };
-    ge_callback_id = try ge.set_callback(cb_data);
+    ge_callback_id = ge.set_callback(cb_data) catch return error.GfxInitFailed;
 
     begin_list();
 
@@ -574,7 +575,7 @@ pub fn init() anyerror!void {
 
     // Equivalent to gu.disp_buffer's side effect of enabling LCD mode the
     // first time it is called.
-    try display.set_mode(.lcd, SCREEN_WIDTH, SCREEN_HEIGHT);
+    display.set_mode(.lcd, SCREEN_WIDTH, SCREEN_HEIGHT) catch return error.GfxInitFailed;
 
     // Drawing region (rasterizer bounds). gu emits this from inside
     // sceGuDispBuffer; we have to do it explicitly.
@@ -621,9 +622,9 @@ pub fn init() anyerror!void {
     finish_list();
     _ = ge_list.draw_sync(.wait);
 
-    try swapchain.install_vblank_handler();
-    try swapchain.prime_display();
-    try display.wait_vblank_start();
+    swapchain.install_vblank_handler() catch return error.GfxInitFailed;
+    swapchain.prime_display() catch return error.GfxInitFailed;
+    display.wait_vblank_start() catch return error.GfxInitFailed;
 }
 
 pub fn deinit() void {
@@ -870,7 +871,7 @@ pub fn has_second_screen() bool {
 }
 
 pub fn switch_second_screen() void {
-    unreachable;
+    std.debug.panic("psp gfx: switch_second_screen called but this backend has no second screen", .{});
 }
 
 pub fn set_vsync(v: bool) void {
@@ -935,7 +936,7 @@ const MeshData = struct {
 
 var meshes = Util.ResourceTable(MeshData, 2048, Mesh.Handle).init();
 
-pub fn create_mesh(_: *const Mesh.Desc) anyerror!Mesh.Handle {
+pub fn create_mesh(_: *const Mesh.Desc) gfx_api.CreateMeshError!Mesh.Handle {
     return meshes.add(.{
         .data = null,
         .len = 0,
@@ -947,11 +948,13 @@ pub fn create_mesh(_: *const Mesh.Desc) anyerror!Mesh.Handle {
 }
 
 pub fn destroy_mesh(handle: Mesh.Handle) void {
+    if (handle.is_null()) return;
+    if (meshes.get(handle) == null) Util.panic_invalid_handle("psp gfx", "destroy_mesh", handle);
     _ = meshes.remove(handle);
 }
 
 pub fn update_mesh(handle: Mesh.Handle, desc: *const Mesh.UpdateDesc) void {
-    var mesh = meshes.get(handle) orelse return;
+    var mesh = meshes.get(handle) orelse Util.panic_invalid_handle("psp gfx", "update_mesh", handle);
     const data = desc.vertices;
     const indices = desc.indices;
     const index_bytes = std.mem.sliceAsBytes(indices);
@@ -969,7 +972,7 @@ pub fn update_mesh(handle: Mesh.Handle, desc: *const Mesh.UpdateDesc) void {
 }
 
 pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
-    const mesh = meshes.get(handle) orelse return;
+    const mesh = meshes.get(handle) orelse Util.panic_invalid_handle("psp gfx", "draw_mesh", handle);
     var pl = render_pipeline;
     const data = mesh.data orelse return;
     if (mesh.vertex_count == 0) return;
@@ -1084,7 +1087,7 @@ pub fn swizzled_offset(x: u32, y: u32, width: u32) usize {
 var textures = Util.ResourceTable(TextureData, 64, Texture.Handle).init();
 var bound_texture: Texture.Handle = .none;
 
-pub fn create_texture(desc: *const Texture.UploadDesc) anyerror!Texture.Handle {
+pub fn create_texture(desc: *const Texture.UploadDesc) gfx_api.CreateTextureError!Texture.Handle {
     const width = desc.width;
     const height = desc.height;
     const data = desc.pixels;
@@ -1114,7 +1117,7 @@ pub fn create_texture(desc: *const Texture.UploadDesc) anyerror!Texture.Handle {
 // correct (swizzled or linear) layout thanks to Rendering.Texture.set_pixel
 // routing writes through pixel_offset. We must NOT swizzle again here.
 pub fn update_texture(handle: Texture.Handle, data: []align(16) u8) void {
-    const tex = textures.get(handle) orelse return;
+    const tex = textures.get(handle) orelse Util.panic_invalid_handle("psp gfx", "update_texture", handle);
 
     if (tex.in_vram) {
         // The GE is sampling from VRAM; mirror the RAM buffer over it.
@@ -1130,7 +1133,8 @@ pub fn update_texture(handle: Texture.Handle, data: []align(16) u8) void {
 
 pub fn bind_texture(handle: Texture.Handle) void {
     bound_texture = handle;
-    const tex = textures.get(handle) orelse return;
+    if (handle.is_null()) return;
+    const tex = textures.get(handle) orelse Util.panic_invalid_handle("psp gfx", "bind_texture", handle);
 
     const layout: ge_list.TextureDataLayout = if (tex.swizzled) .swizzled else .linear;
 
@@ -1156,6 +1160,8 @@ pub fn bind_texture(handle: Texture.Handle) void {
 }
 
 pub fn destroy_texture(handle: Texture.Handle) void {
+    if (handle.is_null()) return;
+    if (textures.get(handle) == null) Util.panic_invalid_handle("psp gfx", "destroy_texture", handle);
     if (textures.get(handle)) |tex| {
         if (tex.in_vram) {
             if (tex.vram_data) |data| vram_free(data);

@@ -1,12 +1,18 @@
 const std = @import("std");
 
+pub const InitError = error{
+    OutOfMemory,
+    SurfaceInitFailed,
+    VulkanNotSupported,
+};
+
 /// The contract every surface backend must satisfy. Surfaces have real
 /// instance state (window handle, dimensions, etc.) so methods take a
 /// `*Backend` self pointer. This struct is never instantiated -- it
 /// exists purely to drive `assertImpl` at comptime.
 pub fn Interface(comptime Backend: type) type {
     return struct {
-        init: fn (*Backend, u32, u32, [:0]const u8, bool, bool, bool) anyerror!void,
+        init: fn (*Backend, u32, u32, [:0]const u8, bool, bool, bool) InitError!void,
         deinit: fn (*Backend) void,
         update: fn (*Backend) bool,
         draw: fn (*Backend) void,

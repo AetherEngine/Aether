@@ -1,4 +1,5 @@
 const std = @import("std");
+const audio_api = @import("../audio_api.zig");
 const Stream = @import("../../audio/stream.zig").Stream;
 
 var audio_alloc: std.mem.Allocator = undefined;
@@ -9,7 +10,7 @@ pub fn setup(alloc: std.mem.Allocator, io: std.Io) void {
     audio_io = io;
 }
 
-pub fn init() anyerror!void {}
+pub fn init() audio_api.InitError!void {}
 pub fn deinit() void {}
 pub fn update() void {}
 pub fn suspend_for_applet() void {}
@@ -19,7 +20,7 @@ pub fn max_voices() u32 {
     return 32;
 }
 
-pub fn play_slot(_: u8, _: Stream) anyerror!void {}
+pub fn play_slot(_: u8, _: Stream) audio_api.PlaySlotError!void {}
 
 pub fn stop_slot(_: u8) void {}
 

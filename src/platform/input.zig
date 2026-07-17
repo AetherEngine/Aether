@@ -24,7 +24,7 @@ comptime {
     input_api.assert_impl(Api);
 }
 
-pub fn init(alloc: std.mem.Allocator, io: std.Io) !void {
+pub fn init(alloc: std.mem.Allocator, io: std.Io) input_api.InitError!void {
     try core.init(alloc);
     Api.setup(alloc, io);
     try Api.init();
@@ -45,7 +45,7 @@ pub fn update() void {
     Api.pump();
 }
 
-pub fn begin_text_input_session(target: core.TextInputTarget, opts: core.TextInputOptions) !void {
+pub fn begin_text_input_session(target: *const core.TextInputTarget, opts: *const core.TextInputOptions) input_api.TextSessionError!void {
     try Api.begin_text_input_session(target, opts);
 }
 

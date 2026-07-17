@@ -2,6 +2,7 @@
 //! engine update and translates them into Aether core input events.
 
 const std = @import("std");
+const input_api = @import("../input_api.zig");
 const core = @import("../../core/input/input.zig");
 const Util = @import("../../util/util.zig");
 const c = @import("../nintendo_c.zig").switch_c;
@@ -60,7 +61,7 @@ pub fn setup(_: std.mem.Allocator, _: std.Io) void {
     current_cursor_mode = .visible;
 }
 
-pub fn init() anyerror!void {
+pub fn init() input_api.InitError!void {
     if (c.hidInitialize() != 0) return error.InputInitFailed;
     c.hidInitializeTouchScreen();
     c.padConfigureInput(1, HID_NPAD_STYLE_STANDARD);
@@ -114,7 +115,7 @@ pub fn handle_operation_mode_changed() void {
     reset_previous_input_state();
 }
 
-pub fn begin_text_input_session(target: core.TextInputTarget, options: core.TextInputOptions) anyerror!void {
+pub fn begin_text_input_session(target: *const core.TextInputTarget, options: *const core.TextInputOptions) input_api.TextSessionError!void {
     var config_buf: [SWKBD_CONFIG_BYTES]u8 align(8) = @splat(0);
     const config: *anyopaque = @ptrCast(&config_buf);
 

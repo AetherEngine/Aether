@@ -8,6 +8,12 @@ pub const Audio = @import("audio/audio.zig");
 pub const Math = @import("math/math.zig");
 pub const Engine = @import("engine.zig").Engine;
 pub const ctx_to_self = Util.ctx_to_self;
+pub const PlatformApi = struct {
+    pub const gfx = @import("platform/gfx_api.zig");
+    pub const audio = @import("platform/audio_api.zig");
+    pub const input = @import("platform/input_api.zig");
+    pub const surface = @import("platform/surface.zig");
+};
 
 /// PSP-exclusive system utility dialogs (OSK, network configuration).
 /// Only available when `platform == .psp`; evaluates to `void` otherwise.

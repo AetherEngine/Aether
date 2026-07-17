@@ -19,6 +19,11 @@ pub const UpdateDesc = struct {
     vertex_stride: usize,
 };
 
+pub const DataError = error{
+    OutOfMemory,
+    IndexOverflow,
+};
+
 /// CPU-side editable mesh data. On borrowed-source backends such as PSP and
 /// 3DS, this data must remain alive while the uploaded Mesh uses it.
 pub fn MeshData(comptime V: type) type {
@@ -30,7 +35,7 @@ pub fn MeshData(comptime V: type) type {
         vertices: std.ArrayList(Vertex),
         indices: std.ArrayList(Index),
 
-        pub fn init(alloc: std.mem.Allocator) !Self {
+        pub fn init(alloc: std.mem.Allocator) DataError!Self {
             var vertices = try std.ArrayList(V).initCapacity(alloc, 32);
             errdefer vertices.deinit(alloc);
             const indices = try std.ArrayList(Index).initCapacity(alloc, 32);
@@ -46,7 +51,7 @@ pub fn MeshData(comptime V: type) type {
         }
 
         /// Append a slice of vertices, growing the buffer as needed.
-        pub fn append(self: *Self, alloc: std.mem.Allocator, verts: []const V) !void {
+        pub fn append(self: *Self, alloc: std.mem.Allocator, verts: []const V) DataError!void {
             try self.vertices.appendSlice(alloc, verts);
         }
 
@@ -60,7 +65,7 @@ pub fn MeshData(comptime V: type) type {
             self.indices.clearAndFree(alloc);
         }
 
-        pub fn ensure_tri_capacity(self: *Self, alloc: std.mem.Allocator, count: usize) !void {
+        pub fn ensure_tri_capacity(self: *Self, alloc: std.mem.Allocator, count: usize) DataError!void {
             const add_verts = count * 3;
             if (indexing_enabled) {
                 if (self.vertices.items.len + add_verts > @as(usize, std.math.maxInt(Index)) + 1) return error.IndexOverflow;
@@ -69,7 +74,7 @@ pub fn MeshData(comptime V: type) type {
             try self.vertices.ensureTotalCapacity(alloc, self.vertices.items.len + add_verts);
         }
 
-        pub fn ensure_quad_capacity(self: *Self, alloc: std.mem.Allocator, count: usize) !void {
+        pub fn ensure_quad_capacity(self: *Self, alloc: std.mem.Allocator, count: usize) DataError!void {
             if (indexing_enabled) {
                 const add_verts = count * 4;
                 if (self.vertices.items.len + add_verts > @as(usize, std.math.maxInt(Index)) + 1) return error.IndexOverflow;
@@ -80,12 +85,12 @@ pub fn MeshData(comptime V: type) type {
             }
         }
 
-        pub inline fn add_tri(self: *Self, alloc: std.mem.Allocator, a: V, b: V, c: V) !void {
+        pub inline fn add_tri(self: *Self, alloc: std.mem.Allocator, a: V, b: V, c: V) DataError!void {
             try self.ensure_tri_capacity(alloc, 1);
             self.add_tri_assume_capacity(a, b, c);
         }
 
-        pub inline fn add_quad(self: *Self, alloc: std.mem.Allocator, a: V, b: V, c: V, d: V) !void {
+        pub inline fn add_quad(self: *Self, alloc: std.mem.Allocator, a: V, b: V, c: V, d: V) DataError!void {
             try self.ensure_quad_capacity(alloc, 1);
             self.add_quad_assume_capacity(a, b, c, d);
         }
@@ -132,7 +137,7 @@ pub fn Mesh(comptime V: type) type {
 
         handle: Handle,
 
-        pub fn init(desc: *const Desc) !Self {
+        pub fn init(desc: *const Desc) @import("../platform/gfx_api.zig").CreateMeshError!Self {
             const handle = try gfx.api.create_mesh(desc);
             return .{
                 .handle = handle,
