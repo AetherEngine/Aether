@@ -128,7 +128,15 @@ pub fn main(init: std.process.Init) !void {
         .title = "My Game",
     }, &my_state.state());
     defer engine.deinit();
-    try engine.run();
+    engine.run() catch |err| switch (err) {
+        error.StateTransitionFailed => {
+            if (engine.last_transition_failure()) |state_err| {
+                ae.Util.game_logger.err("state transition failed: {s}", .{@errorName(state_err)});
+            }
+            return error.EngineStateTransitionFailed;
+        },
+        else => return err,
+    };
 }
 ```
 

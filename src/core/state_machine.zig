@@ -8,10 +8,15 @@ const logger = @import("../util/logger.zig");
 const Engine = @import("../engine.zig").Engine;
 
 pub const StateMachine = struct {
+    pub const TransitionError = error{
+        StateTransitionFailed,
+    };
+
     initialized: bool = false,
     has_current: bool = false,
     curr_state: State = undefined,
     pending_state: ?State = null,
+    last_transition_error: ?anyerror = null,
 
     pub fn init(self: *StateMachine, engine: *Engine, state: *const State) anyerror!void {
         assert(!self.initialized);
@@ -20,6 +25,7 @@ pub const StateMachine = struct {
         try self.curr_state.init(engine);
 
         self.pending_state = null;
+        self.last_transition_error = null;
         self.has_current = true;
         self.initialized = true;
         assert(self.initialized);
@@ -33,6 +39,7 @@ pub const StateMachine = struct {
             self.has_current = false;
         }
         self.pending_state = null;
+        self.last_transition_error = null;
         self.initialized = false;
         assert(!self.initialized);
     }
@@ -49,7 +56,13 @@ pub const StateMachine = struct {
         return self.pending_state != null;
     }
 
-    pub fn commit_pending(self: *StateMachine, engine: *Engine) anyerror!void {
+    /// Returns the original error from the most recent failed replacement
+    /// state's `init`, if a queued transition failed during commit.
+    pub fn last_transition_failure(self: *const StateMachine) ?anyerror {
+        return self.last_transition_error;
+    }
+
+    pub fn commit_pending(self: *StateMachine, engine: *Engine) TransitionError!void {
         assert(self.initialized);
 
         const next = self.pending_state orelse return;
@@ -64,13 +77,15 @@ pub const StateMachine = struct {
 
         self.curr_state = next;
         self.curr_state.init(engine) catch |err| {
+            self.last_transition_error = err;
             if (!builtin.is_test) {
                 Util.engine_logger.err("state transition failed during init: {s}; exiting", .{@errorName(err)});
             }
             logger.flush();
             engine.quit();
-            return err;
+            return error.StateTransitionFailed;
         };
+        self.last_transition_error = null;
         self.has_current = true;
     }
 
@@ -171,7 +186,8 @@ test "state transition init failure exits without deinit retry" {
     defer states.deinit(&engine);
 
     states.transition(&b_state);
-    try std.testing.expectError(error.TestInitFailed, states.commit_pending(&engine));
+    try std.testing.expectError(error.StateTransitionFailed, states.commit_pending(&engine));
+    try std.testing.expectEqual(error.TestInitFailed, states.last_transition_failure().?);
     try std.testing.expect(!engine.running);
     try std.testing.expectEqual(@as(u32, 1), a.deinit_count);
     try std.testing.expectEqual(@as(u32, 0), b.init_count);
