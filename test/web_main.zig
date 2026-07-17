@@ -73,6 +73,7 @@ fn webMemoryConfig() ae.Util.MemoryConfig {
         .render = 12 * 1024 * 1024,
         .audio = 10 * 1024 * 1024,
         .game = 2 * 1024 * 1024,
+        .frame = 2 * 1024 * 1024,
         .user = 8 * 1024 * 1024,
     };
 }

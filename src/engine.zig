@@ -138,6 +138,7 @@ pub const Engine = struct {
     io: std.Io,
     pool: memory.PoolAlloc,
     trackers: [TRACKER_COUNT]CategoryTracker,
+    frame_scratch: std.heap.ArenaAllocator,
     running: bool,
     vsync: bool,
     state: Core.State,
@@ -224,6 +225,8 @@ pub const Engine = struct {
                 .name = f.name,
             };
         }
+        self.frame_scratch = std.heap.ArenaAllocator.init(self.tracker_allocator(.frame));
+        errdefer self.frame_scratch.deinit();
 
         // Dirs must resolve BEFORE logger (which opens a log file in the
         // data dir) and BEFORE Platform.init (which may read resources).
@@ -246,10 +249,12 @@ pub const Engine = struct {
             error.OutOfMemory => return error.StateInitOutOfMemory,
             else => return err,
         };
+        self.reset_frame_scratch();
     }
 
     pub fn deinit(self: *Engine) void {
         Core.state_machine.deinit(self);
+        self.frame_scratch.deinit();
         Rendering.Texture.Default.deinit(self.allocator(.render));
         Platform.deinit();
         logger.deinit(self.io);
@@ -257,7 +262,20 @@ pub const Engine = struct {
     }
 
     pub fn allocator(self: *Engine, p: Pool) std.mem.Allocator {
+        if (p == .frame) return self.frame_allocator();
+        return self.tracker_allocator(p);
+    }
+
+    pub fn frame_allocator(self: *Engine) std.mem.Allocator {
+        return self.frame_scratch.allocator();
+    }
+
+    fn tracker_allocator(self: *Engine, p: Pool) std.mem.Allocator {
         return self.trackers[@intFromEnum(p)].get_allocator();
+    }
+
+    fn reset_frame_scratch(self: *Engine) void {
+        _ = self.frame_scratch.reset(.free_all);
     }
 
     pub fn quit(self: *Engine) void {
@@ -412,6 +430,7 @@ pub const Engine = struct {
     }
 
     pub fn beginRun(self: *Engine) void {
+        self.reset_frame_scratch();
         self.run_loop.reset(self.io);
     }
 
@@ -429,6 +448,8 @@ pub const Engine = struct {
     }
 
     fn stepFrameInternal(self: *Engine, allow_sleep: bool) !void {
+        defer self.reset_frame_scratch();
+
         const US_PER_S: u64 = std.time.us_per_s;
         const NS_PER_US: i64 = 1000;
 
@@ -668,6 +689,80 @@ pub const Engine = struct {
         }
     }
 };
+
+test "frame scratch allocator resets tracked usage" {
+    const frame_budget = 4096;
+    var backing: [16 * 1024]u8 align(64) = undefined;
+    var engine: Engine = undefined;
+
+    engine.pool = memory.PoolAlloc.init(backing[0..], "test");
+    const inner = engine.pool.allocator();
+
+    const config = MemoryConfig{
+        .render = 1024,
+        .audio = 1024,
+        .game = 1024,
+        .frame = frame_budget,
+        .user = 1024,
+    };
+    inline for (std.meta.fields(Pool), 0..) |f, i| {
+        engine.trackers[i] = .{
+            .inner = inner,
+            .used = 0,
+            .budget = @field(config, f.name),
+            .high_water = 0,
+            .allocation_count = 0,
+            .last_failed_request = null,
+            .name = f.name,
+        };
+    }
+    engine.frame_scratch = std.heap.ArenaAllocator.init(engine.tracker_allocator(.frame));
+    defer engine.frame_scratch.deinit();
+
+    const alloc = engine.frame_allocator();
+    _ = try alloc.alloc(u8, 256);
+    try std.testing.expect(engine.pool_used(.frame) > 0);
+
+    engine.reset_frame_scratch();
+    try std.testing.expectEqual(@as(usize, 0), engine.pool_used(.frame));
+    try std.testing.expect(engine.pool_high_water(.frame) > 0);
+}
+
+test "zero frame budget disables frame scratch allocations" {
+    var backing: [16 * 1024]u8 align(64) = undefined;
+    var engine: Engine = undefined;
+
+    engine.pool = memory.PoolAlloc.init(backing[0..], "test");
+    const inner = engine.pool.allocator();
+
+    const config = MemoryConfig{
+        .render = 1024,
+        .audio = 1024,
+        .game = 1024,
+        .frame = 0,
+        .user = 1024,
+    };
+    inline for (std.meta.fields(Pool), 0..) |f, i| {
+        engine.trackers[i] = .{
+            .inner = inner,
+            .used = 0,
+            .budget = @field(config, f.name),
+            .high_water = 0,
+            .allocation_count = 0,
+            .last_failed_request = null,
+            .name = f.name,
+        };
+    }
+    engine.frame_scratch = std.heap.ArenaAllocator.init(engine.tracker_allocator(.frame));
+    defer engine.frame_scratch.deinit();
+
+    try std.testing.expectError(error.OutOfMemory, engine.frame_allocator().alloc(u8, 1));
+    try std.testing.expectEqual(@as(usize, 0), engine.pool_used(.frame));
+    try std.testing.expect(engine.pool_last_failed_request(.frame) != null);
+
+    engine.reset_frame_scratch();
+    try std.testing.expectEqual(@as(usize, 0), engine.pool_used(.frame));
+}
 
 fn elapsedNsBetween(start_ns: i96, end_ns: i96) i64 {
     return clampI96ToI64(end_ns - start_ns);
