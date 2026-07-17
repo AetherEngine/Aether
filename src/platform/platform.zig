@@ -12,7 +12,7 @@ const gfx_api = @import("gfx_api.zig");
 const audio_api = @import("audio_api.zig");
 const input_api = @import("input_api.zig");
 
-pub const GraphicsAPI = @import("options").@"build.Gfx";
+pub const GraphicsAPI = @TypeOf(@import("options").config.gfx);
 
 pub const InitError = error{
     GfxInitOutOfMemory,

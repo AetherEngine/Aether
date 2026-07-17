@@ -10,11 +10,11 @@ User code is structured as hooks into the engine via a `State` interface. You im
 ## Features
 
 - **Cross-platform**: Windows, Linux, macOS (PSP/Switch planned)
-- **Multiple graphics backends**: OpenGL 4.5, Vulkan — selected at compile time, overridable with `-Dgfx=opengl`
+- **Multiple graphics backends**: OpenGL 4.5, Vulkan -- selected at compile time, overridable with `-Dgfx=opengl`
 - **Fixed-step game loop**: 144 Hz updates, 20 Hz ticks, uncapped rendering
 - **Action-based input system**: keyboard, mouse, and gamepad with callback bindings
 - **Generic mesh & pipeline API**: define vertex layouts from structs using comptime reflection
-- **Budgeted memory pools**: render, audio, game, user, and scratch — no hidden heap allocations
+- **Budgeted memory pools**: render, audio, game, user, and scratch -- no hidden heap allocations
 
 ## Requirements
 
@@ -46,11 +46,11 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     // Optional: allow overriding the graphics backend with -Dgfx=opengl
-    const overrides: Aether.Config.Overrides = .{
-        .gfx = b.option(Aether.Gfx, "gfx", "Graphics backend override (default: auto-detect from target)"),
+    const overrides: Aether.config.Config.Overrides = .{
+        .gfx = b.option(Aether.config.Gfx, "gfx", "Graphics backend override (default: auto-detect from target)"),
     };
 
-    const config = Aether.Config.resolve(target, overrides);
+    const config = Aether.config.Config.resolve(target, overrides);
 
     const ae_dep = b.dependency("engine", .{
         .target = target,
@@ -59,7 +59,7 @@ pub fn build(b: *std.Build) void {
 
     // Create a game executable -- this wires up the engine module
     // and all platform-specific dependencies (GLFW/Vulkan/OpenGL/pspsdk)
-    const exe = Aether.addGame(ae_dep.builder, b, .{
+    const exe = Aether.modules.addGame(ae_dep.builder, b, .{
         .name = "my_game",
         .root_source_file = b.path("src/main.zig"),
         .target = target,
@@ -68,7 +68,7 @@ pub fn build(b: *std.Build) void {
     });
 
     // Export the artifact (produces EBOOT.PBP for PSP, install artifact otherwise)
-    Aether.exportArtifact(ae_dep.builder, b, exe, config, .{
+    Aether.packaging.exportArtifact(ae_dep.builder, b, exe, config, .{
         .title = "My Game",
     });
 
@@ -78,7 +78,7 @@ pub fn build(b: *std.Build) void {
 }
 ```
 
-The first argument to `addGame` and `exportArtifact` is the
+The first argument to `modules.addGame` and `packaging.exportArtifact` is the
 dependency's builder (`ae_dep.builder`), and the second is your project's
 builder (`b`). This lets Aether resolve its own internal dependencies (GLFW,
 Vulkan, Slang, pspsdk) from its `build.zig.zon` while building artifacts that
@@ -222,7 +222,7 @@ Static textures can use the default `.cpu_access = .none`; request
 
 ## Build API Reference
 
-### `Aether.addGame(owner, b, opts) -> *Compile`
+### `Aether.modules.addGame(owner, b, opts) -> *Compile`
 
 Creates a game executable with the engine module and platform dependencies wired up.
 
@@ -232,9 +232,9 @@ Creates a game executable with the engine module and platform dependencies wired
 | `root_source_file` | `LazyPath` | Path to your main source file |
 | `target` | `ResolvedTarget` | Build target |
 | `optimize` | `OptimizeMode` | Optimization level (default: `.Debug`) |
-| `overrides` | `Config.Overrides` | Graphics/display mode overrides (default: `.{}`) |
+| `overrides` | `config.Config.Overrides` | Graphics/display mode overrides (default: `.{}`) |
 
-### `Aether.exportArtifact(owner, b, exe, config, opts)`
+### `Aether.packaging.exportArtifact(owner, b, exe, config, opts)`
 
 Exports the build artifact. For PSP targets, produces an `EBOOT.PBP`. For desktop, installs the artifact normally.
 
@@ -246,16 +246,16 @@ Exports the build artifact. For PSP targets, produces an `EBOOT.PBP`. For deskto
 | `pic0`, `pic1` | `?LazyPath` | PSP background images (optional) |
 | `snd0` | `?LazyPath` | PSP startup sound (optional) |
 
-### `Aether.Config.resolve(target, overrides) -> Config`
+### `Aether.config.Config.resolve(target, overrides) -> Config`
 
-Resolves the full engine configuration (platform, graphics backend, audio, input) from the build target and any user overrides. Pass the result to `exportArtifact`.
+Resolves the full engine configuration (platform, graphics backend, audio, input) from the build target and any user overrides. Pass the result to `packaging.exportArtifact`.
 
-### `Aether.Config.Overrides`
+### `Aether.config.Config.Overrides`
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `gfx` | `?Gfx` | Graphics backend override (`null` = auto-detect) |
-| `psp_display_mode` | `?PspDisplayMode` | PSP display mode (`null` = `rgba8888`) |
+| `gfx` | `?config.Gfx` | Graphics backend override (`null` = auto-detect) |
+| `psp_display_mode` | `?config.PspDisplayMode` | PSP display mode (`null` = `rgba8888`) |
 
 ## License
 
