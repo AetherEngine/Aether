@@ -13,6 +13,8 @@ const vertex = Rendering.vertex;
 const Mesh = Rendering.mesh;
 const Texture = Rendering.Texture;
 
+pub const mesh_source_mode = Mesh.SourceMode.borrowed_cpu;
+
 var render_alloc: std.mem.Allocator = undefined;
 var render_io: std.Io = undefined;
 
@@ -819,6 +821,18 @@ pub fn set_view_matrix(mat: *const Mat4) void {
     advance_stall();
 }
 
+pub fn set_render_state(state: *const Rendering.RenderState) void {
+    set_alpha_blend(state.blend == .alpha);
+    set_depth_write(state.depth_write);
+    set_culling(state.cull);
+    set_clip_planes(state.clip_planes);
+    set_uv_offset(state.uv_offset[0], state.uv_offset[1]);
+    set_fog(state.fog.enabled, state.fog.start, state.fog.end, state.fog.color[0], state.fog.color[1], state.fog.color[2]);
+    set_proj_matrix(&state.proj);
+    set_view_matrix(&state.view);
+    bind_texture(if (state.texture.is_null()) Texture.Default.handle else state.texture);
+}
+
 pub fn start_frame() bool {
     const allow_tear = !gfx.surface.sync;
     var attempts: u32 = 0;
@@ -921,7 +935,7 @@ const MeshData = struct {
 
 var meshes = Util.ResourceTable(MeshData, 2048, Mesh.Handle).init();
 
-pub fn create_mesh() anyerror!Mesh.Handle {
+pub fn create_mesh(_: *const Mesh.Desc) anyerror!Mesh.Handle {
     return meshes.add(.{
         .data = null,
         .len = 0,
@@ -936,8 +950,10 @@ pub fn destroy_mesh(handle: Mesh.Handle) void {
     _ = meshes.remove(handle);
 }
 
-pub fn update_mesh(handle: Mesh.Handle, data: []const u8, indices: []const Mesh.Index) void {
+pub fn update_mesh(handle: Mesh.Handle, desc: *const Mesh.UpdateDesc) void {
     var mesh = meshes.get(handle) orelse return;
+    const data = desc.vertices;
+    const indices = desc.indices;
     const index_bytes = std.mem.sliceAsBytes(indices);
 
     mesh.data = data.ptr;
@@ -1000,9 +1016,9 @@ const TextureData = struct {
     // Pointer actually bound to the GE. Equals cpu_data until the texture is
     // made VRAM-resident, after which it points at the VRAM copy.
     data: [*]const u8,
-    // The caller's RAM buffer (Rendering.Texture.data.ptr). Always valid and
-    // always in the correct (swizzled or linear) layout, since set_pixel
-    // routes writes through pixel_offset.
+    // The texture's RAM backing. Always valid and always in the correct
+    // (swizzled or linear) layout, since set_pixel routes writes through
+    // pixel_offset.
     cpu_data: [*]align(16) u8,
     vram_data: ?[]align(16) u8,
     in_vram: bool,
@@ -1068,7 +1084,10 @@ pub fn swizzled_offset(x: u32, y: u32, width: u32) usize {
 var textures = Util.ResourceTable(TextureData, 64, Texture.Handle).init();
 var bound_texture: Texture.Handle = .none;
 
-pub fn create_texture(width: u32, height: u32, data: []align(16) u8) anyerror!Texture.Handle {
+pub fn create_texture(desc: *const Texture.UploadDesc) anyerror!Texture.Handle {
+    const width = desc.width;
+    const height = desc.height;
+    const data = desc.pixels;
     const width_bytes = width * tex_bpp;
     const should_swizzle = width_bytes * height >= 8 * 1024;
 

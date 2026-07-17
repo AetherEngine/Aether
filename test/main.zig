@@ -40,6 +40,7 @@ fn psp_cwd() std.Io.Dir {
 
 const Vertex = Rendering.Vertex;
 const MyMesh = Rendering.Mesh(Vertex);
+const MyMeshData = Rendering.MeshData(Vertex);
 
 const BATCH_A_TRIANGLES = 61;
 const BATCH_B_TRIANGLES = 78;
@@ -94,7 +95,7 @@ fn orientedPoint(cx: f32, cy: f32, lx: f32, ly: f32, angle: f32) [2]f32 {
 
 fn appendOrientedTriangle(
     alloc: std.mem.Allocator,
-    mesh: *MyMesh,
+    mesh: *MyMeshData,
     cx: f32,
     cy: f32,
     sx: f32,
@@ -115,7 +116,7 @@ fn appendOrientedTriangle(
     );
 }
 
-fn buildBatchA(alloc: std.mem.Allocator, mesh: *MyMesh) !void {
+fn buildBatchA(alloc: std.mem.Allocator, mesh: *MyMeshData) !void {
     try mesh.vertices.ensureTotalCapacity(alloc, BATCH_A_TRIANGLES * 3);
 
     try mesh.add_tri(
@@ -165,7 +166,7 @@ fn buildBatchA(alloc: std.mem.Allocator, mesh: *MyMesh) !void {
     }
 }
 
-fn buildBatchB(alloc: std.mem.Allocator, mesh: *MyMesh) !void {
+fn buildBatchB(alloc: std.mem.Allocator, mesh: *MyMeshData) !void {
     try mesh.vertices.ensureTotalCapacity(alloc, BATCH_B_TRIANGLES * 3);
 
     const cols = 9;
@@ -219,6 +220,8 @@ fn buildBatchB(alloc: std.mem.Allocator, mesh: *MyMesh) !void {
 }
 
 pub const MyState = struct {
+    batch_a_data: MyMeshData,
+    batch_b_data: MyMeshData,
     batch_a: MyMesh,
     batch_b: MyMesh,
     batch_a_transform: Rendering.Transform,
@@ -257,17 +260,23 @@ pub const MyState = struct {
 
         const render = engine.allocator(.render);
 
-        self.batch_a = try MyMesh.new(render);
-        self.batch_b = try MyMesh.new(render);
+        self.batch_a_data = try MyMeshData.init(render);
+        errdefer self.batch_a_data.deinit(render);
+        self.batch_b_data = try MyMeshData.init(render);
+        errdefer self.batch_b_data.deinit(render);
+        self.batch_a = try MyMesh.init(&.{});
+        errdefer self.batch_a.deinit();
+        self.batch_b = try MyMesh.init(&.{});
+        errdefer self.batch_b.deinit();
         self.batch_a_transform = Rendering.Transform.new();
         self.batch_b_transform = Rendering.Transform.new();
 
-        self.texture = try Rendering.Texture.load(engine.io, engine.dirs.resources, render, "test.png");
+        self.texture = try Rendering.Texture.load(engine.io, engine.dirs.resources, render, "test.png", .{});
 
-        try buildBatchA(render, &self.batch_a);
-        try buildBatchB(render, &self.batch_b);
-        self.batch_a.update();
-        self.batch_b.update();
+        try buildBatchA(render, &self.batch_a_data);
+        try buildBatchB(render, &self.batch_b_data);
+        self.batch_a.update(&self.batch_a_data);
+        self.batch_b.update(&self.batch_b_data);
 
         self.music_data = &.{};
         self.music_reader = .fixed(&.{});
@@ -298,8 +307,10 @@ pub const MyState = struct {
         var self = ae.ctx_to_self(MyState, ctx);
         const render = engine.allocator(.render);
         self.texture.deinit(render);
-        self.batch_b.deinit(render);
-        self.batch_a.deinit(render);
+        self.batch_b.deinit();
+        self.batch_a.deinit();
+        self.batch_b_data.deinit(render);
+        self.batch_a_data.deinit(render);
     }
 
     fn tick(ctx: *anyopaque, _: *ae.Engine) anyerror!void {
@@ -351,18 +362,19 @@ pub const MyState = struct {
     fn draw(ctx: *anyopaque, _: *ae.Engine, _: f32, _: *const Util.BudgetContext) anyerror!void {
         var self = ae.ctx_to_self(MyState, ctx);
 
-        Rendering.gfx.api.set_proj_matrix(&Math.Mat4.orthographicRh(
-            2 * @as(f32, @floatFromInt(Rendering.gfx.surface.get_width())) / @as(f32, @floatFromInt(Rendering.gfx.surface.get_height())),
-            2,
-            0,
-            1,
-        ));
+        Rendering.set_state(&.{
+            .texture = self.texture.handle,
+            .proj = Math.Mat4.orthographicRh(
+                2 * @as(f32, @floatFromInt(Rendering.gfx.surface.get_width())) / @as(f32, @floatFromInt(Rendering.gfx.surface.get_height())),
+                2,
+                0,
+                1,
+            ),
+            .depth_write = false,
+        });
 
-        Rendering.gfx.api.set_depth_write(false);
-        self.texture.bind();
         self.batch_b.draw(&self.batch_b_transform.get_matrix());
         self.batch_a.draw(&self.batch_a_transform.get_matrix());
-        Rendering.gfx.api.set_depth_write(true);
     }
 
     pub fn state(self: *MyState) State {

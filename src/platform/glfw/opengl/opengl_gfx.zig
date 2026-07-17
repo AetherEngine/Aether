@@ -15,6 +15,8 @@ const GLFWSurface = @import("../surface.zig");
 const basic_vert align(@alignOf(u32)) = @embedFile("aether_basic_vert").*;
 const basic_frag align(@alignOf(u32)) = @embedFile("aether_basic_frag").*;
 
+pub const mesh_source_mode = Mesh.SourceMode.uploaded_copy;
+
 var render_alloc: std.mem.Allocator = undefined;
 var render_io: std.Io = undefined;
 
@@ -183,6 +185,18 @@ pub fn set_view_matrix(mat: *const Mat4) void {
     shader.update_ubo();
 }
 
+pub fn set_render_state(state: *const Rendering.RenderState) void {
+    set_alpha_blend(state.blend == .alpha);
+    set_depth_write(state.depth_write);
+    set_culling(state.cull);
+    set_clip_planes(state.clip_planes);
+    set_uv_offset(state.uv_offset[0], state.uv_offset[1]);
+    set_fog(state.fog.enabled, state.fog.start, state.fog.end, state.fog.color[0], state.fog.color[1], state.fog.color[2]);
+    set_proj_matrix(&state.proj);
+    set_view_matrix(&state.view);
+    bind_texture(if (state.texture.is_null()) Texture.Default.handle else state.texture);
+}
+
 fn init_pipeline(layout: vertex.VertexLayout) !PipelineData {
     var vao: gl.uint = 0;
     gl.CreateVertexArrays(1, @ptrCast(&vao));
@@ -218,7 +232,7 @@ fn deinit_pipeline(pl: *PipelineData) void {
     pl.program.deinit();
 }
 
-pub fn create_mesh() anyerror!Mesh.Handle {
+pub fn create_mesh(_: *const Mesh.Desc) anyerror!Mesh.Handle {
     var vbo: gl.uint = 0;
     var ebo: gl.uint = 0;
     var buffers = [_]gl.uint{ 0, 0 };
@@ -246,8 +260,10 @@ pub fn destroy_mesh(handle: Mesh.Handle) void {
     _ = meshes.remove(handle);
 }
 
-pub fn update_mesh(handle: Mesh.Handle, data: []const u8, indices: []const Mesh.Index) void {
+pub fn update_mesh(handle: Mesh.Handle, desc: *const Mesh.UpdateDesc) void {
     var mesh = meshes.get(handle) orelse return;
+    const data = desc.vertices;
+    const indices = desc.indices;
 
     gl.NamedBufferData(mesh.vbo, @intCast(data.len), null, gl.STATIC_DRAW);
     gl.NamedBufferSubData(mesh.vbo, 0, @intCast(data.len), data.ptr);
@@ -278,7 +294,10 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
     }
 }
 
-pub fn create_texture(width: u32, height: u32, data: []align(16) u8) anyerror!Texture.Handle {
+pub fn create_texture(desc: *const Texture.UploadDesc) anyerror!Texture.Handle {
+    const width = desc.width;
+    const height = desc.height;
+    const data = desc.pixels;
     var tex: gl.uint = 0;
     gl.CreateTextures(gl.TEXTURE_2D, 1, @ptrCast(&tex));
     gl.TextureStorage2D(tex, 1, gl.RGBA8, @intCast(width), @intCast(height));

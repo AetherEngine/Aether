@@ -9,41 +9,40 @@ pub const MeshHandleTag = enum {};
 pub const Handle = Util.Handle(MeshHandleTag);
 pub const Index = u16;
 pub const indexing_enabled = options.config.mesh_indexing;
+pub const SourceMode = enum { borrowed_cpu, uploaded_copy };
 
-/// A generic mesh parameterised by vertex type `V`.
-///
-/// Vertex data is stored in `vertices` (an unmanaged ArrayList backed by the
-/// caller-supplied allocator). Use `append` to add vertices without touching
-/// the allocator directly. `update` must be called after any change to push
-/// data to the GPU.
-pub fn Mesh(comptime V: type) type {
+pub const Desc = struct {};
+
+pub const UpdateDesc = struct {
+    vertices: []const u8,
+    indices: []const Index = &.{},
+    vertex_stride: usize,
+};
+
+/// CPU-side editable mesh data. On borrowed-source backends such as PSP and
+/// 3DS, this data must remain alive while the uploaded Mesh uses it.
+pub fn MeshData(comptime V: type) type {
     return struct {
         const Self = @This();
 
         pub const Vertex = V;
 
-        handle: Handle,
         vertices: std.ArrayList(Vertex),
         indices: std.ArrayList(Index),
 
-        pub fn new(alloc: std.mem.Allocator) !Self {
-            const handle = try gfx.api.create_mesh();
-            errdefer gfx.api.destroy_mesh(handle);
+        pub fn init(alloc: std.mem.Allocator) !Self {
             var vertices = try std.ArrayList(V).initCapacity(alloc, 32);
             errdefer vertices.deinit(alloc);
             const indices = try std.ArrayList(Index).initCapacity(alloc, 32);
             return .{
-                .handle = handle,
                 .vertices = vertices,
                 .indices = indices,
             };
         }
 
         pub fn deinit(self: *Self, alloc: std.mem.Allocator) void {
-            gfx.api.destroy_mesh(self.handle);
             self.indices.deinit(alloc);
             self.vertices.deinit(alloc);
-            self.handle = .none;
         }
 
         /// Append a slice of vertices, growing the buffer as needed.
@@ -113,40 +112,61 @@ pub fn Mesh(comptime V: type) type {
             }
         }
 
-        /// Push the current vertex data to the GPU. Call after any `append` or
-        /// direct modification of `vertices.items` or `indices.items`.
-        pub fn update(self: *Self) void {
+        pub fn update_desc(self: *const Self) UpdateDesc {
+            return .{
+                .vertices = std.mem.sliceAsBytes(self.vertices.items),
+                .indices = if (indexing_enabled) self.indices.items else &.{},
+                .vertex_stride = @sizeOf(Vertex),
+            };
+        }
+    };
+}
+
+/// A generic mesh parameterised by vertex type `V`.
+pub fn Mesh(comptime V: type) type {
+    return struct {
+        const Self = @This();
+
+        pub const Vertex = V;
+        pub const Data = MeshData(V);
+
+        handle: Handle,
+
+        pub fn init(desc: *const Desc) !Self {
+            const handle = try gfx.api.create_mesh(desc);
+            return .{
+                .handle = handle,
+            };
+        }
+
+        pub fn deinit(self: *Self) void {
+            gfx.api.destroy_mesh(self.handle);
+            self.handle = .none;
+        }
+
+        /// Push the current CPU data to the backend. On borrowed-source
+        /// backends, the data must remain alive and stable after this call.
+        pub fn update(self: *Self, data: *const Data) void {
             if (gfx.validate_mesh_updates_outside_frame and gfx.frame_active) {
                 @panic("Rendering.Mesh.update called during an active frame; rebuild/upload meshes during update, not draw");
             }
-            gfx.api.update_mesh(
-                self.handle,
-                std.mem.sliceAsBytes(self.vertices.items),
-                if (indexing_enabled) self.indices.items else &.{},
-            );
+            const desc = data.update_desc();
+            gfx.api.update_mesh(self.handle, &desc);
         }
 
         pub fn draw(self: *Self, mat: *const Mat4) void {
-            gfx.api.draw_mesh(
-                self.handle,
-                mat,
-            );
+            gfx.api.draw_mesh(self.handle, mat);
         }
     };
 }
 
 test "mesh triangle and quad helpers build expected geometry" {
     const TestVertex = extern struct { id: u32 };
-    const TestMesh = Mesh(TestVertex);
+    const TestData = MeshData(TestVertex);
     const alloc = std.testing.allocator;
 
-    var mesh: TestMesh = .{
-        .handle = .none,
-        .vertices = try std.ArrayList(TestVertex).initCapacity(alloc, 0),
-        .indices = try std.ArrayList(Index).initCapacity(alloc, 0),
-    };
-    defer mesh.indices.deinit(alloc);
-    defer mesh.vertices.deinit(alloc);
+    var mesh = try TestData.init(alloc);
+    defer mesh.deinit(alloc);
 
     try mesh.add_tri(alloc, .{ .id = 0 }, .{ .id = 1 }, .{ .id = 2 });
     try mesh.add_quad(alloc, .{ .id = 3 }, .{ .id = 4 }, .{ .id = 5 }, .{ .id = 6 });

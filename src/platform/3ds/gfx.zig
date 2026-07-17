@@ -15,6 +15,8 @@ const Texture = Rendering.Texture;
 const gfx = @import("../gfx.zig");
 const basic_vert align(@alignOf(u32)) = @embedFile("aether_basic_vert").*;
 
+pub const mesh_source_mode = Mesh.SourceMode.borrowed_cpu;
+
 const horizon = zitrus.horizon;
 const mango = zitrus.mango;
 const pica = zitrus.hardware.pica;
@@ -339,6 +341,18 @@ pub fn set_view_matrix(m: *const Mat4) void {
     pending_state.view = m.*;
 }
 
+pub fn set_render_state(state: *const Rendering.RenderState) void {
+    set_alpha_blend(state.blend == .alpha);
+    set_depth_write(state.depth_write);
+    set_culling(state.cull);
+    set_clip_planes(state.clip_planes);
+    set_uv_offset(state.uv_offset[0], state.uv_offset[1]);
+    set_fog(state.fog.enabled, state.fog.start, state.fog.end, state.fog.color[0], state.fog.color[1], state.fog.color[2]);
+    set_proj_matrix(&state.proj);
+    set_view_matrix(&state.view);
+    bind_texture(if (state.texture.is_null()) Texture.Default.handle else state.texture);
+}
+
 pub fn start_frame() bool {
     if (!initialized or gfx.surface.device == .null) return false;
 
@@ -452,7 +466,7 @@ pub fn set_vsync(v: bool) void {
     bottom_presented = false;
 }
 
-pub fn create_mesh() anyerror!Mesh.Handle {
+pub fn create_mesh(_: *const Mesh.Desc) anyerror!Mesh.Handle {
     return meshes.add(.{}) orelse error.OutOfMeshSlots;
 }
 
@@ -462,8 +476,10 @@ pub fn destroy_mesh(handle: Mesh.Handle) void {
     _ = meshes.remove(handle);
 }
 
-pub fn update_mesh(handle: Mesh.Handle, data: []const u8, indices: []const Mesh.Index) void {
+pub fn update_mesh(handle: Mesh.Handle, desc: *const Mesh.UpdateDesc) void {
     const mesh = meshes.get_ptr(handle) orelse return;
+    const data = desc.vertices;
+    const indices = desc.indices;
     if (data.len == 0) {
         retire_mesh_data(mesh);
         return;
@@ -554,7 +570,10 @@ fn create_mesh_buffer_data(data: []const u8, usage: mango.BufferCreateInfo.Usage
     };
 }
 
-pub fn create_texture(width: u32, height: u32, data: []align(16) u8) anyerror!Texture.Handle {
+pub fn create_texture(desc: *const Texture.UploadDesc) anyerror!Texture.Handle {
+    const width = desc.width;
+    const height = desc.height;
+    const data = desc.pixels;
     if (!valid_texture_dimensions(width, height)) return error.UnsupportedTextureSize;
     if (data.len < @as(usize, width) * @as(usize, height) * 4) return error.TextureDataTooSmall;
 

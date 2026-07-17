@@ -20,6 +20,8 @@ const Context = @import("context.zig");
 const Swapchain = @import("swapchain.zig");
 const GarbageCollector = @import("garbage_collector.zig");
 
+pub const mesh_source_mode = Mesh.SourceMode.uploaded_copy;
+
 const CODE_MEM_SIZE = 512 * 1024;
 const UPLOAD_CMD_MEM_SIZE = 64 * 1024;
 const MAX_VERTEX_ATTRIBS = 32;
@@ -261,6 +263,18 @@ pub fn set_view_matrix(m: *const Mat4) void {
     pending_state.view = m.*;
 }
 
+pub fn set_render_state(state: *const Rendering.RenderState) void {
+    set_alpha_blend(state.blend == .alpha);
+    set_depth_write(state.depth_write);
+    set_culling(state.cull);
+    set_clip_planes(state.clip_planes);
+    set_uv_offset(state.uv_offset[0], state.uv_offset[1]);
+    set_fog(state.fog.enabled, state.fog.start, state.fog.end, state.fog.color[0], state.fog.color[1], state.fog.color[2]);
+    set_proj_matrix(&state.proj);
+    set_view_matrix(&state.view);
+    bind_texture(if (state.texture.is_null()) Texture.Default.handle else state.texture);
+}
+
 pub fn start_frame() bool {
     if (!initialized) return false;
     if (!swapchain.begin_frame(&gc)) return false;
@@ -304,7 +318,7 @@ pub fn set_vsync(v: bool) void {
     if (initialized) swapchain.set_vsync(v);
 }
 
-pub fn create_mesh() anyerror!Mesh.Handle {
+pub fn create_mesh(_: *const Mesh.Desc) anyerror!Mesh.Handle {
     return meshes.add(.{}) orelse return error.OutOfMeshes;
 }
 
@@ -314,8 +328,10 @@ pub fn destroy_mesh(handle: Mesh.Handle) void {
     _ = meshes.remove(handle);
 }
 
-pub fn update_mesh(handle: Mesh.Handle, data: []const u8, indices: []const Mesh.Index) void {
+pub fn update_mesh(handle: Mesh.Handle, desc: *const Mesh.UpdateDesc) void {
     const mesh = meshes.get_ptr(handle) orelse return;
+    const data = desc.vertices;
+    const indices = desc.indices;
 
     update_mesh_upload(&mesh.vertex, data);
     update_mesh_upload(&mesh.index, std.mem.sliceAsBytes(indices));
@@ -421,7 +437,10 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
     frame_vertex_count += @intCast(draw_count);
 }
 
-pub fn create_texture(width: u32, height: u32, data: []align(16) u8) anyerror!Texture.Handle {
+pub fn create_texture(desc: *const Texture.UploadDesc) anyerror!Texture.Handle {
+    const width = desc.width;
+    const height = desc.height;
+    const data = desc.pixels;
     if (width == 0 or height == 0) return error.InvalidTextureSize;
     if (data.len < @as(usize, width) * @as(usize, height) * 4) return error.TextureDataTooSmall;
     collect_retired_texture_slots();
@@ -674,7 +693,11 @@ fn ensure_image_descriptors_current() void {
 
 fn create_fallback_texture() !void {
     var white align(16) = [_]u8{ 0xFF, 0xFF, 0xFF, 0xFF };
-    current_texture = try create_texture(1, 1, &white);
+    current_texture = try create_texture(&.{
+        .width = 1,
+        .height = 1,
+        .pixels = white[0..],
+    });
     const current_index = texture_slots.raw_index(current_texture) orelse return error.OutOfTextures;
     image_descriptors[0] = image_descriptors[current_index];
     image_descriptors_dirty = true;

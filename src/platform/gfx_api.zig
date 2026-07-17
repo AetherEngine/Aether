@@ -3,6 +3,7 @@ const Mat4 = @import("../math/math.zig").Mat4;
 const Rendering = @import("../rendering/rendering.zig");
 const Mesh = Rendering.mesh;
 const Texture = Rendering.Texture;
+const RenderState = Rendering.RenderState;
 
 /// The contract every graphics backend must satisfy. Each field names a
 /// public top-level fn on the backend module and gives its exact type.
@@ -10,19 +11,13 @@ const Texture = Rendering.Texture;
 /// `assertImpl` at comptime, replacing the runtime vtable that used to
 /// hold function pointers here.
 pub const Interface = struct {
+    mesh_source_mode: Mesh.SourceMode,
+
     setup: fn (std.mem.Allocator, std.Io) void,
     init: fn () anyerror!void,
     deinit: fn () void,
 
-    set_clear_color: fn (f32, f32, f32, f32) void,
-    set_alpha_blend: fn (bool) void,
-    set_depth_write: fn (bool) void,
-    set_fog: fn (bool, f32, f32, f32, f32, f32) void,
-    set_clip_planes: fn (bool) void,
-    set_culling: fn (bool) void,
-    set_uv_offset: fn (f32, f32) void,
-    set_proj_matrix: fn (*const Mat4) void,
-    set_view_matrix: fn (*const Mat4) void,
+    set_render_state: fn (*const RenderState) void,
 
     start_frame: fn () bool,
     end_frame: fn () void,
@@ -32,14 +27,13 @@ pub const Interface = struct {
 
     set_vsync: fn (bool) void,
 
-    create_mesh: fn () anyerror!Mesh.Handle,
+    create_mesh: fn (*const Mesh.Desc) anyerror!Mesh.Handle,
     destroy_mesh: fn (Mesh.Handle) void,
-    update_mesh: fn (Mesh.Handle, []const u8, []const Mesh.Index) void,
+    update_mesh: fn (Mesh.Handle, *const Mesh.UpdateDesc) void,
     draw_mesh: fn (Mesh.Handle, *const Mat4) void,
 
-    create_texture: fn (u32, u32, []align(16) u8) anyerror!Texture.Handle,
+    create_texture: fn (*const Texture.UploadDesc) anyerror!Texture.Handle,
     update_texture: fn (Texture.Handle, []align(16) u8) void,
-    bind_texture: fn (Texture.Handle) void,
     destroy_texture: fn (Texture.Handle) void,
     force_texture_resident: fn (Texture.Handle) void,
 };
