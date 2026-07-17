@@ -32,10 +32,6 @@ fn slangcPath(owner: *std.Build) ?std.Build.LazyPath {
     return dep.path(exe_name);
 }
 
-fn requireSlangcPath(owner: *std.Build) std.Build.LazyPath {
-    return slangcPath(owner) orelse @panic("slangc dependency unavailable; run zig build --fetch");
-}
-
 fn addSlangStep(b: *std.Build, slangc: std.Build.LazyPath, args: []const []const u8, comptime output_name: []const u8, input: std.Build.LazyPath) std.Build.LazyPath {
     const run = std.Build.Step.Run.create(b, "slangc " ++ output_name);
     run.addFileArg(slangc);
@@ -79,7 +75,7 @@ fn internalShaderStages(owner: *std.Build, b: *std.Build, config: Config) ?Shade
 
     if (config.platform == .nintendo_switch and config.gfx == .default) {
         const uam = b.pathJoin(&.{ tools.devkitProPath(b), "tools/bin/uam" });
-        const slangc = requireSlangcPath(owner);
+        const slangc = slangcPath(owner) orelse return null;
         const source = owner.path("src/rendering/shaders/basic.slang");
         const vert_glsl = addSlangStep(b, slangc, &.{
             "-target",       "glsl",       "-matrix-layout-column-major",
@@ -113,7 +109,7 @@ fn internalShaderStages(owner: *std.Build, b: *std.Build, config: Config) ?Shade
 
     switch (config.gfx) {
         .vulkan => {
-            const slangc = requireSlangcPath(owner);
+            const slangc = slangcPath(owner) orelse return null;
             const source = owner.path("src/rendering/shaders/basic.slang");
             return .{
                 .vert = addSlangStep(b, slangc, &.{
@@ -129,7 +125,7 @@ fn internalShaderStages(owner: *std.Build, b: *std.Build, config: Config) ?Shade
             };
         },
         .opengl => {
-            const slangc = requireSlangcPath(owner);
+            const slangc = slangcPath(owner) orelse return null;
             const source = owner.path("src/rendering/shaders/basic.slang");
             return .{
                 .vert = addSlangStep(b, slangc, &.{
@@ -145,7 +141,7 @@ fn internalShaderStages(owner: *std.Build, b: *std.Build, config: Config) ?Shade
             };
         },
         .webgl => {
-            const slangc = requireSlangcPath(owner);
+            const slangc = slangcPath(owner) orelse return null;
             const spirv_cross = tools.spirvCrossPath(b);
             const source = owner.path("src/rendering/shaders/basic.slang");
             const vert_spv = addSlangStep(b, slangc, &.{
