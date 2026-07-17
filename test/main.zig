@@ -419,6 +419,12 @@ pub fn main(init: std.process.Init) !void {
     };
     defer engine.deinit();
     engine.run() catch |err| switch (err) {
+        error.StateTransitionFailed => {
+            if (engine.last_transition_failure()) |state_err| {
+                Util.game_logger.err("state transition failed: {s}", .{@errorName(state_err)});
+            }
+            return error.EngineStateTransitionFailed;
+        },
         error.OutOfMemory => return error.EngineRunOutOfMemory,
         else => return err,
     };

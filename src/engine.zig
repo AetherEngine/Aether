@@ -299,6 +299,10 @@ pub const Engine = struct {
         return self.states.has_pending_transition();
     }
 
+    pub fn last_transition_failure(self: *const Engine) ?anyerror {
+        return self.states.last_transition_failure();
+    }
+
     pub fn set_vsync(self: *Engine, v: bool) void {
         self.vsync = v;
         Platform.gfx.set_vsync(v);
