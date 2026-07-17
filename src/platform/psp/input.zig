@@ -14,7 +14,7 @@ const dialogs = @import("psp_dialogs.zig");
 var prev_pad: ctrl.Data = std.mem.zeroes(ctrl.Data);
 var have_prev: bool = false;
 
-pub fn setup(_: std.mem.Allocator, _: std.Io) void {
+pub fn setup(_: std.mem.Allocator, _: std.Io, _: *core.InputSystem) void {
     prev_pad = std.mem.zeroes(ctrl.Data);
     have_prev = false;
 }
@@ -27,22 +27,22 @@ pub fn init() input_api.InitError!void {
 
 pub fn deinit() void {}
 
-pub fn pump() void {
+pub fn pump(input: *core.InputSystem) void {
     var buf: [1]ctrl.Data = undefined;
     ctrl.peek_buffer_positive(&buf) catch return;
     const pad = buf[0];
 
-    diff_buttons(pad);
-    diff_axes(pad);
+    diff_buttons(input, pad);
+    diff_axes(input, pad);
 
     prev_pad = pad;
     have_prev = true;
-    core.signal_frame_boundary();
+    input.signal_frame_boundary();
 }
 
 pub fn apply_cursor_mode(_: core.CursorMode) void {}
 
-pub fn begin_text_input_session(target: *const core.TextInputTarget, options: *const core.TextInputOptions) input_api.TextSessionError!void {
+pub fn begin_text_input_session(input: *core.InputSystem, target: *const core.TextInputTarget, options: *const core.TextInputOptions) input_api.TextSessionError!void {
     // OSK is modal -- runs its own loop and writes the buffer on return.
     var desc_buf: [128]u16 = @splat(0);
     const desc_len = std.unicode.utf8ToUtf16Le(&desc_buf, target.id) catch 0;
@@ -54,7 +54,7 @@ pub fn begin_text_input_session(target: *const core.TextInputTarget, options: *c
 
     var in_buf: [257]u16 = @splat(0);
     var in_len: usize = 0;
-    if (core.current_text_session()) |s| {
+    if (input.current_text_session()) |s| {
         if (s.buffer.items.len > 0) {
             const cap: usize = in_buf.len - 1;
             const written = std.unicode.utf8ToUtf16Le(&in_buf, s.buffer.items) catch 0;
@@ -76,10 +76,10 @@ pub fn begin_text_input_session(target: *const core.TextInputTarget, options: *c
     }
 
     const status: core.TextInputStatus = if (result == 0) .submitted else .cancelled;
-    core.write_text_session_buffer(utf8_buf[0..u_len], status);
+    input.write_text_session_buffer(utf8_buf[0..u_len], status);
 }
 
-pub fn end_text_input_session() void {}
+pub fn end_text_input_session(_: *core.InputSystem) void {}
 
 // -- helpers -----------------------------------------------------------------
 
@@ -87,7 +87,7 @@ fn buttons_eq_for(field: []const u8, prev: anytype, now: anytype) bool {
     return @field(prev, field) == @field(now, field);
 }
 
-fn diff_buttons(now: ctrl.Data) void {
+fn diff_buttons(input: *core.InputSystem, now: ctrl.Data) void {
     const Pair = struct { field: []const u8, button: core.Button };
     const map = [_]Pair{
         .{ .field = "cross", .button = .A },
@@ -109,18 +109,18 @@ fn diff_buttons(now: ctrl.Data) void {
         const prev_bit = if (have_prev) @field(prev_pad.buttons, entry.field) else 0;
         if (now_bit != prev_bit) {
             const edge: core.ButtonState = if (now_bit == 1) .pressed else .released;
-            core.deliver_gamepad_button(entry.button, edge);
+            input.deliver_gamepad_button(entry.button, edge);
         }
     }
 }
 
-fn diff_axes(now: ctrl.Data) void {
+fn diff_axes(input: *core.InputSystem, now: ctrl.Data) void {
     const lx = normalize(now.Lx);
     const ly = normalize(now.Ly);
     const prev_lx: f32 = if (have_prev) normalize(prev_pad.Lx) else 0;
     const prev_ly: f32 = if (have_prev) normalize(prev_pad.Ly) else 0;
-    if (lx != 0 or prev_lx != 0) core.deliver_gamepad_axis(.LeftX, lx);
-    if (ly != 0 or prev_ly != 0) core.deliver_gamepad_axis(.LeftY, ly);
+    if (lx != 0 or prev_lx != 0) input.deliver_gamepad_axis(.LeftX, lx);
+    if (ly != 0 or prev_ly != 0) input.deliver_gamepad_axis(.LeftY, ly);
 }
 
 fn normalize(raw: u8) f32 {

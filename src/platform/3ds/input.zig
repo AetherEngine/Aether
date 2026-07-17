@@ -30,9 +30,11 @@ var prev_axes: [axis_count]f32 = @splat(0.0);
 var prev_touch_down: bool = false;
 var prev_touch_pos: core.Vec2 = .{};
 var current_cursor_mode: core.CursorMode = .visible;
+var active_input: ?*core.InputSystem = null;
 
-pub fn setup(alloc: std.mem.Allocator, _: std.Io) void {
+pub fn setup(alloc: std.mem.Allocator, _: std.Io, input: *core.InputSystem) void {
     input_alloc = alloc;
+    active_input = input;
     reset_state();
 }
 
@@ -41,7 +43,7 @@ pub fn init() input_api.InitError!void {
 }
 
 pub fn deinit() void {
-    release_touch_if_down();
+    if (active_input) |input| release_touch_if_down(input);
 
     const must_close = if (app_3ds.currentApplication()) |app| app.app.flags.must_close else true;
     if (ir_service) |service| {
@@ -52,29 +54,30 @@ pub fn deinit() void {
     ir_service = null;
     ir_input = null;
     ir_started = false;
+    active_input = null;
     reset_state();
 }
 
-pub fn pump() void {
+pub fn pump(input: *core.InputSystem) void {
     if (app_3ds.currentApplication()) |app| {
         const pad = app.input.pollPad();
-        pump_buttons(pad);
-        pump_left_stick(pad);
-        pump_touch(app.input.pollTouch());
-        pump_ir();
+        pump_buttons(input, pad);
+        pump_left_stick(input, pad);
+        pump_touch(input, app.input.pollTouch());
+        pump_ir(input);
     }
 
-    core.signal_frame_boundary();
+    input.signal_frame_boundary();
 }
 
 pub fn apply_cursor_mode(mode: core.CursorMode) void {
     current_cursor_mode = mode;
 }
 
-pub fn begin_text_input_session(target: *const core.TextInputTarget, options: *const core.TextInputOptions) input_api.TextSessionError!void {
+pub fn begin_text_input_session(input: *core.InputSystem, target: *const core.TextInputTarget, options: *const core.TextInputOptions) input_api.TextSessionError!void {
     const app = app_3ds.currentApplication() orelse return error.NoCurrentApplication;
     var initial_buf: [MAX_OSK_UTF8_BYTES]u8 = undefined;
-    const initial = copy_current_text_for_osk(&initial_buf, options.*);
+    const initial = copy_current_text_for_osk(input, &initial_buf, options.*);
 
     var buttons = [_]SoftwareKeyboard.Config.Button{
         .button(.utf8("Cancel"), .none),
@@ -110,7 +113,7 @@ pub fn begin_text_input_session(target: *const core.TextInputTarget, options: *c
         if (suspended_audio) audio.Api.resume_from_applet();
     }
 
-    release_touch_if_down();
+    release_touch_if_down(input);
     const result = swkbd.start(app.app, app.apt, .app, app.srv, capture) catch return error.GraphicsNotInitialized;
     if (released_surface) {
         gfx.surface.resume_from_applet();
@@ -126,13 +129,13 @@ pub fn begin_text_input_session(target: *const core.TextInputTarget, options: *c
             var out_buf: [MAX_OSK_UTF8_BYTES]u8 = undefined;
             const len = std.unicode.utf16LeToUtf8(&out_buf, swkbd.writtenText()) catch 0;
             const text = clamp_utf8_to_max_bytes(out_buf[0..len], options.max_bytes);
-            core.write_text_session_buffer(text, .submitted);
+            input.write_text_session_buffer(text, .submitted);
         },
-        else => core.write_text_session_buffer(initial, .cancelled),
+        else => input.write_text_session_buffer(initial, .cancelled),
     }
 }
 
-pub fn end_text_input_session() void {}
+pub fn end_text_input_session(_: *core.InputSystem) void {}
 
 fn init_ir() void {
     const app = app_3ds.currentApplication() orelse return;
@@ -156,28 +159,28 @@ fn init_ir() void {
     ir_input = input;
 }
 
-fn pump_buttons(entry: Hid.Pad.Entry) void {
+fn pump_buttons(input: *core.InputSystem, entry: Hid.Pad.Entry) void {
     const current = entry.current;
     const previous = if (have_prev_pad) prev_pad else std.mem.zeroes(Hid.Pad.State);
 
-    diff_button(current.a, previous.a, .A);
-    diff_button(current.b, previous.b, .B);
-    diff_button(current.x, previous.x, .X);
-    diff_button(current.y, previous.y, .Y);
-    diff_button(current.l, previous.l, .LButton);
-    diff_button(current.r, previous.r, .RButton);
-    diff_button(current.select, previous.select, .Back);
-    diff_button(current.start, previous.start, .Start);
-    diff_button(current.up, previous.up, .DpadUp);
-    diff_button(current.right, previous.right, .DpadRight);
-    diff_button(current.down, previous.down, .DpadDown);
-    diff_button(current.left, previous.left, .DpadLeft);
+    diff_button(input, current.a, previous.a, .A);
+    diff_button(input, current.b, previous.b, .B);
+    diff_button(input, current.x, previous.x, .X);
+    diff_button(input, current.y, previous.y, .Y);
+    diff_button(input, current.l, previous.l, .LButton);
+    diff_button(input, current.r, previous.r, .RButton);
+    diff_button(input, current.select, previous.select, .Back);
+    diff_button(input, current.start, previous.start, .Start);
+    diff_button(input, current.up, previous.up, .DpadUp);
+    diff_button(input, current.right, previous.right, .DpadRight);
+    diff_button(input, current.down, previous.down, .DpadDown);
+    diff_button(input, current.left, previous.left, .DpadLeft);
 
     prev_pad = current;
     have_prev_pad = true;
 }
 
-fn pump_left_stick(entry: Hid.Pad.Entry) void {
+fn pump_left_stick(input: *core.InputSystem, entry: Hid.Pad.Entry) void {
     var x = normalize_stick(entry.circle.x);
     var y = -normalize_stick(entry.circle.y);
 
@@ -190,20 +193,20 @@ fn pump_left_stick(entry: Hid.Pad.Entry) void {
         if (entry.current.circle_pad_up) y = -1.0;
     }
 
-    deliver_axis(.LeftX, x);
-    deliver_axis(.LeftY, y);
+    deliver_axis(input, .LeftX, x);
+    deliver_axis(input, .LeftY, y);
 }
 
-fn pump_ir() void {
-    const input = ir_input orelse {
-        deliver_axis(.RightX, 0.0);
-        deliver_axis(.RightY, 0.0);
-        deliver_axis(.LeftTrigger, 0.0);
-        deliver_axis(.RightTrigger, 0.0);
+fn pump_ir(input: *core.InputSystem) void {
+    const ir = ir_input orelse {
+        deliver_axis(input, .RightX, 0.0);
+        deliver_axis(input, .RightY, 0.0);
+        deliver_axis(input, .LeftTrigger, 0.0);
+        deliver_axis(input, .RightTrigger, 0.0);
         return;
     };
 
-    const entry = input.pollPad();
+    const entry = ir.pollPad();
     var x = normalize_stick(entry.c_stick.x);
     var y = -normalize_stick(entry.c_stick.y);
 
@@ -216,15 +219,15 @@ fn pump_ir() void {
         if (entry.current.c_stick_up) y = -1.0;
     }
 
-    deliver_axis(.RightX, x);
-    deliver_axis(.RightY, y);
-    deliver_axis(.LeftTrigger, if (entry.current.zl) 1.0 else 0.0);
-    deliver_axis(.RightTrigger, if (entry.current.zr) 1.0 else 0.0);
+    deliver_axis(input, .RightX, x);
+    deliver_axis(input, .RightY, y);
+    deliver_axis(input, .LeftTrigger, if (entry.current.zl) 1.0 else 0.0);
+    deliver_axis(input, .RightTrigger, if (entry.current.zr) 1.0 else 0.0);
 }
 
-fn pump_touch(touch: Hid.Touch.State) void {
+fn pump_touch(input: *core.InputSystem, touch: Hid.Touch.State) void {
     if (current_cursor_mode == .captured) {
-        release_touch_if_down();
+        release_touch_if_down(input);
         return;
     }
 
@@ -238,31 +241,31 @@ fn pump_touch(touch: Hid.Touch.State) void {
         else
             .{};
 
-        core.deliver_mouse_move(pos, delta);
-        if (!prev_touch_down) core.deliver_mouse_button(.Left, .pressed, pos);
+        input.deliver_mouse_move(pos, delta);
+        if (!prev_touch_down) input.deliver_mouse_button(.Left, .pressed, pos);
         prev_touch_pos = pos;
         prev_touch_down = true;
     } else {
-        release_touch_if_down();
+        release_touch_if_down(input);
     }
 }
 
-fn release_touch_if_down() void {
+fn release_touch_if_down(input: *core.InputSystem) void {
     if (!prev_touch_down) return;
-    core.deliver_mouse_button(.Left, .released, prev_touch_pos);
+    input.deliver_mouse_button(.Left, .released, prev_touch_pos);
     prev_touch_down = false;
     prev_touch_pos = .{};
 }
 
-fn diff_button(current: bool, previous: bool, button: core.Button) void {
+fn diff_button(input: *core.InputSystem, current: bool, previous: bool, button: core.Button) void {
     if (current == previous) return;
-    core.deliver_gamepad_button(button, if (current) .pressed else .released);
+    input.deliver_gamepad_button(button, if (current) .pressed else .released);
 }
 
-fn deliver_axis(axis: core.Axis, value: f32) void {
+fn deliver_axis(input: *core.InputSystem, axis: core.Axis, value: f32) void {
     const idx = @intFromEnum(axis);
     const prev = prev_axes[idx];
-    if (value != 0.0 or prev != 0.0) core.deliver_gamepad_axis(axis, value);
+    if (value != 0.0 or prev != 0.0) input.deliver_gamepad_axis(axis, value);
     prev_axes[idx] = value;
 }
 
@@ -272,8 +275,8 @@ fn normalize_stick(raw: i16) f32 {
     return if (@abs(clamped) < STICK_DEADZONE) 0.0 else clamped;
 }
 
-fn copy_current_text_for_osk(dst: []u8, options: core.TextInputOptions) []const u8 {
-    const session = core.current_text_session() orelse return "";
+fn copy_current_text_for_osk(input: *core.InputSystem, dst: []u8, options: core.TextInputOptions) []const u8 {
+    const session = input.current_text_session() orelse return "";
     const limit = @min(osk_text_limit(options.max_bytes), dst.len - 1);
     const text = valid_utf8_prefix(session.buffer.items, limit);
     @memcpy(dst[0..text.len], text);
