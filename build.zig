@@ -6,6 +6,20 @@ pub const packaging = @import("build/packaging.zig");
 
 // --- Aether's own build (test app + engine tests) ---
 
+fn directoryExists(b: *std.Build, path: []const u8) bool {
+    const io = b.graph.io;
+    const full_path = b.pathFromRoot(path);
+    var dir = std.Io.Dir.cwd().openDir(io, full_path, .{}) catch |err| switch (err) {
+        error.FileNotFound, error.NotDir => return false,
+        else => {
+            std.debug.panic("unable to open directory '{s}': {s}", .{ path, @errorName(err) });
+        },
+    };
+    dir.close(io);
+
+    return true;
+}
+
 fn makeResourceManifest(b: *std.Build, resource_dir_path: []const u8) []const u8 {
     const io = b.graph.io;
     const full_resource_dir_path = b.pathFromRoot(resource_dir_path);
@@ -48,6 +62,15 @@ pub fn build(b: *std.Build) void {
     };
 
     const resolved_config = config.Config.resolve(target, overrides);
+
+    if (!directoryExists(b, "test")) {
+        const missing_demo = b.addFail("Aether demo steps require the repository test/ directory.");
+        b.step("run", "Run the app").dependOn(&missing_demo.step);
+        b.step("web", "Build the browser-playable WASM site in zig-out/web").dependOn(&missing_demo.step);
+        b.step("serve-web", "Serve zig-out/web with WASM MIME and COOP/COEP headers").dependOn(&missing_demo.step);
+        b.step("test", "Run tests").dependOn(&missing_demo.step);
+        return;
+    }
 
     const exe = modules.addGame(b, b, .{
         .name = "Aether",
