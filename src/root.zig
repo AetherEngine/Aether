@@ -8,19 +8,29 @@ pub const Audio = @import("audio/audio.zig");
 pub const Math = @import("math/math.zig");
 pub const Engine = @import("engine.zig").Engine;
 pub const ctx_to_self = Util.ctx_to_self;
+pub const PlatformApi = struct {
+    pub const gfx = @import("platform/gfx_api.zig");
+    pub const audio = @import("platform/audio_api.zig");
+    pub const input = @import("platform/input_api.zig");
+    pub const surface = @import("platform/surface.zig");
+};
 
 /// PSP-exclusive system utility dialogs (OSK, network configuration).
 /// Only available when `platform == .psp`; evaluates to `void` otherwise.
 pub const Psp = if (platform == .psp) @import("platform/psp/psp_dialogs.zig") else void;
+pub const N3ds = if (platform == .nintendo_3ds) @import("platform/3ds/app.zig") else void;
+pub const Cio = if (platform == .nintendo_switch) @import("platform/c_io.zig") else void;
+pub const CProcessInit = if (platform == .nintendo_switch) @import("platform/c_process_init.zig") else void;
 
 /// Comptime-known platform and graphics backend, resolved from build options.
 /// User code can switch on these for per-platform configuration without
 /// importing the build options module directly.
-pub const Platform = options.@"build.Platform";
-pub const Gfx = options.@"build.Gfx";
+pub const Platform = @TypeOf(options.config.platform);
+pub const Gfx = @TypeOf(options.config.gfx);
 pub const platform: Platform = options.config.platform;
 pub const gfx: Gfx = options.config.gfx;
+pub const mesh_indexing: bool = options.config.mesh_indexing;
 
 comptime {
-    std.testing.refAllDecls(@This());
+    if (platform != .wasm) std.testing.refAllDecls(@This());
 }

@@ -1,9 +1,10 @@
 const std = @import("std");
+const surface_api = @import("../surface.zig");
 const Self = @This();
 
 alloc: std.mem.Allocator,
 
-pub fn init(_: *Self, _: u32, _: u32, _: [:0]const u8, _: bool, _: bool, _: bool) anyerror!void {}
+pub fn init(_: *Self, _: u32, _: u32, _: [:0]const u8, _: bool, _: bool, _: bool) surface_api.InitError!void {}
 
 pub fn deinit(_: *Self) void {}
 

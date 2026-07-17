@@ -1,6 +1,7 @@
 //! Actions, action sets, the action-set registry, and the per-frame
-//! evaluator. Game code interacts via `ActionSetHandle` so the registry is
-//! free to relocate ActionSet structs on grow without dangling references.
+//! evaluator. Game code interacts via handles so the registry is free to
+//! relocate ActionSet structs and action maps on grow without dangling
+//! references.
 
 const std = @import("std");
 const data = @import("data.zig");
@@ -16,6 +17,52 @@ pub const ActionValue = union(ActionKind) {
     button: data.ButtonState,
     axis: f32,
     vector2: [2]f32,
+};
+
+pub const ButtonQuery = struct {
+    current: data.ButtonState = .released,
+    previous: data.ButtonState = .released,
+
+    pub fn down(self: ButtonQuery) bool {
+        return self.current == .pressed;
+    }
+
+    pub fn pressed(self: ButtonQuery) bool {
+        return self.current == .pressed and self.previous == .released;
+    }
+
+    pub fn released(self: ButtonQuery) bool {
+        return self.current == .released and self.previous == .pressed;
+    }
+};
+
+pub const AxisQuery = struct {
+    current: f32 = 0.0,
+    previous: f32 = 0.0,
+
+    pub fn value(self: AxisQuery) f32 {
+        return self.current;
+    }
+
+    pub fn delta(self: AxisQuery) f32 {
+        return self.current - self.previous;
+    }
+};
+
+pub const Vector2Query = struct {
+    current: [2]f32 = .{ 0.0, 0.0 },
+    previous: [2]f32 = .{ 0.0, 0.0 },
+
+    pub fn value(self: Vector2Query) [2]f32 {
+        return self.current;
+    }
+
+    pub fn delta(self: Vector2Query) [2]f32 {
+        return .{
+            self.current[0] - self.previous[0],
+            self.current[1] - self.previous[1],
+        };
+    }
 };
 
 pub const Action = struct {
@@ -42,6 +89,35 @@ pub const ActionSet = struct {
 /// Opaque handle into the registry. Stable across rehashes; passed back
 /// to every API call that operates on a set.
 pub const ActionSetHandle = enum(u32) { _ };
+
+/// Opaque handle to an action inside an action set. The action index is the
+/// insertion-order index in the set's name map. Actions are never removed, so
+/// this remains stable across map growth and rehashing.
+pub const ActionHandle = packed struct(u64) {
+    const Self = @This();
+    const null_index = std.math.maxInt(u32);
+
+    set_index: u32 = null_index,
+    action_index: u32 = null_index,
+
+    pub const none: Self = .{};
+
+    pub fn from_parts(action_set: ActionSetHandle, action_index: usize) Self {
+        std.debug.assert(action_index <= std.math.maxInt(u32));
+        return .{
+            .set_index = @intFromEnum(action_set),
+            .action_index = @intCast(action_index),
+        };
+    }
+
+    pub fn is_null(self: Self) bool {
+        return self.set_index == null_index or self.action_index == null_index;
+    }
+
+    pub fn set(self: Self) ActionSetHandle {
+        return @enumFromInt(self.set_index);
+    }
+};
 
 /// Snapshot of currently-held device state. Updated in-place inside each
 /// `deliver_*` call. The action evaluator reads it once per frame to
@@ -110,7 +186,19 @@ pub fn evaluate_set(set: *ActionSet, dev: *const DeviceState) void {
     }
 }
 
-fn compute(a: *const Action, dev: *const DeviceState) ActionValue {
+/// Recompute a set without creating edges. Used when a context becomes active
+/// so already-held inputs do not look like fresh presses.
+pub fn sync_set(set: *ActionSet, dev: *const DeviceState) void {
+    var it = set.actions.iterator();
+    while (it.next()) |entry| {
+        const a = entry.value_ptr;
+        const value = compute(a, dev);
+        a.previous_value = value;
+        a.current_value = value;
+    }
+}
+
+pub fn compute(a: *const Action, dev: *const DeviceState) ActionValue {
     return switch (a.kind) {
         .button => blk: {
             for (a.bindings.items) |b| {

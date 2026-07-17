@@ -1,0 +1,47 @@
+.entry main vertex
+.out main o0 position
+.out main o1.xy texture_coordinates_0.xy
+.out main o2 color
+.set main f11 (0.0, 1.0, 0.0, 0.0)
+
+.alias outpos o0
+.alias outtc0 o1
+.alias outclr o2
+
+.alias inpos v0
+.alias inclr v1
+.alias inuv v2
+
+.alias projection0 f0
+.alias projection1 f1
+.alias projection2 f2
+.alias projection3 f3
+.alias modelview0 f4
+.alias modelview1 f5
+.alias modelview2 f6
+.alias modelview3 f7
+.alias posscale f8
+.alias uvscaleoffset f9
+.alias colorscale f10
+.alias zeros f11.xxxx
+.alias ones f11.yyyy
+
+main:
+    mul r0.xyz, posscale, inpos
+    mov r0.w, ones
+
+    dp4 r1.x, modelview0, r0
+    dp4 r1.y, modelview1, r0
+    dp4 r1.z, modelview2, r0
+    dp4 r1.w, modelview3, r0
+
+    dp4 outpos.x, projection0, r1
+    dp4 outpos.y, projection1, r1
+    dp4 outpos.z, projection2, r1
+    dp4 outpos.w, projection3, r1
+
+    mul r2.xy, uvscaleoffset.xy, inuv.xy
+    add outtc0.xy, uvscaleoffset.zw, r2.xy
+    mov outtc0.zw, zeros
+    mul outclr, colorscale, inclr
+    end

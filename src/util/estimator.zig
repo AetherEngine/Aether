@@ -10,7 +10,7 @@ pub const Estimator = struct {
     sorted: [CAPACITY]i64,
     head: usize,
     count: usize,
-    start_ns: i64,
+    start_ns: i96,
 
     cached_avg: i64,
     cached_min: i64,
@@ -30,14 +30,14 @@ pub const Estimator = struct {
     }
 
     pub fn begin(self: *Estimator, io: std.Io) void {
-        var clock = std.Io.Clock.real;
-        self.start_ns = @truncate(clock.now(io).toNanoseconds());
+        var clock = std.Io.Clock.boot;
+        self.start_ns = clock.now(io).toNanoseconds();
     }
 
     pub fn end(self: *Estimator, io: std.Io) void {
-        var clock = std.Io.Clock.real;
-        const now_ns: i64 = @truncate(clock.now(io).toNanoseconds());
-        const elapsed = now_ns - self.start_ns;
+        var clock = std.Io.Clock.boot;
+        const now_ns = clock.now(io).toNanoseconds();
+        const elapsed = clamp_i128_to_i64(@as(i128, now_ns) - @as(i128, self.start_ns));
         self.start_ns = 0;
         self.record(elapsed);
     }
@@ -53,9 +53,9 @@ pub const Estimator = struct {
         std.sort.insertion(i64, self.sorted[0..n], {}, std.sort.asc(i64));
 
         // Recompute cached stats
-        var sum: i64 = 0;
+        var sum: i128 = 0;
         for (self.sorted[0..n]) |s| sum += s;
-        self.cached_avg = @divTrunc(sum, @as(i64, @intCast(n)));
+        self.cached_avg = clamp_i128_to_i64(@divTrunc(sum, @as(i128, @intCast(n))));
         self.cached_min = self.sorted[0];
         self.cached_max = self.sorted[n - 1];
     }
@@ -128,3 +128,11 @@ pub const Estimator = struct {
         logger.info("----------------------------", .{});
     }
 };
+
+fn clamp_i128_to_i64(value: i128) i64 {
+    const max: i128 = std.math.maxInt(i64);
+    const min: i128 = std.math.minInt(i64);
+    if (value > max) return std.math.maxInt(i64);
+    if (value < min) return std.math.minInt(i64);
+    return @intCast(value);
+}

@@ -76,20 +76,34 @@
             .url = "git+https://github.com/Snektron/vulkan-zig#3adbeefbc833c12656791d304b37a6315b357745",
             .hash = "vulkan-0.0.0-r7YtxyBsAwD35FvkFhT2xruTNdCByD3TtGw44XWtfun8",
         },
-        .zaudio = .{
-            .url = "git+https://github.com/IridescentRose/zaudio?ref=update_zig_16#54e45e002005448623bff0ba06baa919bd036e03",
-            .hash = "zaudio-0.11.0-dev-_M-91l8yQQDTAb3Hk8V-lyP88DGgLzS9QNUkmpbCN_PK",
-        },
         .system_sdk = .{
             .url = "https://github.com/zig-gamedev/system_sdk/archive/c0dbf11cdc17da5904ea8a17eadc54dee26567ec.tar.gz",
             .hash = "system_sdk-0.3.0-dev-alwUNnYaaAJAtIdE2fg4NQfDqEKs7QCXy_qYukAOBfmF",
             .lazy = true,
         },
+        .sdl3 = .{
+            .url = "git+https://codeberg.org/7Games/zig-sdl3?ref=master#40c2e4b579aa556db37a502c936426aa1c8b5c95",
+            .hash = "sdl3-0.2.0-NmT1Q0mFJwBi9kZmArzh2rfJ_mFshydV0zPGULVlpACc",
+            .lazy = true,
+        },
+        .zsflt = .{
+            .url = "git+https://github.com/GasInfinity/zsflt.git#1929cbae9d41c7e1178e494e42aa7b349a68cd8a",
+            .hash = "zsflt-0.0.1-_pCibQ4wAABnfZskVOk2Y14F056VNJtuqVpAEzUNBGfl",
+        },
+        .zitrus = .{
+            // .url = "git+https://codeberg.org/GasInfinity/zitrus#195b7968221e509ff11a8b79167352d347ee98ee",
+            // .hash = "zitrus-0.0.0-Ewix9Ec4HABJWzZgjz17mSNilgWmi6Ag3DROjhKPChf5",
+            .path = "../zitrus",
+        },
     },
     .paths = .{
+        "build",
         "build.zig",
         "build.zig.zon",
         "src",
+        "tools",
+        "upgrade-guide.md",
+        "web",
         "LICENSE",
         "README.md",
     },

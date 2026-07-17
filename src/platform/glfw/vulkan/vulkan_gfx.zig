@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const gfx_api = @import("../../gfx_api.zig");
 const Util = @import("../../../util/util.zig");
 
 // MoltenVK cannot back VK_DYNAMIC_STATE_COLOR_BLEND_ENABLE_EXT on top of
@@ -15,14 +16,18 @@ const Mat4 = @import("../../../math/math.zig").Mat4;
 const vk = @import("vulkan");
 const gfx = @import("../../gfx.zig");
 const Rendering = @import("../../../rendering/rendering.zig");
-const Pipeline = Rendering.Pipeline;
+const vertex = Rendering.vertex;
 const Mesh = Rendering.mesh;
 const Texture = Rendering.Texture;
+const basic_vert align(@alignOf(u32)) = @embedFile("aether_basic_vert").*;
+const basic_frag align(@alignOf(u32)) = @embedFile("aether_basic_frag").*;
 
 const Context = @import("context.zig");
 const Swapchain = @import("swapchain.zig");
 const GarbageCollector = @import("garbage_collector.zig");
 const GLFWSurface = @import("../surface.zig");
+
+pub const mesh_source_mode = Mesh.SourceMode.uploaded_copy;
 
 var render_alloc: std.mem.Allocator = undefined;
 var render_io: std.Io = undefined;
@@ -33,20 +38,26 @@ pub fn setup(alloc: std.mem.Allocator, io: std.Io) void {
 }
 
 const PipelineData = struct {
-    layout: vk.PipelineLayout,
-    vert_layout: Pipeline.VertexLayout,
-    pipeline: vk.Pipeline,
+    layout: vk.PipelineLayout = .null_handle,
+    pipeline: vk.Pipeline = .null_handle,
 };
 
 const MAX_FRAMES = 3;
 
 const MeshData = struct {
+    vertex: MeshBufferSet = .{},
+    index: MeshBufferSet = .{},
+    vertex_count: usize = 0,
+    index_count: usize = 0,
+    built: bool = false,
+};
+
+const MeshBufferSet = struct {
     buffers: [MAX_FRAMES]vk.Buffer = @splat(.null_handle),
     memories: [MAX_FRAMES]vk.DeviceMemory = @splat(.null_handle),
     mapped: [MAX_FRAMES]?[*]u8 = @splat(null),
     capacity: usize = 0,
-    pipeline: Pipeline.Handle = 0,
-    built: bool = false,
+    size: usize = 0,
 };
 
 pub const ShaderState = struct {
@@ -113,10 +124,10 @@ var tex_set: vk.DescriptorSet = .null_handle;
 var tex_sampler: vk.Sampler = .null_handle;
 
 const TextureRec = struct { image: vk.Image, memory: vk.DeviceMemory, view: vk.ImageView, width: u32, height: u32 };
-var textures = Util.CircularBuffer(TextureRec, TEXTURE_CAP).init();
+var textures = Util.ResourceTable(TextureRec, TEXTURE_CAP, Texture.Handle).init();
 
-var pipelines = Util.CircularBuffer(PipelineData, 16).init();
-var meshes = Util.CircularBuffer(MeshData, 8192).init();
+var meshes = Util.ResourceTable(MeshData, 8192, Mesh.Handle).init();
+var render_pipeline: PipelineData = .{};
 
 var swap_state: Swapchain.PresentState = .optimal;
 var alpha_blend_enabled: bool = true;
@@ -422,21 +433,42 @@ fn destroy_depth_image() void {
     depth_image_memory = .null_handle;
 }
 
-pub fn init() anyerror!void {
-    context = try Context.init(render_alloc, "AetherEngine");
-    swapchain = try Swapchain.init(&context, gfx.sync);
+pub fn init() gfx_api.InitError!void {
+    context = Context.init(render_alloc, "AetherEngine") catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.NoSuitableDeviceFound => return error.NoSuitableDeviceFound,
+        error.SurfaceInitFailed => return error.SurfaceInitFailed,
+        else => return error.GfxInitFailed,
+    };
+    swapchain = Swapchain.init(&context, gfx.sync) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.SwapchainCreationFailed => return error.SwapchainCreationFailed,
+        error.ImageAcquireFailed => return error.ImageAcquireFailed,
+        else => return error.GfxInitFailed,
+    };
     gc = GarbageCollector.init(render_alloc);
 
-    try create_command_pool();
-    try create_depth_image();
-    try create_uniform_buffers();
-    try create_descriptor_set_layout();
-    try create_descriptor_pool();
-    try create_descriptor_sets();
+    create_command_pool() catch return error.GfxInitFailed;
+    create_depth_image() catch |err| switch (err) {
+        error.NoSuitableMemoryType => return error.NoSuitableMemoryType,
+        else => return error.GfxInitFailed,
+    };
+    create_uniform_buffers() catch return error.OutOfMemory;
+    create_descriptor_set_layout() catch return error.GfxInitFailed;
+    create_descriptor_pool() catch return error.GfxInitFailed;
+    create_descriptor_sets() catch |err| switch (err) {
+        error.OutOfHostMemory, error.OutOfDeviceMemory => return error.OutOfMemory,
+        else => return error.GfxInitFailed,
+    };
 
-    try create_texture_set_layout();
-    try create_texture_descriptor_pool_and_set(4096);
-    try create_texture_sampler();
+    create_texture_set_layout() catch return error.GfxInitFailed;
+    create_texture_descriptor_pool_and_set(4096) catch return error.GfxInitFailed;
+    create_texture_sampler() catch return error.GfxInitFailed;
+    render_pipeline = init_pipeline(vertex.Layout) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.PipelineCreationFailed => return error.PipelineCreationFailed,
+        else => return error.GfxInitFailed,
+    };
 
     GLFWSurface.on_resize = resize_flag;
 }
@@ -449,6 +481,7 @@ pub fn deinit() void {
     GLFWSurface.on_resize = null;
     context.logical_device.deviceWaitIdle() catch {};
 
+    deinit_pipeline(&render_pipeline);
     destroy_texture_sampler();
     destroy_texture_descriptor_pool_and_set();
     destroy_texture_set_layout();
@@ -679,6 +712,14 @@ pub fn clear_depth() void {
     command_buffer.clearAttachments(@ptrCast(&attachment), @ptrCast(&rect));
 }
 
+pub fn has_second_screen() bool {
+    return false;
+}
+
+pub fn switch_second_screen() void {
+    std.debug.panic("vulkan gfx: switch_second_screen called but this backend has no second screen", .{});
+}
+
 pub fn end_frame() void {
     command_buffer.endRendering();
     const post = vk.ImageMemoryBarrier2{
@@ -730,6 +771,18 @@ pub fn set_view_matrix(mat: *const Mat4) void {
     camera_dirty = true;
 }
 
+pub fn set_render_state(state: *const Rendering.RenderState) void {
+    set_alpha_blend(state.blend == .alpha);
+    set_depth_write(state.depth_write);
+    set_culling(state.cull);
+    set_clip_planes(state.clip_planes);
+    set_uv_offset(state.uv_offset[0], state.uv_offset[1]);
+    set_fog(state.fog.enabled, state.fog.start, state.fog.end, state.fog.color[0], state.fog.color[1], state.fog.color[2]);
+    set_proj_matrix(&state.proj);
+    set_view_matrix(&state.view);
+    bind_texture(if (state.texture.is_null()) Texture.Default.handle else state.texture);
+}
+
 /// If the camera state has changed since the last draw, write it into the
 /// next slot of the per-frame ring and remember which slot to bind from.
 /// Back-to-back set_proj+set_view calls before any draw collapse into a
@@ -751,8 +804,9 @@ fn flush_camera_if_dirty() void {
     camera_dirty = false;
 }
 
-pub fn create_pipeline(layout: Pipeline.VertexLayout, vs: ?[:0]align(4) const u8, fs: ?[:0]align(4) const u8) anyerror!Pipeline.Handle {
-    if (vs == null or fs == null) return error.InvalidShader;
+fn init_pipeline(layout: vertex.VertexLayout) !PipelineData {
+    const vs: [:0]align(4) const u8 = &basic_vert;
+    const fs: [:0]align(4) const u8 = &basic_frag;
 
     const set_layouts = [_]vk.DescriptorSetLayout{ descriptor_set_layout, tex_set_layout };
 
@@ -768,16 +822,19 @@ pub fn create_pipeline(layout: Pipeline.VertexLayout, vs: ?[:0]align(4) const u8
         .push_constant_range_count = 1,
         .p_push_constant_ranges = @ptrCast(&range),
     }, null);
+    errdefer context.logical_device.destroyPipelineLayout(pl, null);
 
     const vert = try context.logical_device.createShaderModule(&.{
-        .code_size = vs.?.len,
-        .p_code = @ptrCast(@alignCast(vs.?.ptr)),
+        .code_size = vs.len,
+        .p_code = @ptrCast(@alignCast(vs.ptr)),
     }, null);
+    defer context.logical_device.destroyShaderModule(vert, null);
 
     const frag = try context.logical_device.createShaderModule(&.{
-        .code_size = fs.?.len,
-        .p_code = @ptrCast(@alignCast(fs.?.ptr)),
+        .code_size = fs.len,
+        .p_code = @ptrCast(@alignCast(fs.ptr)),
     }, null);
+    defer context.logical_device.destroyShaderModule(frag, null);
 
     const pipeline_shade_stage_create_info = [_]vk.PipelineShaderStageCreateInfo{
         .{
@@ -954,115 +1011,78 @@ pub fn create_pipeline(layout: Pipeline.VertexLayout, vs: ?[:0]align(4) const u8
         return error.PipelineCreationFailed;
     }
 
-    const p_handle = pipelines.add_element(.{
+    return .{
         .layout = pl,
-        .vert_layout = layout,
         .pipeline = pipeline,
-    }) orelse return error.OutOfPipelines;
-
-    return @intCast(p_handle);
+    };
 }
 
-pub fn destroy_pipeline(handle: Pipeline.Handle) void {
-    context.logical_device.deviceWaitIdle() catch {};
-    const pd = pipelines.get_element(handle) orelse return;
-
-    context.logical_device.destroyPipeline(pd.pipeline, null);
-    context.logical_device.destroyPipelineLayout(pd.layout, null);
-
-    _ = pipelines.remove_element(handle);
+fn deinit_pipeline(pd: *PipelineData) void {
+    if (pd.pipeline != .null_handle) {
+        context.logical_device.destroyPipeline(pd.pipeline, null);
+    }
+    if (pd.layout != .null_handle) {
+        context.logical_device.destroyPipelineLayout(pd.layout, null);
+    }
+    pd.* = .{};
 }
 
-pub fn bind_pipeline(handle: Pipeline.Handle) void {
-    const pd = pipelines.get_element(handle) orelse return;
-
-    command_buffer.bindPipeline(.graphics, pd.pipeline);
-    // Descriptor sets are (re)bound per draw in draw_mesh because the
-    // dynamic UBO offset can change as the user swaps projection/view
-    // matrices mid-frame.
-}
-
-pub fn create_mesh(pipeline: Pipeline.Handle) anyerror!Mesh.Handle {
-    const m_handle = meshes.add_element(.{
-        .pipeline = pipeline,
-    }) orelse return error.OutOfMeshes;
-    return @intCast(m_handle);
+pub fn create_mesh(_: *const Mesh.Desc) gfx_api.CreateMeshError!Mesh.Handle {
+    return meshes.add(.{}) orelse return error.OutOfMeshes;
 }
 
 pub fn destroy_mesh(handle: Mesh.Handle) void {
-    const m_data = meshes.get_element(handle) orelse return;
+    if (handle.is_null()) return;
+    var m_data = meshes.get(handle) orelse Util.panic_invalid_handle("vulkan gfx", "destroy_mesh", handle);
 
-    if (m_data.built) {
-        for (0..MAX_FRAMES) |i| {
-            if (m_data.buffers[i] != .null_handle) {
-                gc.defer_destroy_buffer(m_data.buffers[i], m_data.memories[i]) catch unreachable;
-            }
-        }
-    }
+    destroy_mesh_buffer_set(&m_data.vertex);
+    destroy_mesh_buffer_set(&m_data.index);
 
-    _ = meshes.remove_element(handle);
+    _ = meshes.remove(handle);
 }
 
-pub fn update_mesh(handle: Mesh.Handle, data: []const u8) void {
-    var m_data = meshes.get_element(handle) orelse return;
+pub fn update_mesh(handle: Mesh.Handle, desc: *const Mesh.UpdateDesc) void {
+    var m_data = meshes.get(handle) orelse Util.panic_invalid_handle("vulkan gfx", "update_mesh", handle);
+    const data = desc.vertices;
+    const indices = desc.indices;
 
-    // Grow buffers if the current allocation is too small.
-    if (data.len > m_data.capacity) {
-        // Defer-destroy old buffers.
-        for (0..MAX_FRAMES) |i| {
-            if (m_data.buffers[i] != .null_handle) {
-                gc.defer_destroy_buffer(m_data.buffers[i], m_data.memories[i]) catch unreachable;
-            }
-        }
-
-        // Round up to next power of two (minimum 256 bytes).
-        var new_cap: usize = 256;
-        while (new_cap < data.len) new_cap *= 2;
-
-        for (0..MAX_FRAMES) |i| {
-            m_data.buffers[i] = context.logical_device.createBuffer(&.{
-                .size = new_cap,
-                .usage = .{ .vertex_buffer_bit = true },
-                .sharing_mode = .exclusive,
-            }, null) catch unreachable;
-
-            const mem_reqs = context.logical_device.getBufferMemoryRequirements(m_data.buffers[i]);
-
-            // Prefer device-local + host-visible (resizable BAR), fall back to host-visible only.
-            m_data.memories[i] = context.allocate_gpu_buffer(mem_reqs, .{
-                .host_visible_bit = true,
-                .host_coherent_bit = true,
-                .device_local_bit = true,
-            }) catch context.allocate_gpu_buffer(mem_reqs, .{
-                .host_visible_bit = true,
-                .host_coherent_bit = true,
-            }) catch unreachable;
-
-            context.logical_device.bindBufferMemory(m_data.buffers[i], m_data.memories[i], 0) catch unreachable;
-
-            const mapped_data = context.logical_device.mapMemory(m_data.memories[i], 0, vk.WHOLE_SIZE, .{}) catch unreachable;
-            m_data.mapped[i] = @ptrCast(@alignCast(mapped_data));
-        }
-
-        m_data.capacity = new_cap;
+    if (data.len == 0) {
+        m_data.built = false;
+        m_data.vertex.size = 0;
+        m_data.index.size = 0;
+        m_data.vertex_count = 0;
+        m_data.index_count = 0;
+        _ = meshes.update(handle, m_data);
+        return;
     }
 
-    // Copy vertex data into all frame slots so every frame has current data.
-    for (0..MAX_FRAMES) |i| {
-        @memcpy(m_data.mapped[i].?[0..data.len], data);
+    ensure_mesh_buffer_set(&m_data.vertex, data.len, .{ .vertex_buffer_bit = true });
+    copy_mesh_buffer_set(&m_data.vertex, data);
+
+    const index_bytes = std.mem.sliceAsBytes(indices);
+    if (index_bytes.len > 0) {
+        ensure_mesh_buffer_set(&m_data.index, index_bytes.len, .{ .index_buffer_bit = true });
+        copy_mesh_buffer_set(&m_data.index, index_bytes);
+    } else {
+        m_data.index.size = 0;
     }
 
     m_data.built = true;
-    meshes.update_element(handle, m_data);
+    m_data.vertex_count = data.len / vertex.Layout.stride;
+    m_data.index_count = indices.len;
+    _ = meshes.update(handle, m_data);
 }
 
-pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize, primitive: Mesh.Primitive) void {
+pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
     draw_state.mat = model.*;
 
-    const m_data = meshes.get_element(handle) orelse return;
-    const p_data = pipelines.get_element(m_data.pipeline) orelse return;
+    const m_data = meshes.get(handle) orelse Util.panic_invalid_handle("vulkan gfx", "draw_mesh", handle);
+    if (!m_data.built or m_data.vertex_count == 0) return;
+    if (render_pipeline.pipeline == .null_handle) return;
+    const p_data = &render_pipeline;
 
     flush_camera_if_dirty();
+    command_buffer.bindPipeline(.graphics, p_data.pipeline);
 
     const sets = [_]vk.DescriptorSet{
         descriptor_sets[swapchain.image_index],
@@ -1071,26 +1091,83 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize, primitiv
     const dyn_offsets = [_]u32{current_camera_slot * camera_rings[swapchain.image_index].slot_stride};
     command_buffer.bindDescriptorSets(.graphics, p_data.layout, 0, &sets, &dyn_offsets);
 
-    command_buffer.setPrimitiveTopology(switch (primitive) {
-        .triangles => .triangle_list,
-        .lines => .line_list,
-    });
+    command_buffer.setPrimitiveTopology(.triangle_list);
 
     const offset = [_]vk.DeviceSize{0};
-    const frame_buf = m_data.buffers[swapchain.image_index];
+    const frame_buf = m_data.vertex.buffers[swapchain.image_index];
+    if (frame_buf == .null_handle) return;
     command_buffer.bindVertexBuffers(0, @ptrCast(&frame_buf), &offset);
     command_buffer.pushConstants(p_data.layout, .{ .vertex_bit = true, .fragment_bit = true }, 0, @sizeOf(DrawState), &draw_state);
-    command_buffer.draw(@intCast(count), 1, 0, 0);
+    if (m_data.index_count > 0) {
+        const index_buf = m_data.index.buffers[swapchain.image_index];
+        if (index_buf == .null_handle) return;
+        command_buffer.bindIndexBuffer(index_buf, 0, .uint16);
+        command_buffer.drawIndexed(@intCast(m_data.index_count), 1, 0, 0, 0);
+    } else {
+        command_buffer.draw(@intCast(m_data.vertex_count), 1, 0, 0);
+    }
 }
 
-pub fn create_texture(width: u32, height: u32, data: []align(16) u8) anyerror!Texture.Handle {
+fn ensure_mesh_buffer_set(set: *MeshBufferSet, needed: usize, usage: vk.BufferUsageFlags) void {
+    if (needed <= set.capacity) return;
+
+    destroy_mesh_buffer_set(set);
+
+    var new_cap: usize = 256;
+    while (new_cap < needed) new_cap *= 2;
+
+    for (0..MAX_FRAMES) |i| {
+        set.buffers[i] = context.logical_device.createBuffer(&.{
+            .size = new_cap,
+            .usage = usage,
+            .sharing_mode = .exclusive,
+        }, null) catch unreachable;
+
+        const mem_reqs = context.logical_device.getBufferMemoryRequirements(set.buffers[i]);
+        set.memories[i] = context.allocate_gpu_buffer(mem_reqs, .{
+            .host_visible_bit = true,
+            .host_coherent_bit = true,
+            .device_local_bit = true,
+        }) catch context.allocate_gpu_buffer(mem_reqs, .{
+            .host_visible_bit = true,
+            .host_coherent_bit = true,
+        }) catch unreachable;
+
+        context.logical_device.bindBufferMemory(set.buffers[i], set.memories[i], 0) catch unreachable;
+        const mapped_data = context.logical_device.mapMemory(set.memories[i], 0, vk.WHOLE_SIZE, .{}) catch unreachable;
+        set.mapped[i] = @ptrCast(@alignCast(mapped_data));
+    }
+
+    set.capacity = new_cap;
+}
+
+fn copy_mesh_buffer_set(set: *MeshBufferSet, data: []const u8) void {
+    for (0..MAX_FRAMES) |i| {
+        @memcpy(set.mapped[i].?[0..data.len], data);
+    }
+    set.size = data.len;
+}
+
+fn destroy_mesh_buffer_set(set: *MeshBufferSet) void {
+    for (0..MAX_FRAMES) |i| {
+        if (set.buffers[i] != .null_handle) {
+            gc.defer_destroy_buffer(set.buffers[i], set.memories[i]) catch unreachable;
+        }
+    }
+    set.* = .{};
+}
+
+pub fn create_texture(desc: *const Texture.UploadDesc) gfx_api.CreateTextureError!Texture.Handle {
+    const width = desc.width;
+    const height = desc.height;
+    const data = desc.pixels;
     if (width == 0 or height == 0) return error.InvalidTextureSize;
     // Expect RGBA8 pixels
     if (data.len < @as(usize, width) * @as(usize, height) * 4) return error.TextureDataTooSmall;
 
     const fmt: vk.Format = .r8g8b8a8_unorm;
 
-    const image = try context.logical_device.createImage(&.{
+    const image = context.logical_device.createImage(&.{
         .image_type = .@"2d",
         .format = fmt,
         .extent = .{ .width = width, .height = height, .depth = 1 },
@@ -1101,27 +1178,39 @@ pub fn create_texture(width: u32, height: u32, data: []align(16) u8) anyerror!Te
         .usage = .{ .transfer_dst_bit = true, .sampled_bit = true },
         .sharing_mode = .exclusive,
         .initial_layout = .undefined,
-    }, null);
+    }, null) catch |err| switch (err) {
+        error.OutOfHostMemory, error.OutOfDeviceMemory => return error.OutOfMemory,
+        else => return error.GfxInitFailed,
+    };
 
     const mem_reqs = context.logical_device.getImageMemoryRequirements(image);
-    const memory = try context.allocate_gpu_buffer(mem_reqs, .{ .device_local_bit = true });
-    try context.logical_device.bindImageMemory(image, memory, 0);
+    const memory = context.allocate_gpu_buffer(mem_reqs, .{ .device_local_bit = true }) catch |err| switch (err) {
+        error.NoSuitableMemoryType => return error.GfxInitFailed,
+        else => return error.GfxInitFailed,
+    };
+    context.logical_device.bindImageMemory(image, memory, 0) catch return error.GfxInitFailed;
 
     // --- Create a staging buffer and upload the pixels ---
     const byte_count = data.len;
 
-    const staging = try context.logical_device.createBuffer(&.{
+    const staging = context.logical_device.createBuffer(&.{
         .size = byte_count,
         .usage = .{ .transfer_src_bit = true },
         .sharing_mode = .exclusive,
-    }, null);
+    }, null) catch |err| switch (err) {
+        error.OutOfHostMemory, error.OutOfDeviceMemory => return error.OutOfMemory,
+        else => return error.GfxInitFailed,
+    };
 
     const staging_reqs = context.logical_device.getBufferMemoryRequirements(staging);
-    const staging_mem = try context.allocate_gpu_buffer(staging_reqs, .{ .host_visible_bit = true, .host_coherent_bit = true });
-    try context.logical_device.bindBufferMemory(staging, staging_mem, 0);
+    const staging_mem = context.allocate_gpu_buffer(staging_reqs, .{ .host_visible_bit = true, .host_coherent_bit = true }) catch |err| switch (err) {
+        error.NoSuitableMemoryType => return error.GfxInitFailed,
+        else => return error.GfxInitFailed,
+    };
+    context.logical_device.bindBufferMemory(staging, staging_mem, 0) catch return error.GfxInitFailed;
 
     {
-        const mapped = try context.logical_device.mapMemory(staging_mem, 0, vk.WHOLE_SIZE, .{});
+        const mapped = context.logical_device.mapMemory(staging_mem, 0, vk.WHOLE_SIZE, .{}) catch return error.GfxInitFailed;
         defer context.logical_device.unmapMemory(staging_mem);
         const dst: [*]u8 = @ptrCast(@alignCast(mapped));
         @memcpy(dst, data);
@@ -1129,14 +1218,14 @@ pub fn create_texture(width: u32, height: u32, data: []align(16) u8) anyerror!Te
 
     // --- One-time command buffer: transition + copy + transition ---
     var cmdbuf_handle: vk.CommandBuffer = undefined;
-    try context.logical_device.allocateCommandBuffers(&.{
+    context.logical_device.allocateCommandBuffers(&.{
         .command_pool = command_pool,
         .level = .primary,
         .command_buffer_count = 1,
-    }, @ptrCast(&cmdbuf_handle));
+    }, @ptrCast(&cmdbuf_handle)) catch return error.GfxInitFailed;
 
     const cmdbuf = vk.CommandBufferProxy.init(cmdbuf_handle, context.logical_device.wrapper);
-    try cmdbuf.beginCommandBuffer(&.{ .flags = .{ .one_time_submit_bit = true } });
+    cmdbuf.beginCommandBuffer(&.{ .flags = .{ .one_time_submit_bit = true } }) catch return error.GfxInitFailed;
 
     const subrange = vk.ImageSubresourceRange{
         .aspect_mask = .{ .color_bit = true },
@@ -1200,37 +1289,46 @@ pub fn create_texture(width: u32, height: u32, data: []align(16) u8) anyerror!Te
     };
     cmdbuf.pipelineBarrier2(&post_dep);
 
-    try cmdbuf.endCommandBuffer();
+    cmdbuf.endCommandBuffer() catch return error.GfxInitFailed;
 
     const submit = vk.SubmitInfo{
         .command_buffer_count = 1,
         .p_command_buffers = @ptrCast(&cmdbuf_handle),
     };
-    try context.logical_device.queueSubmit(context.graphics_queue.handle, @ptrCast(&submit), .null_handle);
-    try context.logical_device.queueWaitIdle(context.graphics_queue.handle);
+    context.logical_device.queueSubmit(context.graphics_queue.handle, @ptrCast(&submit), .null_handle) catch return error.GfxInitFailed;
+    context.logical_device.queueWaitIdle(context.graphics_queue.handle) catch return error.GfxInitFailed;
 
     context.logical_device.freeCommandBuffers(command_pool, @ptrCast(&cmdbuf_handle));
 
     context.logical_device.destroyBuffer(staging, null);
     context.logical_device.freeMemory(staging_mem, null);
 
-    const view = try context.logical_device.createImageView(&.{
+    const view = context.logical_device.createImageView(&.{
         .image = image,
         .view_type = .@"2d",
         .format = fmt,
         .subresource_range = subrange,
         .components = .{ .r = .identity, .g = .identity, .b = .identity, .a = .identity },
-    }, null);
+    }, null) catch |err| switch (err) {
+        error.OutOfHostMemory, error.OutOfDeviceMemory => return error.OutOfMemory,
+        else => return error.GfxInitFailed,
+    };
 
     const rec = TextureRec{ .image = image, .memory = memory, .view = view, .width = width, .height = height };
-    const handle_opt = textures.add_element(rec);
+    const handle_opt = textures.add(rec);
     if (handle_opt == null) {
         context.logical_device.destroyImageView(view, null);
         context.logical_device.destroyImage(image, null);
         context.logical_device.freeMemory(memory, null);
         return error.OutOfTextures;
     }
-    const idx: u32 = @intCast(handle_opt.?);
+    const handle = handle_opt.?;
+    const idx: u32 = @intCast(textures.raw_index(handle) orelse {
+        context.logical_device.destroyImageView(view, null);
+        context.logical_device.destroyImage(image, null);
+        context.logical_device.freeMemory(memory, null);
+        return error.OutOfTextures;
+    });
 
     // Write sampler once at binding 0, elem 0
     const samp_info = vk.DescriptorImageInfo{
@@ -1269,11 +1367,11 @@ pub fn create_texture(width: u32, height: u32, data: []align(16) u8) anyerror!Te
     const writes = [_]vk.WriteDescriptorSet{ write_sampler, write_image };
     context.logical_device.updateDescriptorSets(&writes, null);
 
-    return idx;
+    return handle;
 }
 
 pub fn update_texture(handle: Texture.Handle, data: []align(16) u8) void {
-    const rec = textures.get_element(handle) orelse return;
+    const rec = textures.get(handle) orelse Util.panic_invalid_handle("vulkan gfx", "update_texture", handle);
 
     const byte_count = data.len;
 
@@ -1381,11 +1479,14 @@ pub fn update_texture(handle: Texture.Handle, data: []align(16) u8) void {
 }
 
 pub fn bind_texture(handle: Texture.Handle) void {
-    draw_state.tex_id = handle;
+    if (handle.is_null()) return;
+    draw_state.tex_id = @intCast(textures.raw_index(handle) orelse Util.panic_invalid_handle("vulkan gfx", "bind_texture", handle));
 }
 
 pub fn destroy_texture(handle: Texture.Handle) void {
-    const rec = textures.get_element(handle) orelse return;
+    if (handle.is_null()) return;
+    const rec = textures.get(handle) orelse Util.panic_invalid_handle("vulkan gfx", "destroy_texture", handle);
+    const idx: u32 = @intCast(textures.raw_index(handle) orelse Util.panic_invalid_handle("vulkan gfx", "destroy_texture", handle));
 
     // Null out the image slot in the bindless array (binding 1).
     // Binding 0 is a single shared sampler (element 0 only) -- don't touch it here.
@@ -1397,7 +1498,7 @@ pub fn destroy_texture(handle: Texture.Handle) void {
     const clear_image = vk.WriteDescriptorSet{
         .dst_set = tex_set,
         .dst_binding = 1,
-        .dst_array_element = handle,
+        .dst_array_element = idx,
         .descriptor_count = 1,
         .descriptor_type = .sampled_image,
         .p_image_info = @ptrCast(&null_img),
@@ -1412,7 +1513,7 @@ pub fn destroy_texture(handle: Texture.Handle) void {
     context.logical_device.destroyImage(rec.image, null);
     context.logical_device.freeMemory(rec.memory, null);
 
-    _ = textures.remove_element(handle);
+    _ = textures.remove(handle);
 }
 
 pub fn force_texture_resident(_: Texture.Handle) void {}

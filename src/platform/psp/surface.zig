@@ -1,11 +1,12 @@
 const std = @import("std");
 const sdk = @import("pspsdk");
+const surface_api = @import("../surface.zig");
 const Self = @This();
 
 alloc: std.mem.Allocator,
 sync: bool = false,
 
-pub fn init(self: *Self, _: u32, _: u32, _: [:0]const u8, _: bool, sync: bool, _: bool) anyerror!void {
+pub fn init(self: *Self, _: u32, _: u32, _: [:0]const u8, _: bool, sync: bool, _: bool) surface_api.InitError!void {
     self.sync = sync;
 
     sdk.power.set_clock_frequency(333, 333, 166) catch {};

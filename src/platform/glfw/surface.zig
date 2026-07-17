@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const surface_api = @import("../surface.zig");
 const Util = @import("../../util/util.zig");
 const glfw = @import("glfw");
 
@@ -27,7 +28,7 @@ height: c_int = 0,
 
 pub var on_resize: ?*const fn () void = null;
 
-pub fn init(self: *Self, width: u32, height: u32, title: [:0]const u8, fullscreen: bool, sync: bool, resizable: bool) anyerror!void {
+pub fn init(self: *Self, width: u32, height: u32, title: [:0]const u8, fullscreen: bool, sync: bool, resizable: bool) surface_api.InitError!void {
     // See extern decls above -- bypass GLFW's libvulkan.1.dylib dlopen on macOS.
     // Must run BEFORE glfw.init() per GLFW 3.4 API contract.
     if (builtin.target.os.tag == .macos and api == .vulkan) {
@@ -36,7 +37,7 @@ pub fn init(self: *Self, width: u32, height: u32, title: [:0]const u8, fullscree
 
     glfw.initHint(glfw.JoystickHatButtons, 1);
 
-    try glfw.init();
+    glfw.init() catch return error.SurfaceInitFailed;
 
     Util.engine_logger.debug("GLFW {s}", .{glfw.getVersionString()});
 
@@ -61,14 +62,14 @@ pub fn init(self: *Self, width: u32, height: u32, title: [:0]const u8, fullscree
     if (fullscreen) {
         const monitor = glfw.getPrimaryMonitor();
         const mode = glfw.getVideoMode(monitor).?;
-        self.window = try glfw.createWindow(mode.width, mode.height, title.ptr, monitor, null);
+        self.window = glfw.createWindow(mode.width, mode.height, title.ptr, monitor, null) catch return error.SurfaceInitFailed;
         self.width = mode.width;
         self.height = mode.height;
     } else {
         self.width = @intCast(width);
         self.height = @intCast(height);
 
-        self.window = try glfw.createWindow(@intCast(width), @intCast(height), title.ptr, null, null);
+        self.window = glfw.createWindow(@intCast(width), @intCast(height), title.ptr, null, null) catch return error.SurfaceInitFailed;
     }
 
     // OpenGL

@@ -97,6 +97,12 @@ pub fn CircularBuffer(comptime T: type, comptime SIZE: usize) type {
             if (index == 0 or index >= SIZE) return null;
             return self.buffer[index];
         }
+
+        pub fn get_element_ptr(self: *Self, index: usize) ?*T {
+            if (index == 0 or index >= SIZE) return null;
+            if (self.buffer[index]) |*value| return value;
+            return null;
+        }
     };
 }
 

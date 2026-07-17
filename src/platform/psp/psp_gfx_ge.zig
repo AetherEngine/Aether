@@ -6,12 +6,15 @@
 // gu's hidden globals.
 
 const std = @import("std");
+const gfx_api = @import("../gfx_api.zig");
 const Util = @import("../../util/util.zig");
 const Mat4 = @import("../../math/math.zig").Mat4;
 const Rendering = @import("../../rendering/rendering.zig");
-const Pipeline = Rendering.Pipeline;
+const vertex = Rendering.vertex;
 const Mesh = Rendering.mesh;
 const Texture = Rendering.Texture;
+
+pub const mesh_source_mode = Mesh.SourceMode.borrowed_cpu;
 
 var render_alloc: std.mem.Allocator = undefined;
 var render_io: std.Io = undefined;
@@ -113,7 +116,7 @@ const frame_bpp: u32 = switch (options.config.psp_display_mode) {
 
 const VertexType = sdk.VertexType;
 
-// ---- pipeline cache --------------------------------------------------------
+// ---- vertex pipeline -------------------------------------------------------
 
 const PipelineData = struct {
     vertex_type: VertexType,
@@ -124,8 +127,7 @@ const PipelineData = struct {
     uv_unorm8: bool,
 };
 
-var pipelines = Util.CircularBuffer(PipelineData, 16).init();
-var bound_pipeline: Pipeline.Handle = 0;
+var render_pipeline: PipelineData = undefined;
 var alpha_blend_enabled: bool = true;
 var clip_planes_enabled: bool = false;
 var fog_enabled: bool = false;
@@ -544,7 +546,8 @@ fn emit_depth_range(near_value: u16, far_value: u16) void {
 
 // ---- engine state ----------------------------------------------------------
 
-pub fn init() anyerror!void {
+pub fn init() gfx_api.InitError!void {
+    render_pipeline = init_pipeline(vertex.Layout);
     clear_color = 0x000000;
 
     swapchain.init();
@@ -557,7 +560,7 @@ pub fn init() anyerror!void {
         .finish_func = ge_finish_callback,
         .finish_arg = &swapchain,
     };
-    ge_callback_id = try ge.set_callback(cb_data);
+    ge_callback_id = ge.set_callback(cb_data) catch return error.GfxInitFailed;
 
     begin_list();
 
@@ -572,7 +575,7 @@ pub fn init() anyerror!void {
 
     // Equivalent to gu.disp_buffer's side effect of enabling LCD mode the
     // first time it is called.
-    try display.set_mode(.lcd, SCREEN_WIDTH, SCREEN_HEIGHT);
+    display.set_mode(.lcd, SCREEN_WIDTH, SCREEN_HEIGHT) catch return error.GfxInitFailed;
 
     // Drawing region (rasterizer bounds). gu emits this from inside
     // sceGuDispBuffer; we have to do it explicitly.
@@ -619,9 +622,9 @@ pub fn init() anyerror!void {
     finish_list();
     _ = ge_list.draw_sync(.wait);
 
-    try swapchain.install_vblank_handler();
-    try swapchain.prime_display();
-    try display.wait_vblank_start();
+    swapchain.install_vblank_handler() catch return error.GfxInitFailed;
+    swapchain.prime_display() catch return error.GfxInitFailed;
+    display.wait_vblank_start() catch return error.GfxInitFailed;
 }
 
 pub fn deinit() void {
@@ -819,6 +822,18 @@ pub fn set_view_matrix(mat: *const Mat4) void {
     advance_stall();
 }
 
+pub fn set_render_state(state: *const Rendering.RenderState) void {
+    set_alpha_blend(state.blend == .alpha);
+    set_depth_write(state.depth_write);
+    set_culling(state.cull);
+    set_clip_planes(state.clip_planes);
+    set_uv_offset(state.uv_offset[0], state.uv_offset[1]);
+    set_fog(state.fog.enabled, state.fog.start, state.fog.end, state.fog.color[0], state.fog.color[1], state.fog.color[2]);
+    set_proj_matrix(&state.proj);
+    set_view_matrix(&state.view);
+    bind_texture(if (state.texture.is_null()) Texture.Default.handle else state.texture);
+}
+
 pub fn start_frame() bool {
     const allow_tear = !gfx.surface.sync;
     var attempts: u32 = 0;
@@ -851,13 +866,21 @@ pub fn end_frame() void {
     gfx.surface.draw();
 }
 
+pub fn has_second_screen() bool {
+    return false;
+}
+
+pub fn switch_second_screen() void {
+    std.debug.panic("psp gfx: switch_second_screen called but this backend has no second screen", .{});
+}
+
 pub fn set_vsync(v: bool) void {
     gfx.surface.sync = v;
 }
 
-// ---- pipelines -------------------------------------------------------------
+// ---- meshes ---------------------------------------------------------------
 
-pub fn create_pipeline(layout: Pipeline.VertexLayout, _: ?[:0]align(4) const u8, _: ?[:0]align(4) const u8) anyerror!Pipeline.Handle {
+fn init_pipeline(layout: vertex.VertexLayout) PipelineData {
     var vtype = VertexType{
         .vertex = .Vertex32Bitf, // default, overridden by position attribute
         .transform = .Transform3D,
@@ -895,61 +918,64 @@ pub fn create_pipeline(layout: Pipeline.VertexLayout, _: ?[:0]align(4) const u8,
         }
     }
 
-    const handle = pipelines.add_element(.{
+    return .{
         .vertex_type = vtype,
         .stride = layout.stride,
         .uv_unorm8 = uv_unorm8,
-    }) orelse return error.OutOfPipelines;
-
-    return @intCast(handle);
+    };
 }
-
-pub fn destroy_pipeline(handle: Pipeline.Handle) void {
-    _ = pipelines.remove_element(handle);
-}
-
-pub fn bind_pipeline(handle: Pipeline.Handle) void {
-    bound_pipeline = handle;
-}
-
-// ---- meshes ---------------------------------------------------------------
 
 const MeshData = struct {
-    pipeline: Pipeline.Handle,
     data: ?[*]const u8,
     len: usize,
+    indices: ?[*]const u8,
+    index_len: usize,
+    vertex_count: usize,
+    index_count: usize,
 };
 
-var meshes = Util.CircularBuffer(MeshData, 2048).init();
+var meshes = Util.ResourceTable(MeshData, 2048, Mesh.Handle).init();
 
-pub fn create_mesh(pipeline: Pipeline.Handle) anyerror!Mesh.Handle {
-    const handle = meshes.add_element(.{
-        .pipeline = pipeline,
+pub fn create_mesh(_: *const Mesh.Desc) gfx_api.CreateMeshError!Mesh.Handle {
+    return meshes.add(.{
         .data = null,
         .len = 0,
+        .indices = null,
+        .index_len = 0,
+        .vertex_count = 0,
+        .index_count = 0,
     }) orelse return error.OutOfMeshes;
-
-    return @intCast(handle);
 }
 
 pub fn destroy_mesh(handle: Mesh.Handle) void {
-    _ = meshes.remove_element(handle);
+    if (handle.is_null()) return;
+    if (meshes.get(handle) == null) Util.panic_invalid_handle("psp gfx", "destroy_mesh", handle);
+    _ = meshes.remove(handle);
 }
 
-pub fn update_mesh(handle: Mesh.Handle, data: []const u8) void {
-    var mesh = meshes.get_element(handle) orelse return;
+pub fn update_mesh(handle: Mesh.Handle, desc: *const Mesh.UpdateDesc) void {
+    var mesh = meshes.get(handle) orelse Util.panic_invalid_handle("psp gfx", "update_mesh", handle);
+    const data = desc.vertices;
+    const indices = desc.indices;
+    const index_bytes = std.mem.sliceAsBytes(indices);
 
     mesh.data = data.ptr;
     mesh.len = data.len;
+    mesh.indices = if (indices.len > 0) index_bytes.ptr else null;
+    mesh.index_len = index_bytes.len;
+    mesh.vertex_count = data.len / vertex.Layout.stride;
+    mesh.index_count = indices.len;
     sdk.kernel.dcache_writeback_range(data.ptr, @intCast(data.len));
+    if (index_bytes.len > 0) sdk.kernel.dcache_writeback_range(index_bytes.ptr, @intCast(index_bytes.len));
 
-    meshes.update_element(handle, mesh);
+    _ = meshes.update(handle, mesh);
 }
 
-pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize, primitive: Mesh.Primitive) void {
-    const mesh = meshes.get_element(handle) orelse return;
-    const pl = pipelines.get_element(mesh.pipeline) orelse return;
+pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
+    const mesh = meshes.get(handle) orelse Util.panic_invalid_handle("psp gfx", "draw_mesh", handle);
+    var pl = render_pipeline;
     const data = mesh.data orelse return;
+    if (mesh.vertex_count == 0) return;
 
     must(cmd.world_matrix(mat4_as_floats(model)));
 
@@ -961,12 +987,16 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4, count: usize, primitiv
         must(cmd.texture_scale(1.0, 1.0));
     }
 
+    if (mesh.index_count > 0) {
+        const index_data = mesh.indices orelse return;
+        pl.vertex_type.index = .Index16Bit;
+        must(cmd.index_address(@intFromPtr(index_data)));
+    } else {
+        pl.vertex_type.index = .None;
+    }
     must(cmd.vertex_type(@as(u24, @bitCast(pl.vertex_type))));
     must(cmd.vertex_address(@intFromPtr(data)));
-    must(cmd.primitive(switch (primitive) {
-        .triangles => .triangles,
-        .lines => .lines,
-    }, @intCast(count)));
+    must(cmd.primitive(.triangles, @intCast(if (mesh.index_count > 0) mesh.index_count else mesh.vertex_count)));
     advance_stall();
 }
 
@@ -989,9 +1019,9 @@ const TextureData = struct {
     // Pointer actually bound to the GE. Equals cpu_data until the texture is
     // made VRAM-resident, after which it points at the VRAM copy.
     data: [*]const u8,
-    // The caller's RAM buffer (Rendering.Texture.data.ptr). Always valid and
-    // always in the correct (swizzled or linear) layout, since set_pixel
-    // routes writes through pixel_offset.
+    // The texture's RAM backing. Always valid and always in the correct
+    // (swizzled or linear) layout, since set_pixel routes writes through
+    // pixel_offset.
     cpu_data: [*]align(16) u8,
     vram_data: ?[]align(16) u8,
     in_vram: bool,
@@ -1054,10 +1084,13 @@ pub fn swizzled_offset(x: u32, y: u32, width: u32) usize {
     return block_start + local_y * 16 + local_x;
 }
 
-var textures = Util.CircularBuffer(TextureData, 64).init();
-var bound_texture: Texture.Handle = 0;
+var textures = Util.ResourceTable(TextureData, 64, Texture.Handle).init();
+var bound_texture: Texture.Handle = .none;
 
-pub fn create_texture(width: u32, height: u32, data: []align(16) u8) anyerror!Texture.Handle {
+pub fn create_texture(desc: *const Texture.UploadDesc) gfx_api.CreateTextureError!Texture.Handle {
+    const width = desc.width;
+    const height = desc.height;
+    const data = desc.pixels;
     const width_bytes = width * tex_bpp;
     const should_swizzle = width_bytes * height >= 8 * 1024;
 
@@ -1067,7 +1100,7 @@ pub fn create_texture(width: u32, height: u32, data: []align(16) u8) anyerror!Te
 
     sdk.kernel.dcache_writeback_range(data.ptr, @intCast(data.len));
 
-    const handle = textures.add_element(.{
+    return textures.add(.{
         .width = width,
         .height = height,
         .data = data.ptr,
@@ -1078,15 +1111,13 @@ pub fn create_texture(width: u32, height: u32, data: []align(16) u8) anyerror!Te
         .mip_count = 0,
         .mips = undefined,
     }) orelse return error.OutOfTextures;
-
-    return @intCast(handle);
 }
 
 // The incoming `data` slice is the caller's RAM buffer and is already in the
 // correct (swizzled or linear) layout thanks to Rendering.Texture.set_pixel
 // routing writes through pixel_offset. We must NOT swizzle again here.
 pub fn update_texture(handle: Texture.Handle, data: []align(16) u8) void {
-    const tex = textures.get_element(handle) orelse return;
+    const tex = textures.get(handle) orelse Util.panic_invalid_handle("psp gfx", "update_texture", handle);
 
     if (tex.in_vram) {
         // The GE is sampling from VRAM; mirror the RAM buffer over it.
@@ -1102,7 +1133,8 @@ pub fn update_texture(handle: Texture.Handle, data: []align(16) u8) void {
 
 pub fn bind_texture(handle: Texture.Handle) void {
     bound_texture = handle;
-    const tex = textures.get_element(handle) orelse return;
+    if (handle.is_null()) return;
+    const tex = textures.get(handle) orelse Util.panic_invalid_handle("psp gfx", "bind_texture", handle);
 
     const layout: ge_list.TextureDataLayout = if (tex.swizzled) .swizzled else .linear;
 
@@ -1128,7 +1160,9 @@ pub fn bind_texture(handle: Texture.Handle) void {
 }
 
 pub fn destroy_texture(handle: Texture.Handle) void {
-    if (textures.get_element(handle)) |tex| {
+    if (handle.is_null()) return;
+    if (textures.get(handle) == null) Util.panic_invalid_handle("psp gfx", "destroy_texture", handle);
+    if (textures.get(handle)) |tex| {
         if (tex.in_vram) {
             if (tex.vram_data) |data| vram_free(data);
         }
@@ -1140,7 +1174,7 @@ pub fn destroy_texture(handle: Texture.Handle) void {
             vram_free(raw_ptr[0..size]);
         }
     }
-    _ = textures.remove_element(handle);
+    _ = textures.remove(handle);
 }
 
 fn vram_pixel_format() gu_types.GuPixelFormat {
@@ -1335,7 +1369,7 @@ fn generate_resident_mips(tex: *TextureData) void {
 }
 
 pub fn force_texture_resident(handle: Texture.Handle) void {
-    var tex = textures.get_element(handle) orelse return;
+    var tex = textures.get(handle) orelse return;
     if (tex.in_vram) return;
 
     const size = tex.width * tex.height * tex_bpp;
@@ -1351,5 +1385,5 @@ pub fn force_texture_resident(handle: Texture.Handle) void {
 
     generate_resident_mips(&tex);
 
-    textures.update_element(handle, tex);
+    _ = textures.update(handle, tex);
 }

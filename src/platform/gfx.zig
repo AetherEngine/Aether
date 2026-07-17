@@ -10,9 +10,17 @@ const surface_iface = @import("surface.zig");
 /// `gfx.api.start_frame()` resolve to direct function calls with no
 /// indirection.
 pub const Api = switch (options.config.gfx) {
-    .default => @import("psp/psp_gfx_ge.zig"),
+    .default => if (options.config.platform == .nintendo_switch)
+        @import("switch/switch_gfx.zig")
+    else if (options.config.platform == .nintendo_3ds)
+        @import("3ds/gfx.zig")
+    else if (options.config.platform == .wasm)
+        @import("wasm/webgl_gfx.zig")
+    else
+        @import("psp/psp_gfx_ge.zig"),
     .opengl => @import("glfw/opengl/opengl_gfx.zig"),
     .vulkan => @import("glfw/vulkan/vulkan_gfx.zig"),
+    .webgl => @import("wasm/webgl_gfx.zig"),
     .headless => @import("headless/headless_gfx.zig"),
 };
 
@@ -22,6 +30,12 @@ pub const Surface = if (options.config.gfx == .headless)
     @import("headless/surface.zig")
 else if (builtin.os.tag == .psp)
     @import("psp/surface.zig")
+else if (options.config.platform == .nintendo_3ds)
+    @import("3ds/surface.zig")
+else if (options.config.platform == .nintendo_switch)
+    @import("switch/surface.zig")
+else if (options.config.platform == .wasm)
+    @import("wasm/surface.zig")
 else
     @import("glfw/surface.zig");
 
@@ -33,6 +47,8 @@ comptime {
 pub const api = Api;
 pub var surface: Surface = undefined;
 pub var sync: bool = true;
+pub var frame_active: bool = false;
+pub var validate_mesh_updates_outside_frame: bool = false;
 
 /// Initializes the graphics subsystem with the specified parameters.
 /// Must be called before any other graphics functions.
@@ -45,10 +61,14 @@ pub fn init(
     fullscreen: bool,
     vsync: bool,
     resizable: bool,
-) !void {
+) gfx_api.InitError!void {
     sync = vsync;
     surface = .{ .alloc = alloc };
-    try surface.init(width, height, title, fullscreen, vsync, resizable);
+    surface.init(width, height, title, fullscreen, vsync, resizable) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.VulkanNotSupported => return error.VulkanNotSupported,
+        error.SurfaceInitFailed => return error.SurfaceInitFailed,
+    };
 
     Api.setup(alloc, io);
     try Api.init();
@@ -63,4 +83,12 @@ pub fn deinit() void {
 pub fn set_vsync(v: bool) void {
     sync = v;
     Api.set_vsync(v);
+}
+
+pub fn has_second_screen() bool {
+    return Api.has_second_screen();
+}
+
+pub fn switch_second_screen() void {
+    Api.switch_second_screen();
 }
