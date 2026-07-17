@@ -141,7 +141,8 @@ pub const Engine = struct {
     frame_scratch: std.heap.ArenaAllocator,
     running: bool,
     vsync: bool,
-    state: Core.State,
+    input: Core.InputSystem,
+    states: Core.StateMachine,
     dirs: Core.paths.Dirs,
     debug_trace_loops: u8,
     debug_trace_loop_index: u32,
@@ -205,7 +206,8 @@ pub const Engine = struct {
         self.io = sys_io;
         self.running = true;
         self.vsync = config.vsync;
-        self.state = state.*;
+        self.input = .{};
+        self.states = .{};
         self.debug_trace_loops = 0;
         self.debug_trace_loop_index = 0;
         self.current_memory_profile = config.memory_profile_name;
@@ -235,17 +237,23 @@ pub const Engine = struct {
 
         try logger.init(sys_io, self.dirs.data);
 
+        self.input.init(self.allocator(.game)) catch |err| switch (err) {
+            error.OutOfMemory => return error.InputInitOutOfMemory,
+            else => return err,
+        };
+        errdefer self.input.deinit();
+
         Platform.init(self, config.width, config.height, config.title, config.fullscreen, config.vsync, config.resizable) catch |err| switch (err) {
             error.OutOfMemory => return error.PlatformInitOutOfMemory,
             else => return err,
         };
-        errdefer Platform.deinit();
+        errdefer Platform.deinit(self);
 
         Rendering.Texture.init_defaults(self.allocator(.render)) catch |err| switch (err) {
             error.OutOfMemory => return error.DefaultTexturesOutOfMemory,
             else => return err,
         };
-        Core.state_machine.init(self, &self.state) catch |err| switch (err) {
+        self.states.init(self, state) catch |err| switch (err) {
             error.OutOfMemory => return error.StateInitOutOfMemory,
             else => return err,
         };
@@ -253,10 +261,11 @@ pub const Engine = struct {
     }
 
     pub fn deinit(self: *Engine) void {
-        Core.state_machine.deinit(self);
+        self.states.deinit(self);
         self.frame_scratch.deinit();
         Rendering.Texture.Default.deinit(self.allocator(.render));
-        Platform.deinit();
+        Platform.deinit(self);
+        self.input.deinit();
         logger.deinit(self.io);
         self.dirs.close(self.io);
     }
@@ -280,6 +289,14 @@ pub const Engine = struct {
 
     pub fn quit(self: *Engine) void {
         self.running = false;
+    }
+
+    pub fn transition(self: *Engine, state: *const Core.State) void {
+        self.states.transition(state);
+    }
+
+    pub fn has_pending_transition(self: *const Engine) bool {
+        return self.states.has_pending_transition();
     }
 
     pub fn set_vsync(self: *Engine, v: bool) void {
@@ -531,8 +548,8 @@ pub const Engine = struct {
                 });
             }
             const tick_start_ns = clock.now(self.io).toNanoseconds();
-            try Core.state_machine.tick(self);
-            try Core.state_machine.commit_pending(self);
+            try self.states.tick(self);
+            try self.states.commit_pending(self);
             if (!self.running) return;
             const tick_end_ns = clock.now(self.io).toNanoseconds();
             tick_cost_ns = saturatingAddI64(tick_cost_ns, elapsedNsBetween(tick_start_ns, tick_end_ns));
@@ -560,8 +577,8 @@ pub const Engine = struct {
                 });
             }
             const input_start_ns = clock.now(self.io).toNanoseconds();
-            Platform.input.update();
-            Core.input.update();
+            Platform.input.update(&self.input);
+            self.input.update();
             const input_done_ns = clock.now(self.io).toNanoseconds();
             const engine_elapsed_ns = saturatingAddI64(pre_update_elapsed_ns, elapsedNsBetween(input_start_ns, input_done_ns));
             if (trace_loop) {
@@ -585,8 +602,8 @@ pub const Engine = struct {
                     @as(u32, @bitCast(UPDATE_DT_S)),
                 });
             }
-            try Core.state_machine.update(self, UPDATE_DT_S, &budget);
-            try Core.state_machine.commit_pending(self);
+            try self.states.update(self, UPDATE_DT_S, &budget);
+            try self.states.commit_pending(self);
             if (!self.running) return;
             pre_update_elapsed_ns = 0;
             self.run_loop.update_accum -= UPDATE_US;
@@ -635,7 +652,7 @@ pub const Engine = struct {
             if (trace_loop) {
                 Util.engine_logger.info("trace: engine loop {d} draw begin", .{trace_loop_index});
             }
-            try Core.state_machine.draw(self, frame_dt_s, &draw_budget);
+            try self.states.draw(self, frame_dt_s, &draw_budget);
             if (trace_loop) {
                 Util.engine_logger.info("trace: engine loop {d} draw end", .{trace_loop_index});
             }
@@ -645,7 +662,7 @@ pub const Engine = struct {
             }
             Platform.gfx.api.end_frame();
             Platform.gfx.frame_active = false;
-            try Core.state_machine.commit_pending(self);
+            try self.states.commit_pending(self);
             if (!self.running) return;
             if (trace_loop) {
                 Util.engine_logger.info("trace: engine loop {d} end_frame end", .{trace_loop_index});

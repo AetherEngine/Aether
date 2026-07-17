@@ -1,5 +1,5 @@
 //! GLFW-driven input backend. Subscribes to per-event callbacks and
-//! translates them into `core.deliver_*` calls; polls gamepad state once
+//! translates them into `InputSystem.deliver_*` calls; polls gamepad state once
 //! per pump for axes (which GLFW does not expose via callback).
 
 const std = @import("std");
@@ -19,10 +19,12 @@ var prev_pad: glfw.GamepadState = .{ .buttons = @splat(0), .axes = @splat(0) };
 var have_prev_pad: bool = false;
 var current_cursor_mode: core.CursorMode = .visible;
 var have_applied_cursor_mode: bool = false;
+var active_input: ?*core.InputSystem = null;
 
 // -- Interface ---------------------------------------------------------------
 
-pub fn setup(_: std.mem.Allocator, _: std.Io) void {
+pub fn setup(_: std.mem.Allocator, _: std.Io, input: *core.InputSystem) void {
+    active_input = input;
     prev_cursor_x = 0;
     prev_cursor_y = 0;
     have_prev_cursor = false;
@@ -53,12 +55,15 @@ pub fn init() input_api.InitError!void {
     }
 }
 
-pub fn deinit() void {}
+pub fn deinit() void {
+    active_input = null;
+}
 
-pub fn pump() void {
+pub fn pump(input: *core.InputSystem) void {
+    active_input = input;
     glfw.pollEvents();
-    pump_gamepad();
-    core.signal_frame_boundary();
+    pump_gamepad(input);
+    input.signal_frame_boundary();
 }
 
 pub fn apply_cursor_mode(mode: core.CursorMode) void {
@@ -86,12 +91,12 @@ pub fn apply_cursor_mode(mode: core.CursorMode) void {
     }
 }
 
-pub fn begin_text_input_session(_: *const core.TextInputTarget, _: *const core.TextInputOptions) input_api.TextSessionError!void {
+pub fn begin_text_input_session(_: *core.InputSystem, _: *const core.TextInputTarget, _: *const core.TextInputOptions) input_api.TextSessionError!void {
     // GLFW backends rely on `deliver_text` from the char callback to
     // populate the session buffer -- no modal OSK to dispatch here.
 }
 
-pub fn end_text_input_session() void {}
+pub fn end_text_input_session(_: *core.InputSystem) void {}
 
 // -- callbacks ---------------------------------------------------------------
 
@@ -105,25 +110,28 @@ fn convert_mods(mods: c_int) core.ModifierSet {
 }
 
 export fn key_callback(_: *glfw.Window, key: c_int, _: c_int, action: c_int, mods: c_int) callconv(.c) void {
+    const input = active_input orelse return;
     if (key < 0) return;
     const k: core.Key = std.enums.fromInt(core.Key, key) orelse return;
     const m = convert_mods(mods);
     current_modifiers = m;
     switch (action) {
-        glfw.Press => core.deliver_key_down(k, m, false),
-        glfw.Repeat => core.deliver_key_down(k, m, true),
-        glfw.Release => core.deliver_key_up(k, m),
+        glfw.Press => input.deliver_key_down(k, m, false),
+        glfw.Repeat => input.deliver_key_down(k, m, true),
+        glfw.Release => input.deliver_key_up(k, m),
         else => {},
     }
 }
 
 export fn char_callback(_: *glfw.Window, codepoint: c_uint) callconv(.c) void {
+    const input = active_input orelse return;
     var buf: [4]u8 = undefined;
     const len = std.unicode.utf8Encode(@intCast(codepoint), &buf) catch return;
-    core.deliver_text(buf[0..len]);
+    input.deliver_text(buf[0..len]);
 }
 
 export fn mouse_button_callback(window: *glfw.Window, button: c_int, action: c_int, mods: c_int) callconv(.c) void {
+    const input = active_input orelse return;
     if (button < 0 or button > 2) return;
     current_modifiers = convert_mods(mods);
     const mb: core.MouseButton = @enumFromInt(button);
@@ -140,10 +148,11 @@ export fn mouse_button_callback(window: *glfw.Window, button: c_int, action: c_i
         .y = @floatCast(prev_cursor_y * sy),
     };
     const edge: core.ButtonState = if (action == glfw.Press) .pressed else .released;
-    core.deliver_mouse_button(mb, edge, pos);
+    input.deliver_mouse_button(mb, edge, pos);
 }
 
 export fn cursor_pos_callback(window: *glfw.Window, xpos: f64, ypos: f64) callconv(.c) void {
+    const input = active_input orelse return;
     const dx = if (have_prev_cursor) xpos - prev_cursor_x else 0;
     const dy = if (have_prev_cursor) ypos - prev_cursor_y else 0;
     prev_cursor_x = xpos;
@@ -161,18 +170,20 @@ export fn cursor_pos_callback(window: *glfw.Window, xpos: f64, ypos: f64) callco
     glfw.getFramebufferSize(window, &fb_w, &fb_h);
     const sx = @as(f64, @floatFromInt(fb_w)) / @as(f64, @floatFromInt(win_w));
     const sy = @as(f64, @floatFromInt(fb_h)) / @as(f64, @floatFromInt(win_h));
-    core.deliver_mouse_move(
+    input.deliver_mouse_move(
         .{ .x = @floatCast(xpos * sx), .y = @floatCast(ypos * sy) },
         .{ .x = @floatCast(dx), .y = @floatCast(dy) },
     );
 }
 
 export fn scroll_callback(_: *glfw.Window, xoffset: f64, yoffset: f64) callconv(.c) void {
-    core.deliver_mouse_wheel(.{ .x = @floatCast(xoffset), .y = @floatCast(yoffset) });
+    const input = active_input orelse return;
+    input.deliver_mouse_wheel(.{ .x = @floatCast(xoffset), .y = @floatCast(yoffset) });
 }
 
 export fn window_focus_callback(_: *glfw.Window, focused: c_int) callconv(.c) void {
-    core.deliver_focus_change(focused != 0);
+    const input = active_input orelse return;
+    input.deliver_focus_change(focused != 0);
 }
 
 export fn joystick_callback(id: c_int, event: c_int) callconv(.c) void {
@@ -188,7 +199,7 @@ export fn joystick_callback(id: c_int, event: c_int) callconv(.c) void {
 
 // -- gamepad polling ---------------------------------------------------------
 
-fn pump_gamepad() void {
+fn pump_gamepad(input: *core.InputSystem) void {
     if (active_joystick == -1 or !glfw.joystickPresent(active_joystick)) {
         // Lazily rescan if our cached active joystick disappeared.
         active_joystick = -1;
@@ -212,7 +223,7 @@ fn pump_gamepad() void {
         const prev = if (have_prev_pad) prev_pad.buttons[idx] else 0;
         if (now != prev) {
             const edge: core.ButtonState = if (now == glfw.Press) .pressed else .released;
-            core.deliver_gamepad_button(b, edge);
+            input.deliver_gamepad_button(b, edge);
         }
     }
 
@@ -233,7 +244,7 @@ fn pump_gamepad() void {
         // Emit when active OR when transitioning back to zero, so core's
         // device state lands on zero rather than stranded mid-stick.
         if (raw != 0 or prev_raw != 0) {
-            core.deliver_gamepad_axis(a, raw);
+            input.deliver_gamepad_axis(a, raw);
         }
     }
 

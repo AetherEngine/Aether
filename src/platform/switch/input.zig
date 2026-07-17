@@ -50,8 +50,10 @@ var prev_axes: [axis_count]f32 = @splat(0.0);
 var prev_touch_down: bool = false;
 var prev_touch_pos: core.Vec2 = .{};
 var current_cursor_mode: core.CursorMode = .visible;
+var active_input: ?*core.InputSystem = null;
 
-pub fn setup(_: std.mem.Allocator, _: std.Io) void {
+pub fn setup(_: std.mem.Allocator, _: std.Io, input: *core.InputSystem) void {
+    active_input = input;
     initialized = false;
     pad = std.mem.zeroes(c.PadState);
     prev_buttons = 0;
@@ -73,27 +75,28 @@ pub fn deinit() void {
     if (!initialized) return;
     c.hidExit();
     initialized = false;
+    active_input = null;
 }
 
-pub fn pump() void {
+pub fn pump(input: *core.InputSystem) void {
     c.padUpdate(&pad);
 
-    diff_buttons(pad.buttons_cur);
-    pump_axes(pad.buttons_cur);
-    pump_touch();
+    diff_buttons(input, pad.buttons_cur);
+    pump_axes(input, pad.buttons_cur);
+    pump_touch(input);
 
     prev_buttons = pad.buttons_cur;
-    core.signal_frame_boundary();
+    input.signal_frame_boundary();
 }
 
 pub fn apply_cursor_mode(mode: core.CursorMode) void {
     current_cursor_mode = mode;
 }
 
-pub fn handle_operation_mode_changed() void {
+pub fn handle_operation_mode_changed(input: *core.InputSystem) void {
     if (!initialized) return;
 
-    release_all_input_state();
+    release_all_input_state(input);
 
     var arg: c.HidLaControllerSupportArg = undefined;
     c.hidLaCreateControllerSupportArg(&arg);
@@ -115,19 +118,19 @@ pub fn handle_operation_mode_changed() void {
     reset_previous_input_state();
 }
 
-pub fn begin_text_input_session(target: *const core.TextInputTarget, options: *const core.TextInputOptions) input_api.TextSessionError!void {
+pub fn begin_text_input_session(input: *core.InputSystem, target: *const core.TextInputTarget, options: *const core.TextInputOptions) input_api.TextSessionError!void {
     var config_buf: [SWKBD_CONFIG_BYTES]u8 align(8) = @splat(0);
     const config: *anyopaque = @ptrCast(&config_buf);
 
     var initial_buf: [MAX_TEXT_BYTES:0]u8 = @splat(0);
-    const initial_len = copy_current_text(&initial_buf);
+    const initial_len = copy_current_text(input, &initial_buf);
     const initial = initial_buf[0..initial_len :0];
 
     var target_buf: [128:0]u8 = @splat(0);
     const target_text = copy_z(&target_buf, target.id);
 
     if (c.swkbdCreate(config, 0) != 0) {
-        core.write_text_session_buffer(initial_buf[0..initial_len], .cancelled);
+        input.write_text_session_buffer(initial_buf[0..initial_len], .cancelled);
         return;
     }
     defer c.swkbdClose(config);
@@ -142,15 +145,15 @@ pub fn begin_text_input_session(target: *const core.TextInputTarget, options: *c
     const out_size = output_buffer_size(options.max_bytes);
     if (c.swkbdShow(config, out_buf[0..].ptr, out_size) == 0) {
         const len = bounded_z_len(out_buf[0..out_size]);
-        core.write_text_session_buffer(out_buf[0..len], .submitted);
+        input.write_text_session_buffer(out_buf[0..len], .submitted);
     } else {
-        core.write_text_session_buffer(initial_buf[0..initial_len], .cancelled);
+        input.write_text_session_buffer(initial_buf[0..initial_len], .cancelled);
     }
 }
 
-pub fn end_text_input_session() void {}
+pub fn end_text_input_session(_: *core.InputSystem) void {}
 
-fn diff_buttons(buttons: u64) void {
+fn diff_buttons(input: *core.InputSystem, buttons: u64) void {
     const Pair = struct { mask: u64, button: core.Button };
     const map = [_]Pair{
         // A/B actions follow Nintendo labels. X/Y are swapped so Aether's
@@ -175,26 +178,26 @@ fn diff_buttons(buttons: u64) void {
         const now = buttons & entry.mask != 0;
         const prev = prev_buttons & entry.mask != 0;
         if (now != prev) {
-            core.deliver_gamepad_button(entry.button, if (now) .pressed else .released);
+            input.deliver_gamepad_button(entry.button, if (now) .pressed else .released);
         }
     }
 }
 
-fn pump_axes(buttons: u64) void {
+fn pump_axes(input: *core.InputSystem, buttons: u64) void {
     const left = pad.sticks[0];
     const right = pad.sticks[1];
 
-    deliver_axis(.LeftX, normalize_stick(left.x));
-    deliver_axis(.LeftY, -normalize_stick(left.y));
-    deliver_axis(.RightX, normalize_stick(right.x));
-    deliver_axis(.RightY, -normalize_stick(right.y));
-    deliver_axis(.LeftTrigger, if (buttons & BUTTON_ZL != 0) 1.0 else 0.0);
-    deliver_axis(.RightTrigger, if (buttons & BUTTON_ZR != 0) 1.0 else 0.0);
+    deliver_axis(input, .LeftX, normalize_stick(left.x));
+    deliver_axis(input, .LeftY, -normalize_stick(left.y));
+    deliver_axis(input, .RightX, normalize_stick(right.x));
+    deliver_axis(input, .RightY, -normalize_stick(right.y));
+    deliver_axis(input, .LeftTrigger, if (buttons & BUTTON_ZL != 0) 1.0 else 0.0);
+    deliver_axis(input, .RightTrigger, if (buttons & BUTTON_ZR != 0) 1.0 else 0.0);
 }
 
-fn pump_touch() void {
+fn pump_touch(input: *core.InputSystem) void {
     if (current_cursor_mode == .captured) {
-        if (prev_touch_down) core.deliver_mouse_button(.Left, .released, prev_touch_pos);
+        if (prev_touch_down) input.deliver_mouse_button(.Left, .released, prev_touch_pos);
         prev_touch_down = false;
         prev_touch_pos = .{};
         return;
@@ -215,32 +218,32 @@ fn pump_touch() void {
         else
             .{};
 
-        core.deliver_mouse_move(pos, delta);
-        if (!prev_touch_down) core.deliver_mouse_button(.Left, .pressed, pos);
+        input.deliver_mouse_move(pos, delta);
+        if (!prev_touch_down) input.deliver_mouse_button(.Left, .pressed, pos);
         prev_touch_pos = pos;
     } else if (prev_touch_down) {
-        core.deliver_mouse_button(.Left, .released, prev_touch_pos);
+        input.deliver_mouse_button(.Left, .released, prev_touch_pos);
     }
 
     prev_touch_down = touch_down;
 }
 
-fn deliver_axis(axis: core.Axis, value: f32) void {
+fn deliver_axis(input: *core.InputSystem, axis: core.Axis, value: f32) void {
     const idx = @intFromEnum(axis);
     const prev = prev_axes[idx];
-    if (value != 0.0 or prev != 0.0) core.deliver_gamepad_axis(axis, value);
+    if (value != 0.0 or prev != 0.0) input.deliver_gamepad_axis(axis, value);
     prev_axes[idx] = value;
 }
 
-fn release_all_input_state() void {
-    if (prev_buttons != 0) diff_buttons(0);
+fn release_all_input_state(input: *core.InputSystem) void {
+    if (prev_buttons != 0) diff_buttons(input, 0);
     inline for (std.meta.fields(core.Axis)) |f| {
         const axis: core.Axis = @enumFromInt(f.value);
         const index = @intFromEnum(axis);
-        if (prev_axes[index] != 0.0) deliver_axis(axis, 0.0);
+        if (prev_axes[index] != 0.0) deliver_axis(input, axis, 0.0);
     }
-    if (prev_touch_down) core.deliver_mouse_button(.Left, .released, prev_touch_pos);
-    core.signal_frame_boundary();
+    if (prev_touch_down) input.deliver_mouse_button(.Left, .released, prev_touch_pos);
+    input.signal_frame_boundary();
     reset_previous_input_state();
 }
 
@@ -261,8 +264,8 @@ fn output_buffer_size(limit: ?usize) usize {
     return max + 1;
 }
 
-fn copy_current_text(dst: []u8) usize {
-    const s = core.current_text_session() orelse return 0;
+fn copy_current_text(input: *core.InputSystem, dst: []u8) usize {
+    const s = input.current_text_session() orelse return 0;
     const n = @min(dst.len - 1, s.buffer.items.len);
     @memcpy(dst[0..n], s.buffer.items[0..n]);
     dst[n] = 0;

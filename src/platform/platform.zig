@@ -51,7 +51,7 @@ pub fn init(engine: *Engine, width: u32, height: u32, title: [:0]const u8, fulls
         error.OutOfMemory => return error.AudioInitOutOfMemory,
         else => return err,
     };
-    input.init(engine.allocator(.game), engine.io) catch |err| switch (err) {
+    input.init(&engine.input, engine.allocator(.game), engine.io) catch |err| switch (err) {
         error.OutOfMemory => return error.InputInitOutOfMemory,
         else => return err,
     };
@@ -69,9 +69,9 @@ pub fn update(engine: *Engine) void {
         engine.running = false;
         return;
     }
-    if (@hasDecl(gfx.Surface, "take_operation_mode_changed") and @hasDecl(input.Api, "handle_operation_mode_changed")) {
+    if (@hasDecl(gfx.Surface, "take_operation_mode_changed") and @hasDecl(input.api, "handle_operation_mode_changed")) {
         if (gfx.surface.take_operation_mode_changed()) {
-            input.Api.handle_operation_mode_changed();
+            input.api.handle_operation_mode_changed(&engine.input);
         }
     }
     audio.update();
@@ -81,8 +81,8 @@ pub fn update(engine: *Engine) void {
 }
 
 /// Deinitializes the platform subsystems in reverse order.
-pub fn deinit() void {
-    input.deinit();
+pub fn deinit(engine: *Engine) void {
+    input.deinit(&engine.input);
     audio.deinit();
     gfx.deinit();
 }
