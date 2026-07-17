@@ -7,6 +7,7 @@ const std = @import("std");
 const sdk = @import("pspsdk");
 const ctrl = sdk.ctrl;
 
+const input_api = @import("../input_api.zig");
 const core = @import("../../core/input/input.zig");
 const dialogs = @import("psp_dialogs.zig");
 
@@ -18,7 +19,7 @@ pub fn setup(_: std.mem.Allocator, _: std.Io) void {
     have_prev = false;
 }
 
-pub fn init() anyerror!void {
+pub fn init() input_api.InitError!void {
     _ = ctrl.set_sampling_cycle(0);
     _ = ctrl.set_sampling_mode(.analog);
     sdk.extra.utils.enableHBCB();
@@ -41,7 +42,7 @@ pub fn pump() void {
 
 pub fn apply_cursor_mode(_: core.CursorMode) void {}
 
-pub fn begin_text_input_session(target: core.TextInputTarget, options: core.TextInputOptions) anyerror!void {
+pub fn begin_text_input_session(target: *const core.TextInputTarget, options: *const core.TextInputOptions) input_api.TextSessionError!void {
     // OSK is modal -- runs its own loop and writes the buffer on return.
     var desc_buf: [128]u16 = @splat(0);
     const desc_len = std.unicode.utf8ToUtf16Le(&desc_buf, target.id) catch 0;

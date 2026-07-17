@@ -5,6 +5,7 @@
 //! owns renderer state plus backend resource records.
 
 const std = @import("std");
+const gfx_api = @import("../gfx_api.zig");
 const Util = @import("../../util/util.zig");
 const Mat4 = @import("../../math/math.zig").Mat4;
 const Rendering = @import("../../rendering/rendering.zig");
@@ -162,35 +163,45 @@ pub fn setup(alloc: std.mem.Allocator, io: std.Io) void {
     render_io = io;
 }
 
-pub fn init() anyerror!void {
+pub fn init() gfx_api.InitError!void {
     _ = render_io;
-    context = try Context.init(render_alloc);
+    context = Context.init(render_alloc) catch |err| switch (err) {
+        else => return error.GfxInitFailed,
+    };
     context.activate();
     errdefer context.deinit();
 
-    swapchain = try Swapchain.init(&context, gfx.sync);
+    swapchain = Swapchain.init(&context, gfx.sync) catch return error.GfxInitFailed;
     errdefer swapchain.deinit();
 
     gc = GarbageCollector.init(render_alloc, &context);
     errdefer gc.deinit();
 
-    try create_code_memory();
+    create_code_memory() catch return error.GfxInitFailed;
     errdefer destroy_code_memory();
 
-    try create_uniform_memory();
+    create_uniform_memory() catch return error.GfxInitFailed;
     errdefer destroy_uniform_memory();
 
-    try create_upload_command_buffer();
+    create_upload_command_buffer() catch return error.GfxInitFailed;
     errdefer destroy_upload_command_buffer();
 
-    try create_descriptor_memory();
+    create_descriptor_memory() catch return error.GfxInitFailed;
     errdefer destroy_descriptor_memory();
 
-    try initialize_sampler_descriptor();
-    render_pipeline = try init_pipeline(vertex.Layout);
+    initialize_sampler_descriptor() catch return error.GfxInitFailed;
+    render_pipeline = init_pipeline(vertex.Layout) catch |err| switch (err) {
+        error.InvalidShader => return error.InvalidShader,
+        error.OutOfShaderMemory => return error.OutOfShaderMemory,
+        error.UnsupportedVertexLayout => return error.UnsupportedVertexLayout,
+        else => return error.GfxInitFailed,
+    };
     render_pipeline_initialized = true;
 
-    try create_fallback_texture();
+    create_fallback_texture() catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.GfxInitFailed,
+    };
     errdefer destroy_all_textures();
 
     initialized = true;
@@ -310,7 +321,7 @@ pub fn has_second_screen() bool {
 }
 
 pub fn switch_second_screen() void {
-    unreachable;
+    std.debug.panic("switch gfx: switch_second_screen called but this backend has no second screen", .{});
 }
 
 pub fn set_vsync(v: bool) void {
@@ -318,18 +329,19 @@ pub fn set_vsync(v: bool) void {
     if (initialized) swapchain.set_vsync(v);
 }
 
-pub fn create_mesh(_: *const Mesh.Desc) anyerror!Mesh.Handle {
+pub fn create_mesh(_: *const Mesh.Desc) gfx_api.CreateMeshError!Mesh.Handle {
     return meshes.add(.{}) orelse return error.OutOfMeshes;
 }
 
 pub fn destroy_mesh(handle: Mesh.Handle) void {
-    const mesh = meshes.get_ptr(handle) orelse return;
+    if (handle.is_null()) return;
+    const mesh = meshes.get_ptr(handle) orelse Util.panic_invalid_handle("switch gfx", "destroy_mesh", handle);
     destroy_mesh_data(mesh, true);
     _ = meshes.remove(handle);
 }
 
 pub fn update_mesh(handle: Mesh.Handle, desc: *const Mesh.UpdateDesc) void {
-    const mesh = meshes.get_ptr(handle) orelse return;
+    const mesh = meshes.get_ptr(handle) orelse Util.panic_invalid_handle("switch gfx", "update_mesh", handle);
     const data = desc.vertices;
     const indices = desc.indices;
 
@@ -342,7 +354,7 @@ pub fn update_mesh(handle: Mesh.Handle, desc: *const Mesh.UpdateDesc) void {
 
 pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
     if (!initialized or !render_pipeline_initialized or !swapchain.recording) return;
-    const mesh = meshes.get_ptr(handle) orelse return;
+    const mesh = meshes.get_ptr(handle) orelse Util.panic_invalid_handle("switch gfx", "draw_mesh", handle);
     const mesh_id = handle.raw_index();
     const frame_index = swapchain.frame_index;
     if (mesh.dirty) {
@@ -437,7 +449,7 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
     frame_vertex_count += @intCast(draw_count);
 }
 
-pub fn create_texture(desc: *const Texture.UploadDesc) anyerror!Texture.Handle {
+pub fn create_texture(desc: *const Texture.UploadDesc) gfx_api.CreateTextureError!Texture.Handle {
     const width = desc.width;
     const height = desc.height;
     const data = desc.pixels;
@@ -452,28 +464,32 @@ pub fn create_texture(desc: *const Texture.UploadDesc) anyerror!Texture.Handle {
         _ = texture_slots.remove(handle);
     }
 
-    try create_texture_image(tex, width, height);
+    create_texture_image(tex, width, height) catch |err| switch (err) {
+        else => return error.GfxInitFailed,
+    };
     tex.alive = true;
-    try upload_texture_pixels(handle, tex, data);
+    upload_texture_pixels(handle, tex, data) catch return error.GfxInitFailed;
     return handle;
 }
 
 pub fn update_texture(handle: Texture.Handle, data: []align(16) u8) void {
-    const tex = texture_slots.get_ptr(handle) orelse return;
+    const tex = texture_slots.get_ptr(handle) orelse Util.panic_invalid_handle("switch gfx", "update_texture", handle);
     if (!tex.alive) return;
     if (data.len < @as(usize, tex.width) * @as(usize, tex.height) * 4) return;
     upload_texture_pixels(handle, tex, data) catch return;
 }
 
 pub fn bind_texture(handle: Texture.Handle) void {
-    const tex = texture_slots.get(handle) orelse return;
+    if (handle.is_null()) return;
+    const tex = texture_slots.get(handle) orelse Util.panic_invalid_handle("switch gfx", "bind_texture", handle);
     if (!tex.alive) return;
     current_texture = handle;
     draw_state.tex_id = @intCast(texture_slots.raw_index(handle) orelse 0);
 }
 
 pub fn destroy_texture(handle: Texture.Handle) void {
-    const tex = texture_slots.get_ptr(handle) orelse return;
+    if (handle.is_null()) return;
+    const tex = texture_slots.get_ptr(handle) orelse Util.panic_invalid_handle("switch gfx", "destroy_texture", handle);
     if (!tex.alive) return;
     const texture_id: u32 = @intCast(texture_slots.raw_index(handle) orelse return);
     destroy_texture_data(tex, true);
@@ -759,8 +775,9 @@ fn upload_texture_pixels(handle: Texture.Handle, tex: *TextureData, data: []cons
 
     var descriptor: dk.DkImageDescriptor = undefined;
     dk.dkImageDescriptorInitialize(&descriptor, &tex.view, false, false);
-    image_descriptors[handle] = descriptor;
-    image_descriptor_count = @max(image_descriptor_count, @as(u32, @intCast(handle + 1)));
+    const texture_index = texture_slots.raw_index(handle) orelse return error.OutOfTextures;
+    image_descriptors[texture_index] = descriptor;
+    image_descriptor_count = @max(image_descriptor_count, @as(u32, @intCast(texture_index + 1)));
     image_descriptors_dirty = true;
     dk.dkCmdBufBarrier(upload_command_buffer, dk.BarrierFull, dk.InvalidateImage);
     submit_upload_commands("texture upload");
@@ -913,7 +930,7 @@ fn destroy_mesh_buffer(buffer: *MeshBuffer, deferred: bool) void {
 }
 
 fn destroy_all_meshes() void {
-    for (&meshes.buffer) |*slot| {
+    for (&meshes.slots) |*slot| {
         if (slot.*) |*mesh| destroy_mesh_data(mesh, false);
         slot.* = null;
     }

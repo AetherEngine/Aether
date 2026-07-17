@@ -5,6 +5,7 @@
 //! resampler keeps the existing 44.1 kHz test WAVs playable.
 
 const std = @import("std");
+const audio_api = @import("../audio_api.zig");
 const Stream = @import("../../audio/stream.zig").Stream;
 const PcmFormat = @import("../../audio/stream.zig").PcmFormat;
 const c = @import("../nintendo_c.zig").switch_c;
@@ -58,7 +59,7 @@ pub fn setup(alloc: std.mem.Allocator, io: std.Io) void {
     audio_io = io;
 }
 
-pub fn init() anyerror!void {
+pub fn init() audio_api.InitError!void {
     _ = audio_alloc;
     _ = audio_io;
 
@@ -129,7 +130,7 @@ pub fn max_voices() u32 {
     return NUM_SLOTS;
 }
 
-pub fn play_slot(slot: u8, stream: Stream) anyerror!void {
+pub fn play_slot(slot: u8, stream: Stream) audio_api.PlaySlotError!void {
     if (slot >= NUM_SLOTS) return error.InvalidArgs;
     if (!format_supported(stream.format)) return error.UnsupportedFormat;
 

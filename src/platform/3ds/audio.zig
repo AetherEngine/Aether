@@ -7,6 +7,7 @@
 const std = @import("std");
 const zitrus = @import("zitrus");
 const app_3ds = @import("app.zig");
+const audio_api = @import("../audio_api.zig");
 const thread_mod = @import("../../util/thread.zig");
 const Stream = @import("../../audio/stream.zig").Stream;
 const PcmFormat = @import("../../audio/stream.zig").PcmFormat;
@@ -97,7 +98,7 @@ pub fn setup(alloc: std.mem.Allocator, io: std.Io) void {
     audio_io = io;
 }
 
-pub fn init() anyerror!void {
+pub fn init() audio_api.InitError!void {
     _ = audio_io;
 
     const app = app_3ds.currentApplication() orelse std.debug.panic("3DS audio init failed: no current application", .{});
@@ -155,9 +156,12 @@ pub fn init() anyerror!void {
     initialized = true;
 }
 
-fn init_failed(comptime stage: []const u8, err: anyerror) anyerror {
+fn init_failed(comptime stage: []const u8, err: anyerror) audio_api.InitError {
     std.log.err("3DS audio init failed at {s}: {s}", .{ stage, @errorName(err) });
-    return err;
+    return switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        else => error.AudioInitFailed,
+    };
 }
 
 pub fn deinit() void {
@@ -220,7 +224,7 @@ pub fn max_voices() u32 {
     return NUM_SLOTS;
 }
 
-pub fn play_slot(slot: u8, stream: Stream) anyerror!void {
+pub fn play_slot(slot: u8, stream: Stream) audio_api.PlaySlotError!void {
     if (slot >= NUM_SLOTS) return error.InvalidArgs;
     if (!format_supported(stream.format)) return error.UnsupportedFormat;
 

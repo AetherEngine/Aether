@@ -1,4 +1,5 @@
 const std = @import("std");
+const surface_api = @import("../surface.zig");
 const Self = @This();
 
 extern "aether_host" fn aether_canvas_width() u32;
@@ -8,7 +9,7 @@ extern "aether_host" fn aether_surface_present() void;
 
 alloc: std.mem.Allocator,
 
-pub fn init(_: *Self, width: u32, height: u32, title: [:0]const u8, _: bool, _: bool, resizable: bool) anyerror!void {
+pub fn init(_: *Self, width: u32, height: u32, title: [:0]const u8, _: bool, _: bool, resizable: bool) surface_api.InitError!void {
     aether_surface_init(width, height, title.ptr, title.len, resizable);
 }
 

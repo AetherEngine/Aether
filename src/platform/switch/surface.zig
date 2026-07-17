@@ -3,6 +3,7 @@
 //! Switch uses 1280x720 in handheld mode and 1920x1080 in docked mode.
 
 const std = @import("std");
+const surface_api = @import("../surface.zig");
 const Self = @This();
 const c = @import("../nintendo_c.zig").switch_c;
 
@@ -17,7 +18,7 @@ height: u32 = HANDHELD_HEIGHT,
 operation_mode: c.AppletOperationMode = c.AppletOperationMode_Handheld,
 operation_mode_changed: bool = false,
 
-pub fn init(self: *Self, _: u32, _: u32, _: [:0]const u8, _: bool, _: bool, _: bool) anyerror!void {
+pub fn init(self: *Self, _: u32, _: u32, _: [:0]const u8, _: bool, _: bool, _: bool) surface_api.InitError!void {
     self.operation_mode = c.appletGetOperationMode();
     self.set_operation_mode_resolution(self.operation_mode);
     self.operation_mode_changed = false;

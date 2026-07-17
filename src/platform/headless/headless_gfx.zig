@@ -1,4 +1,5 @@
 const std = @import("std");
+const gfx_api = @import("../gfx_api.zig");
 const Mat4 = @import("../../math/math.zig").Mat4;
 const Rendering = @import("../../rendering/rendering.zig");
 const Mesh = Rendering.mesh;
@@ -14,7 +15,7 @@ pub fn setup(alloc: std.mem.Allocator, io: std.Io) void {
     render_io = io;
 }
 
-pub fn init() anyerror!void {}
+pub fn init() gfx_api.InitError!void {}
 pub fn deinit() void {}
 
 pub fn set_clear_color(_: f32, _: f32, _: f32, _: f32) void {}
@@ -38,11 +39,11 @@ pub fn has_second_screen() bool {
     return false;
 }
 pub fn switch_second_screen() void {
-    unreachable;
+    std.debug.panic("headless gfx: switch_second_screen called but this backend has no second screen", .{});
 }
 pub fn set_vsync(_: bool) void {}
 
-pub fn create_mesh(_: *const Mesh.Desc) anyerror!Mesh.Handle {
+pub fn create_mesh(_: *const Mesh.Desc) gfx_api.CreateMeshError!Mesh.Handle {
     return Mesh.Handle.none;
 }
 
@@ -50,7 +51,7 @@ pub fn destroy_mesh(_: Mesh.Handle) void {}
 pub fn update_mesh(_: Mesh.Handle, _: *const Mesh.UpdateDesc) void {}
 pub fn draw_mesh(_: Mesh.Handle, _: *const Mat4) void {}
 
-pub fn create_texture(_: *const Texture.UploadDesc) anyerror!Texture.Handle {
+pub fn create_texture(_: *const Texture.UploadDesc) gfx_api.CreateTextureError!Texture.Handle {
     return Texture.Handle.none;
 }
 

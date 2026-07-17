@@ -1,6 +1,7 @@
 const std = @import("std");
 const zitrus = @import("zitrus");
 const app_3ds = @import("app.zig");
+const input_api = @import("../input_api.zig");
 const core = @import("../../core/input/input.zig");
 const audio = @import("../audio.zig");
 const gfx = @import("../gfx.zig");
@@ -35,7 +36,7 @@ pub fn setup(alloc: std.mem.Allocator, _: std.Io) void {
     reset_state();
 }
 
-pub fn init() anyerror!void {
+pub fn init() input_api.InitError!void {
     init_ir();
 }
 
@@ -70,10 +71,10 @@ pub fn apply_cursor_mode(mode: core.CursorMode) void {
     current_cursor_mode = mode;
 }
 
-pub fn begin_text_input_session(target: core.TextInputTarget, options: core.TextInputOptions) anyerror!void {
+pub fn begin_text_input_session(target: *const core.TextInputTarget, options: *const core.TextInputOptions) input_api.TextSessionError!void {
     const app = app_3ds.currentApplication() orelse return error.NoCurrentApplication;
     var initial_buf: [MAX_OSK_UTF8_BYTES]u8 = undefined;
-    const initial = copy_current_text_for_osk(&initial_buf, options);
+    const initial = copy_current_text_for_osk(&initial_buf, options.*);
 
     var buttons = [_]SoftwareKeyboard.Config.Button{
         .button(.utf8("Cancel"), .none),
@@ -82,23 +83,26 @@ pub fn begin_text_input_session(target: core.TextInputTarget, options: core.Text
     const hint = valid_utf8_prefix(target.id, SoftwareKeyboard.State.max_hint_text_len - 1);
 
     const osk_alloc = app.base.gpa;
-    var swkbd = try SoftwareKeyboard.normal(.{
+    var swkbd = SoftwareKeyboard.normal(.{
         .max_length = osk_max_length(options.max_bytes),
         .buttons = &buttons,
         .initial_text = .utf8(initial),
         .hint = if (hint.len == 0) .default else .utf8(hint),
         .features = .{ .multiline = options.multiline },
         .dictionary = &.{},
-    }, osk_alloc);
+    }, osk_alloc) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.GraphicsNotInitialized,
+    };
     defer swkbd.deinit(osk_alloc);
 
     var released_surface = false;
     var suspended_audio = false;
     const capture = if (@hasDecl(gfx.Surface, "suspend_for_applet")) blk: {
-        const capture = try gfx.surface.suspend_for_applet();
+        const capture = gfx.surface.suspend_for_applet() catch return error.GraphicsNotInitialized;
         released_surface = true;
         break :blk capture;
-    } else try app.gsp.sendImportDisplayCaptureInfo();
+    } else app.gsp.sendImportDisplayCaptureInfo() catch return error.GraphicsNotInitialized;
     audio.Api.suspend_for_applet();
     suspended_audio = true;
     defer {
@@ -107,7 +111,7 @@ pub fn begin_text_input_session(target: core.TextInputTarget, options: core.Text
     }
 
     release_touch_if_down();
-    const result = try swkbd.start(app.app, app.apt, .app, app.srv, capture);
+    const result = swkbd.start(app.app, app.apt, .app, app.srv, capture) catch return error.GraphicsNotInitialized;
     if (released_surface) {
         gfx.surface.resume_from_applet();
         released_surface = false;

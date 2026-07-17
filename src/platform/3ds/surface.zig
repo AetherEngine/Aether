@@ -1,4 +1,5 @@
 const std = @import("std");
+const surface_api = @import("../surface.zig");
 const zitrus = @import("zitrus");
 const app_3ds = @import("app.zig");
 const Self = @This();
@@ -49,14 +50,17 @@ sync: bool = true,
 applet_released: bool = false,
 last_capture: ?GraphicsServerGpu.ScreenCapture = null,
 
-pub fn init(self: *Self, _: u32, _: u32, _: [:0]const u8, _: bool, sync: bool, _: bool) anyerror!void {
-    const app = app_3ds.currentApplication() orelse return error.NoCurrentApplication;
+pub fn init(self: *Self, _: u32, _: u32, _: [:0]const u8, _: bool, sync: bool, _: bool) surface_api.InitError!void {
+    const app = app_3ds.currentApplication() orelse return error.SurfaceInitFailed;
 
     self.sync = sync;
-    self.device = try mango.createHorizonBackedDevice(.{
+    self.device = mango.createHorizonBackedDevice(.{
         .gsp = app.gsp,
         .arbiter = app.base.arbiter,
-    }, self.alloc);
+    }, self.alloc) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.SurfaceInitFailed,
+    };
     errdefer {
         self.device.destroy();
         self.device = .null;
@@ -66,7 +70,10 @@ pub fn init(self: *Self, _: u32, _: u32, _: [:0]const u8, _: bool, sync: bool, _
         self.queues.set(family, self.device.getQueue(family));
     }
 
-    try self.init_swapchains();
+    self.init_swapchains() catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.SurfaceInitFailed,
+    };
 }
 
 pub fn deinit(self: *Self) void {

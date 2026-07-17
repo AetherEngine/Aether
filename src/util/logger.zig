@@ -10,6 +10,8 @@ var log_io: std.Io = undefined;
 var file_logging = false;
 var log_lock: std.atomic.Value(bool) = .init(false);
 
+pub const Error = std.Io.File.OpenError;
+
 fn lock() void {
     while (log_lock.cmpxchgWeak(false, true, .acquire, .monotonic) != null) {
         std.atomic.spinLoopHint();
@@ -32,7 +34,7 @@ fn flushFile(sync_to_storage: bool) void {
 /// other platform routes through the engine-resolved data dir so
 /// Finder-launched `.app` bundles don't try to write into read-only
 /// bundle internals.
-pub fn init(io: std.Io, data_dir: anytype) !void {
+pub fn init(io: std.Io, data_dir: anytype) Error!void {
     if (builtin.os.tag == .psp) {
         file_log = try std.Io.Dir.cwd().createFile(io, "ms0:/aether.log", .{ .truncate = true });
     } else {

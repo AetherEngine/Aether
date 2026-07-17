@@ -24,6 +24,10 @@ pub const PlayOptions = struct {
     max_distance: f32 = 100.0,
 };
 
+pub const PlayError = error{
+    TooManyVoices,
+};
+
 /// Platform-independent voice scheduler. Manages a pool of virtual voices
 /// and assigns the highest-priority ones to real backend slots each tick.
 ///
@@ -52,7 +56,7 @@ pub fn Mixer(comptime Backend: type) type {
 
         // -- lifecycle -------------------------------------------------------
 
-        pub fn init() !void {
+        pub fn init() @import("../platform/audio_api.zig").InitError!void {
             try Backend.init();
         }
 
@@ -77,12 +81,12 @@ pub fn Mixer(comptime Backend: type) type {
         // -- voice control ---------------------------------------------------
 
         /// Play a non-positional sound (music, UI). Never distance-culled.
-        pub fn play(stream: Stream, opts: PlayOptions) !SoundHandle {
+        pub fn play(stream: *const Stream, opts: *const PlayOptions) PlayError!SoundHandle {
             return play_internal(stream, null, opts);
         }
 
         /// Play a positional sound. Subject to attenuation and slot priority.
-        pub fn play_at(stream: Stream, pos: Vec3, opts: PlayOptions) !SoundHandle {
+        pub fn play_at(stream: *const Stream, pos: Vec3, opts: *const PlayOptions) PlayError!SoundHandle {
             return play_internal(stream, pos, opts);
         }
 
@@ -198,7 +202,7 @@ pub fn Mixer(comptime Backend: type) type {
 
         // -- internals -------------------------------------------------------
 
-        fn play_internal(stream: Stream, pos: ?Vec3, opts: PlayOptions) !SoundHandle {
+        fn play_internal(stream: *const Stream, pos: ?Vec3, opts: *const PlayOptions) PlayError!SoundHandle {
             const vi = for (0..MAX_VOICES) |i| {
                 if (voices[i] == null) break i;
             } else return error.TooManyVoices;
@@ -206,7 +210,7 @@ pub fn Mixer(comptime Backend: type) type {
             const handle = make_handle(vi);
 
             voices[vi] = .{
-                .stream = stream,
+                .stream = stream.*,
                 .position = pos,
                 .volume = opts.volume,
                 .priority = opts.priority,

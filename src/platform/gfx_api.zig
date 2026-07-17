@@ -5,6 +5,39 @@ const Mesh = Rendering.mesh;
 const Texture = Rendering.Texture;
 const RenderState = Rendering.RenderState;
 
+pub const InitError = error{
+    OutOfMemory,
+    GfxInitFailed,
+    SurfaceInitFailed,
+    VulkanNotSupported,
+    NoSuitableDeviceFound,
+    NoSuitableMemoryType,
+    SwapchainCreationFailed,
+    ImageAcquireFailed,
+    PipelineCreationFailed,
+    WebGlInitFailed,
+    InvalidShader,
+    OutOfShaderMemory,
+    UnsupportedVertexLayout,
+};
+
+pub const CreateMeshError = error{
+    OutOfMemory,
+    OutOfMeshes,
+};
+
+pub const CreateTextureError = error{
+    OutOfMemory,
+    GfxInitFailed,
+    InvalidTextureSize,
+    UnsupportedTextureSize,
+    TextureDataTooSmall,
+    OutOfTextures,
+    OutOfTextureSlots,
+    TextureCreateFailed,
+    PendingTextureQueueFull,
+};
+
 /// The contract every graphics backend must satisfy. Each field names a
 /// public top-level fn on the backend module and gives its exact type.
 /// This struct is never instantiated -- it exists purely to drive
@@ -14,7 +47,7 @@ pub const Interface = struct {
     mesh_source_mode: Mesh.SourceMode,
 
     setup: fn (std.mem.Allocator, std.Io) void,
-    init: fn () anyerror!void,
+    init: fn () InitError!void,
     deinit: fn () void,
 
     set_render_state: fn (*const RenderState) void,
@@ -27,12 +60,12 @@ pub const Interface = struct {
 
     set_vsync: fn (bool) void,
 
-    create_mesh: fn (*const Mesh.Desc) anyerror!Mesh.Handle,
+    create_mesh: fn (*const Mesh.Desc) CreateMeshError!Mesh.Handle,
     destroy_mesh: fn (Mesh.Handle) void,
     update_mesh: fn (Mesh.Handle, *const Mesh.UpdateDesc) void,
     draw_mesh: fn (Mesh.Handle, *const Mat4) void,
 
-    create_texture: fn (*const Texture.UploadDesc) anyerror!Texture.Handle,
+    create_texture: fn (*const Texture.UploadDesc) CreateTextureError!Texture.Handle,
     update_texture: fn (Texture.Handle, []align(16) u8) void,
     destroy_texture: fn (Texture.Handle) void,
     force_texture_resident: fn (Texture.Handle) void,

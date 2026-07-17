@@ -117,7 +117,7 @@ pub fn main(init: std.process.Init) !void {
 
     var my_state: MyState = undefined;
     var engine: ae.Engine = undefined;
-    try engine.init(init.io, init.environ_map, memory, .{
+    try engine.init(init.io, init.environ_map, memory, &.{
         .memory = .{
             .render = 8 * 1024 * 1024,
             .audio = 2 * 1024 * 1024,
@@ -164,9 +164,10 @@ zig build -Doptimize=ReleaseFast
 Actions are registered by name and bound to one or more input sources:
 
 ```zig
-try ae.Core.input.register_action("jump", .button);
-try ae.Core.input.bind_action("jump", .{ .source = .{ .key = .Space } });
-try ae.Core.input.add_button_callback("jump", ctx, on_jump);
+const actions = try ae.Core.input.register_action_set("gameplay");
+try ae.Core.input.add_action(actions, "jump", .button);
+try ae.Core.input.bind_action(actions, "jump", &.{ .source = .{ .key = .Space } });
+try ae.Core.input.install_action_set(actions);
 ```
 
 Supported sources: keyboard keys, mouse buttons, mouse scroll, mouse relative movement, and gamepad buttons/axes.

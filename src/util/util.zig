@@ -36,3 +36,10 @@ pub const game_logger = std.log.scoped(.game);
 pub fn ctx_to_self(comptime T: type, ptr: *anyopaque) *T {
     return @ptrCast(@alignCast(ptr));
 }
+
+pub fn panic_invalid_handle(comptime subsystem: []const u8, comptime operation: []const u8, handle: anytype) noreturn {
+    std.debug.panic(subsystem ++ ": " ++ operation ++ ": invalid handle index={} generation={}", .{
+        handle.raw_index(),
+        handle.generation,
+    });
+}

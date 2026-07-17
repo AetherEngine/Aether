@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const zitrus = @import("zitrus");
+const gfx_api = @import("../gfx_api.zig");
 const Util = @import("../../util/util.zig");
 const Mat4 = @import("../../math/math.zig").Mat4;
 const Rendering = @import("../../rendering/rendering.zig");
@@ -190,24 +191,33 @@ pub fn setup(alloc: std.mem.Allocator, io: std.Io) void {
     render_io = io;
 }
 
-pub fn init() anyerror!void {
+pub fn init() gfx_api.InitError!void {
     _ = render_io;
-    command_pool = try gfx.surface.device.createCommandPool(.{
+    command_pool = gfx.surface.device.createCommandPool(.{
         .initial_command_buffers = COMMAND_BUFFER_COUNT,
-    }, null);
+    }, null) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.GfxInitFailed,
+    };
     errdefer cleanup_renderer_resources();
 
-    try gfx.surface.device.allocateCommandBuffers(.{
+    gfx.surface.device.allocateCommandBuffers(.{
         .pool = command_pool,
         .command_buffer_count = COMMAND_BUFFER_COUNT,
-    }, &command_buffers);
+    }, &command_buffers) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.GfxInitFailed,
+    };
     top_state.command_buffer = command_buffers[0];
     bottom_state.command_buffer = command_buffers[1];
 
-    basic_shader = try gfx.surface.device.createShader(.init(.psh, &basic_vert, "main"), null);
-    vertex_input = try create_vertex_input();
-    depth_clear_geometry = try create_depth_clear_geometry();
-    texture_sampler = try gfx.surface.device.createSampler(.{
+    basic_shader = gfx.surface.device.createShader(.init(.psh, &basic_vert, "main"), null) catch return error.GfxInitFailed;
+    vertex_input = create_vertex_input() catch return error.GfxInitFailed;
+    depth_clear_geometry = create_depth_clear_geometry() catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.GfxInitFailed,
+    };
+    texture_sampler = gfx.surface.device.createSampler(.{
         .mag_filter = .nearest,
         .min_filter = .nearest,
         .mip_filter = .nearest,
@@ -217,19 +227,19 @@ pub fn init() anyerror!void {
         .min_lod = 0,
         .max_lod = 0,
         .border_color = @splat(0),
-    }, null);
+    }, null) catch return error.GfxInitFailed;
 
-    top_frame_semaphore = try gfx.surface.device.createSemaphore(.initial_zero, null);
+    top_frame_semaphore = gfx.surface.device.createSemaphore(.initial_zero, null) catch return error.GfxInitFailed;
     errdefer {
         gfx.surface.device.destroySemaphore(top_frame_semaphore, null);
         top_frame_semaphore = .null;
     }
-    bottom_frame_semaphore = try gfx.surface.device.createSemaphore(.initial_zero, null);
+    bottom_frame_semaphore = gfx.surface.device.createSemaphore(.initial_zero, null) catch return error.GfxInitFailed;
     errdefer {
         gfx.surface.device.destroySemaphore(bottom_frame_semaphore, null);
         bottom_frame_semaphore = .null;
     }
-    texture_upload_semaphore = try gfx.surface.device.createSemaphore(.initial_zero, null);
+    texture_upload_semaphore = gfx.surface.device.createSemaphore(.initial_zero, null) catch return error.GfxInitFailed;
     errdefer {
         gfx.surface.device.destroySemaphore(texture_upload_semaphore, null);
         texture_upload_semaphore = .null;
@@ -243,9 +253,15 @@ pub fn init() anyerror!void {
     bottom_wait = 0;
     bottom_presented = false;
 
-    top_target = try create_render_target(.top);
+    top_target = create_render_target(.top) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.GfxInitFailed,
+    };
     errdefer destroy_render_target(&top_target);
-    bottom_target = try create_render_target(.bottom);
+    bottom_target = create_render_target(.bottom) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.GfxInitFailed,
+    };
     errdefer destroy_render_target(&bottom_target);
 
     init_projection_transform();
@@ -466,18 +482,19 @@ pub fn set_vsync(v: bool) void {
     bottom_presented = false;
 }
 
-pub fn create_mesh(_: *const Mesh.Desc) anyerror!Mesh.Handle {
-    return meshes.add(.{}) orelse error.OutOfMeshSlots;
+pub fn create_mesh(_: *const Mesh.Desc) gfx_api.CreateMeshError!Mesh.Handle {
+    return meshes.add(.{}) orelse error.OutOfMeshes;
 }
 
 pub fn destroy_mesh(handle: Mesh.Handle) void {
-    const mesh = meshes.get_ptr(handle) orelse return;
+    if (handle.is_null()) return;
+    const mesh = meshes.get_ptr(handle) orelse Util.panic_invalid_handle("3ds gfx", "destroy_mesh", handle);
     retire_mesh_data(mesh);
     _ = meshes.remove(handle);
 }
 
 pub fn update_mesh(handle: Mesh.Handle, desc: *const Mesh.UpdateDesc) void {
-    const mesh = meshes.get_ptr(handle) orelse return;
+    const mesh = meshes.get_ptr(handle) orelse Util.panic_invalid_handle("3ds gfx", "update_mesh", handle);
     const data = desc.vertices;
     const indices = desc.indices;
     if (data.len == 0) {
@@ -499,7 +516,7 @@ pub fn update_mesh(handle: Mesh.Handle, desc: *const Mesh.UpdateDesc) void {
 }
 
 pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
-    const mesh = meshes.get_ptr(handle) orelse return;
+    const mesh = meshes.get_ptr(handle) orelse Util.panic_invalid_handle("3ds gfx", "draw_mesh", handle);
     if (mesh.vertex.buffer == .null or mesh.vertex_count == 0) return;
     if (mesh.vertex_count > std.math.maxInt(usize) / vertex.Layout.stride) return;
     if (mesh.vertex_count * vertex.Layout.stride > mesh.vertex.size) return;
@@ -570,7 +587,7 @@ fn create_mesh_buffer_data(data: []const u8, usage: mango.BufferCreateInfo.Usage
     };
 }
 
-pub fn create_texture(desc: *const Texture.UploadDesc) anyerror!Texture.Handle {
+pub fn create_texture(desc: *const Texture.UploadDesc) gfx_api.CreateTextureError!Texture.Handle {
     const width = desc.width;
     const height = desc.height;
     const data = desc.pixels;
@@ -588,14 +605,20 @@ pub fn create_texture(desc: *const Texture.UploadDesc) anyerror!Texture.Handle {
         .width = width,
         .height = height,
     };
-    try create_texture_resources(texture);
-    try upload_texture_pixels(texture, data);
+    create_texture_resources(texture) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.GfxInitFailed,
+    };
+    upload_texture_pixels(texture, data) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.GfxInitFailed,
+    };
     texture.alive = true;
     return handle;
 }
 
 pub fn update_texture(handle: Texture.Handle, data: []align(16) u8) void {
-    const texture = texture_slots.get_ptr(handle) orelse return;
+    const texture = texture_slots.get_ptr(handle) orelse Util.panic_invalid_handle("3ds gfx", "update_texture", handle);
     if (!texture.alive) return;
     if (data.len < @as(usize, texture.width) * @as(usize, texture.height) * 4) return;
 
@@ -618,7 +641,7 @@ pub fn update_texture(handle: Texture.Handle, data: []align(16) u8) void {
 
 pub fn bind_texture(handle: Texture.Handle) void {
     if (!handle.is_null()) {
-        const texture = texture_slots.get(handle) orelse return;
+        const texture = texture_slots.get(handle) orelse Util.panic_invalid_handle("3ds gfx", "bind_texture", handle);
         if (!texture.alive) return;
     }
     current_texture = handle;
@@ -626,7 +649,8 @@ pub fn bind_texture(handle: Texture.Handle) void {
 }
 
 pub fn destroy_texture(handle: Texture.Handle) void {
-    const texture = texture_slots.get_ptr(handle) orelse return;
+    if (handle.is_null()) return;
+    const texture = texture_slots.get_ptr(handle) orelse Util.panic_invalid_handle("3ds gfx", "destroy_texture", handle);
     drop_pending_texture_uploads(handle);
     retire_texture_data(texture);
     _ = texture_slots.remove(handle);
@@ -1333,7 +1357,7 @@ fn cleanup_renderer_resources() void {
 }
 
 fn destroy_all_meshes() void {
-    for (meshes.buffer[1..]) |*maybe_mesh| {
+    for (meshes.slots[1..]) |*maybe_mesh| {
         if (maybe_mesh.*) |*mesh| destroy_mesh_data(mesh);
         maybe_mesh.* = null;
     }

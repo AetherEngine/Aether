@@ -1,4 +1,5 @@
 const std = @import("std");
+const gfx_api = @import("../gfx_api.zig");
 const Mat4 = @import("../../math/math.zig").Mat4;
 const Util = @import("../../util/util.zig");
 
@@ -47,7 +48,7 @@ pub fn setup(alloc: std.mem.Allocator, io: std.Io) void {
     _ = render_io;
 }
 
-pub fn init() anyerror!void {
+pub fn init() gfx_api.InitError!void {
     if (!aether_webgl_init(&basic_vert, basic_vert.len, &basic_frag, basic_frag.len)) {
         return error.WebGlInitFailed;
     }
@@ -123,25 +124,26 @@ pub fn has_second_screen() bool {
 }
 
 pub fn switch_second_screen() void {
-    unreachable;
+    std.debug.panic("webgl gfx: switch_second_screen called but this backend has no second screen", .{});
 }
 
 pub fn set_vsync(_: bool) void {}
 
-pub fn create_mesh(_: *const Mesh.Desc) anyerror!Mesh.Handle {
+pub fn create_mesh(_: *const Mesh.Desc) gfx_api.CreateMeshError!Mesh.Handle {
     const host_handle = aether_webgl_create_mesh();
     if (host_handle == 0) return error.OutOfMeshes;
     return meshes.add(host_handle) orelse return error.OutOfMeshes;
 }
 
 pub fn destroy_mesh(handle: Mesh.Handle) void {
-    const host_handle = meshes.get(handle) orelse return;
+    if (handle.is_null()) return;
+    const host_handle = meshes.get(handle) orelse Util.panic_invalid_handle("webgl gfx", "destroy_mesh", handle);
     aether_webgl_destroy_mesh(host_handle);
     _ = meshes.remove(handle);
 }
 
 pub fn update_mesh(handle: Mesh.Handle, desc: *const Mesh.UpdateDesc) void {
-    const host_handle = meshes.get(handle) orelse return;
+    const host_handle = meshes.get(handle) orelse Util.panic_invalid_handle("webgl gfx", "update_mesh", handle);
     const data = desc.vertices;
     const indices = desc.indices;
     const index_bytes = std.mem.sliceAsBytes(indices);
@@ -149,11 +151,11 @@ pub fn update_mesh(handle: Mesh.Handle, desc: *const Mesh.UpdateDesc) void {
 }
 
 pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
-    const host_handle = meshes.get(handle) orelse return;
+    const host_handle = meshes.get(handle) orelse Util.panic_invalid_handle("webgl gfx", "draw_mesh", handle);
     aether_webgl_draw_mesh(host_handle, model.ptr());
 }
 
-pub fn create_texture(desc: *const Texture.UploadDesc) anyerror!Texture.Handle {
+pub fn create_texture(desc: *const Texture.UploadDesc) gfx_api.CreateTextureError!Texture.Handle {
     const width = desc.width;
     const height = desc.height;
     const data = desc.pixels;
@@ -166,17 +168,19 @@ pub fn create_texture(desc: *const Texture.UploadDesc) anyerror!Texture.Handle {
 }
 
 pub fn update_texture(handle: Texture.Handle, data: []align(16) u8) void {
-    const host_handle = textures.get(handle) orelse return;
+    const host_handle = textures.get(handle) orelse Util.panic_invalid_handle("webgl gfx", "update_texture", handle);
     aether_webgl_update_texture(host_handle, data.ptr, data.len);
 }
 
 pub fn bind_texture(handle: Texture.Handle) void {
-    const host_handle = textures.get(handle) orelse return;
+    if (handle.is_null()) return;
+    const host_handle = textures.get(handle) orelse Util.panic_invalid_handle("webgl gfx", "bind_texture", handle);
     aether_webgl_bind_texture(host_handle);
 }
 
 pub fn destroy_texture(handle: Texture.Handle) void {
-    const host_handle = textures.get(handle) orelse return;
+    if (handle.is_null()) return;
+    const host_handle = textures.get(handle) orelse Util.panic_invalid_handle("webgl gfx", "destroy_texture", handle);
     aether_webgl_destroy_texture(host_handle);
     _ = textures.remove(handle);
 }

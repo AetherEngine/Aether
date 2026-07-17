@@ -8,8 +8,17 @@ const app_3ds = if (options.config.platform == .nintendo_3ds) @import("3ds/app.z
 const horizon_3ds = if (options.config.platform == .nintendo_3ds) @import("zitrus").horizon else struct {};
 
 const Engine = @import("../engine.zig").Engine;
+const gfx_api = @import("gfx_api.zig");
+const audio_api = @import("audio_api.zig");
+const input_api = @import("input_api.zig");
 
 pub const GraphicsAPI = @import("options").@"build.Gfx";
+
+pub const InitError = error{
+    GfxInitOutOfMemory,
+    AudioInitOutOfMemory,
+    InputInitOutOfMemory,
+} || gfx_api.InitError || audio_api.InitError || input_api.InitError;
 
 const AppletCallbacks = if (options.config.platform == .nintendo_3ds) struct {
     const ScreenCapture = horizon_3ds.services.GraphicsServerGpu.ScreenCapture;
@@ -33,7 +42,7 @@ const AppletCallbacks = if (options.config.platform == .nintendo_3ds) struct {
 
 /// Initializes the platform subsystems: graphics, audio, then input.
 /// Order matters: input subscribes to surface callbacks created by gfx.
-pub fn init(engine: *Engine, width: u32, height: u32, title: [:0]const u8, fullscreen: bool, sync: bool, resizable: bool) !void {
+pub fn init(engine: *Engine, width: u32, height: u32, title: [:0]const u8, fullscreen: bool, sync: bool, resizable: bool) InitError!void {
     gfx.init(engine.allocator(.render), engine.io, width, height, title, fullscreen, sync, resizable) catch |err| switch (err) {
         error.OutOfMemory => return error.GfxInitOutOfMemory,
         else => return err,

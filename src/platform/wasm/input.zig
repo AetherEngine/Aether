@@ -2,13 +2,14 @@
 //! Aether enum integer values and call the exported delivery functions below.
 
 const std = @import("std");
+const input_api = @import("../input_api.zig");
 const core = @import("../../core/input/input.zig");
 
 extern "aether_host" fn aether_input_apply_cursor_mode(mode: u32) void;
 
 pub fn setup(_: std.mem.Allocator, _: std.Io) void {}
 
-pub fn init() anyerror!void {}
+pub fn init() input_api.InitError!void {}
 
 pub fn deinit() void {}
 
@@ -20,7 +21,7 @@ pub fn apply_cursor_mode(mode: core.CursorMode) void {
     aether_input_apply_cursor_mode(@intFromEnum(mode));
 }
 
-pub fn begin_text_input_session(_: core.TextInputTarget, _: core.TextInputOptions) anyerror!void {}
+pub fn begin_text_input_session(_: *const core.TextInputTarget, _: *const core.TextInputOptions) input_api.TextSessionError!void {}
 
 pub fn end_text_input_session() void {}
 

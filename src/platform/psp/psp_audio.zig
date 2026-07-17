@@ -7,6 +7,7 @@
 
 const std = @import("std");
 const sdk = @import("pspsdk");
+const audio_api = @import("../audio_api.zig");
 const Stream = @import("../../audio/stream.zig").Stream;
 const PcmFormat = @import("../../audio/stream.zig").PcmFormat;
 
@@ -63,7 +64,7 @@ pub fn setup(alloc: std.mem.Allocator, io: std.Io) void {
     audio_io = io;
 }
 
-pub fn init() anyerror!void {
+pub fn init() audio_api.InitError!void {
     hw_channel = sdk.audio.ch_reserve(sdk.audio.next_channel, @intCast(SAMPLES_PER_BUF), .stereo) catch
         return error.AudioInitFailed;
 
@@ -111,7 +112,7 @@ pub fn max_voices() u32 {
     return NUM_SLOTS;
 }
 
-pub fn play_slot(slot: u8, stream: Stream) anyerror!void {
+pub fn play_slot(slot: u8, stream: Stream) audio_api.PlaySlotError!void {
     if (slot >= NUM_SLOTS) return error.InvalidArgs;
     slots[slot].stream = stream;
     slots[slot].state.store(@intFromEnum(SlotState.pending), .release);

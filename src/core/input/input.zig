@@ -62,6 +62,47 @@ pub const config = struct {
     pub const default_axis_deadzone: f32 = binding_mod.default_axis_deadzone;
 };
 
+pub const InitError = error{
+    OutOfMemory,
+    ContextStackFull,
+};
+
+pub const ActionSetError = error{
+    OutOfMemory,
+    UnknownActionSet,
+    ActionAlreadyExists,
+    ActionNotFound,
+    Vector2BindingNeedsComponent,
+    AlreadyInstalled,
+    NotInstalled,
+    ActionSetInUse,
+};
+
+pub const ContextError = error{
+    UnknownActionSet,
+    ActionSetNotInstalled,
+    ContextStackFull,
+    ContextStackBaseProtected,
+    ContextStackEmpty,
+};
+
+pub const TextSessionError = error{
+    OutOfMemory,
+    TextSessionInFlight,
+    NoActiveTextSession,
+    TextSessionNotActive,
+    TextSessionTerminal,
+    NoCurrentApplication,
+    GraphicsNotInitialized,
+};
+
+pub const CaptureError = error{
+    OutOfMemory,
+    CaptureInFlight,
+    NoCaptureSession,
+    CaptureTerminal,
+};
+
 // -- module state -------------------------------------------------------------
 
 var alloc: std.mem.Allocator = undefined;
@@ -76,7 +117,7 @@ var current_modifiers: ModifierSet = .{};
 var last_mode: InputMode = .keyboard_mouse;
 var initialised: bool = false;
 
-var begin_text_session_hook: ?*const fn (TextInputTarget, TextInputOptions) anyerror!void = null;
+var begin_text_session_hook: ?*const fn (*const TextInputTarget, *const TextInputOptions) TextSessionError!void = null;
 var end_text_session_hook: ?*const fn () void = null;
 
 const base_set_name = "__base";
@@ -85,7 +126,7 @@ const base_set_name = "__base";
 
 /// Initialise the input system. Called by `Platform.input.init` (do not
 /// call directly from game code).
-pub fn init(allocator: std.mem.Allocator) !void {
+pub fn init(allocator: std.mem.Allocator) InitError!void {
     alloc = allocator;
     fb = frame.FrameBuffer.init(allocator);
     device = .{};
@@ -98,8 +139,13 @@ pub fn init(allocator: std.mem.Allocator) !void {
     pub_frame = .{};
 
     // Seed an installed empty base set so the stack always has a top.
-    const base_handle = try register_action_set(base_set_name);
-    try install_action_set(base_handle);
+    const base_handle = register_action_set(base_set_name) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => std.debug.panic("input init: unexpected base action set registration error: {s}", .{@errorName(err)}),
+    };
+    install_action_set(base_handle) catch |err| {
+        std.debug.panic("input init: unexpected base action set install error: {s}", .{@errorName(err)});
+    };
     try stack.push(.{
         .name = "base",
         .cursor_mode = .visible,
@@ -270,12 +316,12 @@ pub fn frame_events() []const RawEvent {
 
 // -- ActionApi ----------------------------------------------------------------
 
-pub fn register_action_set(name: []const u8) !ActionSetHandle {
+pub fn register_action_set(name: []const u8) ActionSetError!ActionSetHandle {
     try registry.append(alloc, .{ .name = name, .actions = .empty, .installed = false });
     return @enumFromInt(registry.items.len - 1);
 }
 
-pub fn add_action(set: ActionSetHandle, name: []const u8, kind: ActionKind) !void {
+pub fn add_action(set: ActionSetHandle, name: []const u8, kind: ActionKind) ActionSetError!void {
     const s = set_ptr(set) orelse return error.UnknownActionSet;
     if (action_ptr(s, name) != null) return error.ActionAlreadyExists;
     try s.actions.put(alloc, name, .{
@@ -286,20 +332,20 @@ pub fn add_action(set: ActionSetHandle, name: []const u8, kind: ActionKind) !voi
     });
 }
 
-pub fn bind_action(set: ActionSetHandle, action_name: []const u8, b: Binding) !void {
+pub fn bind_action(set: ActionSetHandle, action_name: []const u8, b: *const Binding) ActionSetError!void {
     const s = set_ptr(set) orelse return error.UnknownActionSet;
     const a = action_ptr(s, action_name) orelse return error.ActionNotFound;
     if (a.kind == .vector2 and b.component == .none) return error.Vector2BindingNeedsComponent;
-    try a.bindings.append(alloc, b);
+    try a.bindings.append(alloc, b.*);
 }
 
-pub fn install_action_set(set: ActionSetHandle) !void {
+pub fn install_action_set(set: ActionSetHandle) ActionSetError!void {
     const s = set_ptr(set) orelse return error.UnknownActionSet;
     if (s.installed) return error.AlreadyInstalled;
     s.installed = true;
 }
 
-pub fn uninstall_action_set(set: ActionSetHandle) !void {
+pub fn uninstall_action_set(set: ActionSetHandle) ActionSetError!void {
     const s = set_ptr(set) orelse return error.UnknownActionSet;
     if (!s.installed) return error.NotInstalled;
     if (stack.references(set)) return error.ActionSetInUse;
@@ -342,20 +388,20 @@ pub fn active_action_set() ?*const ActionSet {
 
 // -- ContextStackApi ----------------------------------------------------------
 
-pub fn push_context(ctx: InputContext) !void {
+pub fn push_context(ctx: *const InputContext) ContextError!void {
     const s = set_ptr(ctx.actions) orelse return error.UnknownActionSet;
     if (!s.installed) return error.ActionSetNotInstalled;
-    try stack.push(ctx);
+    try stack.push(ctx.*);
 }
 
-pub fn pop_context() !InputContext {
+pub fn pop_context() ContextError!InputContext {
     return try stack.pop();
 }
 
-pub fn replace_top(ctx: InputContext) !InputContext {
+pub fn replace_top(ctx: *const InputContext) ContextError!InputContext {
     const s = set_ptr(ctx.actions) orelse return error.UnknownActionSet;
     if (!s.installed) return error.ActionSetNotInstalled;
-    return try stack.replace_top(ctx);
+    return try stack.replace_top(ctx.*);
 }
 
 pub fn stack_top() ?*const InputContext {
@@ -372,14 +418,14 @@ pub fn effective_cursor_mode() CursorMode {
 
 // -- TextInputApi -------------------------------------------------------------
 
-pub fn begin_text_input(target: TextInputTarget, options: TextInputOptions) !*TextInputSession {
+pub fn begin_text_input(target: *const TextInputTarget, options: *const TextInputOptions) TextSessionError!*TextInputSession {
     if (text_session_state) |*s| {
         if (!s.is_terminal()) return error.TextSessionInFlight;
         s.deinit(alloc);
     }
     text_session_state = .{
-        .target = target,
-        .options = options,
+        .target = target.*,
+        .options = options.*,
         .buffer = .empty,
         .status = .active,
     };
@@ -394,14 +440,14 @@ pub fn begin_text_input(target: TextInputTarget, options: TextInputOptions) !*Te
     return &text_session_state.?;
 }
 
-pub fn submit_text() !void {
+pub fn submit_text() TextSessionError!void {
     const s = &(text_session_state orelse return error.NoActiveTextSession);
     if (s.status != .active) return error.TextSessionNotActive;
     s.status = .submitted;
     if (end_text_session_hook) |h| h();
 }
 
-pub fn cancel_text() !void {
+pub fn cancel_text() TextSessionError!void {
     const s = &(text_session_state orelse return error.NoActiveTextSession);
     if (s.status != .active and s.status != .suspended) return error.TextSessionTerminal;
     s.status = .cancelled;
@@ -411,7 +457,7 @@ pub fn cancel_text() !void {
 /// Install platform hooks for text-session begin/end. Called by
 /// `Platform.input.init` once per process; passing null detaches.
 pub fn set_text_session_hooks(
-    begin_hook: ?*const fn (TextInputTarget, TextInputOptions) anyerror!void,
+    begin_hook: ?*const fn (*const TextInputTarget, *const TextInputOptions) TextSessionError!void,
     end_hook: ?*const fn () void,
 ) void {
     begin_text_session_hook = begin_hook;
@@ -435,7 +481,7 @@ pub fn write_text_session_buffer(text: []const u8, terminal: TextInputStatus) vo
 
 // -- CaptureNextInputApi ------------------------------------------------------
 
-pub fn begin_capture_next_input(eligible: std.EnumSet(BindingSourceKind)) !void {
+pub fn begin_capture_next_input(eligible: std.EnumSet(BindingSourceKind)) CaptureError!void {
     if (capture_session_state) |*s| {
         if (s.status == .waiting) return error.CaptureInFlight;
         s.deinit(alloc);
@@ -450,7 +496,7 @@ pub fn begin_capture_next_input(eligible: std.EnumSet(BindingSourceKind)) !void 
     capture_session_state = session;
 }
 
-pub fn cancel_capture() !void {
+pub fn cancel_capture() CaptureError!void {
     const s = &(capture_session_state orelse return error.NoCaptureSession);
     if (s.status != .waiting) return error.CaptureTerminal;
     s.status = .cancelled;
