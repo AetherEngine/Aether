@@ -114,7 +114,7 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
         mod.addImport("vulkan", vulkan);
 
         if (config.audio != .none) {
-            const sdl3_dep = owner.lazyDependency("sdl3", .{
+            if (owner.lazyDependency("sdl3", .{
                 .target = target,
                 .optimize = opts.optimize,
                 .main = false,
@@ -128,15 +128,16 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
                     std.builtin.LinkMode,
                     if (target.result.os.tag == .linux) .dynamic else .static,
                 ),
-            }) orelse @panic("sdl3 dependency is required when desktop audio is enabled");
-            mod.addImport("sdl3", sdl3_dep.module("sdl3"));
+            })) |sdl3_dep| {
+                mod.addImport("sdl3", sdl3_dep.module("sdl3"));
 
-            if (target.result.os.tag == .linux) {
-                mod.addRPathSpecial("$ORIGIN");
-                const install_sdl3 = b.addInstallArtifact(sdl3_dep.artifact("SDL3"), .{
-                    .dest_dir = .{ .override = .bin },
-                });
-                b.getInstallStep().dependOn(&install_sdl3.step);
+                if (target.result.os.tag == .linux) {
+                    mod.addRPathSpecial("$ORIGIN");
+                    const install_sdl3 = b.addInstallArtifact(sdl3_dep.artifact("SDL3"), .{
+                        .dest_dir = .{ .override = .bin },
+                    });
+                    b.getInstallStep().dependOn(&install_sdl3.step);
+                }
             }
         }
 
