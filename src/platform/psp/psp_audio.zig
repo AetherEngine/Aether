@@ -8,7 +8,7 @@
 const std = @import("std");
 const sdk = @import("pspsdk");
 const audio_api = @import("../audio_api.zig");
-const Stream = @import("../../audio/stream.zig").Stream;
+const SlotSource = @import("../../audio/stream.zig").SlotSource;
 const PcmFormat = @import("../../audio/stream.zig").PcmFormat;
 
 const NUM_SLOTS: usize = 8;
@@ -32,7 +32,7 @@ const Slot = struct {
     state: std.atomic.Value(u8) = std.atomic.Value(u8).init(@intFromEnum(SlotState.inactive)),
     gain: std.atomic.Value(u32) = std.atomic.Value(u32).init(@bitCast(@as(f32, 0))),
     pan: std.atomic.Value(u32) = std.atomic.Value(u32).init(@bitCast(@as(f32, 0))),
-    stream: Stream = undefined,
+    source: SlotSource = undefined,
     read_buf: [READ_BUF_SIZE]u8 = undefined,
 };
 
@@ -112,9 +112,9 @@ pub fn max_voices() u32 {
     return NUM_SLOTS;
 }
 
-pub fn play_slot(slot: u8, stream: Stream) audio_api.PlaySlotError!void {
+pub fn play_slot(slot: u8, source: SlotSource) audio_api.PlaySlotError!void {
     if (slot >= NUM_SLOTS) return error.InvalidArgs;
-    slots[slot].stream = stream;
+    slots[slot].source = source;
     slots[slot].state.store(@intFromEnum(SlotState.pending), .release);
 }
 
@@ -179,7 +179,7 @@ fn fill_buffer(buf: *[OUTPUT_BUF_BYTES]u8) void {
         const left_vol: i32 = @intFromFloat(std.math.clamp(left_gain, 0.0, 1.0) * 32768.0);
         const right_vol: i32 = @intFromFloat(std.math.clamp(right_gain, 0.0, 1.0) * 32768.0);
 
-        const fmt = slot.stream.format;
+        const fmt = source_format(slot.source);
         const bytes_needed: usize = SAMPLES_PER_BUF * fmt.frame_size();
 
         if (bytes_needed > READ_BUF_SIZE) {
@@ -189,12 +189,38 @@ fn fill_buffer(buf: *[OUTPUT_BUF_BYTES]u8) void {
 
         const read_buf = slot.read_buf[0..bytes_needed];
 
-        slot.stream.reader.readSliceAll(read_buf) catch {
+        if (!read_source(&slot.source, read_buf)) {
             slot.state.store(@intFromEnum(SlotState.finished), .release);
             continue;
-        };
+        }
 
         mix_into_i16(out, read_buf, fmt, left_vol, right_vol);
+    }
+}
+
+fn source_format(source: SlotSource) PcmFormat {
+    return switch (source) {
+        .buffer => |buffer| buffer.format,
+        .stream => |stream| stream.format,
+    };
+}
+
+fn read_source(source: *SlotSource, dst: []u8) bool {
+    switch (source.*) {
+        .buffer => |buffer| {
+            const cursor = buffer.cursor.load(.acquire);
+            if (cursor >= buffer.pcm.len) return false;
+            const remaining = buffer.pcm.len - cursor;
+            const n = @min(dst.len, remaining);
+            @memcpy(dst[0..n], buffer.pcm[cursor..][0..n]);
+            if (n < dst.len) @memset(dst[n..], 0);
+            buffer.cursor.store(cursor + n, .release);
+            return true;
+        },
+        .stream => |stream| {
+            stream.reader.readSliceAll(dst) catch return false;
+            return true;
+        },
     }
 }
 

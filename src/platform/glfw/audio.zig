@@ -1,12 +1,12 @@
 //! Desktop audio backend -- uses SDL3 audio with an on-demand stream
-//! callback. The audio thread pulls PCM from each slot's Stream reader,
+//! callback. The audio thread pulls PCM from each slot source,
 //! converts to float32 stereo, applies gain/pan from the mixer, and queues
 //! mixed frames to SDL.
 
 const std = @import("std");
 const sdl3 = @import("sdl3");
 const audio_api = @import("../audio_api.zig");
-const Stream = @import("../../audio/stream.zig").Stream;
+const SlotSource = @import("../../audio/stream.zig").SlotSource;
 const PcmFormat = @import("../../audio/stream.zig").PcmFormat;
 
 const SDL_AUDIO_FLAGS = sdl3.InitFlags{ .audio = true };
@@ -23,7 +23,7 @@ const READ_BUF_SIZE: usize = MAX_PERIOD_FRAMES * 2 * 4;
 
 const SlotState = enum(u8) {
     inactive = 0,
-    /// Game thread wrote a new Stream; audio thread should pick it up.
+    /// Game thread wrote a new source; audio thread should pick it up.
     pending = 1,
     /// Audio thread is actively reading from the stream.
     active = 2,
@@ -35,7 +35,7 @@ const Slot = struct {
     state: std.atomic.Value(u8) = std.atomic.Value(u8).init(@intFromEnum(SlotState.inactive)),
     gain: std.atomic.Value(u32) = std.atomic.Value(u32).init(@bitCast(@as(f32, 0))),
     pan: std.atomic.Value(u32) = std.atomic.Value(u32).init(@bitCast(@as(f32, 0))),
-    stream: Stream = undefined,
+    source: SlotSource = undefined,
     read_buf: [READ_BUF_SIZE]u8 = undefined,
 };
 
@@ -99,9 +99,9 @@ pub fn max_voices() u32 {
     return NUM_SLOTS;
 }
 
-pub fn play_slot(slot: u8, stream: Stream) audio_api.PlaySlotError!void {
+pub fn play_slot(slot: u8, source: SlotSource) audio_api.PlaySlotError!void {
     if (slot >= NUM_SLOTS) return error.InvalidArgs;
-    slots[slot].stream = stream;
+    slots[slot].source = source;
     // Release ensures the stream write is visible to the audio thread.
     slots[slot].state.store(@intFromEnum(SlotState.pending), .release);
 }
@@ -168,7 +168,7 @@ fn fill_output(out: []f32, frame_count: usize) void {
         const left_gain = gain * std.math.clamp(1.0 - pan, 0.0, 1.0);
         const right_gain = gain * std.math.clamp(1.0 + pan, 0.0, 1.0);
 
-        const fmt = slot.stream.format;
+        const fmt = source_format(slot.source);
         const bytes_needed: usize = frame_count * @as(usize, fmt.frame_size());
 
         if (bytes_needed > READ_BUF_SIZE) {
@@ -178,12 +178,38 @@ fn fill_output(out: []f32, frame_count: usize) void {
 
         const buf = slot.read_buf[0..bytes_needed];
 
-        slot.stream.reader.readSliceAll(buf) catch {
+        if (!read_source(&slot.source, buf)) {
             slot.state.store(@intFromEnum(SlotState.finished), .release);
             continue;
-        };
+        }
 
         mix_into(out, buf, fmt, frame_count, left_gain, right_gain);
+    }
+}
+
+fn source_format(source: SlotSource) PcmFormat {
+    return switch (source) {
+        .buffer => |buffer| buffer.format,
+        .stream => |stream| stream.format,
+    };
+}
+
+fn read_source(source: *SlotSource, dst: []u8) bool {
+    switch (source.*) {
+        .buffer => |buffer| {
+            const cursor = buffer.cursor.load(.acquire);
+            if (cursor >= buffer.pcm.len) return false;
+            const remaining = buffer.pcm.len - cursor;
+            const n = @min(dst.len, remaining);
+            @memcpy(dst[0..n], buffer.pcm[cursor..][0..n]);
+            if (n < dst.len) @memset(dst[n..], 0);
+            buffer.cursor.store(cursor + n, .release);
+            return true;
+        },
+        .stream => |stream| {
+            stream.reader.readSliceAll(dst) catch return false;
+            return true;
+        },
     }
 }
 

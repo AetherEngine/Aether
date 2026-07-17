@@ -44,7 +44,6 @@ const MyMeshData = Rendering.MeshData(Vertex);
 
 const BATCH_A_TRIANGLES = 61;
 const BATCH_B_TRIANGLES = 78;
-const MAX_GRASS_VOICES = 4;
 const Vec3 = Math.Vec3;
 
 fn rgba(r: u8, g: u8, b: u8) u32 {
@@ -227,33 +226,11 @@ pub const MyState = struct {
     batch_a_transform: Rendering.Transform,
     batch_b_transform: Rendering.Transform,
     texture: Rendering.Texture,
-    music_data: []const u8,
-    music_reader: std.Io.Reader,
-    grass_data: []const u8,
-    grass_readers: [MAX_GRASS_VOICES]std.Io.Reader,
+    music_buffer: Audio.SoundBufferHandle,
+    grass_buffer: Audio.SoundBufferHandle,
     grass_tick: u32,
     grass_spawn: u32,
     time: f32,
-
-    fn load_wav(engine: *ae.Engine, path: []const u8) ![]u8 {
-        var file = try engine.dirs.resources.openFile(engine.io, path, .{});
-        defer file.close(engine.io);
-
-        var tmp: [4096]u8 = undefined;
-        var rdr = if (ae.platform == .nintendo_switch)
-            file.readerStreaming(engine.io, &tmp)
-        else
-            file.reader(engine.io, &tmp);
-
-        var riff_hdr: [8]u8 = undefined;
-        try rdr.interface.readSliceAll(&riff_hdr);
-        const file_size: usize = @as(usize, std.mem.readInt(u32, riff_hdr[4..8], .little)) + 8;
-
-        const buf = try engine.allocator(.audio).alloc(u8, file_size);
-        @memcpy(buf[0..8], &riff_hdr);
-        try rdr.interface.readSliceAll(buf[8..]);
-        return buf;
-    }
 
     fn init(ctx: *anyopaque, engine: *ae.Engine) anyerror!void {
         var self = ae.ctx_to_self(MyState, ctx);
@@ -278,10 +255,8 @@ pub const MyState = struct {
         self.batch_a.update(&self.batch_a_data);
         self.batch_b.update(&self.batch_b_data);
 
-        self.music_data = &.{};
-        self.music_reader = .fixed(&.{});
-        self.grass_data = &.{};
-        self.grass_readers = @splat(.fixed(&.{}));
+        self.music_buffer = .none;
+        self.grass_buffer = .none;
         self.grass_tick = 0;
         self.grass_spawn = 0;
         self.time = 0.0;
@@ -289,13 +264,11 @@ pub const MyState = struct {
         if (!Audio.enabled) return;
 
         // -- background music --
-        self.music_data = try load_wav(engine, "calm1.wav");
-        self.music_reader = .fixed(self.music_data);
-        const music_stream = try Audio.wav.open(&self.music_reader);
-        _ = try Audio.play(&music_stream, &.{ .priority = .critical });
+        self.music_buffer = try Audio.load_wav(engine.io, engine.dirs.resources, engine.allocator(.audio), "calm1.wav");
+        _ = try Audio.play_buffer(self.music_buffer, &.{ .priority = .critical });
 
         // -- spatial SFX data --
-        self.grass_data = try load_wav(engine, "grass1.wav");
+        self.grass_buffer = try Audio.load_wav(engine.io, engine.dirs.resources, engine.allocator(.audio), "grass1.wav");
 
         // Listener at origin, facing -Z
         Audio.set_listener(Vec3.zero(), Vec3.new(0, 0, -1), Vec3.new(0, 1, 0));
@@ -306,6 +279,8 @@ pub const MyState = struct {
     fn deinit(ctx: *anyopaque, engine: *ae.Engine) void {
         var self = ae.ctx_to_self(MyState, ctx);
         const render = engine.allocator(.render);
+        if (!self.grass_buffer.is_null()) Audio.destroy_buffer(self.grass_buffer);
+        if (!self.music_buffer.is_null()) Audio.destroy_buffer(self.music_buffer);
         self.texture.deinit(render);
         self.batch_b.deinit();
         self.batch_a.deinit();
@@ -323,7 +298,6 @@ pub const MyState = struct {
         if (self.grass_tick >= 30) {
             self.grass_tick = 0;
 
-            const i = self.grass_spawn % MAX_GRASS_VOICES;
             const n = self.grass_spawn;
             self.grass_spawn +%= 1;
 
@@ -332,9 +306,7 @@ pub const MyState = struct {
             const dist = 1.0 + @as(f32, @floatFromInt(n % 5)) * 4.0;
             const pos = Vec3.new(@cos(angle) * dist, 0, @sin(angle) * dist);
 
-            self.grass_readers[i] = .fixed(self.grass_data);
-            const stream = Audio.wav.open(&self.grass_readers[i]) catch return;
-            _ = Audio.play_at(&stream, pos, &.{
+            _ = Audio.play_buffer_at(self.grass_buffer, pos, &.{
                 .ref_distance = 1.0,
                 .max_distance = 25.0,
             }) catch return;

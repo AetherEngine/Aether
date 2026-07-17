@@ -1,5 +1,5 @@
 const std = @import("std");
-const Stream = @import("../audio/stream.zig").Stream;
+const SlotSource = @import("../audio/stream.zig").SlotSource;
 
 pub const InitError = error{
     OutOfMemory,
@@ -10,7 +10,6 @@ pub const PlaySlotError = error{
     OutOfMemory,
     InvalidArgs,
     UnsupportedFormat,
-    UnknownStreamLength,
     AudioHostRejectedStream,
 };
 
@@ -18,8 +17,8 @@ pub const PlaySlotError = error{
 /// slot-based PCM outputs -- all scheduling, priority, and spatial math
 /// lives in the platform-independent mixer (`audio/mixer.zig`).
 ///
-/// The backend's audio thread pulls PCM from the Stream's reader, applies
-/// the gain/pan set by the mixer, and writes to the output device.
+/// The backend's audio thread pulls PCM from the assigned slot source,
+/// applies the gain/pan set by the mixer, and writes to the output device.
 pub const Interface = struct {
     setup: fn (std.mem.Allocator, std.Io) void,
     init: fn () InitError!void,
@@ -29,9 +28,9 @@ pub const Interface = struct {
 
     /// Number of simultaneous voices the backend can output.
     max_voices: fn () u32,
-    /// Begin reading PCM from `stream` on `slot`. Implicitly stops any
+    /// Begin reading PCM from `source` on `slot`. Implicitly stops any
     /// previous stream on that slot.
-    play_slot: fn (u8, Stream) PlaySlotError!void,
+    play_slot: fn (u8, SlotSource) PlaySlotError!void,
     /// Stop reading on `slot`.
     stop_slot: fn (u8) void,
     /// Set output gain [0,1] and stereo pan [-1,1] for `slot`.
