@@ -65,7 +65,7 @@ pub fn main(init: Application) !void {
         .preopens = .empty,
     };
 
-    try entry.callMain(process_init);
+    try entry.call_main(process_init);
 }
 
 const NetworkContext = struct {
