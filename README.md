@@ -84,10 +84,11 @@ builder (`b`). This lets Aether resolve its own internal dependencies (GLFW,
 Vulkan, Slang, pspsdk) from its `build.zig.zon` while building artifacts that
 belong to your project.
 
-You can add additional module imports to the returned compile step as usual:
+The returned executable root is Aether's platform entry shim. Add imports for
+your game root through `userRootModule`:
 
 ```zig
-exe.root_module.addImport("my_module", my_module);
+Aether.modules.userRootModule(exe).addImport("my_module", my_module);
 ```
 
 Then write your game code:
@@ -95,6 +96,15 @@ Then write your game code:
 ```zig
 const std = @import("std");
 const ae = @import("aether");
+
+pub const aether_options: ae.Options = .{
+    .title = "My Game",
+    .app_name = "my_game",
+    .psp = .{
+        .module_name = "MyGame",
+        .stack_size = 512 * 1024,
+    },
+};
 
 const MyState = struct {
     fn init(ctx: *anyopaque, engine: *ae.Engine) anyerror!void { _ = ctx; _ = engine; }
@@ -126,6 +136,7 @@ pub fn main(init: std.process.Init) !void {
             .user = 16 * 1024 * 1024,
         },
         .title = "My Game",
+        .app_name = ae.AppOptions.resolveAppName(aether_options),
     }, &my_state.state());
     defer engine.deinit();
     engine.run() catch |err| switch (err) {
