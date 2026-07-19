@@ -31,7 +31,7 @@ pub const psp_heap_kb_size: u32 = entry.options.psp.heap_kb_size;
 pub const psp_heap_reserve_kb_size: u32 = entry.options.psp.heap_reserve_kb_size;
 
 pub fn main(init: std.process.Init) !void {
-    try entry.callMain(init);
+    try entry.call_main(init);
 }
 
 fn pspCwd() std.Io.Dir {
