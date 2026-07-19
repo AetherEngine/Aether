@@ -8,10 +8,10 @@ else
     .{};
 
 comptime {
-    validateUserRoot();
+    validate_user_root();
 }
 
-fn validateUserRoot() void {
+fn validate_user_root() void {
     if (!@hasDecl(app_root, "main")) {
         @compileError("Aether apps must expose pub fn main(init: std.process.Init) !void");
     }
@@ -47,11 +47,11 @@ const stale_root_decls = .{
     "psp_heap_reserve_kb_size",
 };
 
-pub fn callMain(init: std.process.Init) !void {
-    return finishMain(app_root.main(init));
+pub fn call_main(init: std.process.Init) !void {
+    return finish_main(app_root.main(init));
 }
 
-fn finishMain(result: anytype) !void {
+fn finish_main(result: anytype) !void {
     const Result = @TypeOf(result);
     switch (@typeInfo(Result)) {
         .void => return,

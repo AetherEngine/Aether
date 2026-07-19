@@ -8,5 +8,5 @@ pub const std_options_debug_threaded_io = std.Io.Threaded.global_single_threaded
 pub const std_options_debug_io: std.Io = std.Io.Threaded.global_single_threaded.io();
 
 pub fn main(init: std.process.Init) !void {
-    try entry.callMain(init);
+    try entry.call_main(init);
 }
