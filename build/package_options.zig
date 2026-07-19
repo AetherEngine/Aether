@@ -32,6 +32,9 @@ pub const ExportOptions = struct {
     /// WASM/browser: destination wasm filename. Defaults to the name expected
     /// by the stock Aether web loader.
     web_wasm_name: []const u8 = "Aether.wasm",
+    /// WASM/browser: optional ES module installed as `aether_app.js`.
+    /// Export `hostImports(ctx)` to provide app-specific `aether_host` imports.
+    web_app_module: ?std.Build.LazyPath = null,
     /// Switch: NACP author string (shows under the title in the HOME menu).
     /// Empty falls back to "Aether".
     switch_author: []const u8 = "",

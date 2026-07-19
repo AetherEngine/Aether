@@ -1,3 +1,5 @@
+import { hostImports } from "./aether_app.js";
+
 const canvas = document.getElementById("aether");
 const statusEl = document.getElementById("status");
 const textDecoder = new TextDecoder();
@@ -1042,6 +1044,26 @@ function pollGamepads() {
   }
 }
 
+function buildHostImports() {
+  const appHost = hostImports(
+    Object.freeze({
+      files,
+      normalizePath,
+      str,
+      canvas,
+    }),
+  ) || {};
+  for (const [name, fn] of Object.entries(appHost)) {
+    if (Object.prototype.hasOwnProperty.call(host, name)) {
+      throw new Error(`app host import conflicts with Aether import: ${name}`);
+    }
+    if (typeof fn !== "function") {
+      throw new Error(`app host import is not a function: ${name}`);
+    }
+  }
+  return { ...host, ...appHost };
+}
+
 async function main() {
   try {
     resizeCanvas();
@@ -1050,7 +1072,7 @@ async function main() {
       fetch("./Aether.wasm"),
       {
         wasi_snapshot_preview1: WASI,
-        aether_host: host,
+        aether_host: buildHostImports(),
       },
     );
     instance = wasm.instance;

@@ -8,6 +8,8 @@ pub fn addWebBundle(owner: *std.Build, b: *std.Build, exe: *std.Build.Step.Compi
     _ = web.addCopyFile(exe.getEmittedBin(), opts.web_wasm_name);
     _ = web.addCopyFile(owner.path("web/index.html"), "index.html");
     _ = web.addCopyFile(owner.path("web/aether.js"), "aether.js");
+    const web_app_module = opts.web_app_module orelse owner.path("web/aether_app.js");
+    _ = web.addCopyFile(web_app_module, "aether_app.js");
     _ = web.add("resources.manifest", opts.web_resource_manifest);
     if (opts.web_resources) |resource_dir| {
         _ = web.addCopyDirectory(resource_dir, "", .{});
