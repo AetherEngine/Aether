@@ -46,6 +46,16 @@ pub fn userRootModule(exe: *std.Build.Step.Compile) *std.Build.Module {
     return exe.root_module.import_table.get(user_root_import_name) orelse exe.root_module;
 }
 
+fn entryRootSource(config: Config) []const u8 {
+    return switch (config.platform) {
+        .psp => "src/platform/psp/entry.zig",
+        .nintendo_3ds => "src/platform/3ds/entry.zig",
+        .nintendo_switch => "src/platform/switch/services.zig",
+        .wasm => unreachable,
+        else => "src/platform/entry.zig",
+    };
+}
+
 fn addNintendoCImportPaths(_: *std.Build, mod: *std.Build.Module, config: Config, dkp: []const u8) void {
     const b = mod.owner;
     switch (config.platform) {
@@ -202,12 +212,19 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
         user_mod.addImport("zitrus", zd.module("zitrus"));
     }
 
-    const root_mod = if (uses_nintendo_c_io or uses_zitrus) b.createModule(.{
-        .root_source_file = owner.path(switch (config.platform) {
-            .nintendo_switch => "src/platform/switch/services.zig",
-            .nintendo_3ds => "src/platform/3ds/entry.zig",
-            else => unreachable,
-        }),
+    const entry_common_mod = if (config.platform != .wasm) b.createModule(.{
+        .root_source_file = owner.path("src/platform/entry_common.zig"),
+        .target = target,
+        .optimize = opts.optimize,
+        .link_libc = if (uses_nintendo_c_io) true else null,
+        .imports = &.{
+            .{ .name = "aether", .module = mod },
+            .{ .name = user_root_import_name, .module = user_mod },
+        },
+    }) else null;
+
+    const root_mod = if (config.platform != .wasm) b.createModule(.{
+        .root_source_file = owner.path(entryRootSource(config)),
         .target = target,
         .optimize = opts.optimize,
         .link_libc = if (uses_nintendo_c_io) true else null,
@@ -215,8 +232,12 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
             .{ .name = "aether", .module = mod },
             .{ .name = user_root_import_name, .module = user_mod },
             .{ .name = "options", .module = options_module },
+            .{ .name = "aether_entry_common", .module = entry_common_mod.? },
         },
     }) else user_mod;
+    if (psp_dep) |_| {
+        root_mod.addImport("pspsdk", mod.import_table.get("pspsdk").?);
+    }
     if (zitrus_dep) |zd| {
         root_mod.addImport("zitrus", zd.module("zitrus"));
     }
@@ -336,12 +357,19 @@ pub fn addHeadless(owner: *std.Build, b: *std.Build, opts: HeadlessOptions) *std
         user_mod.addImport("zitrus", zd.module("zitrus"));
     }
 
-    const root_mod = if (uses_nintendo_c_io or uses_zitrus) b.createModule(.{
-        .root_source_file = owner.path(switch (config.platform) {
-            .nintendo_switch => "src/platform/switch/services.zig",
-            .nintendo_3ds => "src/platform/3ds/entry.zig",
-            else => unreachable,
-        }),
+    const entry_common_mod = if (config.platform != .wasm) b.createModule(.{
+        .root_source_file = owner.path("src/platform/entry_common.zig"),
+        .target = target,
+        .optimize = opts.optimize,
+        .link_libc = if (uses_nintendo_c_io) true else null,
+        .imports = &.{
+            .{ .name = "aether", .module = mod },
+            .{ .name = user_root_import_name, .module = user_mod },
+        },
+    }) else null;
+
+    const root_mod = if (config.platform != .wasm) b.createModule(.{
+        .root_source_file = owner.path(entryRootSource(config)),
         .target = target,
         .optimize = opts.optimize,
         .link_libc = if (uses_nintendo_c_io) true else null,
@@ -349,8 +377,12 @@ pub fn addHeadless(owner: *std.Build, b: *std.Build, opts: HeadlessOptions) *std
             .{ .name = "aether", .module = mod },
             .{ .name = user_root_import_name, .module = user_mod },
             .{ .name = "options", .module = options_module },
+            .{ .name = "aether_entry_common", .module = entry_common_mod.? },
         },
     }) else user_mod;
+    if (psp_dep) |_| {
+        root_mod.addImport("pspsdk", mod.import_table.get("pspsdk").?);
+    }
     if (zitrus_dep) |zd| {
         root_mod.addImport("zitrus", zd.module("zitrus"));
     }

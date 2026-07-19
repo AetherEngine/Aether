@@ -6,7 +6,7 @@
 
 const std = @import("std");
 const aether = @import("aether");
-const app_root = @import("aether_user_root");
+const entry = @import("aether_entry_common");
 const zitrus = @import("zitrus");
 
 const Application = zitrus.horizon.Init.Application;
@@ -15,12 +15,11 @@ const MIN_STACK_SIZE: u32 = 768 * 1024;
 const SOC_BUFFER_LEN: usize = 1024 * 1024;
 const log = std.log.scoped(.aether_3ds_entry);
 
-pub const zitrus_options: zitrus.Options = if (@hasDecl(app_root, "zitrus_options"))
-    .{ .stack_size = @max(MIN_STACK_SIZE, app_root.zitrus_options.stack_size) }
-else
-    .{ .stack_size = MIN_STACK_SIZE };
+pub const zitrus_options: zitrus.Options = .{
+    .stack_size = @max(MIN_STACK_SIZE, entry.options.nintendo_3ds.stack_size),
+};
 
-pub const std_options = if (@hasDecl(app_root, "std_options")) app_root.std_options else aether.Util.std_options;
+pub const std_options = entry.options.std_options;
 pub const std_os_options = zitrus.std_os_options;
 pub const panic = std.debug.FullPanic(zitrus.horizon.debug.defaultPanic);
 pub const std_options_debug_threaded_io = null;
@@ -66,47 +65,7 @@ pub fn main(init: Application) !void {
         .preopens = .empty,
     };
 
-    try callUserMain(init, process_init);
-}
-
-fn callUserMain(app_init: Application, process_init: std.process.Init) !void {
-    const main_fn = app_root.main;
-    const info = @typeInfo(@TypeOf(main_fn)).@"fn";
-    if (info.params.len == 0) {
-        return finishMain(main_fn());
-    }
-    if (info.params.len != 1) {
-        @compileError("3DS Aether apps must expose main(), main(std.process.Init), main(std.process.Init.Minimal), or main(zitrus.horizon.Init.Application)");
-    }
-
-    const Param = info.params[0].type orelse @compileError("3DS Aether app main parameter must have a concrete type");
-    if (Param == std.process.Init) {
-        return finishMain(main_fn(process_init));
-    }
-    if (Param == std.process.Init.Minimal) {
-        return finishMain(main_fn(process_init.minimal));
-    }
-    if (Param == Application) {
-        return finishMain(main_fn(app_init));
-    }
-
-    @compileError("unsupported 3DS Aether app main parameter type");
-}
-
-fn finishMain(result: anytype) !void {
-    const Result = @TypeOf(result);
-    switch (@typeInfo(Result)) {
-        .void => return,
-        .noreturn => unreachable,
-        .error_union => {
-            const payload = try result;
-            return finishMain(payload);
-        },
-        .int, .comptime_int => {
-            if (result != 0) return error.AetherMainReturnedFailure;
-        },
-        else => @compileError("unsupported 3DS Aether app main return type"),
-    }
+    try entry.callMain(process_init);
 }
 
 const NetworkContext = struct {

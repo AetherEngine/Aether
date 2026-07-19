@@ -13,6 +13,7 @@
 const process_init = @import("aether").CProcessInit;
 const std = @import("std");
 const Cio = @import("aether").Cio;
+const entry_common = @import("aether_entry_common");
 const c = @cImport({
     @cUndef("_GNU_SOURCE");
     @cUndef("_DEFAULT_SOURCE");
@@ -29,16 +30,10 @@ pub const os = struct {
     pub const NAME_MAX = 255;
 };
 
-fn app_root() type {
-    const root = @import("root");
-    return if (@hasDecl(root, "main")) root else @import("aether_user_root");
-}
-
-pub const std_options = if (@hasDecl(app_root(), "std_options")) app_root().std_options else std.Options{};
-pub const std_options_debug_threaded_io = if (@hasDecl(app_root(), "std_options_debug_threaded_io")) app_root().std_options_debug_threaded_io else null;
-pub const std_options_debug_io = if (@hasDecl(app_root(), "std_options_debug_io")) app_root().std_options_debug_io else std.Io.failing;
-const app_std_options_cwd: ?fn () std.Io.Dir = if (@hasDecl(app_root(), "std_options_cwd")) app_root().std_options_cwd else null;
-pub const std_options_cwd = app_std_options_cwd orelse @import("aether").Cio.cwd;
+pub const std_options = entry_common.options.std_options;
+pub const std_options_debug_threaded_io = null;
+pub const std_options_debug_io: std.Io = Cio.io();
+pub const std_options_cwd = Cio.cwd;
 
 const fatal_result: u32 = 0xf801;
 const fatal_policy_error_screen: c_int = 2;
@@ -131,7 +126,7 @@ fn entry(_: c_int, _: [*c][*c]u8) callconv(.c) c_int {
 
     const init = process_init.makeInit(.{ .vector = {} });
     defer Cio.deinitNetworking();
-    app_root().main(init) catch |err| {
+    entry_common.callMain(init) catch |err| {
         fatal_main_error(err, @errorReturnTrace(), @returnAddress());
     };
     return 0;

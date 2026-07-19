@@ -7,36 +7,14 @@ const Rendering = ae.Rendering;
 const Audio = ae.Audio;
 const State = Core.State;
 
-// TODO: Make these options stuff nice
-pub const std_options = Util.std_options;
-
-const sdk = if (ae.platform == .psp) @import("pspsdk") else void;
-comptime {
-    if (sdk != void)
-        asm (sdk.extra.module.module_info("My App Name", .{ .mode = .User }, 1, 0));
-}
-
-pub const psp_stack_size: u32 = 256 * 1024;
-
-// PSP/Switch override panic/IO handlers that would otherwise
-// pull in posix symbols (Io.Threaded references std.posix decls that
-// don't exist for these targets). Switch uses Aether's newlib-backed
-// baseline.
-const is_freestanding_console = ae.platform == .psp or ae.platform == .nintendo_switch;
-pub const panic = if (ae.platform == .psp)
-    sdk.extra.debug.panic
-else if (ae.platform == .nintendo_switch)
-    std.debug.no_panic
-else
-    std.debug.FullPanic(std.debug.defaultPanic);
-pub const std_options_debug_threaded_io = if (is_freestanding_console) null else std.Io.Threaded.global_single_threaded;
-pub const std_options_debug_io: std.Io =
-    if (ae.platform == .psp) sdk.extra.Io.psp_io else if (ae.platform == .nintendo_switch) ae.Cio.io() else std.Io.Threaded.global_single_threaded.io();
-pub const std_options_cwd =
-    if (ae.platform == .psp) psp_cwd else if (ae.platform == .nintendo_switch) ae.Cio.cwd else null;
-fn psp_cwd() std.Io.Dir {
-    return .{ .handle = -1 };
-}
+pub const aether_options: ae.Options = .{
+    .title = "Aether",
+    .app_name = "Aether",
+    .psp = .{
+        .module_name = "My App Name",
+        .stack_size = 256 * 1024,
+    },
+};
 
 const Vertex = Rendering.Vertex;
 const MyMesh = Rendering.Mesh(Vertex);
@@ -384,6 +362,8 @@ pub fn main(init: std.process.Init) !void {
     var engine: ae.Engine = undefined;
     engine.init(init.io, init.environ_map, memory, &.{
         .memory = memory_config,
+        .title = aether_options.title,
+        .app_name = ae.AppOptions.resolveAppName(aether_options),
         .resizable = true,
     }, &state.state()) catch |err| switch (err) {
         error.OutOfMemory => return error.EngineInitOutOfMemory,
