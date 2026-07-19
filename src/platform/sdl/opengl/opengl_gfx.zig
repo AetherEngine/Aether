@@ -1,5 +1,5 @@
 const std = @import("std");
-const glfw = @import("glfw");
+const sdl3 = @import("sdl3");
 const gl = @import("gl");
 const gfx_api = @import("../../gfx_api.zig");
 const Mat4 = @import("../../../math/math.zig").Mat4;
@@ -12,7 +12,6 @@ const Rendering = @import("../../../rendering/rendering.zig");
 const Mesh = Rendering.mesh;
 const vertex = Rendering.vertex;
 const Texture = Rendering.Texture;
-const GLFWSurface = @import("../surface.zig");
 const basic_vert align(@alignOf(u32)) = @embedFile("aether_basic_vert").*;
 const basic_frag align(@alignOf(u32)) = @embedFile("aether_basic_frag").*;
 
@@ -33,6 +32,7 @@ var meshes = Util.ResourceTable(MeshInternal, 8192, Mesh.Handle).init();
 var textures = Util.ResourceTable(gl.uint, 8192, Texture.Handle).init();
 var alpha_blend_enabled: bool = true;
 var cull_face_enabled: bool = true;
+var depth_write_enabled: bool = true;
 var pipeline: PipelineData = undefined;
 var pipeline_initialized: bool = false;
 
@@ -49,8 +49,14 @@ const MeshInternal = struct {
     index_count: usize = 0,
 };
 
+/// SDL_GL_GetProcAddress, adapted to zigglgen's nullable-loader convention.
+fn gl_proc_loader(name: [*:0]const u8) ?*const anyopaque {
+    const proc = sdl3.video.gl.getProcAddress(std.mem.span(name));
+    return if (@intFromPtr(proc) == 0) null else proc;
+}
+
 pub fn init() gfx_api.InitError!void {
-    if (!procs.init(glfw.getProcAddress)) @panic("Failed to initialize OpenGL");
+    if (!procs.init(gl_proc_loader)) @panic("Failed to initialize OpenGL");
     gl.makeProcTableCurrent(&procs);
 
     Util.engine_logger.debug("OpenGL {s}", .{gl.GetString(gl.VERSION).?});
@@ -106,6 +112,7 @@ pub fn set_alpha_blend(enabled: bool) void {
 }
 
 pub fn set_depth_write(enabled: bool) void {
+    depth_write_enabled = enabled;
     gl.DepthMask(@intFromBool(enabled));
 }
 
@@ -151,7 +158,13 @@ pub fn start_frame() bool {
         }
     }
 
+    // gl.Clear honors the depth write mask, so a game running with
+    // depth_write=false would never clear depth. Force the mask on for the
+    // frame clear (Vulkan clears via load op regardless of pipeline state),
+    // then restore the requested state.
+    gl.DepthMask(gl.TRUE);
     gl.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    if (!depth_write_enabled) gl.DepthMask(gl.FALSE);
 
     return true;
 }
@@ -161,7 +174,10 @@ pub fn end_frame() void {
 }
 
 pub fn clear_depth() void {
+    // See start_frame: the depth clear must ignore the game's write mask.
+    gl.DepthMask(gl.TRUE);
     gl.Clear(gl.DEPTH_BUFFER_BIT);
+    if (!depth_write_enabled) gl.DepthMask(gl.FALSE);
 }
 
 pub fn has_second_screen() bool {
@@ -173,7 +189,7 @@ pub fn switch_second_screen() void {
 }
 
 pub fn set_vsync(v: bool) void {
-    glfw.swapInterval(@intFromBool(v));
+    sdl3.video.gl.setSwapInterval(if (v) .synchronized else .immediate) catch {};
 }
 
 pub fn set_proj_matrix(mat: *const Mat4) void {

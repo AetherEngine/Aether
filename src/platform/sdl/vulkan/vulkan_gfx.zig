@@ -10,7 +10,6 @@ const Util = @import("../../../util/util.zig");
 // passes, sky plane), so behavior matches the non-macOS path for current
 // shaders. See context.zig for the device-feature side.
 const is_macos = builtin.target.os.tag == .macos;
-const glfw = @import("glfw");
 const Mat4 = @import("../../../math/math.zig").Mat4;
 
 const vk = @import("vulkan");
@@ -25,7 +24,7 @@ const basic_frag align(@alignOf(u32)) = @embedFile("aether_basic_frag").*;
 const Context = @import("context.zig");
 const Swapchain = @import("swapchain.zig");
 const GarbageCollector = @import("garbage_collector.zig");
-const GLFWSurface = @import("../surface.zig");
+const SDLSurface = @import("../surface.zig");
 
 pub const mesh_source_mode = Mesh.SourceMode.uploaded_copy;
 
@@ -470,7 +469,7 @@ pub fn init() gfx_api.InitError!void {
         else => return error.GfxInitFailed,
     };
 
-    GLFWSurface.on_resize = resize_flag;
+    SDLSurface.on_resize = resize_flag;
 }
 
 fn resize_flag() void {
@@ -478,7 +477,7 @@ fn resize_flag() void {
 }
 
 pub fn deinit() void {
-    GLFWSurface.on_resize = null;
+    SDLSurface.on_resize = null;
     context.logical_device.deviceWaitIdle() catch {};
 
     deinit_pipeline(&render_pipeline);

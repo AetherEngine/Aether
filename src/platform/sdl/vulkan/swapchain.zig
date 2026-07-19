@@ -1,6 +1,5 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const glfw = @import("glfw");
 const vk = @import("vulkan");
 const Context = @import("context.zig");
 

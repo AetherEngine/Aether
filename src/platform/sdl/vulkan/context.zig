@@ -1,12 +1,12 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const glfw = @import("glfw");
+const sdl3 = @import("sdl3");
 const vk = @import("vulkan");
 const Util = @import("../../../util/util.zig");
 
-// GLFW function pointers
-extern fn glfwGetInstanceProcAddress(instance: vk.Instance, procname: [*:0]const u8) vk.PfnVoidFunction;
-extern fn glfwCreateWindowSurface(instance: vk.Instance, window: *glfw.Window, allocation_callbacks: ?*const vk.AllocationCallbacks, surface: *vk.SurfaceKHR) vk.Result;
+// SDL hands us the vkGetInstanceProcAddr from its own Vulkan library load
+// (see surface.zig); feed it straight into the base wrapper's loader.
+const GetInstanceProcAddrFn = *const fn (vk.Instance, [*:0]const u8) callconv(.c) vk.PfnVoidFunction;
 
 const BaseWrapper = vk.BaseWrapper;
 const InstanceWrapper = vk.InstanceWrapper;
@@ -44,7 +44,8 @@ memory_properties: vk.PhysicalDeviceMemoryProperties,
 
 fn create_instance(self: *Self, name: [:0]const u8) !void {
     // Initialize Vulkan instance
-    self.vkb = vk.BaseWrapper.load(glfwGetInstanceProcAddress);
+    const get_proc_addr: GetInstanceProcAddrFn = @ptrCast(try sdl3.vulkan.getVkGetInstanceProcAddr());
+    self.vkb = vk.BaseWrapper.load(get_proc_addr);
 
     // Setup extensions
     var extension_names: std.ArrayList([*:0]const u8) = .empty;
@@ -69,10 +70,9 @@ fn create_instance(self: *Self, name: [:0]const u8) !void {
     }
     try extension_names.append(self.allocator, vk.extensions.khr_get_physical_device_properties_2.name);
 
-    // Get required GLFW extensions
-    var glfw_exts_count: u32 = 0;
-    const glfw_exts = glfw.getRequiredInstanceExtensions(&glfw_exts_count) orelse @panic("Failed to get GLFW extensions");
-    try extension_names.appendSlice(self.allocator, @ptrCast(glfw_exts[0..glfw_exts_count]));
+    // Get required SDL window-system extensions
+    const sdl_exts = sdl3.vulkan.getInstanceExtensions() catch @panic("Failed to get SDL Vulkan extensions");
+    try extension_names.appendSlice(self.allocator, sdl_exts);
 
     // Create an instance
     var instance_create_info: vk.InstanceCreateInfo = .{
@@ -102,10 +102,14 @@ fn create_instance(self: *Self, name: [:0]const u8) !void {
 
 const gfx = @import("../../gfx.zig");
 fn create_surface(self: *Self) !void {
-    // Create a window surface
-    if (glfwCreateWindowSurface(self.instance.handle, gfx.surface.window, null, &self.surface) != .success) {
+    // Create a window surface. SDL's Vk handle types come from its own
+    // translate-c headers, so bridge to the vulkan-zig enums via usize.
+    var raw_surface: sdl3.c.VkSurfaceKHR = undefined;
+    const instance: sdl3.c.VkInstance = @ptrFromInt(@intFromEnum(self.instance.handle));
+    if (!sdl3.c.SDL_Vulkan_CreateSurface(gfx.surface.window.value, instance, null, &raw_surface)) {
         return error.SurfaceInitFailed;
     }
+    self.surface = @enumFromInt(@as(u64, @intFromPtr(raw_surface orelse return error.SurfaceInitFailed)));
 }
 
 pub const Queue = struct {

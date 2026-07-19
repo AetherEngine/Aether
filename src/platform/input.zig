@@ -17,7 +17,7 @@ else if (options.config.platform == .nintendo_switch)
 else if (options.config.platform == .wasm)
     @import("wasm/input.zig")
 else
-    @import("glfw/input.zig");
+    @import("sdl/input.zig");
 
 comptime {
     input_api.assert_impl(api);
