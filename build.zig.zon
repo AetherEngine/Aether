@@ -32,10 +32,6 @@
     // Once all dependencies are fetched, `zig build` no longer requires
     // internet connectivity.
     .dependencies = .{
-        .zglfw = .{
-            .url = "git+https://github.com/IridescenceTech/zglfw#188d33b5abdb24768905dec1dad6b3ffd60fc324",
-            .hash = "zglfw-0.1.0-BghZXaTUAAAkCOlD_2akK4k1zIzo6HIXelVZu39yr_MO",
-        },
         .zigglgen = .{
             .url = "git+https://github.com/castholm/zigglgen.git#6b21369ac50de8826f8af60a7edb33693b4ec7bf",
             .hash = "zigglgen-0.5.0-zigglr_CLwBs1aABtYVtxNPo1SB8AzgKMVouoqULqkDQ",
@@ -47,10 +43,6 @@
         .pspsdk = .{
             .url = "git+https://github.com/zPSP-Dev/Zig-PSP#35a7e02f1a2eafc200a851aea1ed0757128fe28e",
             .hash = "pspsdk-0.7.0-BZphyk2bEgCFkzGUlGnNooIZmU52-Ezju6f4rU3JllQL",
-        },
-        .glfw_zig = .{
-            .url = "git+https://github.com/tiawl/glfw.zig/#885b260a97eae7d299fc74490afae533e6e53886",
-            .hash = "glfw_zig-1.0.0-NrvYoy_SGQD5J2e5okpIf_dir8BZpWdKaUmWNDenm_ki",
         },
         .slangc_linux_x86_64 = .{
             .url = "https://github.com/shader-slang/slang/releases/download/v2026.5.1/slang-2026.5.1-linux-x86_64.tar.gz",

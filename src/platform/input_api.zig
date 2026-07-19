@@ -22,7 +22,7 @@ pub const Interface = struct {
     deinit: fn () void,
 
     /// One-shot per UPDATE phase. Backends:
-    /// - Drain platform event queues (e.g. glfw.pollEvents) so callbacks
+    /// - Drain platform event queues (e.g. SDL_PollEvent) so callbacks
     ///   that `deliver_*` have a chance to fire.
     /// - Sample peripherals that aren't callback-driven (gamepad axes,
     ///   PSP pad).
@@ -38,7 +38,7 @@ pub const Interface = struct {
     /// Optional PSP OSK hook. On platforms with a system OSK (PSP), this
     /// drives the modal keyboard and writes the result into the active
     /// `TextInputSession` via `input.write_text_session_buffer`. On
-    /// platforms without one (GLFW, headless), it is a no-op so text
+    /// platforms without one (SDL desktop, headless), it is a no-op so text
     /// flows through `deliver_text` instead.
     begin_text_input_session: fn (*core.InputSystem, *const core.TextInputTarget, *const core.TextInputOptions) TextSessionError!void,
     end_text_input_session: fn (*core.InputSystem) void,

@@ -19,7 +19,7 @@ else if (options.config.platform == .nintendo_switch)
 else if (options.config.platform == .wasm)
     @import("wasm/browser_audio.zig")
 else
-    @import("glfw/audio.zig");
+    @import("sdl/audio.zig");
 
 comptime {
     audio_api.assert_impl(Api);

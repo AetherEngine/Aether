@@ -19,8 +19,10 @@ User code is structured as hooks into the engine via a `State` interface. You im
 ## Requirements
 
 - Zig **0.16.0-dev** or later (see `build.zig.zon` for exact minimum)
-- GLFW 3 (system library)
 - Vulkan SDK (for Vulkan headers; on macOS, MoltenVK is used)
+
+Desktop windowing, input, and audio use SDL3, which the build compiles from
+vendored source and statically links -- no system windowing library is needed.
 
 ## Getting Started
 
@@ -58,7 +60,7 @@ pub fn build(b: *std.Build) void {
     });
 
     // Create a game executable -- this wires up the engine module
-    // and all platform-specific dependencies (GLFW/Vulkan/OpenGL/pspsdk)
+    // and all platform-specific dependencies (SDL3/Vulkan/OpenGL/pspsdk)
     const exe = Aether.modules.addGame(ae_dep.builder, b, .{
         .name = "my_game",
         .root_source_file = b.path("src/main.zig"),
@@ -80,7 +82,7 @@ pub fn build(b: *std.Build) void {
 
 The first argument to `modules.addGame` and `packaging.exportArtifact` is the
 dependency's builder (`ae_dep.builder`), and the second is your project's
-builder (`b`). This lets Aether resolve its own internal dependencies (GLFW,
+builder (`b`). This lets Aether resolve its own internal dependencies (SDL3,
 Vulkan, Slang, pspsdk) from its `build.zig.zon` while building artifacts that
 belong to your project.
 
@@ -197,6 +199,10 @@ if (ae.Core.input.button(jump).pressed()) {
 ```
 
 Supported sources: keyboard keys, mouse buttons, mouse scroll, mouse relative movement, and gamepad buttons/axes.
+
+On desktop, keyboard keys are physical-position based (SDL scancodes): `Key.W`
+is always the key above `Key.A` on a QWERTY layout, regardless of the OS
+keyboard layout.
 
 ## Rendering
 

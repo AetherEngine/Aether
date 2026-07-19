@@ -5,25 +5,6 @@ const tools = @import("tool_options.zig");
 
 const Config = config_mod.Config;
 
-fn installedDynamicArtifact(dep: *std.Build.Dependency, name: []const u8) ?*std.Build.Step.Compile {
-    var found: ?*std.Build.Step.Compile = null;
-
-    for (dep.builder.install_tls.step.dependencies.items) |dep_step| {
-        const install = dep_step.cast(std.Build.Step.InstallArtifact) orelse continue;
-        const artifact = install.artifact;
-        if (!std.mem.eql(u8, artifact.name, name)) continue;
-        if (!artifact.isDynamicLibrary()) continue;
-
-        if (found) |existing| {
-            if (existing == artifact) continue;
-            std.debug.panic("dynamic artifact name '{s}' is ambiguous", .{name});
-        }
-        found = artifact;
-    }
-
-    return found;
-}
-
 pub const GameOptions = struct {
     name: []const u8,
     root_source_file: std.Build.LazyPath,
@@ -118,16 +99,6 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
         // imports for files, clocks, stdio, random, and environment. They do
         // not link desktop windowing/audio dependencies.
     } else {
-        const zglfw = owner.dependency("zglfw", .{
-            .target = target,
-            .optimize = opts.optimize,
-        });
-
-        const glfw = owner.dependency("glfw_zig", .{
-            .target = target,
-            .optimize = opts.optimize,
-        });
-
         const gl_bindings = @import("zigglgen").generateBindingsModule(owner, .{
             .api = .gl,
             .version = .@"4.5",
@@ -138,46 +109,27 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
             .registry = owner.dependency("vulkan_headers", .{}).path("registry/vk.xml"),
         }).module("vulkan-zig");
 
-        mod.addImport("glfw", zglfw.module("glfw"));
+        // SDL3 provides desktop windowing, input, and audio, and is linked
+        // statically on every desktop target.
+        if (owner.lazyDependency("sdl3", .{
+            .target = target,
+            .optimize = opts.optimize,
+            .main = false,
+            .ext_image = false,
+            .ext_net = false,
+            .ext_ttf = false,
+            .c_sdl_preferred_linkage = .static,
+        })) |sdl3_dep| {
+            mod.addImport("sdl3", sdl3_dep.module("sdl3"));
+        }
+
         mod.addImport("gl", gl_bindings);
         mod.addImport("vulkan", vulkan);
-
-        if (config.audio != .none) {
-            if (owner.lazyDependency("sdl3", .{
-                .target = target,
-                .optimize = opts.optimize,
-                .main = false,
-                .ext_image = false,
-                .ext_net = false,
-                .ext_ttf = false,
-                // Static SDL3 and static GLFW both embed generated Wayland
-                // protocol objects on Linux. Use dynamic SDL there until
-                // Aether can request an audio-only SDL build.
-                .c_sdl_preferred_linkage = @as(
-                    std.builtin.LinkMode,
-                    if (target.result.os.tag == .linux) .dynamic else .static,
-                ),
-            })) |sdl3_dep| {
-                mod.addImport("sdl3", sdl3_dep.module("sdl3"));
-
-                if (target.result.os.tag == .linux) {
-                    mod.addRPathSpecial("$ORIGIN");
-                    if (installedDynamicArtifact(sdl3_dep, "SDL3")) |sdl3_artifact| {
-                        const install_sdl3 = b.addInstallArtifact(sdl3_artifact, .{
-                            .dest_dir = .{ .override = .bin },
-                        });
-                        b.getInstallStep().dependOn(&install_sdl3.step);
-                    }
-                }
-            }
-        }
 
         if (target.result.os.tag == .macos) {
             // Link MoltenVK directly as the Vulkan ICD -- no loader.
             mod.addLibraryPath(.{ .cwd_relative = tools.macosMoltenVkPath(b) });
-            mod.addLibraryPath(.{ .cwd_relative = tools.macosGlfwPath(b) });
             mod.linkSystemLibrary("MoltenVK", .{});
-            mod.linkSystemLibrary("glfw3", .{});
 
             // rpath for the .app bundle layout.
             mod.addRPathSpecial("@executable_path/../Frameworks");
@@ -187,8 +139,6 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
                 mod.addSystemIncludePath(system_sdk.path("macos12/usr/include"));
                 mod.addLibraryPath(system_sdk.path("macos12/usr/lib"));
             }
-        } else {
-            mod.linkLibrary(glfw.artifact("glfw"));
         }
     }
 

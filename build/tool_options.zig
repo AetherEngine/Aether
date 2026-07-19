@@ -13,15 +13,6 @@ pub fn macosMoltenVkPath(b: *std.Build) []const u8 {
     return p;
 }
 
-var glfw_path_cached: ?[]const u8 = null;
-pub fn macosGlfwPath(b: *std.Build) []const u8 {
-    if (glfw_path_cached) |p| return p;
-    const p = b.option([]const u8, "glfw-path", "macOS: directory containing libglfw.3.dylib (default: $(brew --prefix glfw)/lib)") orelse
-        "/opt/homebrew/opt/glfw/lib";
-    glfw_path_cached = p;
-    return p;
-}
-
 var devkitpro_path_cached: ?[]const u8 = null;
 pub fn devkitProPath(b: *std.Build) []const u8 {
     if (devkitpro_path_cached) |p| return p;

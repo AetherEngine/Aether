@@ -18,8 +18,8 @@ pub const Api = switch (options.config.gfx) {
         @import("wasm/webgl_gfx.zig")
     else
         @import("psp/psp_gfx_ge.zig"),
-    .opengl => @import("glfw/opengl/opengl_gfx.zig"),
-    .vulkan => @import("glfw/vulkan/vulkan_gfx.zig"),
+    .opengl => @import("sdl/opengl/opengl_gfx.zig"),
+    .vulkan => @import("sdl/vulkan/vulkan_gfx.zig"),
     .webgl => @import("wasm/webgl_gfx.zig"),
     .headless => @import("headless/headless_gfx.zig"),
 };
@@ -37,7 +37,7 @@ else if (options.config.platform == .nintendo_switch)
 else if (options.config.platform == .wasm)
     @import("wasm/surface.zig")
 else
-    @import("glfw/surface.zig");
+    @import("sdl/surface.zig");
 
 comptime {
     gfx_api.assert_impl(Api);

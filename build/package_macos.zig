@@ -7,7 +7,6 @@ const ExportOptions = package_options.ExportOptions;
 /// Builds a `<exe.name>.app` directory under zig-out/bin/ with:
 ///   Contents/MacOS/<exe>                   -- patched load commands
 ///   Contents/Frameworks/libMoltenVK.dylib  -- id rewritten to @rpath
-///   Contents/Frameworks/libglfw.3.dylib    -- id rewritten to @rpath
 ///   Contents/Info.plist                    -- minimum viable plist
 ///   Contents/Resources/<name>              -- opts.resources
 ///
@@ -16,7 +15,6 @@ const ExportOptions = package_options.ExportOptions;
 /// --deep is intentionally avoided (deprecated, unreliable).
 pub fn appBundle(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOptions) void {
     const molten_vk_dir = tools.macosMoltenVkPath(b);
-    const glfw_dir = tools.macosGlfwPath(b);
 
     const app_name = b.fmt("{s}.app", .{exe.name});
 
@@ -26,11 +24,6 @@ pub fn appBundle(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOption
         b,
         .{ .cwd_relative = b.pathJoin(&.{ molten_vk_dir, "libMoltenVK.dylib" }) },
         "libMoltenVK.dylib",
-    );
-    const patched_glfw = patchDylibId(
-        b,
-        .{ .cwd_relative = b.pathJoin(&.{ glfw_dir, "libglfw.3.dylib" }) },
-        "libglfw.3.dylib",
     );
 
     // Xcode 16+ install_name_tool exits non-zero when it invalidates an
@@ -48,7 +41,6 @@ pub fn appBundle(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOption
         \\fi
         \\install_name_tool \
         \\  -change /opt/homebrew/opt/molten-vk/lib/libMoltenVK.dylib @rpath/libMoltenVK.dylib \
-        \\  -change /opt/homebrew/opt/glfw/lib/libglfw.3.dylib @rpath/libglfw.3.dylib \
         \\  "$2"
         ,
         "sh",
@@ -107,7 +99,6 @@ pub fn appBundle(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOption
     const app_tree = b.addWriteFiles();
     _ = app_tree.addCopyFile(exe_out, b.fmt("Contents/MacOS/{s}", .{exe.name}));
     _ = app_tree.addCopyFile(patched_moltenvk, "Contents/Frameworks/libMoltenVK.dylib");
-    _ = app_tree.addCopyFile(patched_glfw, "Contents/Frameworks/libglfw.3.dylib");
     _ = app_tree.add("Contents/Info.plist", info_plist);
     if (icns_out) |icns| _ = app_tree.addCopyFile(icns, "Contents/Resources/AppIcon.icns");
     for (opts.resources) |res| {
@@ -126,10 +117,9 @@ pub fn appBundle(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOption
     const bundle_path = b.getInstallPath(.bin, app_name);
     const sign = b.addSystemCommand(&.{ "sh", "-c", b.fmt(
         "codesign --force --sign - \"{s}/Contents/Frameworks/libMoltenVK.dylib\" && " ++
-            "codesign --force --sign - \"{s}/Contents/Frameworks/libglfw.3.dylib\" && " ++
             "codesign --force --sign - \"{s}/Contents/MacOS/{s}\" && " ++
             "codesign --force --sign - \"{s}\"",
-        .{ bundle_path, bundle_path, bundle_path, exe.name, bundle_path },
+        .{ bundle_path, bundle_path, exe.name, bundle_path },
     ) });
     sign.step.dependOn(&install.step);
     b.getInstallStep().dependOn(&sign.step);
