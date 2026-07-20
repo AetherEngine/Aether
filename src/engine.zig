@@ -623,6 +623,32 @@ pub const Engine = struct {
 
         // ---- render ASAP (uncapped when vsync == false) ----
         const frame_dt_s: f32 = @as(f32, @floatFromInt(frame_dt_us)) / @as(f32, US_PER_S);
+        // Time until next update step is due.
+        const slack_us: i64 = @as(i64, @intCast(UPDATE_US)) - @max(0, self.run_loop.update_accum);
+        const draw_budget_ns: i64 = if (self.vsync)
+            slack_us * NS_PER_US
+        else
+            std.math.maxInt(i64);
+
+        const draw_budget = Util.BudgetContext{
+            .phase_budget_ns = draw_budget_ns,
+            .engine_elapsed_ns = 0,
+            .remaining_ns = draw_budget_ns,
+            .is_tick_frame = is_tick_frame,
+            .tick_cost_ns = tick_cost_ns,
+            .safety_margin_ns = Util.BudgetContext.DEFAULT_SAFETY_MARGIN_NS,
+        };
+
+        if (trace_loop) {
+            Util.engine_logger.info("trace: engine loop {d} ui_update begin", .{trace_loop_index});
+        }
+        try self.states.ui_update(self, frame_dt_s, &draw_budget);
+        try self.states.commit_pending(self);
+        if (!self.running) return;
+        if (trace_loop) {
+            Util.engine_logger.info("trace: engine loop {d} ui_update end", .{trace_loop_index});
+        }
+
         if (trace_loop) {
             Util.engine_logger.info("trace: engine loop {d} start_frame begin frame_dt_us={d}", .{
                 trace_loop_index,
@@ -637,22 +663,6 @@ pub const Engine = struct {
         if (drew_frame) {
             defer Platform.gfx.frame_active = false;
             const draw_start_ns = clock.now(self.io).toNanoseconds();
-            // Time until next update step is due
-            const slack_us: i64 = @as(i64, @intCast(UPDATE_US)) - @max(0, self.run_loop.update_accum);
-            const draw_budget_ns: i64 = if (self.vsync)
-                slack_us * NS_PER_US
-            else
-                std.math.maxInt(i64);
-
-            const draw_budget = Util.BudgetContext{
-                .phase_budget_ns = draw_budget_ns,
-                .engine_elapsed_ns = 0,
-                .remaining_ns = draw_budget_ns,
-                .is_tick_frame = is_tick_frame,
-                .tick_cost_ns = tick_cost_ns,
-                .safety_margin_ns = Util.BudgetContext.DEFAULT_SAFETY_MARGIN_NS,
-            };
-
             if (trace_loop) {
                 Util.engine_logger.info("trace: engine loop {d} draw begin", .{trace_loop_index});
             }

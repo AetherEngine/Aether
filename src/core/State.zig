@@ -10,6 +10,7 @@ const VTable = struct {
 
     tick: *const fn (ctx: *anyopaque, engine: *Engine) anyerror!void,
     update: *const fn (ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetContext) anyerror!void,
+    ui_update: ?*const fn (ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetContext) anyerror!void = null,
     draw: *const fn (ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetContext) anyerror!void,
 };
 
@@ -29,6 +30,10 @@ pub fn tick(self: *const Self, engine: *Engine) anyerror!void {
 
 pub fn update(self: *const Self, engine: *Engine, dt: f32, budget: *const Util.BudgetContext) anyerror!void {
     try self.tab.update(self.ptr, engine, dt, budget);
+}
+
+pub fn ui_update(self: *const Self, engine: *Engine, dt: f32, budget: *const Util.BudgetContext) anyerror!void {
+    if (self.tab.ui_update) |f| try f(self.ptr, engine, dt, budget);
 }
 
 pub fn draw(self: *const Self, engine: *Engine, dt: f32, budget: *const Util.BudgetContext) anyerror!void {

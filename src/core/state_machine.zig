@@ -101,6 +101,12 @@ pub const StateMachine = struct {
         try self.curr_state.update(engine, dt, budget);
     }
 
+    pub fn ui_update(self: *StateMachine, engine: *Engine, dt: f32, budget: *const Util.BudgetContext) anyerror!void {
+        assert(self.initialized);
+        assert(self.has_current);
+        try self.curr_state.ui_update(engine, dt, budget);
+    }
+
     pub fn draw(self: *StateMachine, engine: *Engine, dt: f32, budget: *const Util.BudgetContext) anyerror!void {
         assert(self.initialized);
         assert(self.has_current);
@@ -112,6 +118,9 @@ const TestStateData = struct {
     init_count: u32 = 0,
     deinit_count: u32 = 0,
     tick_count: u32 = 0,
+    update_count: u32 = 0,
+    ui_update_count: u32 = 0,
+    draw_count: u32 = 0,
     fail_init: bool = false,
 
     fn init(ctx: *anyopaque, _: *Engine) anyerror!void {
@@ -130,8 +139,20 @@ const TestStateData = struct {
         self.tick_count += 1;
     }
 
-    fn update(_: *anyopaque, _: *Engine, _: f32, _: *const Util.BudgetContext) anyerror!void {}
-    fn draw(_: *anyopaque, _: *Engine, _: f32, _: *const Util.BudgetContext) anyerror!void {}
+    fn update(ctx: *anyopaque, _: *Engine, _: f32, _: *const Util.BudgetContext) anyerror!void {
+        const self: *TestStateData = @ptrCast(@alignCast(ctx));
+        self.update_count += 1;
+    }
+
+    fn ui_update(ctx: *anyopaque, _: *Engine, _: f32, _: *const Util.BudgetContext) anyerror!void {
+        const self: *TestStateData = @ptrCast(@alignCast(ctx));
+        self.ui_update_count += 1;
+    }
+
+    fn draw(ctx: *anyopaque, _: *Engine, _: f32, _: *const Util.BudgetContext) anyerror!void {
+        const self: *TestStateData = @ptrCast(@alignCast(ctx));
+        self.draw_count += 1;
+    }
 
     fn state(self: *TestStateData) State {
         return .{ .ptr = self, .tab = &.{
@@ -139,6 +160,7 @@ const TestStateData = struct {
             .deinit = TestStateData.deinit,
             .tick = TestStateData.tick,
             .update = TestStateData.update,
+            .ui_update = TestStateData.ui_update,
             .draw = TestStateData.draw,
         } };
     }
@@ -170,6 +192,61 @@ test "state transition is queued until engine commit point" {
     try std.testing.expect(!states.has_pending_transition());
     try std.testing.expectEqual(@as(u32, 1), a.deinit_count);
     try std.testing.expectEqual(@as(u32, 1), b.init_count);
+}
+
+test "state machine dispatches optional ui update between update and draw" {
+    var engine: Engine = undefined;
+    engine.running = true;
+    var states = StateMachine{};
+    var a = TestStateData{};
+    const a_state = a.state();
+    const budget = Util.BudgetContext{
+        .phase_budget_ns = 1,
+        .engine_elapsed_ns = 0,
+        .remaining_ns = 1,
+        .is_tick_frame = false,
+        .tick_cost_ns = 0,
+        .safety_margin_ns = 0,
+    };
+
+    try states.init(&engine, &a_state);
+    defer states.deinit(&engine);
+
+    try states.update(&engine, 1.0, &budget);
+    try states.ui_update(&engine, 1.0, &budget);
+    try states.draw(&engine, 1.0, &budget);
+
+    try std.testing.expectEqual(@as(u32, 1), a.update_count);
+    try std.testing.expectEqual(@as(u32, 1), a.ui_update_count);
+    try std.testing.expectEqual(@as(u32, 1), a.draw_count);
+}
+
+test "state machine tolerates omitted ui update callback" {
+    var engine: Engine = undefined;
+    engine.running = true;
+    var states = StateMachine{};
+    var a = TestStateData{};
+    const budget = Util.BudgetContext{
+        .phase_budget_ns = 1,
+        .engine_elapsed_ns = 0,
+        .remaining_ns = 1,
+        .is_tick_frame = false,
+        .tick_cost_ns = 0,
+        .safety_margin_ns = 0,
+    };
+    const state = State{ .ptr = &a, .tab = &.{
+        .init = TestStateData.init,
+        .deinit = TestStateData.deinit,
+        .tick = TestStateData.tick,
+        .update = TestStateData.update,
+        .draw = TestStateData.draw,
+    } };
+
+    try states.init(&engine, &state);
+    defer states.deinit(&engine);
+
+    try states.ui_update(&engine, 1.0, &budget);
+    try std.testing.expectEqual(@as(u32, 0), a.ui_update_count);
 }
 
 test "state transition init failure exits without deinit retry" {
