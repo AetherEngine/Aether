@@ -44,7 +44,7 @@ memory_properties: vk.PhysicalDeviceMemoryProperties,
 
 fn create_instance(self: *Self, name: [:0]const u8) !void {
     // Initialize Vulkan instance
-    const get_proc_addr: GetInstanceProcAddrFn = @ptrCast(try sdl3.vulkan.getVkGetInstanceProcAddr());
+    const get_proc_addr: GetInstanceProcAddrFn = @ptrCast(@alignCast(try sdl3.vulkan.getVkGetInstanceProcAddr()));
     self.vkb = vk.BaseWrapper.load(get_proc_addr);
 
     // Setup extensions
@@ -70,9 +70,15 @@ fn create_instance(self: *Self, name: [:0]const u8) !void {
     }
     try extension_names.append(self.allocator, vk.extensions.khr_get_physical_device_properties_2.name);
 
-    // Get required SDL window-system extensions
+    // Get required SDL window-system extensions. SDL 3.4's macOS list
+    // includes VK_KHR_portability_enumeration; like the flag above it is
+    // loader-implemented, and direct MoltenVK rejects it, so filter it out
+    // on mac.
     const sdl_exts = sdl3.vulkan.getInstanceExtensions() catch @panic("Failed to get SDL Vulkan extensions");
-    try extension_names.appendSlice(self.allocator, sdl_exts);
+    for (sdl_exts) |ext| {
+        if (is_macos and std.mem.orderZ(u8, ext, vk.extensions.khr_portability_enumeration.name) == .eq) continue;
+        try extension_names.append(self.allocator, ext);
+    }
 
     // Create an instance
     var instance_create_info: vk.InstanceCreateInfo = .{
