@@ -127,6 +127,36 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
         mod.addImport("vulkan", vulkan);
 
         if (target.result.os.tag == .macos) {
+            // The statically-linked SDL3 archive's Apple framework
+            // dependencies don't propagate through module imports, so link
+            // them here. Mirrors the list in the SDL package's build script,
+            // but links the concrete frameworks (AppKit, CoreFoundation,
+            // CoreGraphics, CoreServices) directly: the umbrella tbds in the
+            // zig system_sdk don't re-export their subframeworks.
+            mod.linkFramework("CoreMedia", .{});
+            mod.linkFramework("CoreVideo", .{});
+            mod.linkFramework("Cocoa", .{});
+            mod.linkFramework("AppKit", .{});
+            mod.linkFramework("CoreFoundation", .{});
+            mod.linkFramework("CoreGraphics", .{});
+            mod.linkFramework("CoreServices", .{});
+            mod.linkFramework("CoreVideo", .{});
+            mod.linkFramework("Cocoa", .{});
+            mod.linkFramework("UniformTypeIdentifiers", .{ .weak = true });
+            mod.linkFramework("IOKit", .{});
+            mod.linkFramework("ForceFeedback", .{});
+            mod.linkFramework("Carbon", .{});
+            mod.linkFramework("CoreAudio", .{});
+            mod.linkFramework("AudioToolbox", .{});
+            mod.linkFramework("AVFoundation", .{});
+            mod.linkFramework("Foundation", .{});
+            mod.linkFramework("GameController", .{});
+            mod.linkFramework("Metal", .{});
+            mod.linkFramework("QuartzCore", .{});
+            mod.linkFramework("CoreHaptics", .{ .weak = true });
+            // Objective-C runtime for SDL's Cocoa .m objects.
+            mod.linkSystemLibrary("objc", .{});
+
             // Link MoltenVK directly as the Vulkan ICD -- no loader.
             mod.addLibraryPath(.{ .cwd_relative = tools.macosMoltenVkPath(b) });
             mod.linkSystemLibrary("MoltenVK", .{});
