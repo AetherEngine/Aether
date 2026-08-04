@@ -1,15 +1,35 @@
-pub const Vertex = extern struct {
+const options = @import("options");
+
+const StandardVertex = extern struct {
     pos: [3]i16,
     _pad: i16 = 0,
     color: u32,
     uv: [2]i16,
 };
 
+/// The PSP GE consumes vertex attributes in its packed order: texture
+/// coordinates, color, then position. Other backends use the named layout
+/// offsets, so they keep the standard position-first representation.
+pub const PspVertex = extern struct {
+    uv: [2]i16,
+    color: u32,
+    pos: [3]i16,
+    _pad: i16 = 0,
+};
+
+pub const Vertex = if (options.config.platform == .psp) PspVertex else StandardVertex;
+
 comptime {
     if (@sizeOf(Vertex) != 16) @compileError("Rendering.Vertex must stay 16 bytes");
-    if (@offsetOf(Vertex, "pos") != 0) @compileError("Rendering.Vertex.pos must stay at byte offset 0");
-    if (@offsetOf(Vertex, "color") != 8) @compileError("Rendering.Vertex.color must stay at byte offset 8");
-    if (@offsetOf(Vertex, "uv") != 12) @compileError("Rendering.Vertex.uv must stay at byte offset 12");
+    if (options.config.platform == .psp) {
+        if (@offsetOf(Vertex, "uv") != 0) @compileError("PSP vertex uv must stay at byte offset 0");
+        if (@offsetOf(Vertex, "color") != 4) @compileError("PSP vertex color must stay at byte offset 4");
+        if (@offsetOf(Vertex, "pos") != 8) @compileError("PSP vertex pos must stay at byte offset 8");
+    } else {
+        if (@offsetOf(Vertex, "pos") != 0) @compileError("Rendering.Vertex.pos must stay at byte offset 0");
+        if (@offsetOf(Vertex, "color") != 8) @compileError("Rendering.Vertex.color must stay at byte offset 8");
+        if (@offsetOf(Vertex, "uv") != 12) @compileError("Rendering.Vertex.uv must stay at byte offset 12");
+    }
 }
 
 pub const AttributeUsage = enum {
