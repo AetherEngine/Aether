@@ -1,9 +1,9 @@
 //! PSP thread backend -- wraps `sdk.kernel` thread APIs.
 //!
-//! Closure lifetime: `start_thread(thid, arglen, argp)` only forwards the
-//! pointer + length to the entry's `$a0`/`$a1`; it does NOT memcpy. The
-//! `Instance` we hand to the kernel must therefore live in heap memory so
-//! it survives the spawning stack frame. The trampoline frees it on return.
+//! Closure lifetime: `sceKernelStartThread` copies `arglen` bytes from the
+//! supplied argument pointer into a kernel-owned buffer. Pass a pointer to
+//! the heap `Instance` so the trampoline receives the complete pointer value
+//! while the instance itself remains alive until the worker returns.
 //!
 //! The trampoline returns normally rather than calling `exit_delete_thread`
 //! so that `wait_thread_end` + `delete_thread` from `join` succeed cleanly,
@@ -44,7 +44,10 @@ pub fn spawn(cfg: api.Config, comptime func: anytype, args: anytype) !Handle {
         allocator: std.mem.Allocator,
 
         fn entry(_: usize, raw: ?*anyopaque) callconv(.c) c_int {
-            const self: *@This() = @ptrCast(@alignCast(raw.?));
+            // PSP gives the entry a pointer to the kernel-copied argument
+            // bytes. Those bytes contain our heap Instance pointer, not the
+            // Instance struct itself.
+            const self: *@This() = @as(*const *@This(), @ptrCast(@alignCast(raw.?))).*;
             const a = self.allocator;
             const Ret = @typeInfo(@TypeOf(func)).@"fn".return_type.?;
 
@@ -80,7 +83,8 @@ pub fn spawn(cfg: api.Config, comptime func: anytype, args: anytype) !Handle {
     ) catch return error.SystemResources;
     errdefer sdk.kernel.delete_thread(thid) catch {};
 
-    sdk.kernel.start_thread(thid, @sizeOf(@TypeOf(inst)), @ptrCast(inst)) catch
+    var arg: *Instance = inst;
+    sdk.kernel.start_thread(thid, @sizeOf(@TypeOf(arg)), @ptrCast(&arg)) catch
         return error.SystemResources;
 
     return thid;
