@@ -6,6 +6,7 @@ const psp = @import("package_psp.zig");
 const switch_pkg = @import("package_switch.zig");
 const threeds = @import("package_3ds.zig");
 const web = @import("package_web.zig");
+const windows = @import("package_windows.zig");
 
 pub const ExportOptions = options.ExportOptions;
 pub const Resource = options.Resource;
@@ -35,6 +36,9 @@ pub fn exportArtifact(
     } else if (config.platform == .macos) {
         macos.appBundle(b, exe, opts);
     } else {
+        if (config.platform == .windows) {
+            if (opts.windows_icon) |icon| windows.addIconResource(b, exe, icon);
+        }
         b.installArtifact(exe);
         for (opts.resources) |res| {
             const install_res = b.addInstallBinFile(res.path, res.name);
