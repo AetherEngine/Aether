@@ -6,18 +6,29 @@ const Application = horizon.Init.Application;
 
 var app_init_storage: Application = undefined;
 var app_init: ?*const Application = null;
+var new_3ds = false;
 
-pub fn setApplication(app: Application) void {
+pub fn setApplication(app: Application, is_new_3ds: bool) void {
     app_init_storage = app;
     app_init = &app_init_storage;
+    new_3ds = is_new_3ds;
 }
 
 pub fn clearApplication() void {
     app_init = null;
+    new_3ds = false;
 }
 
 pub fn currentApplication() ?*const Application {
     return app_init;
+}
+
+/// Returns whether the running console is a New Nintendo 3DS-family system.
+///
+/// The result is detected once during Aether startup and is available without
+/// opening a Horizon service or issuing IPC from application code.
+pub fn is_new() bool {
+    return new_3ds;
 }
 
 pub fn update(comptime suspend_cb: anytype, comptime resume_cb: fn () void) bool {
