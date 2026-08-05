@@ -16,12 +16,12 @@ alloc: std.mem.Allocator,
 width: u32 = HANDHELD_WIDTH,
 height: u32 = HANDHELD_HEIGHT,
 operation_mode: c.AppletOperationMode = c.AppletOperationMode_Handheld,
-operation_mode_changed: bool = false,
+docked_mode_entered: bool = false,
 
 pub fn init(self: *Self, _: u32, _: u32, _: [:0]const u8, _: bool, _: bool, _: bool) surface_api.InitError!void {
     self.operation_mode = c.appletGetOperationMode();
     self.set_operation_mode_resolution(self.operation_mode);
-    self.operation_mode_changed = false;
+    self.docked_mode_entered = false;
 }
 
 pub fn deinit(_: *Self) void {}
@@ -30,8 +30,9 @@ pub fn update(self: *Self) bool {
     const running = c.appletMainLoop();
     const mode = c.appletGetOperationMode();
     if (mode != self.operation_mode) {
+        const entered_docked_mode = self.operation_mode != c.AppletOperationMode_Console and mode == c.AppletOperationMode_Console;
         self.operation_mode = mode;
-        self.operation_mode_changed = true;
+        self.docked_mode_entered = self.docked_mode_entered or entered_docked_mode;
     }
     self.set_operation_mode_resolution(mode);
     return running;
@@ -47,10 +48,10 @@ pub fn get_height(self: *Self) u32 {
     return self.height;
 }
 
-pub fn take_operation_mode_changed(self: *Self) bool {
-    const changed = self.operation_mode_changed;
-    self.operation_mode_changed = false;
-    return changed;
+pub fn take_docked_mode_entered(self: *Self) bool {
+    const entered = self.docked_mode_entered;
+    self.docked_mode_entered = false;
+    return entered;
 }
 
 fn set_operation_mode_resolution(self: *Self, mode: c.AppletOperationMode) void {

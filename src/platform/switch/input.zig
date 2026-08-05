@@ -93,7 +93,10 @@ pub fn apply_cursor_mode(mode: core.CursorMode) void {
     current_cursor_mode = mode;
 }
 
-pub fn handle_operation_mode_changed(input: *core.InputSystem) void {
+/// Requests controller support after entering docked mode. The public libnx
+/// applet intentionally returns without displaying UI when the current
+/// controller assignment already satisfies this request.
+pub fn handle_docked_mode_entered(input: *core.InputSystem) void {
     if (!initialized) return;
 
     release_all_input_state(input);
@@ -111,6 +114,11 @@ pub fn handle_operation_mode_changed(input: *core.InputSystem) void {
     const rc = c.hidLaShowControllerSupport(&result, &arg);
     if (rc != 0) {
         Util.engine_logger.warn("Switch controller support applet failed: {d}", .{rc});
+    } else {
+        Util.engine_logger.info("Switch controller support request completed (the OS may have skipped its UI): players={d}, selected_id={d}", .{
+            result.player_count,
+            result.selected_id,
+        });
     }
 
     c.padConfigureInput(1, HID_NPAD_STYLE_STANDARD);
