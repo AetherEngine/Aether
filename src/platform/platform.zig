@@ -69,9 +69,9 @@ pub fn update(engine: *Engine) void {
         engine.running = false;
         return;
     }
-    if (@hasDecl(gfx.Surface, "take_operation_mode_changed") and @hasDecl(input.api, "handle_operation_mode_changed")) {
-        if (gfx.surface.take_operation_mode_changed()) {
-            input.api.handle_operation_mode_changed(&engine.input);
+    if (@hasDecl(gfx.Surface, "take_docked_mode_entered") and @hasDecl(input.api, "handle_docked_mode_entered")) {
+        if (gfx.surface.take_docked_mode_entered()) {
+            input.api.handle_docked_mode_entered(&engine.input);
         }
     }
     audio.update();
