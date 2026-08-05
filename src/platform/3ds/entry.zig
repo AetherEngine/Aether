@@ -27,7 +27,9 @@ pub const std_options_debug_io: std.Io = zitrus.horizon.Io.debug_io;
 pub const std_options_cwd = zitrus.horizon.Io.Dir.cwd;
 
 pub fn main(init: Application) !void {
-    aether.N3ds.setApplication(init);
+    const is_new_3ds = detect_and_configure_new_3ds(init.srv);
+
+    aether.N3ds.setApplication(init, is_new_3ds);
     defer aether.N3ds.clearApplication();
 
     try zitrus.horizon.Io.global.initStorage(init.srv, .fs, 0);
@@ -66,6 +68,38 @@ pub fn main(init: Application) !void {
     };
 
     try entry.call_main(process_init);
+}
+
+/// Detects New Nintendo 3DS hardware and enables its higher CPU clock and L2
+/// cache before the engine or application creates any platform resources.
+///
+/// Failure to query or configure PTM is deliberately non-fatal: applications
+/// still run at the system-selected performance level, and `N3ds.is_new()`
+/// reports false when the hardware probe itself could not complete.
+fn detect_and_configure_new_3ds(srv: horizon.ServiceManager) bool {
+    const Playtime = horizon.services.Playtime;
+    const ptm = Playtime.open(srv, .system_menu) catch |err| {
+        log.warn("3DS New-model detection skipped: {s}", .{@errorName(err)});
+        return false;
+    };
+    defer ptm.close();
+
+    const is_new_3ds = ptm.sendIsNew3DS() catch |err| {
+        log.warn("3DS New-model detection failed: {s}", .{@errorName(err)});
+        return false;
+    };
+    if (!is_new_3ds) return false;
+
+    ptm.sendConfigureCpuCache(.{
+        .@"804Mhz" = true,
+        .l2 = true,
+    }) catch |err| {
+        log.warn("3DS New-model performance mode unavailable: {s}", .{@errorName(err)});
+        return true;
+    };
+
+    log.info("3DS New-model performance mode enabled (804 MHz + L2 cache)", .{});
+    return true;
 }
 
 const NetworkContext = struct {
