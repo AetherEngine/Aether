@@ -17,6 +17,8 @@ pub const ExportOptions = struct {
     bundle_id: ?[]const u8 = null,
     /// macOS: PNG icon to use for the bundle.
     icon_png: ?std.Build.LazyPath = null,
+    /// Windows: ICO icon embedded in the executable's PE resource table.
+    windows_icon: ?std.Build.LazyPath = null,
     /// Files to install into the app bundle. On macOS they land under
     /// `Contents/Resources/<name>`. On desktop non-macOS they are copied
     /// alongside the exe in `zig-out/bin/`. Ignored on PSP.

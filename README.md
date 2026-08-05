@@ -262,6 +262,7 @@ Exports the build artifact. For PSP targets, produces an `EBOOT.PBP`. For deskto
 | `icon0` | `?LazyPath` | PSP icon (optional) |
 | `pic0`, `pic1` | `?LazyPath` | PSP background images (optional) |
 | `snd0` | `?LazyPath` | PSP startup sound (optional) |
+| `windows_icon` | `?LazyPath` | Windows ICO embedded in the executable (optional) |
 
 ### `Aether.config.Config.resolve(target, overrides) -> Config`
 
