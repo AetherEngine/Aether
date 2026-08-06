@@ -85,6 +85,14 @@ pub fn set_vsync(v: bool) void {
     Api.set_vsync(v);
 }
 
+/// Ensure a backend that borrows CPU mesh memory has finished consuming the
+/// previous frame before game code mutates or frees that memory.
+pub inline fn wait_for_borrowed_meshes() void {
+    if (comptime @hasDecl(Api, "wait_for_borrowed_meshes")) {
+        Api.wait_for_borrowed_meshes();
+    }
+}
+
 pub fn has_second_screen() bool {
     return Api.has_second_screen();
 }

@@ -28,6 +28,7 @@ const sdk = @import("pspsdk");
 const ge = sdk.ge;
 const ge_list = sdk.ge_list;
 const display = sdk.display;
+const cache_writeback = @import("cache_writeback.zig");
 const pool_alloc = @import("../../util/pool_alloc.zig");
 const gfx = @import("../gfx.zig");
 // VRAM sizing uses GU pixel-format enums; we only import gu for these
@@ -35,6 +36,12 @@ const gfx = @import("../gfx.zig");
 const gu_types = sdk.gu.types;
 
 const VRAM_ALIGNMENT: usize = 16;
+
+fn dcache_writeback(ptr: *const anyopaque, len: usize) void {
+    if (len == 0) return;
+    const range = cache_writeback.covering_range(ptr, len);
+    sdk.kernel.dcache_writeback_range(range.ptr, range.len);
+}
 
 // ---- VRAM pool -------------------------------------------------------------
 //
@@ -498,7 +505,7 @@ fn build_clear_vertices(buffer_idx: Swapchain.BufferIndex, filter: u32) void {
             .z = 1, // matches gu.clear_depth(1) in the existing backend
         };
     }
-    sdk.kernel.dcache_writeback_range(@ptrCast(&clear_vertices[buffer]), @sizeOf(@TypeOf(clear_vertices[buffer])));
+    dcache_writeback(@ptrCast(&clear_vertices[buffer]), @sizeOf(@TypeOf(clear_vertices[buffer])));
 }
 
 /// Pack the clear color the way `sceGuClear` does for the active pixel
@@ -885,6 +892,12 @@ pub fn set_vsync(v: bool) void {
     gfx.surface.sync = v;
 }
 
+/// Meshes on PSP borrow their caller-owned CPU storage. Drain the previous
+/// GE list before the engine lets game code rewrite or release that storage.
+pub fn wait_for_borrowed_meshes() void {
+    _ = ge_list.draw_sync(.wait);
+}
+
 // ---- meshes ---------------------------------------------------------------
 
 fn init_pipeline(layout: vertex.VertexLayout) PipelineData {
@@ -972,8 +985,8 @@ pub fn update_mesh(handle: Mesh.Handle, desc: *const Mesh.UpdateDesc) void {
     mesh.index_len = index_bytes.len;
     mesh.vertex_count = data.len / vertex.Layout.stride;
     mesh.index_count = indices.len;
-    sdk.kernel.dcache_writeback_range(data.ptr, @intCast(data.len));
-    if (index_bytes.len > 0) sdk.kernel.dcache_writeback_range(index_bytes.ptr, @intCast(index_bytes.len));
+    dcache_writeback(data.ptr, data.len);
+    dcache_writeback(index_bytes.ptr, index_bytes.len);
 
     _ = meshes.update(handle, mesh);
 }
@@ -1105,7 +1118,7 @@ pub fn create_texture(desc: *const Texture.UploadDesc) gfx_api.CreateTextureErro
         swizzle_in_place(data, width, height);
     }
 
-    sdk.kernel.dcache_writeback_range(data.ptr, @intCast(data.len));
+    dcache_writeback(data.ptr, data.len);
 
     return textures.add(.{
         .width = width,
@@ -1131,10 +1144,10 @@ pub fn update_texture(handle: Texture.Handle, data: []align(16) u8) void {
         const size = tex.width * tex.height * tex_bpp;
         const dst = tex.vram_data orelse @panic("psp_gfx_ge: VRAM texture missing backing slice");
         @memcpy(dst[0..size], data[0..size]);
-        sdk.kernel.dcache_writeback_range(dst.ptr, @intCast(size));
+        dcache_writeback(dst.ptr, size);
     } else {
         // The RAM buffer is the GE-visible buffer; just flush dcache.
-        sdk.kernel.dcache_writeback_range(data.ptr, @intCast(data.len));
+        dcache_writeback(data.ptr, data.len);
     }
 }
 
@@ -1358,7 +1371,7 @@ fn generate_resident_mips(tex: *TextureData) void {
         } else {
             @memcpy(vram_buf[0..dst_size], dst_linear);
         }
-        sdk.kernel.dcache_writeback_range(vram_buf.ptr, @intCast(dst_size));
+        dcache_writeback(vram_buf.ptr, dst_size);
 
         tex.mips[generated] = .{
             .width = dst_w,
