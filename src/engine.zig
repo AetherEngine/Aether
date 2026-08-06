@@ -536,6 +536,13 @@ pub const Engine = struct {
         }
         if (!self.running) return;
 
+        // PSP meshes borrow CPU-owned vertex/index arrays. The previous GE
+        // list may still be reading those arrays after end_frame(), while
+        // tick/update/ui callbacks are about to rebuild or free them.
+        // Drain once per engine loop before any state callback can mutate
+        // mesh storage; non-borrowing backends compile this to a no-op.
+        Platform.gfx.wait_for_borrowed_meshes();
+
         // ---- fixed-rate TICK steps (e.g., 20 Hz logic) ----
         var is_tick_frame = false;
         var tick_cost_ns: i64 = 0;
@@ -676,6 +683,12 @@ pub const Engine = struct {
             }
             Platform.gfx.api.end_frame();
             Platform.gfx.frame_active = false;
+            // A draw callback can queue a state transition. Its deinit may
+            // free borrowed mesh storage referenced by the list just
+            // submitted above, so complete that list before committing.
+            if (self.states.has_pending_transition()) {
+                Platform.gfx.wait_for_borrowed_meshes();
+            }
             try self.states.commit_pending(self);
             if (!self.running) return;
             if (trace_loop) {
