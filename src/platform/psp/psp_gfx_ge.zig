@@ -669,13 +669,15 @@ pub fn dialog_drain() void {
 
 /// Begin a GE display list for dialog rendering. Uses the same list
 /// buffer and callback as normal frames. Drains any prior list first
-/// so the enqueue doesn't conflict. Resets region/scissor to full screen
-/// so the clear covers everything.
+/// so the enqueue doesn't conflict, publishes a completed game frame, and
+/// restores the full framebuffer state needed by the dialog clear pass.
 pub fn dialog_begin() void {
     _ = ge_list.draw_sync(.wait);
+    swapchain.apply_pending_display();
     begin_list();
-    must(cmd.frame_buffer(swapchain.buffers_rel[swapchain.draw_idx], SCR_BUF_WIDTH));
     must(cmd.pixel_format(ge_pixel_format));
+    must(cmd.frame_buffer(swapchain.buffers_rel[swapchain.draw_idx], SCR_BUF_WIDTH));
+    must(cmd.depth_buffer(swapchain.depth_buffer_rel, SCR_BUF_WIDTH));
     must(cmd.region(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT));
     must(cmd.scissor(0, 0, SCREEN_WIDTH - 1, SCREEN_HEIGHT - 1));
 }
@@ -700,18 +702,23 @@ pub fn dialog_finish() void {
     _ = ge_list.draw_sync(.wait);
 }
 
-/// Swap the dialog display buffer. Alternates draw_idx / front_idx and
-/// points the display controller at the new front.
+/// Swap the dialog display buffer. Dialog lists are finished synchronously,
+/// so they bypass the normal GE-finish queue and publish their front buffer
+/// directly after the caller has waited for vblank.
 pub fn dialog_swap() void {
+    const flags = sdk.kernel.cpu_suspend_intr();
     const old_front = swapchain.front_idx;
     swapchain.front_idx = swapchain.draw_idx;
     swapchain.draw_idx = old_front;
-    // display.set_frame_buf(
-    //     @ptrCast(swapchain.buffers_abs[@intCast(swapchain.front_idx)].?.ptr),
-    //     SCR_BUF_WIDTH,
-    //     display_pixel_format,
-    //     .next_vblank,
-    // ) catch {};
+    const new_front = swapchain.front_idx;
+    sdk.kernel.cpu_resume_intr_with_sync(flags);
+
+    display.set_frame_buf(
+        @ptrCast(swapchain.buffers_abs[@intCast(new_front)].?.ptr),
+        SCR_BUF_WIDTH,
+        display_pixel_format,
+        .next_vblank,
+    ) catch {};
 }
 
 pub fn suspend_for_dialog() void {
