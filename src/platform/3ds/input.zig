@@ -64,7 +64,7 @@ pub fn pump(input: *core.InputSystem) void {
         pump_buttons(input, pad);
         pump_left_stick(input, pad);
         pump_touch(input, app.input.pollTouch());
-        pump_ir(input);
+        pump_ir(input, pad);
     }
 
     input.signal_frame_boundary();
@@ -197,7 +197,19 @@ fn pump_left_stick(input: *core.InputSystem, entry: Hid.Pad.Entry) void {
     deliver_axis(input, .LeftY, y);
 }
 
-fn pump_ir(input: *core.InputSystem) void {
+fn pump_ir(input: *core.InputSystem, pad: Hid.Pad.Entry) void {
+    // Old 3DS has no built-in ZL/ZR. Publish its physical L/R shoulders as
+    // trigger axes so games can keep one break/place action layout across
+    // both 3DS hardware families. L/R button events are still emitted by
+    // pump_buttons for UI and chord bindings.
+    if (!app_3ds.is_new()) {
+        deliver_axis(input, .RightX, 0.0);
+        deliver_axis(input, .RightY, 0.0);
+        deliver_axis(input, .LeftTrigger, if (pad.current.l) 1.0 else 0.0);
+        deliver_axis(input, .RightTrigger, if (pad.current.r) 1.0 else 0.0);
+        return;
+    }
+
     const ir = ir_input orelse {
         deliver_axis(input, .RightX, 0.0);
         deliver_axis(input, .RightY, 0.0);
