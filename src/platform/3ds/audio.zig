@@ -148,7 +148,7 @@ pub fn init() audio_api.InitError!void {
 
     running.store(1, .release);
     audio_thread = Thread.spawn(
-        .{ .allocator = audio_alloc, .name = "aether_audio", .priority = .high, .stack_size = 24 * 1024 },
+        .{ .allocator = audio_alloc, .name = "aether_audio", .priority = .highest, .stack_size = 24 * 1024 },
         audio_thread_fn,
         .{},
     ) catch |err| return init_failed("start audio thread", err);
