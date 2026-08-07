@@ -10,6 +10,14 @@ var log_io: std.Io = undefined;
 var file_logging = false;
 var log_lock: std.atomic.Value(bool) = .init(false);
 
+// Aether's console entry shims can emit useful diagnostics before Engine.init
+// has resolved the data directory and opened aether.log. On platforms where
+// the debug-output channel is not visible (notably a standalone 3DS), retain
+// those messages until the file logger is ready.
+var bootstrap_log_buffer: [4096]u8 = undefined;
+var bootstrap_log_len: usize = 0;
+var bootstrap_log_truncated = false;
+
 pub const Error = std.Io.File.OpenError;
 
 fn lock() void {
@@ -35,6 +43,9 @@ fn flushFile(sync_to_storage: bool) void {
 /// Finder-launched `.app` bundles don't try to write into read-only
 /// bundle internals.
 pub fn init(io: std.Io, data_dir: anytype) Error!void {
+    lock();
+    defer unlock();
+
     if (builtin.os.tag == .psp) {
         file_log = try std.Io.Dir.cwd().createFile(io, "ms0:/aether.log", .{ .truncate = true });
     } else {
@@ -44,6 +55,8 @@ pub fn init(io: std.Io, data_dir: anytype) Error!void {
     writer = &file_writer.interface;
     log_io = io;
     file_logging = true;
+
+    flush_bootstrap_log();
 }
 
 pub fn deinit(io: std.Io) void {
@@ -76,6 +89,37 @@ pub fn aether_log_fn(
     if (file_logging) {
         writer.print(prefix ++ format ++ "\n", args) catch {};
         if (options.config.flush_logs) flushFile(true);
+    } else {
+        append_bootstrap_log(prefix, format, args);
     }
     std.debug.print(prefix ++ format ++ "\n", args);
+}
+
+fn append_bootstrap_log(
+    comptime prefix: []const u8,
+    comptime format: []const u8,
+    args: anytype,
+) void {
+    const written = std.fmt.bufPrint(
+        bootstrap_log_buffer[bootstrap_log_len..],
+        prefix ++ format ++ "\n",
+        args,
+    ) catch {
+        bootstrap_log_truncated = true;
+        return;
+    };
+    bootstrap_log_len += written.len;
+}
+
+fn flush_bootstrap_log() void {
+    if (bootstrap_log_len != 0) {
+        writer.writeAll(bootstrap_log_buffer[0..bootstrap_log_len]) catch {};
+    }
+    if (bootstrap_log_truncated) {
+        writer.writeAll("(logger) [warning]: early log messages were truncated\n") catch {};
+    }
+
+    bootstrap_log_len = 0;
+    bootstrap_log_truncated = false;
+    flushFile(options.config.flush_logs);
 }
