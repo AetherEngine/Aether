@@ -164,6 +164,27 @@ const memory_config: ae.Util.MemoryConfig = switch (ae.platform) {
 
 Set `.frame = 0` if you want to disable the per-frame scratch allocator.
 
+### Nintendo 3DS streaming audio
+
+The 3DS backend reserves a bounded PCM prefetch cache from the engine's
+`.audio` pool so filesystem latency never runs on the real-time mixer thread.
+It defaults to 512 KiB, split across the 16 software-mix slots; this is staging
+memory, not complete-file loading. Account for it in your audio budget and
+adjust it through application options when needed. The value must be at least
+64 KiB and divisible by 16:
+
+```zig
+pub const aether_options: ae.Options = .{
+    .nintendo_3ds = .{
+        .audio_stream_cache_bytes = 512 * 1024,
+    },
+};
+```
+
+Use resident sound buffers for short, latency-sensitive effects. Long music
+and ambient assets can use `StreamingSoundDesc`; cold streams still wait for
+their first filesystem read, but cannot stall other audio playback.
+
 ## Building
 
 ```sh

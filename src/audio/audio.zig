@@ -77,15 +77,29 @@ pub fn destroy_stream(handle: StreamingSoundHandle) void {
 }
 
 pub fn play_buffer(buffer: SoundBufferHandle, opts: *const PlayOptions) PlayError!SoundHandle {
-    return mix.play_buffer(buffer, opts);
+    const handle = try mix.play_buffer(buffer, opts);
+    dispatch_new_voice_on_3ds();
+    return handle;
 }
 
 pub fn play_buffer_at(buffer: SoundBufferHandle, pos: Vec3, opts: *const PlayOptions) PlayError!SoundHandle {
-    return mix.play_buffer_at(buffer, pos, opts);
+    const handle = try mix.play_buffer_at(buffer, pos, opts);
+    dispatch_new_voice_on_3ds();
+    return handle;
 }
 
 pub fn play_stream(stream: StreamingSoundHandle, opts: *const PlayOptions) PlayError!SoundHandle {
-    return mix.play_stream(stream, opts);
+    const handle = try mix.play_stream(stream, opts);
+    dispatch_new_voice_on_3ds();
+    return handle;
+}
+
+/// The normal scheduler runs once at the beginning of an engine frame. On
+/// 3DS, dispatch a just-created voice immediately so it can catch the next
+/// low-latency output page instead of waiting an additional frame. Other
+/// targets retain their existing scheduling behavior.
+fn dispatch_new_voice_on_3ds() void {
+    if (comptime options.config.platform == .nintendo_3ds) mix.update();
 }
 
 pub fn stop(handle: SoundHandle) void {

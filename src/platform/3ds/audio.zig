@@ -9,6 +9,7 @@ const zitrus = @import("zitrus");
 const app_3ds = @import("app.zig");
 const audio_api = @import("../audio_api.zig");
 const thread_mod = @import("../../util/thread.zig");
+const audio_fifo = @import("audio_fifo.zig");
 const SlotSource = @import("../../audio/stream.zig").SlotSource;
 const PcmFormat = @import("../../audio/stream.zig").PcmFormat;
 
@@ -22,14 +23,21 @@ const DEVICE_SAMPLE_RATE: u32 = 44_100;
 const DEVICE_CHANNELS: usize = 1;
 const NUM_SLOTS: usize = 16;
 const SAMPLES_PER_PAGE: usize = 512;
-const RING_PAGE_COUNT: usize = 16;
-const LEAD_PAGE_COUNT: usize = 8;
+const RING_PAGE_COUNT: usize = 8;
+const LEAD_PAGE_COUNT: usize = 3;
 const READ_BUF_SIZE: usize = SAMPLES_PER_PAGE * 2 * @sizeOf(i16);
 const OUTPUT_PAGE_BYTES: usize = SAMPLES_PER_PAGE * DEVICE_CHANNELS * @sizeOf(i16);
 const TOTAL_OUTPUT_BYTES: usize = OUTPUT_PAGE_BYTES * RING_PAGE_COUNT;
 const RING_SAMPLES: usize = SAMPLES_PER_PAGE * RING_PAGE_COUNT;
 const PAGE_NS: u64 = (@as(u64, SAMPLES_PER_PAGE) * std.time.ns_per_s) / DEVICE_SAMPLE_RATE;
 const FP_ONE: u64 = 1 << 32;
+
+/// Filesystem operations on 3DS are latency-sensitive IPC operations. The
+/// render thread consumes from these bounded FIFOs while a separate worker
+/// refills them in larger chunks.
+const STREAM_FIFO_MIN_BYTES: usize = 4 * 1024;
+const STREAM_START_BYTES: usize = 4 * 1024;
+const STREAM_PREFETCH_CHUNK_BYTES: usize = 8 * 1024;
 
 const COMMAND_BLOCK_SIZE: u32 = 0x2000;
 const STATUS_DSP_OFFSET: u32 = COMMAND_BLOCK_SIZE;
@@ -56,6 +64,13 @@ const SlotState = enum(u8) {
     finished = 3,
 };
 
+const StreamState = enum(u8) {
+    none = 0,
+    filling = 1,
+    eof = 2,
+    failed = 3,
+};
+
 const Slot = struct {
     state: std.atomic.Value(u8) = std.atomic.Value(u8).init(@intFromEnum(SlotState.inactive)),
     gain: std.atomic.Value(u32) = std.atomic.Value(u32).init(@bitCast(@as(f32, 0))),
@@ -66,7 +81,18 @@ const Slot = struct {
     phase_fp: u64 = 0,
     current_left: i16 = 0,
     current_right: i16 = 0,
+    has_current_sample: bool = false,
     read_buf: [READ_BUF_SIZE]u8 = undefined,
+    generation: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+    // The worker publishes this only after it has moved on from the previous
+    // stream generation. The render thread can then discard stale FIFO bytes
+    // without racing either FIFO endpoint.
+    producer_generation: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+    stream_state: std.atomic.Value(u8) = std.atomic.Value(u8).init(@intFromEnum(StreamState.none)),
+    stream_state_generation: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+    // Owned exclusively by the render thread.
+    render_generation: u32 = 0,
+    consumer_generation: u32 = 0,
 };
 
 var slots: [NUM_SLOTS]Slot = init_slots();
@@ -79,10 +105,19 @@ var snd_shm: ?[]align(horizon.heap.page_size) u8 = null;
 var output_data: ?[]align(horizon.heap.page_size) u8 = null;
 var channel: ChannelId = .init(0);
 var audio_thread: ?Thread = null;
+var stream_io_thread: ?Thread = null;
 var running: std.atomic.Value(u8) = std.atomic.Value(u8).init(0);
+var stream_io_running: std.atomic.Value(u8) = std.atomic.Value(u8).init(0);
 var applet_suspended: std.atomic.Value(u8) = std.atomic.Value(u8).init(0);
 var stream_started: std.atomic.Value(u8) = std.atomic.Value(u8).init(0);
 var command_lock: std.atomic.Value(u8) = std.atomic.Value(u8).init(0);
+var stream_wakeup: std.Io.Event = .unset;
+var stream_wakeup_sequence: std.atomic.Value(u32) = std.atomic.Value(u32).init(0);
+var stream_cache: ?[]u8 = null;
+var stream_fifo_bytes: usize = 0;
+var stream_fifos: [NUM_SLOTS]audio_fifo.ByteFifo = undefined;
+var stream_underflows: std.atomic.Value(usize) = std.atomic.Value(usize).init(0);
+var output_underruns: std.atomic.Value(usize) = std.atomic.Value(usize).init(0);
 var initialized = false;
 
 fn init_slots() [NUM_SLOTS]Slot {
@@ -99,8 +134,6 @@ pub fn setup(alloc: std.mem.Allocator, io: std.Io) void {
 }
 
 pub fn init() audio_api.InitError!void {
-    _ = audio_io;
-
     const app = app_3ds.currentApplication() orelse std.debug.panic("3DS audio init failed: no current application", .{});
 
     snd = ChannelSound.open(app.srv) catch |err| return init_failed("open csnd:SND", err);
@@ -146,14 +179,33 @@ pub fn init() audio_api.InitError!void {
     flush_output();
     stream_started.store(0, .release);
 
+    init_stream_cache(app_3ds.audio_stream_cache_bytes()) catch |err| return init_failed("reserve stream cache from audio pool", err);
+    errdefer deinit_stream_cache();
+
+    stream_wakeup.reset();
+    stream_wakeup_sequence.store(0, .release);
+    stream_underflows.store(0, .release);
+    output_underruns.store(0, .release);
+    applet_suspended.store(0, .release);
+
+    start_stream_worker() catch |err| return init_failed("start stream I/O worker", err);
+    errdefer stop_stream_worker();
+
     running.store(1, .release);
     audio_thread = Thread.spawn(
         .{ .allocator = audio_alloc, .name = "aether_audio", .priority = .highest, .stack_size = 24 * 1024 },
         audio_thread_fn,
         .{},
     ) catch |err| return init_failed("start audio thread", err);
+    errdefer stop_audio_thread();
 
     initialized = true;
+
+    std.log.info("3DS audio stream cache: {} KiB total ({} slots x {} KiB) from the engine audio pool", .{
+        stream_cache.?.len / 1024,
+        NUM_SLOTS,
+        stream_fifo_bytes / 1024,
+    });
 }
 
 fn init_failed(comptime stage: []const u8, err: anyerror) audio_api.InitError {
@@ -164,14 +216,65 @@ fn init_failed(comptime stage: []const u8, err: anyerror) audio_api.InitError {
     };
 }
 
-pub fn deinit() void {
-    if (!initialized and snd == null) return;
+fn init_stream_cache(total_bytes: usize) !void {
+    if (total_bytes < NUM_SLOTS * STREAM_FIFO_MIN_BYTES or total_bytes % NUM_SLOTS != 0) {
+        return error.InvalidStreamCacheSize;
+    }
 
+    const bytes = try audio_alloc.alloc(u8, total_bytes);
+    errdefer audio_alloc.free(bytes);
+
+    const fifo_bytes = total_bytes / NUM_SLOTS;
+    for (&stream_fifos, 0..) |*fifo, i| {
+        const start = i * fifo_bytes;
+        fifo.* = audio_fifo.ByteFifo.init(bytes[start..][0..fifo_bytes]);
+    }
+
+    stream_cache = bytes;
+    stream_fifo_bytes = fifo_bytes;
+}
+
+fn deinit_stream_cache() void {
+    if (stream_cache) |bytes| {
+        audio_alloc.free(bytes);
+        stream_cache = null;
+    }
+    stream_fifo_bytes = 0;
+}
+
+fn start_stream_worker() !void {
+    stream_io_running.store(1, .release);
+    errdefer stream_io_running.store(0, .release);
+
+    stream_io_thread = try Thread.spawn(
+        .{ .allocator = audio_alloc, .name = "aether_audio_io", .priority = .normal, .stack_size = 16 * 1024 },
+        stream_io_thread_fn,
+        .{},
+    );
+}
+
+fn stop_audio_thread() void {
     running.store(0, .release);
     if (audio_thread) |thread| {
         thread.join();
         audio_thread = null;
     }
+}
+
+fn stop_stream_worker() void {
+    stream_io_running.store(0, .release);
+    notify_stream_worker();
+    if (stream_io_thread) |thread| {
+        thread.join();
+        stream_io_thread = null;
+    }
+}
+
+pub fn deinit() void {
+    if (!initialized and snd == null) return;
+
+    stop_audio_thread();
+    stop_stream_worker();
 
     stop_channel();
 
@@ -199,9 +302,22 @@ pub fn deinit() void {
         horizon.heap.linear_page_allocator.free(data);
         output_data = null;
     }
+    deinit_stream_cache();
+
+    const underflows = stream_underflows.load(.acquire);
+    const output_underflow_count = output_underruns.load(.acquire);
+    if (underflows != 0 or output_underflow_count != 0) {
+        std.log.warn("3DS audio diagnostics: stream underflows={} output underruns={}", .{ underflows, output_underflow_count });
+    }
 
     for (&slots) |*slot| {
         slot.state.store(@intFromEnum(SlotState.inactive), .release);
+        slot.producer_generation.store(0, .release);
+        slot.stream_state.store(@intFromEnum(StreamState.none), .release);
+        slot.stream_state_generation.store(0, .release);
+        slot.render_generation = 0;
+        slot.consumer_generation = 0;
+        slot.has_current_sample = false;
     }
 
     initialized = false;
@@ -210,12 +326,14 @@ pub fn deinit() void {
 pub fn suspend_for_applet() void {
     if (!initialized) return;
     applet_suspended.store(1, .release);
+    notify_stream_worker();
     stop_channel();
 }
 
 pub fn resume_from_applet() void {
     if (!initialized) return;
     applet_suspended.store(0, .release);
+    notify_stream_worker();
 }
 
 pub fn update() void {}
@@ -233,15 +351,28 @@ pub fn play_slot(slot: u8, source: SlotSource) audio_api.PlaySlotError!void {
     slots[i].source = source;
     slots[i].format = format;
     slots[i].step_fp = (@as(u64, format.sample_rate) << 32) / DEVICE_SAMPLE_RATE;
-    slots[i].phase_fp = 0;
-    slots[i].current_left = 0;
-    slots[i].current_right = 0;
+    _ = slots[i].generation.fetchAdd(1, .acq_rel);
+    switch (source) {
+        .buffer => {
+            slots[i].stream_state.store(@intFromEnum(StreamState.none), .release);
+            slots[i].stream_state_generation.store(0, .release);
+        },
+        .stream => {
+            slots[i].stream_state.store(@intFromEnum(StreamState.filling), .release);
+            slots[i].stream_state_generation.store(0, .release);
+        },
+    }
     slots[i].state.store(@intFromEnum(SlotState.pending), .release);
+    if (source == .stream) notify_stream_worker();
 }
 
 pub fn stop_slot(slot: u8) void {
     if (slot >= NUM_SLOTS) return;
+    _ = slots[slot].generation.fetchAdd(1, .acq_rel);
+    slots[slot].stream_state.store(@intFromEnum(StreamState.none), .release);
+    slots[slot].stream_state_generation.store(0, .release);
     slots[slot].state.store(@intFromEnum(SlotState.inactive), .release);
+    notify_stream_worker();
 }
 
 pub fn set_slot_gain_pan(slot: u8, gain: f32, pan: f32) void {
@@ -288,12 +419,15 @@ fn audio_thread_fn() void {
 
         const played_samples = samples_since(start_ns);
         if (played_samples > written_samples) {
-            if (any_active_slots()) std.log.warn("3DS audio underrun: played={} written={} page={} lead_target={}", .{
-                played_samples,
-                written_samples,
-                next_page,
-                lead_target_samples,
-            });
+            if (any_active_slots()) {
+                _ = output_underruns.fetchAdd(1, .monotonic);
+                std.log.warn("3DS audio underrun: played={} written={} page={} lead_target={}", .{
+                    played_samples,
+                    written_samples,
+                    next_page,
+                    lead_target_samples,
+                });
+            }
             reset_looping_output() catch |err| {
                 std.debug.panic("3DS audio underrun recovery failed: {s}", .{@errorName(err)});
             };
@@ -323,9 +457,11 @@ fn fill_output_page(index: usize) void {
     const out: [*]i16 = @ptrCast(@alignCast(buf.ptr));
     var accum: [SAMPLES_PER_PAGE]i32 = @splat(0);
 
-    for (&slots) |*slot| {
+    for (&slots, 0..) |*slot, slot_index| {
         var state: SlotState = @enumFromInt(slot.state.load(.acquire));
         if (state == .pending) {
+            reset_render_state_for_generation(slot);
+            if (!pending_slot_ready(slot, slot_index)) continue;
             state = .active;
             slot.state.store(@intFromEnum(SlotState.active), .release);
         }
@@ -339,9 +475,9 @@ fn fill_output_page(index: usize) void {
         const right_vol: i32 = @intFromFloat(std.math.clamp(right_gain, 0.0, 1.0) * 32768.0);
 
         if (can_bulk_mix(slot)) {
-            mix_slot_page(slot, &accum, left_vol, right_vol);
+            mix_slot_page(slot, slot_index, &accum, left_vol, right_vol);
         } else {
-            mix_slot_page_resampled(slot, &accum, left_vol, right_vol);
+            mix_slot_page_resampled(slot, slot_index, &accum, left_vol, right_vol);
         }
     }
 
@@ -356,7 +492,66 @@ fn can_bulk_mix(slot: *const Slot) bool {
     return slot.format.sample_rate == DEVICE_SAMPLE_RATE and slot.step_fp == FP_ONE;
 }
 
-fn mix_slot_page(slot: *Slot, accum: *[SAMPLES_PER_PAGE]i32, left_vol: i32, right_vol: i32) void {
+const SourceReadStatus = enum {
+    ok,
+    underflow,
+    end,
+};
+
+const SourceRead = struct {
+    bytes_read: usize,
+    status: SourceReadStatus,
+};
+
+fn reset_render_state_for_generation(slot: *Slot) void {
+    const generation = slot.generation.load(.acquire);
+    if (slot.render_generation == generation) return;
+
+    slot.phase_fp = 0;
+    slot.current_left = 0;
+    slot.current_right = 0;
+    slot.has_current_sample = false;
+    slot.render_generation = generation;
+}
+
+fn pending_slot_ready(slot: *Slot, slot_index: usize) bool {
+    return switch (slot.source) {
+        .buffer => true,
+        .stream => {
+            const generation = slot.generation.load(.acquire);
+            if (slot.producer_generation.load(.acquire) != generation) return false;
+
+            const fifo = &stream_fifos[slot_index];
+            if (slot.consumer_generation != generation) {
+                // The worker has finished any prior generation before it
+                // publishes `producer_generation`, so this can only discard
+                // stale bytes (or an early chunk from this generation).
+                fifo.discard_all();
+                slot.consumer_generation = generation;
+                notify_stream_worker();
+            }
+            if (slot.generation.load(.acquire) != generation) return false;
+
+            if (slot.stream_state_generation.load(.acquire) != generation) return false;
+            const stream_state: StreamState = @enumFromInt(slot.stream_state.load(.acquire));
+            if (stream_state == .failed) {
+                slot.state.store(@intFromEnum(SlotState.finished), .release);
+                return false;
+            }
+
+            const frame_size: usize = slot.format.frame_size();
+            const start_bytes = @min(STREAM_START_BYTES, fifo.capacity());
+            const available = fifo.readable();
+            if (stream_state == .eof and available < frame_size) {
+                slot.state.store(@intFromEnum(SlotState.finished), .release);
+                return false;
+            }
+            return available >= start_bytes or (stream_state == .eof and available >= frame_size);
+        },
+    };
+}
+
+fn mix_slot_page(slot: *Slot, slot_index: usize, accum: *[SAMPLES_PER_PAGE]i32, left_vol: i32, right_vol: i32) void {
     const fmt = slot.format;
     const frame_size = fmt.frame_size();
     const bytes_needed: usize = SAMPLES_PER_PAGE * frame_size;
@@ -366,11 +561,8 @@ fn mix_slot_page(slot: *Slot, accum: *[SAMPLES_PER_PAGE]i32, left_vol: i32, righ
     }
 
     const read_buf = slot.read_buf[0..bytes_needed];
-    const bytes_read = read_source_short(&slot.source, read_buf) catch {
-        slot.state.store(@intFromEnum(SlotState.finished), .release);
-        return;
-    };
-    const frames_read = bytes_read / frame_size;
+    const read = read_source_short(slot, slot_index, read_buf);
+    const frames_read = read.bytes_read / frame_size;
 
     if (fmt.channels == 1) {
         const mono_vol = @divTrunc(left_vol + right_vol, 2);
@@ -388,43 +580,65 @@ fn mix_slot_page(slot: *Slot, accum: *[SAMPLES_PER_PAGE]i32, left_vol: i32, righ
         }
     }
 
-    if (bytes_read < bytes_needed) {
+    if (read.status == .end) {
         slot.state.store(@intFromEnum(SlotState.finished), .release);
     }
 }
 
-fn mix_slot_page_resampled(slot: *Slot, accum: *[SAMPLES_PER_PAGE]i32, left_vol: i32, right_vol: i32) void {
-    if (!read_next_sample(slot)) {
-        slot.state.store(@intFromEnum(SlotState.finished), .release);
-        return;
+fn mix_slot_page_resampled(slot: *Slot, slot_index: usize, accum: *[SAMPLES_PER_PAGE]i32, left_vol: i32, right_vol: i32) void {
+    if (!slot.has_current_sample) {
+        switch (read_next_sample(slot, slot_index)) {
+            .ok => slot.has_current_sample = true,
+            .underflow => return,
+            .end => {
+                slot.state.store(@intFromEnum(SlotState.finished), .release);
+                return;
+            },
+        }
     }
 
     for (0..SAMPLES_PER_PAGE) |frame| {
         const left = (@as(i32, slot.current_left) * left_vol) >> 15;
         const right = (@as(i32, slot.current_right) * right_vol) >> 15;
         accum[frame] += @divTrunc(left + right, 2);
-        advance_sample(slot);
-        if (@as(SlotState, @enumFromInt(slot.state.load(.acquire))) == .finished) return;
-    }
-}
-
-fn advance_sample(slot: *Slot) void {
-    slot.phase_fp +%= slot.step_fp;
-    while (slot.phase_fp >= FP_ONE) {
-        slot.phase_fp -= FP_ONE;
-        if (!read_next_sample(slot)) {
-            slot.state.store(@intFromEnum(SlotState.finished), .release);
-            return;
+        switch (advance_sample(slot, slot_index)) {
+            .ok => {},
+            .underflow => {
+                slot.has_current_sample = false;
+                return;
+            },
+            .end => {
+                slot.has_current_sample = false;
+                slot.state.store(@intFromEnum(SlotState.finished), .release);
+                return;
+            },
         }
     }
 }
 
-fn read_next_sample(slot: *Slot) bool {
+fn advance_sample(slot: *Slot, slot_index: usize) SourceReadStatus {
+    slot.phase_fp +%= slot.step_fp;
+    while (slot.phase_fp >= FP_ONE) {
+        slot.phase_fp -= FP_ONE;
+        switch (read_next_sample(slot, slot_index)) {
+            .ok => {},
+            .underflow => return .underflow,
+            .end => return .end,
+        }
+    }
+    return .ok;
+}
+
+fn read_next_sample(slot: *Slot, slot_index: usize) SourceReadStatus {
     var tmp: [4]u8 = undefined;
     const frame_size = slot.format.frame_size();
-    if (frame_size > tmp.len) return false;
+    if (frame_size > tmp.len) return .end;
 
-    read_source_exact(&slot.source, tmp[0..frame_size]) catch return false;
+    switch (read_source_exact(slot, slot_index, tmp[0..frame_size])) {
+        .ok => {},
+        .underflow => return .underflow,
+        .end => return .end,
+    }
 
     if (slot.format.channels == 1) {
         const s = std.mem.readInt(i16, tmp[0..2], .little);
@@ -435,7 +649,7 @@ fn read_next_sample(slot: *Slot) bool {
         slot.current_right = std.mem.readInt(i16, tmp[2..4], .little);
     }
 
-    return true;
+    return .ok;
 }
 
 fn start_looping_output() !void {
@@ -701,35 +915,212 @@ fn source_format(source: SlotSource) PcmFormat {
     };
 }
 
-fn read_source_short(source: *SlotSource, dst: []u8) std.Io.Reader.Error!usize {
-    return switch (source.*) {
+fn read_source_short(slot: *Slot, slot_index: usize, dst: []u8) SourceRead {
+    return switch (slot.source) {
         .buffer => |buffer| blk: {
             const cursor = buffer.cursor.load(.acquire);
-            if (cursor >= buffer.pcm.len) break :blk 0;
+            if (cursor >= buffer.pcm.len) break :blk .{ .bytes_read = 0, .status = .end };
             const remaining = buffer.pcm.len - cursor;
             const n = @min(dst.len, remaining);
             @memcpy(dst[0..n], buffer.pcm[cursor..][0..n]);
             buffer.cursor.store(cursor + n, .release);
-            break :blk n;
+            break :blk .{
+                .bytes_read = n,
+                .status = if (n == dst.len) .ok else .end,
+            };
         },
-        .stream => |stream| stream.reader.readSliceShort(dst),
+        .stream => blk: {
+            const fifo = &stream_fifos[slot_index];
+            const frame_size: usize = @intCast(slot.format.frame_size());
+            const available = fifo.readable();
+            const n = (@min(dst.len, available) / frame_size) * frame_size;
+            const copied = fifo.read(dst[0..n]);
+            std.debug.assert(copied == n);
+            if (fifo.readable() < fifo.capacity() / 2) notify_stream_worker();
+
+            if (copied == dst.len) break :blk .{ .bytes_read = copied, .status = .ok };
+            break :blk .{
+                .bytes_read = copied,
+                .status = stream_short_read_status(slot),
+            };
+        },
     };
 }
 
-fn read_source_exact(source: *SlotSource, dst: []u8) std.Io.Reader.Error!void {
-    switch (source.*) {
+fn read_source_exact(slot: *Slot, slot_index: usize, dst: []u8) SourceReadStatus {
+    switch (slot.source) {
         .buffer => |buffer| {
             const cursor = buffer.cursor.load(.acquire);
-            if (dst.len > buffer.pcm.len -| cursor) return error.EndOfStream;
+            if (dst.len > buffer.pcm.len -| cursor) return .end;
             @memcpy(dst, buffer.pcm[cursor..][0..dst.len]);
             buffer.cursor.store(cursor + dst.len, .release);
+            return .ok;
         },
-        .stream => |stream| try stream.reader.readSliceAll(dst),
+        .stream => {
+            const fifo = &stream_fifos[slot_index];
+            if (fifo.readable() < dst.len) return stream_short_read_status(slot);
+            const copied = fifo.read(dst);
+            std.debug.assert(copied == dst.len);
+            if (fifo.readable() < fifo.capacity() / 2) notify_stream_worker();
+            return .ok;
+        },
     }
 }
 
+fn stream_short_read_status(slot: *Slot) SourceReadStatus {
+    const generation = slot.generation.load(.acquire);
+    if (slot.producer_generation.load(.acquire) != generation or
+        slot.stream_state_generation.load(.acquire) != generation)
+    {
+        _ = stream_underflows.fetchAdd(1, .monotonic);
+        notify_stream_worker();
+        return .underflow;
+    }
+
+    const state: StreamState = @enumFromInt(slot.stream_state.load(.acquire));
+    return switch (state) {
+        .eof, .failed, .none => .end,
+        .filling => blk: {
+            _ = stream_underflows.fetchAdd(1, .monotonic);
+            notify_stream_worker();
+            break :blk .underflow;
+        },
+    };
+}
+
 fn format_supported(fmt: PcmFormat) bool {
-    return fmt.bit_depth == 16 and (fmt.channels == 1 or fmt.channels == 2);
+    return fmt.sample_rate != 0 and fmt.bit_depth == 16 and (fmt.channels == 1 or fmt.channels == 2);
+}
+
+fn stream_refill_needed(slot_index: usize) bool {
+    const fifo = &stream_fifos[slot_index];
+    const minimum_write = @min(STREAM_PREFETCH_CHUNK_BYTES / 2, fifo.capacity() / 2);
+    return fifo.writable() >= minimum_write and fifo.readable() < (fifo.capacity() * 3) / 4;
+}
+
+fn notify_stream_worker() void {
+    _ = stream_wakeup_sequence.fetchAdd(1, .release);
+    stream_wakeup.set(audio_io);
+}
+
+fn format_frame_size(fmt: PcmFormat) usize {
+    return @intCast(fmt.frame_size());
+}
+
+const StreamWorkerProgress = struct {
+    generation: u32 = 0,
+    bytes_read: u64 = 0,
+    initialized: bool = false,
+};
+
+fn stream_slot_is_current(slot: *const Slot, generation: u32) bool {
+    if (slot.generation.load(.acquire) != generation) return false;
+    const state: SlotState = @enumFromInt(slot.state.load(.acquire));
+    return state == .pending or state == .active;
+}
+
+fn set_stream_state_if_current(slot: *Slot, generation: u32, state: StreamState) void {
+    if (!stream_slot_is_current(slot, generation)) return;
+    slot.stream_state_generation.store(generation, .release);
+    slot.stream_state.store(@intFromEnum(state), .release);
+}
+
+fn worker_refill_slot(slot_index: usize, scratch: []u8, progress: *StreamWorkerProgress) bool {
+    const slot = &slots[slot_index];
+    const state: SlotState = @enumFromInt(slot.state.load(.acquire));
+    if (state != .pending and state != .active) return false;
+
+    const generation = slot.generation.load(.acquire);
+    const stream = switch (slot.source) {
+        .buffer => return false,
+        .stream => |value| value,
+    };
+
+    const fifo = &stream_fifos[slot_index];
+    if (!progress.initialized or progress.generation != generation) {
+        progress.* = .{ .generation = generation, .initialized = true };
+
+        // A prior read can finish after a game-thread slot replacement. Do
+        // not let the render thread consume its FIFO bytes: publish this
+        // generation only after that older work has completed.
+        if (slot.generation.load(.acquire) != generation) return true;
+        slot.stream_state_generation.store(generation, .release);
+        slot.stream_state.store(@intFromEnum(StreamState.filling), .release);
+        slot.producer_generation.store(generation, .release);
+
+        // If this FIFO belongs to a previous stream, wait for the sole
+        // consumer to discard it before putting new PCM behind it.
+        if (fifo.readable() != 0) return false;
+    }
+
+    if (!stream_slot_is_current(slot, generation)) return false;
+    if (slot.stream_state_generation.load(.acquire) != generation) return false;
+    const stream_state: StreamState = @enumFromInt(slot.stream_state.load(.acquire));
+    if (stream_state != .filling or !stream_refill_needed(slot_index)) return false;
+
+    const frame_size = format_frame_size(stream.format);
+    const bytes_read = progress.bytes_read;
+    const max_by_length: usize = if (stream.byte_length) |length|
+        @intCast(@min(length -| bytes_read, @as(u64, std.math.maxInt(usize))))
+    else
+        scratch.len;
+    const max_read = @min(@min(scratch.len, fifo.writable()), max_by_length);
+    const request_len = (max_read / frame_size) * frame_size;
+    if (request_len == 0) {
+        if (stream.byte_length) |length| {
+            if (bytes_read >= length) {
+                set_stream_state_if_current(slot, generation, .eof);
+            }
+        }
+        return false;
+    }
+
+    const n = stream.reader.readSliceShort(scratch[0..request_len]) catch {
+        set_stream_state_if_current(slot, generation, .failed);
+        return true;
+    };
+
+    if (!stream_slot_is_current(slot, generation)) return n != 0;
+
+    const copied = fifo.write(scratch[0..n]);
+    std.debug.assert(copied == n);
+    progress.bytes_read += n;
+
+    if (n == 0 or (stream.byte_length != null and progress.bytes_read >= stream.byte_length.?)) {
+        set_stream_state_if_current(slot, generation, .eof);
+    }
+    return true;
+}
+
+fn stream_io_thread_fn() void {
+    var scratch: [STREAM_PREFETCH_CHUNK_BYTES]u8 = undefined;
+    var progress: [NUM_SLOTS]StreamWorkerProgress = @splat(.{});
+    var next_slot: usize = 0;
+    var observed_wakeup = stream_wakeup_sequence.load(.acquire);
+
+    while (stream_io_running.load(.acquire) != 0) {
+        if (applet_suspended.load(.acquire) == 0) {
+            var did_work = false;
+            for (0..NUM_SLOTS) |offset| {
+                const slot_index = (next_slot + offset) % NUM_SLOTS;
+                if (worker_refill_slot(slot_index, &scratch, &progress[slot_index])) {
+                    next_slot = (slot_index + 1) % NUM_SLOTS;
+                    did_work = true;
+                    break;
+                }
+            }
+            if (did_work) continue;
+        }
+
+        stream_wakeup.reset();
+        const current_wakeup = stream_wakeup_sequence.load(.acquire);
+        if (current_wakeup != observed_wakeup or stream_io_running.load(.acquire) == 0) {
+            observed_wakeup = current_wakeup;
+            continue;
+        }
+        stream_wakeup.waitUncancelable(audio_io);
+        observed_wakeup = stream_wakeup_sequence.load(.acquire);
+    }
 }
 
 const CommandId = enum(u16) {

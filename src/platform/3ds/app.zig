@@ -7,16 +7,19 @@ const Application = horizon.Init.Application;
 var app_init_storage: Application = undefined;
 var app_init: ?*const Application = null;
 var new_3ds = false;
+var stream_cache_bytes: usize = 512 * 1024;
 
-pub fn setApplication(app: Application, is_new_3ds: bool) void {
+pub fn setApplication(app: Application, is_new_3ds: bool, cache_bytes: usize) void {
     app_init_storage = app;
     app_init = &app_init_storage;
     new_3ds = is_new_3ds;
+    stream_cache_bytes = cache_bytes;
 }
 
 pub fn clearApplication() void {
     app_init = null;
     new_3ds = false;
+    stream_cache_bytes = 512 * 1024;
 }
 
 pub fn currentApplication() ?*const Application {
@@ -29,6 +32,14 @@ pub fn currentApplication() ?*const Application {
 /// opening a Horizon service or issuing IPC from application code.
 pub fn is_new() bool {
     return new_3ds;
+}
+
+/// Total bytes reserved from the engine audio pool for the 3DS streaming
+/// prefetch cache. This is copied from `Nintendo3dsOptions` before Engine
+/// initialization, so the audio backend does not need to import user-root
+/// options directly.
+pub fn audio_stream_cache_bytes() usize {
+    return stream_cache_bytes;
 }
 
 pub fn update(comptime suspend_cb: anytype, comptime resume_cb: fn () void) bool {
