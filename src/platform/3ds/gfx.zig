@@ -24,10 +24,10 @@ const pica = zitrus.hardware.pica;
 
 const MAX_TEXTURES = 256;
 const PAGE_SIZE = 4096;
-const SCREEN_WIDTH: u32 = 400;
+const SCREEN_WIDTH: u32 = 800;
 const SCREEN_HEIGHT: u32 = 240;
 const SCREEN_TOP_WIDTH = 240;
-const SCREEN_TOP_HEIGHT = 400;
+const SCREEN_TOP_HEIGHT = 800;
 const SCREEN_BOTTOM_WIDTH = 240;
 const SCREEN_BOTTOM_HEIGHT = 320;
 const COMMAND_BUFFER_COUNT = 2;

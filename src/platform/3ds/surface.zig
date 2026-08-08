@@ -44,7 +44,7 @@ const SwapchainState = struct {
 alloc: std.mem.Allocator,
 device: mango.Device = .null,
 queues: std.EnumArray(mango.QueueFamily, mango.Queue) = .initFill(.null),
-top: SwapchainState = .{ .surface = .top_240x400 },
+top: SwapchainState = .{ .surface = .top_240x800 },
 bottom: SwapchainState = .{ .surface = .bottom_240x320 },
 sync: bool = true,
 applet_released: bool = false,
