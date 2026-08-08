@@ -482,6 +482,15 @@ pub fn set_vsync(v: bool) void {
     bottom_presented = false;
 }
 
+pub fn wait_for_borrowed_meshes() void {
+    if (!initialized or gfx.surface.device == .null) return;
+
+    wait_for_frame_sync() catch |err| {
+        std.log.err("3DS Mango borrowed mesh wait failed: {s}; falling back to device idle", .{@errorName(err)});
+        gfx.surface.device.waitIdle();
+    };
+}
+
 pub fn create_mesh(_: *const Mesh.Desc) gfx_api.CreateMeshError!Mesh.Handle {
     return meshes.add(.{}) orelse error.OutOfMeshes;
 }
