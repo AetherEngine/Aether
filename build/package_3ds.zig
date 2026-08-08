@@ -1,11 +1,19 @@
 const std = @import("std");
 const zitrus = @import("zitrus");
 const package_options = @import("package_options.zig");
-const tools = @import("tool_options.zig");
 
 const ExportOptions = package_options.ExportOptions;
 
-pub fn pipeline(owner: *std.Build, b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOptions) void {
+pub const Link3dsxOptions = struct {
+    /// Direct target address. When null, Zitrus discovers the console by
+    /// broadcast.
+    address: ?[]const u8 = null,
+    /// Number of broadcast-discovery attempts. Zitrus' default is used when
+    /// null.
+    retries: ?u32 = null,
+};
+
+pub fn pipeline(owner: *std.Build, b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOptions) std.Build.LazyPath {
     const zitrus_dep = owner.dependency("zitrus", .{});
 
     const elf_name = b.fmt("{s}.elf", .{exe.name});
@@ -72,20 +80,18 @@ pub fn pipeline(owner: *std.Build, b: *std.Build, exe: *std.Build.Step.Compile, 
         else
             final_3dsx.name,
     });
+
+    return final_3dsx.out;
 }
 
-pub fn add3dslink(b: *std.Build, threedsx_path: []const u8) *std.Build.Step.Run {
-    const dkp = tools.devkitProPath(b);
-    const link_cmd = b.addSystemCommand(&.{b.pathJoin(&.{ dkp, "tools/bin/3dslink" })});
-    if (b.option([]const u8, "3dslink-address", "3DS: target IP/hostname for 3dslink push (default: broadcast discovery)")) |ip| {
-        link_cmd.addArgs(&.{ "-a", ip });
-    }
-    if (b.option(u32, "3dslink-retries", "3DS: 3dslink retry count")) |n| {
-        link_cmd.addArgs(&.{ "-r", b.fmt("{d}", .{n}) });
-    }
-    if (b.option(bool, "3dslink-server", "3DS: pass -s so 3dslink stays listening after upload") orelse false) {
-        link_cmd.addArg("-s");
-    }
-    link_cmd.addArg(threedsx_path);
-    return link_cmd;
+/// Sends a 3DSX using Zitrus' built-in 3dslink-protocol client. Unlike the
+/// devkitPro `3dslink` executable, this does not require a separate host tool.
+pub fn addLink3dsx(b: *std.Build, threedsx: std.Build.LazyPath, opts: Link3dsxOptions) *std.Build.Step.Run {
+    const zitrus_dep = b.dependency("zitrus", .{});
+    const link = zitrus.Link3dsx.init(zitrus_dep, .{ .@"3dsx" = threedsx });
+
+    if (opts.address) |address| link.run.addArgs(&.{ "--ip", address });
+    if (opts.retries) |retries| link.run.addArgs(&.{ "--retries", b.fmt("{d}", .{retries}) });
+
+    return link.run;
 }

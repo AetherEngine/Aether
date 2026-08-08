@@ -85,7 +85,7 @@ pub fn build(b: *std.Build) void {
     _ = nintendo_romfs.addCopyFile(b.path("test/calm1.wav"), "calm1.wav");
     _ = nintendo_romfs.addCopyFile(b.path("test/grass1.wav"), "grass1.wav");
 
-    packaging.exportArtifact(b, b, exe, resolved_config, .{
+    const package = packaging.exportArtifactWithOutputs(b, b, exe, resolved_config, .{
         .title = "Aether",
         .output_dir = switch (resolved_config.platform) {
             .psp => "Aether-PSP",
@@ -154,10 +154,16 @@ pub fn build(b: *std.Build) void {
 
         run_step.dependOn(&link_cmd.step);
     } else if (resolved_config.platform == .nintendo_3ds) {
-        const link_cmd = packaging.add3dslink(b, b.getInstallPath(.bin, "Aether-3DS/Aether.3dsx"));
+        // Zitrus owns the 3dslink-protocol client, so running a 3DS target
+        // does not need devkitPro's external 3dslink executable.
+        const threedsx = package.nintendo_3dsx orelse unreachable;
+        const link_cmd = packaging.addLink3dsx(b, threedsx, .{
+            .address = b.option([]const u8, "3dslink-address", "3DS: target IP/hostname for Zitrus link (default: broadcast discovery)"),
+            .retries = b.option(u32, "3dslink-retries", "3DS: Zitrus link broadcast retry count"),
+        });
         link_cmd.step.dependOn(b.getInstallStep());
 
-        const link_step = b.step("3dslink", "Push the 3dsx to a networked 3DS via 3dslink");
+        const link_step = b.step("3dslink", "Send the 3dsx to a networked 3DS via Zitrus");
         link_step.dependOn(&link_cmd.step);
 
         run_step.dependOn(&link_cmd.step);
