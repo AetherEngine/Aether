@@ -29,7 +29,7 @@ pub const std_options_cwd = zitrus.horizon.Io.Dir.cwd;
 pub fn main(init: Application) !void {
     const is_new_3ds = detect_and_configure_new_3ds(init.srv);
 
-    aether.N3ds.setApplication(init, is_new_3ds);
+    aether.N3ds.setApplication(init, is_new_3ds, entry.options.nintendo_3ds.audio_stream_cache_bytes);
     defer aether.N3ds.clearApplication();
 
     try zitrus.horizon.Io.global.initStorage(init.srv, .fs, 0);

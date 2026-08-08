@@ -23,6 +23,11 @@ pub const PspOptions = struct {
 
 pub const Nintendo3dsOptions = struct {
     stack_size: u32 = 768 * 1024,
+    /// Total bounded PCM staging memory reserved from Engine's `.audio` pool
+    /// for 3DS streaming playback. The backend splits this evenly across its
+    /// hardware-mix slots; it never loads complete stream assets into this
+    /// reservation. It must be at least 64 KiB and divisible by 16.
+    audio_stream_cache_bytes: usize = 512 * 1024,
 };
 
 pub const Options = struct {
