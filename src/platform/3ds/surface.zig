@@ -11,7 +11,7 @@ const GraphicsServerGpu = horizon.services.GraphicsServerGpu;
 const VIRTUAL_WIDTH = 400;
 const VIRTUAL_HEIGHT = 240;
 const SWAP_IMAGE_COUNT = 2;
-const COLOR_FORMAT = mango.Format.a8b8g8r8_unorm;
+const COLOR_FORMAT = mango.Format.b8g8r8_unorm;
 const COLOR_BYTES_PER_PIXEL = 4;
 const ACQUIRE_TIMEOUT_NS = 2 * std.time.ns_per_s;
 
