@@ -235,7 +235,8 @@ pub const Engine = struct {
         const app_name = config.app_name orelse config.title;
         self.dirs = try Core.paths.resolve(sys_io, environ_map, app_name);
 
-        try logger.init(sys_io, self.dirs.data);
+        try logger.init(sys_io, self.dirs.data, self.allocator(.game));
+        errdefer logger.deinit(self.io);
 
         self.input.init(self.allocator(.game)) catch |err| switch (err) {
             error.OutOfMemory => return error.InputInitOutOfMemory,
