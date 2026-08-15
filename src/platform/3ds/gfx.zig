@@ -1,7 +1,7 @@
 //! Nintendo 3DS Mango backend.
 //!
 //! This follows the same ownership shape as the deko3D backend: the surface
-//! owns the display device/swapchains, while this module owns renderer state
+//! owns the display device, while this module owns renderer state
 //! and backend resources.
 
 const std = @import("std");
@@ -18,18 +18,19 @@ const basic_vert align(@alignOf(u32)) = @embedFile("aether_basic_vert").*;
 
 pub const mesh_source_mode = Mesh.SourceMode.borrowed_cpu;
 
-const horizon = zitrus.horizon;
 const mango = zitrus.mango;
 const pica = zitrus.hardware.pica;
 
 const MAX_TEXTURES = 256;
 const PAGE_SIZE = 4096;
-const SCREEN_WIDTH: u32 = 800;
+const SCREEN_WIDTH: u32 = 400;
 const SCREEN_HEIGHT: u32 = 240;
-const SCREEN_TOP_WIDTH = 240;
-const SCREEN_TOP_HEIGHT = 800;
-const SCREEN_BOTTOM_WIDTH = 240;
-const SCREEN_BOTTOM_HEIGHT = 320;
+// The framebuffer is 480x400 and is later downsampled to 240x400.
+// We're performing SSAA, which works on all consoles of the 3DS family
+const FRAMEBUFFER_TOP_WIDTH = 480;
+const FRAMEBUFFER_TOP_HEIGHT = 400;
+const FRAMEBUFFER_BOTTOM_WIDTH = 240;
+const FRAMEBUFFER_BOTTOM_HEIGHT = 320;
 const COMMAND_BUFFER_COUNT = 2;
 const FRAME_SYNC_TIMEOUT_NS = 2 * std.time.ns_per_s;
 const TEX_BPP = 4;
@@ -46,21 +47,20 @@ const MeshData = struct {
 };
 
 const MeshBufferData = struct {
-    buffer: mango.Buffer = .null,
-    memory: mango.DeviceMemory = .null,
+    memory: []const u8 = &.{},
+    gpu_memory: mango.DeviceSlice = .empty,
     size: u32 = 0,
     capacity: u32 = 0,
-    source_page: usize = 0,
-    source_offset: usize = 0,
 };
 
 const BufferData = struct {
-    buffer: mango.Buffer = .null,
-    memory: mango.DeviceMemory = .null,
+    memory: []u8 = &.{},
+    gpu_memory: mango.DeviceSlice = .empty,
 };
 
 const TextureData = struct {
-    memory: mango.DeviceMemory = .null,
+    memory: []const u8 = &.{},
+    gpu_memory: mango.DeviceSlice = .empty,
     image: mango.Image = .null,
     view: mango.ImageView = .null,
     width: u32 = 0,
@@ -74,8 +74,10 @@ const PendingTextureUpload = struct {
 };
 
 const RenderTarget = struct {
-    color_memory: mango.DeviceMemory = .null,
-    depth_memory: mango.DeviceMemory = .null,
+    color_memory: []const u8 = &.{},
+    depth_memory: []const u8 = &.{},
+    gpu_color_memory: mango.DeviceSlice = .empty,
+    gpu_depth_memory: mango.DeviceSlice = .empty,
     color_image: mango.Image = .null,
     depth_image: mango.Image = .null,
     color_view: mango.ImageView = .null,
@@ -104,31 +106,16 @@ pub const DrawState = struct {
     uv_offset: [2]f32 = .{ 0.0, 0.0 },
 };
 
-const MemoryHeap = enum(u2) {
-    fcram,
-    vram_a,
-    vram_b,
-};
-
-const ExternalMemoryData = packed struct(u64) {
-    valid: bool = true,
-    virtual_page_shifted: u20,
-    physical_page_shifted: u20,
-    size_page_shifted: u20,
-    heap: MemoryHeap,
-    _: u1 = 0,
-};
-
 const ScreenState = struct {
     command_buffer: mango.CommandBuffer = .null,
     recording: bool = false,
     render_open: bool = false,
-    bound_vertex_buffer: mango.Buffer = .null,
+    bound_vertex_buffer: mango.DeviceSlice = .empty,
     bound_texture: Texture.Handle = .none,
     combiner_mode: CombinerMode = .invalid,
 
     fn reset_cache(state: *ScreenState) void {
-        state.bound_vertex_buffer = .null;
+        state.bound_vertex_buffer = .empty;
         state.bound_texture = .none;
         state.combiner_mode = .invalid;
     }
@@ -139,9 +126,7 @@ var render_io: std.Io = undefined;
 
 var meshes = Util.ResourceTable(MeshData, 8192, Mesh.Handle).init();
 var texture_slots = Util.ResourceTable(TextureData, MAX_TEXTURES, Texture.Handle).init();
-var retired_mesh_buffers = Util.CircularBuffer(mango.Buffer, 8192).init();
 var retired_textures = Util.CircularBuffer(TextureData, MAX_TEXTURES * 2).init();
-var retired_mesh_buffer_overflow: std.ArrayList(mango.Buffer) = .empty;
 var retired_texture_overflow: std.ArrayList(TextureData) = .empty;
 var pending_texture_uploads = Util.CircularBuffer(PendingTextureUpload, MAX_TEXTURES * 2).init();
 
@@ -279,8 +264,6 @@ pub fn deinit() void {
     destroy_all_textures();
     destroy_pending_texture_uploads();
     collect_retired_resources();
-    retired_mesh_buffer_overflow.deinit(render_alloc);
-    retired_mesh_buffer_overflow = .empty;
     retired_texture_overflow.deinit(render_alloc);
     retired_texture_overflow = .empty;
     cleanup_renderer_resources();
@@ -331,7 +314,8 @@ pub fn set_culling(enabled: bool) void {
     culling_enabled = enabled;
     const state = screen_state(current_screen);
     if (initialized and state.recording) {
-        state.command_buffer.setCullMode(if (culling_enabled) .back else .none);
+        // Front face is CCW so we cull the CW faces.
+        state.command_buffer.setCullMode(if (culling_enabled) .cw else .none);
     }
 }
 
@@ -512,10 +496,10 @@ pub fn update_mesh(handle: Mesh.Handle, desc: *const Mesh.UpdateDesc) void {
     }
 
     retire_mesh_data(mesh);
-    mesh.vertex = create_mesh_buffer_data(data, .{ .vertex_buffer = true }, "vertex") orelse return;
+    mesh.vertex = create_mesh_buffer_data(data, "vertex") orelse return;
     const index_bytes = std.mem.sliceAsBytes(indices);
     if (index_bytes.len > 0) {
-        mesh.index = create_mesh_buffer_data(index_bytes, .{ .index_buffer = true }, "index") orelse {
+        mesh.index = create_mesh_buffer_data(index_bytes, "index") orelse {
             retire_mesh_data(mesh);
             return;
         };
@@ -526,10 +510,9 @@ pub fn update_mesh(handle: Mesh.Handle, desc: *const Mesh.UpdateDesc) void {
 
 pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
     const mesh = meshes.get_ptr(handle) orelse Util.panic_invalid_handle("3ds gfx", "draw_mesh", handle);
-    if (mesh.vertex.buffer == .null or mesh.vertex_count == 0) return;
+    if (mesh.vertex_count == 0) return;
     if (mesh.vertex_count > std.math.maxInt(usize) / vertex.Layout.stride) return;
     if (mesh.vertex_count * vertex.Layout.stride > mesh.vertex.size) return;
-    if (mesh.index_count > 0 and mesh.index.buffer == .null) return;
 
     draw_state.mat = model.*;
 
@@ -543,56 +526,38 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
     const state = screen_state(current_screen);
     bind_draw_texture_state(state, cmd);
 
-    if (state.bound_vertex_buffer != mesh.vertex.buffer) {
-        const buffers = [_]mango.Buffer{mesh.vertex.buffer};
-        const offsets = [_]u32{0};
-        cmd.bindVertexBuffersSlice(0, &buffers, &offsets);
-        state.bound_vertex_buffer = mesh.vertex.buffer;
+    if (state.bound_vertex_buffer != mesh.vertex.gpu_memory) {
+        const buffers = [_]mango.DeviceSlice{mesh.vertex.gpu_memory};
+        cmd.bindVertexBuffers(0, &buffers);
+        state.bound_vertex_buffer = mesh.vertex.gpu_memory;
     }
     if (mesh.index_count > 0) {
-        cmd.bindIndexBuffer(mesh.index.buffer, 0, .u16);
+        cmd.bindIndexBuffer(mesh.index.gpu_memory, .u16);
         cmd.drawIndexed(@intCast(mesh.index_count), 0, 0);
     } else {
         cmd.draw(@intCast(mesh.vertex_count), 0);
     }
 }
 
-fn create_mesh_buffer_data(data: []const u8, usage: mango.BufferCreateInfo.Usage, label: []const u8) ?MeshBufferData {
-    if (!is_linear_range(data)) {
-        std.log.err("3DS Mango {s} mesh update received non-linear memory; use std.process.Init.gpa for mesh storage", .{label});
-        return null;
-    }
+fn create_mesh_buffer_data(data: []const u8, label: []const u8) ?MeshBufferData {
     if (data.len > std.math.maxInt(u32)) {
         std.log.err("3DS Mango {s} mesh update too large: {} bytes", .{ label, data.len });
         return null;
     }
 
-    const source_page = data_page(data);
-    const source_offset = page_offset(data);
     const capacity: u32 = @intCast(data.len);
-    const buffer = gfx.surface.device.createBuffer(.{
-        .size = .size(capacity),
-        .usage = usage,
-    }, null) catch |err| {
-        std.log.err("3DS Mango {s} buffer creation failed: {s}", .{ label, @errorName(err) });
+    gfx.surface.device.flushCachedMemoryRanges(&.{data}) catch {};
+
+    const gpu_memory = gfx.surface.device.hostToDevice(data) catch {
+        std.log.err("3DS Mango {s} mesh update received non-linear memory; use std.process.Init.gpa for mesh storage", .{ label });
         return null;
     };
 
-    const memory = external_memory(data);
-    gfx.surface.device.bindBufferMemory(buffer, memory, .size(@intCast(source_offset))) catch |err| {
-        std.log.err("3DS Mango {s} buffer bind failed: {s}", .{ label, @errorName(err) });
-        gfx.surface.device.destroyBuffer(buffer, null);
-        return null;
-    };
-
-    _ = horizon.flushProcessDataCache(.current, data);
     return .{
-        .buffer = buffer,
-        .memory = memory,
+        .memory = data,
+        .gpu_memory = gpu_memory,
         .size = @intCast(data.len),
         .capacity = capacity,
-        .source_page = source_page,
-        .source_offset = source_offset,
     };
 }
 
@@ -717,13 +682,10 @@ fn queue_clear_screen(screen: gfx.Surface.Screen, wait_value: u64) !u64 {
     else
         .init(semaphore, wait_value);
     const signal_op = mango.SemaphoreQueueOperation.init(semaphore, signal_value);
-    const fill_queue = gfx.surface.queues.get(.fill);
-    try fill_queue.clearColorImage(.{
-        .wait_semaphore = if (wait_op) |*op| op else null,
+    try gfx.surface.device.clearColorImage(if (wait_op) |*op| op else null, &signal_op, &.{
         .subresource_range = .full,
         .image = render_target(screen).color_image,
         .color = clear_color,
-        .signal_semaphore = &signal_op,
     });
     return signal_value;
 }
@@ -766,35 +728,17 @@ fn create_depth_clear_geometry() !BufferData {
     };
     const bytes = std.mem.asBytes(&clear_vertices);
 
+    // XXX: This allocator is slow!
+    const fcram = gfx.surface.device.hostAllocator();
+
     var data = BufferData{};
-    data.memory = try gfx.surface.device.allocateMemory(.{
-        .allocation_size = .size(@intCast(bytes.len)),
-        .memory_type = .fcram_cached,
-    }, null);
+    data.memory = try fcram.dupe(u8, bytes);
     errdefer {
-        gfx.surface.device.freeMemory(data.memory, null);
-        data.memory = .null;
+        fcram.free(data.memory);
+        data.memory = &.{};
     }
-
-    data.buffer = try gfx.surface.device.createBuffer(.{
-        .size = .size(@intCast(bytes.len)),
-        .usage = .{ .vertex_buffer = true },
-    }, null);
-    errdefer {
-        gfx.surface.device.destroyBuffer(data.buffer, null);
-        data.buffer = .null;
-    }
-    try gfx.surface.device.bindBufferMemory(data.buffer, data.memory, .size(0));
-
-    const mapped = try gfx.surface.device.mapMemory(data.memory, .size(0), .whole);
-    defer gfx.surface.device.unmapMemory(data.memory);
-    @memcpy(mapped[0..bytes.len], bytes);
-    try gfx.surface.device.flushMappedMemoryRanges(&.{.{
-        .memory = data.memory,
-        .offset = .size(0),
-        .size = .size(@intCast(bytes.len)),
-    }});
-
+    data.gpu_memory = try gfx.surface.device.hostToDevice(data.memory);
+    try gfx.surface.device.flushCachedMemoryRanges(&.{data.memory});
     return data;
 }
 
@@ -829,7 +773,7 @@ fn begin_screen_recording(screen: gfx.Surface.Screen, reset_depth_on_begin: bool
 }
 
 fn draw_depth_clear_pass(cmd: mango.CommandBuffer, state: *ScreenState) void {
-    if (depth_clear_geometry.buffer == .null) return;
+    if (depth_clear_geometry.memory.len == 0) return;
 
     var uniforms = depth_clear_uniforms();
     cmd.setColorWriteMask(.{});
@@ -841,15 +785,16 @@ fn draw_depth_clear_pass(cmd: mango.CommandBuffer, state: *ScreenState) void {
     cmd.setCullMode(.none);
     bind_primary_color_state(state, cmd);
     cmd.bindFloatUniforms(.vertex, 0, &uniforms);
-    cmd.bindVertexBuffersSlice(0, &.{depth_clear_geometry.buffer}, &.{0});
-    state.bound_vertex_buffer = depth_clear_geometry.buffer;
+    cmd.bindVertexBuffers(0, &.{depth_clear_geometry.gpu_memory});
+    state.bound_vertex_buffer = depth_clear_geometry.gpu_memory;
     cmd.draw(6, 0);
     cmd.setColorWriteMask(.rgba);
     cmd.setBlendEquation(normal_blend_equation());
     cmd.setDepthCompareOp(.lt);
     cmd.setDepthWriteEnable(depth_write_enabled);
     apply_alpha_test_state(cmd);
-    cmd.setCullMode(if (culling_enabled) .back else .none);
+    // Front faces are CCW so we cull CW faces.
+    cmd.setCullMode(if (culling_enabled) .cw else .none);
     upload_projection_uniforms(cmd);
     upload_static_uniforms(cmd);
 }
@@ -892,10 +837,8 @@ fn queue_submit_screen(screen: gfx.Surface.Screen, wait_value: u64) !u64 {
         state.recording = false;
         cmd.reset(.none);
     }
-    try gfx.surface.queues.get(.submit).submit(.{
-        .wait_semaphore = if (wait_op) |*op| op else null,
+    try gfx.surface.device.submit(if (wait_op) |*op| op else null, &signal_op, &.{
         .command_buffer = cmd,
-        .signal_semaphore = &signal_op,
     });
     state.recording = false;
     return signal_value;
@@ -910,13 +853,11 @@ fn blit_screen_to_swapchain(screen: gfx.Surface.Screen, wait_value: u64) !u64 {
         .init(semaphore, wait_value);
     const signal_op = mango.SemaphoreQueueOperation.init(semaphore, signal_value);
     try gfx.surface.acquire(screen);
-    try gfx.surface.queues.get(.transfer).blitImage(.{
-        .wait_semaphore = if (wait_op) |*op| op else null,
+    try gfx.surface.device.blitImage(if (wait_op) |*op| op else null, &signal_op, &.{
         .src_image = render_target(screen).color_image,
         .dst_image = gfx.surface.current_image(screen),
         .src_subresource = .full,
         .dst_subresource = .full,
-        .signal_semaphore = &signal_op,
     });
     return signal_value;
 }
@@ -928,8 +869,8 @@ fn set_default_graphics_state(cmd: mango.CommandBuffer, screen: gfx.Surface.Scre
         .extent = .{ .width = dims.width, .height = dims.height },
     };
     cmd.setDepthMode(.z_buffer);
-    cmd.setCullMode(if (culling_enabled) .back else .none);
-    cmd.setFrontFace(.ccw);
+    // Front face is CCW so we cull CW faces.
+    cmd.setCullMode(if (culling_enabled) .cw else .none);
     cmd.setPrimitiveTopology(.triangle_list);
     cmd.setViewport(.{
         .rect = rect,
@@ -1142,8 +1083,8 @@ fn ortho_tilt(left: f32, right: f32, bottom: f32, top: f32, near: f32, far: f32)
 
 fn screen_dimensions(screen: gfx.Surface.Screen) mango.Extent2D {
     return switch (screen) {
-        .top => .{ .width = SCREEN_TOP_WIDTH, .height = SCREEN_TOP_HEIGHT },
-        .bottom => .{ .width = SCREEN_BOTTOM_WIDTH, .height = SCREEN_BOTTOM_HEIGHT },
+        .top => .{ .width = FRAMEBUFFER_TOP_WIDTH, .height = FRAMEBUFFER_TOP_HEIGHT },
+        .bottom => .{ .width = FRAMEBUFFER_BOTTOM_WIDTH, .height = FRAMEBUFFER_BOTTOM_HEIGHT },
     };
 }
 
@@ -1233,36 +1174,14 @@ fn destroy_pending_texture_uploads() void {
 }
 
 fn retire_mesh_data(mesh: *MeshData) void {
-    const vertex_buffer = mesh.vertex.buffer;
-    const index_buffer = mesh.index.buffer;
     mesh.* = .{};
     if (gfx.surface.device == .null) return;
-
-    retire_mesh_buffer(vertex_buffer);
-    retire_mesh_buffer(index_buffer);
-}
-
-fn retire_mesh_buffer(buffer: mango.Buffer) void {
-    if (buffer == .null) return;
-    if (retired_mesh_buffers.add_element(buffer) == null) {
-        if (gfx.frame_active) {
-            retired_mesh_buffer_overflow.append(render_alloc, buffer) catch |err| {
-                std.log.err("3DS Mango retired mesh overflow allocation failed; leaking buffer: {s}", .{@errorName(err)});
-            };
-            return;
-        }
-        collect_retired_resources_after_sync();
-        if (retired_mesh_buffers.add_element(buffer) == null) {
-            gfx.surface.device.waitIdle();
-            destroy_mesh_buffer(buffer);
-        }
-    }
 }
 
 fn retire_texture_data(texture: *TextureData) void {
     const retired = texture.*;
     texture.* = .{};
-    if (retired.memory == .null and retired.image == .null and retired.view == .null) return;
+    if (retired.memory.len == 0 and retired.image == .null and retired.view == .null) return;
     if (gfx.surface.device == .null) return;
 
     if (retired_textures.add_element(retired) == null) {
@@ -1296,19 +1215,6 @@ fn collect_retired_resources_after_sync() void {
 
 fn collect_retired_resources() void {
     if (gfx.surface.device == .null) return;
-
-    for (retired_mesh_buffers.buffer[1..]) |*maybe_buffer| {
-        if (maybe_buffer.*) |buffer| {
-            destroy_mesh_buffer(buffer);
-            maybe_buffer.* = null;
-        }
-    }
-    retired_mesh_buffers.clear();
-
-    for (retired_mesh_buffer_overflow.items) |buffer| {
-        destroy_mesh_buffer(buffer);
-    }
-    retired_mesh_buffer_overflow.clearRetainingCapacity();
 
     for (retired_textures.buffer[1..]) |*maybe_texture| {
         if (maybe_texture.*) |*texture| {
@@ -1384,26 +1290,17 @@ fn destroy_all_textures() void {
 }
 
 fn destroy_mesh_data(mesh: *MeshData) void {
-    if (gfx.surface.device != .null) {
-        destroy_mesh_buffer(mesh.vertex.buffer);
-        destroy_mesh_buffer(mesh.index.buffer);
-    }
     mesh.* = .{};
-}
-
-fn destroy_mesh_buffer(buffer: mango.Buffer) void {
-    if (buffer != .null and gfx.surface.device != .null) {
-        gfx.surface.device.destroyBuffer(buffer, null);
-    }
 }
 
 fn destroy_buffer_data(data: *BufferData) void {
     if (gfx.surface.device != .null) {
-        if (data.buffer != .null) {
-            gfx.surface.device.destroyBuffer(data.buffer, null);
-        }
-        if (data.memory != .null) {
-            gfx.surface.device.freeMemory(data.memory, null);
+        if (data.memory.len != 0) {
+            const fcram = gfx.surface.device.hostAllocator();
+
+            // NOTE: It's unlikely this will be in private (vram) memory;
+            // if so, we must free through freePrivate
+            fcram.free(data.memory);
         }
     }
     data.* = .{};
@@ -1415,31 +1312,26 @@ fn create_render_target(screen: gfx.Surface.Screen) !RenderTarget {
     const color_byte_count: u32 = @intCast(mango.Format.a8b8g8r8_unorm.scale(pixel_count));
     const depth_byte_count: u32 = @intCast(mango.Format.d24_unorm_s8_uint.scale(pixel_count));
 
+    const device = gfx.surface.device;
     var target = RenderTarget{};
-    target.color_memory = try gfx.surface.device.allocateMemory(.{
-        .allocation_size = .size(color_byte_count),
-        .memory_type = .vram_a,
-    }, null);
+    target.color_memory = try device.allocatePrivate(.a, color_byte_count);
     errdefer {
-        gfx.surface.device.freeMemory(target.color_memory, null);
-        target.color_memory = .null;
+        device.freePrivate(target.color_memory);
+        target.color_memory = &.{};
     }
+    target.gpu_color_memory = try device.hostToDevice(target.color_memory);
 
-    target.depth_memory = try gfx.surface.device.allocateMemory(.{
-        .allocation_size = .size(depth_byte_count),
-        .memory_type = .vram_b,
-    }, null);
+    target.depth_memory = try device.allocatePrivate(.b, depth_byte_count);
     errdefer {
-        gfx.surface.device.freeMemory(target.depth_memory, null);
-        target.depth_memory = .null;
+        device.freePrivate(target.depth_memory);
+        target.depth_memory = &.{};
     }
+    target.gpu_depth_memory = try device.hostToDevice(target.depth_memory);
 
-    target.color_image = try gfx.surface.device.createImage(.{
+    target.color_image = try device.createImage(.{
         .flags = .{},
-        .type = .@"2d",
         .tiling = .optimal,
         .usage = .{
-            .transfer_src = true,
             .color_attachment = true,
         },
         .extent = dims,
@@ -1448,15 +1340,13 @@ fn create_render_target(screen: gfx.Surface.Screen) !RenderTarget {
         .array_layers = .@"1",
     }, null);
     errdefer {
-        gfx.surface.device.destroyImage(target.color_image, null);
+        device.destroyImage(target.color_image, null);
         target.color_image = .null;
     }
+    try device.bindImageMemory(target.color_image, target.gpu_color_memory);
 
-    try gfx.surface.device.bindImageMemory(target.color_image, target.color_memory, .size(0));
-
-    target.depth_image = try gfx.surface.device.createImage(.{
+    target.depth_image = try device.createImage(.{
         .flags = .{},
-        .type = .@"2d",
         .tiling = .optimal,
         .usage = .{
             .depth_stencil_attachment = true,
@@ -1467,31 +1357,30 @@ fn create_render_target(screen: gfx.Surface.Screen) !RenderTarget {
         .array_layers = .@"1",
     }, null);
     errdefer {
-        gfx.surface.device.destroyImage(target.depth_image, null);
+        device.destroyImage(target.depth_image, null);
         target.depth_image = .null;
     }
+    try device.bindImageMemory(target.depth_image, target.gpu_depth_memory);
 
-    try gfx.surface.device.bindImageMemory(target.depth_image, target.depth_memory, .size(0));
-
-    target.color_view = try gfx.surface.device.createImageView(.{
+    target.color_view = try device.createImageView(.{
         .type = .@"2d",
         .format = .a8b8g8r8_unorm,
         .image = target.color_image,
         .subresource_range = .full,
     }, null);
     errdefer {
-        gfx.surface.device.destroyImageView(target.color_view, null);
+        device.destroyImageView(target.color_view, null);
         target.color_view = .null;
     }
 
-    target.depth_view = try gfx.surface.device.createImageView(.{
+    target.depth_view = try device.createImageView(.{
         .type = .@"2d",
         .format = .d24_unorm_s8_uint,
         .image = target.depth_image,
         .subresource_range = .full,
     }, null);
     errdefer {
-        gfx.surface.device.destroyImageView(target.depth_view, null);
+        device.destroyImageView(target.depth_view, null);
         target.depth_view = .null;
     }
 
@@ -1512,11 +1401,11 @@ fn destroy_render_target(target: *RenderTarget) void {
         if (target.color_image != .null) {
             gfx.surface.device.destroyImage(target.color_image, null);
         }
-        if (target.depth_memory != .null) {
-            gfx.surface.device.freeMemory(target.depth_memory, null);
+        if (target.depth_memory.len != 0) {
+            gfx.surface.device.freePrivate(target.depth_memory);
         }
-        if (target.color_memory != .null) {
-            gfx.surface.device.freeMemory(target.color_memory, null);
+        if (target.color_memory.len != 0) {
+            gfx.surface.device.freePrivate(target.color_memory);
         }
     }
     target.* = .{};
@@ -1524,21 +1413,20 @@ fn destroy_render_target(target: *RenderTarget) void {
 
 fn create_texture_resources(texture: *TextureData) !void {
     const byte_count = texture_byte_count(texture.width, texture.height);
-    texture.memory = try gfx.surface.device.allocateMemory(.{
-        .allocation_size = .size(byte_count),
-        .memory_type = .vram_a,
-    }, null);
-    errdefer {
-        gfx.surface.device.freeMemory(texture.memory, null);
-        texture.memory = .null;
-    }
+    const device = gfx.surface.device;
 
-    texture.image = try gfx.surface.device.createImage(.{
+    texture.memory = try device.allocatePrivate(.a, byte_count);
+    errdefer {
+        device.freePrivate(texture.memory);
+        texture.memory = &.{};
+        texture.gpu_memory = .empty;
+    }
+    texture.gpu_memory = try device.hostToDevice(texture.memory);
+
+    texture.image = try device.createImage(.{
         .flags = .{},
-        .type = .@"2d",
         .tiling = .optimal,
         .usage = .{
-            .transfer_dst = true,
             .sampled = true,
         },
         .extent = .{ .width = @intCast(texture.width), .height = @intCast(texture.height) },
@@ -1547,13 +1435,13 @@ fn create_texture_resources(texture: *TextureData) !void {
         .array_layers = .@"1",
     }, null);
     errdefer {
-        gfx.surface.device.destroyImage(texture.image, null);
+        device.destroyImage(texture.image, null);
         texture.image = .null;
     }
 
-    try gfx.surface.device.bindImageMemory(texture.image, texture.memory, .size(0));
+    try device.bindImageMemory(texture.image, texture.gpu_memory);
 
-    texture.view = try gfx.surface.device.createImageView(.{
+    texture.view = try device.createImageView(.{
         .type = .@"2d",
         .format = .a8b8g8r8_unorm,
         .image = texture.image,
@@ -1562,52 +1450,28 @@ fn create_texture_resources(texture: *TextureData) !void {
 }
 
 fn upload_texture_pixels(texture: *TextureData, data: []const u8) !void {
+    const device = gfx.surface.device;
     const byte_count = texture_byte_count(texture.width, texture.height);
 
-    const staging_memory = try gfx.surface.device.allocateMemory(.{
-        .allocation_size = .size(byte_count),
-        .memory_type = .fcram_cached,
-    }, null);
-    defer gfx.surface.device.freeMemory(staging_memory, null);
+    // XXX: This allocator is slow!
+    const fcram = device.hostAllocator();
 
-    const staging_buffer = try gfx.surface.device.createBuffer(.{
-        .size = .size(byte_count),
-        .usage = .{
-            .transfer_src = true,
-        },
-    }, null);
-    defer gfx.surface.device.destroyBuffer(staging_buffer, null);
-    try gfx.surface.device.bindBufferMemory(staging_buffer, staging_memory, .size(0));
+    const staging = try fcram.alloc(u8, byte_count);
+    defer fcram.free(staging);
 
-    const texture_buffer = try gfx.surface.device.createBuffer(.{
-        .size = .size(byte_count),
-        .usage = .{
-            .transfer_dst = true,
-        },
-    }, null);
-    defer gfx.surface.device.destroyBuffer(texture_buffer, null);
-    try gfx.surface.device.bindBufferMemory(texture_buffer, texture.memory, .size(0));
+    const gpu_staging = try device.hostToDevice(staging);
 
-    const mapped = try gfx.surface.device.mapMemory(staging_memory, .size(0), .whole);
-    defer gfx.surface.device.unmapMemory(staging_memory);
-    convert_texture_data_tiled_abgr(mapped[0..byte_count], data[0..byte_count], texture.width, texture.height);
-    try gfx.surface.device.flushMappedMemoryRanges(&.{.{
-        .memory = staging_memory,
-        .offset = .size(0),
-        .size = .size(byte_count),
-    }});
+    // XXX: Try u32 reversal (CPU, more cache friendly than swizzling) + copyBufferToImage (GPU) for large textures? (larger than 64x16)
+    convert_texture_data_tiled_abgr(staging, data[0..byte_count], texture.width, texture.height);
+    try device.flushCachedMemoryRanges(&.{staging});
 
     texture_upload_next_sync_value += 1;
     const signal_op = mango.SemaphoreQueueOperation.init(texture_upload_semaphore, texture_upload_next_sync_value);
-    try gfx.surface.queues.get(.transfer).copyBuffer(.{
-        .src_buffer = staging_buffer,
-        .src_offset = .size(0),
-        .dst_buffer = texture_buffer,
-        .dst_offset = .size(0),
-        .size = .size(byte_count),
-        .signal_semaphore = &signal_op,
+    try device.copyBuffer(null, &signal_op, &.{
+        .src_buffer = gpu_staging.slice(0, byte_count),
+        .dst_buffer = texture.gpu_memory.slice(0, byte_count),
     });
-    try gfx.surface.device.waitSemaphores(.init(&.{texture_upload_semaphore}, &.{texture_upload_next_sync_value}), FRAME_SYNC_TIMEOUT_NS);
+    try device.waitSemaphores(.init(&.{texture_upload_semaphore}, &.{texture_upload_next_sync_value}), FRAME_SYNC_TIMEOUT_NS);
 }
 
 fn destroy_texture_data(texture: *TextureData) void {
@@ -1618,8 +1482,8 @@ fn destroy_texture_data(texture: *TextureData) void {
         if (texture.image != .null) {
             gfx.surface.device.destroyImage(texture.image, null);
         }
-        if (texture.memory != .null) {
-            gfx.surface.device.freeMemory(texture.memory, null);
+        if (texture.memory.len != 0) {
+            gfx.surface.device.freePrivate(texture.memory);
         }
     }
     texture.* = .{};
@@ -1666,35 +1530,6 @@ fn tiled_pixel_offset(width: u32, x: u32, y: u32) usize {
     const subtile = pica.morton.toIndex(u3, 2, .{ subtile_x, subtile_y });
     const pixel = (tile_y * tiles_per_row + tile_x) * tile_pixels + subtile;
     return @as(usize, pixel) * TEX_BPP;
-}
-
-fn external_memory(data: []const u8) mango.DeviceMemory {
-    const start = std.mem.alignBackward(usize, @intFromPtr(data.ptr), PAGE_SIZE);
-    const end = std.mem.alignForward(usize, @intFromPtr(data.ptr) + data.len, PAGE_SIZE);
-    const physical = horizon.memory.toPhysical(start);
-
-    const raw = ExternalMemoryData{
-        .virtual_page_shifted = @intCast(start >> 12),
-        .physical_page_shifted = @intCast(@intFromEnum(physical) >> 12),
-        .size_page_shifted = @intCast((end - start) >> 12),
-        .heap = .fcram,
-    };
-    return @enumFromInt(@as(u64, @bitCast(raw)));
-}
-
-fn page_offset(data: []const u8) usize {
-    return @intFromPtr(data.ptr) & (PAGE_SIZE - 1);
-}
-
-fn data_page(data: []const u8) usize {
-    return std.mem.alignBackward(usize, @intFromPtr(data.ptr), PAGE_SIZE);
-}
-
-fn is_linear_range(data: []const u8) bool {
-    const start = @intFromPtr(data.ptr);
-    const end = start + data.len;
-    return (start >= horizon.memory.old_linear_heap_begin and end <= horizon.memory.old_linear_heap_end) or
-        (start >= horizon.memory.linear_heap_begin and end <= horizon.memory.linear_heap_end);
 }
 
 fn float_to_u8(v: f32) u8 {
