@@ -20,32 +20,23 @@ pub const Screen = enum {
     bottom,
 };
 
-const SwapchainState = struct {
-    surface: mango.Surface,
-    swapchain: mango.Swapchain = .null,
-    memories: [SWAP_IMAGE_COUNT]mango.DeviceMemory = @splat(.null),
-    memory_infos: [SWAP_IMAGE_COUNT]mango.SwapchainCreateInfo.ImageMemoryInfo = undefined,
+const DisplayState = struct {
+    display: mango.Display,
+    width: u16,
+    height: u16,
+    memory: []const u8 = &.{},
+    memory_infos: [SWAP_IMAGE_COUNT]mango.DeviceSlice = @splat(.empty),
     images: [SWAP_IMAGE_COUNT]mango.Image = @splat(.null),
-    views: [SWAP_IMAGE_COUNT]mango.ImageView = @splat(.null),
     image_index: u8 = 0,
     image_count: u8 = 0,
     acquired: bool = false,
-
-    fn dimensions(state: SwapchainState) struct { width: u16, height: u16 } {
-        return switch (state.surface) {
-            .top_240x400 => .{ .width = 240, .height = 400 },
-            .bottom_240x320 => .{ .width = 240, .height = 320 },
-            .top_240x800 => .{ .width = 240, .height = 800 },
-            else => unreachable,
-        };
-    }
 };
 
 alloc: std.mem.Allocator,
 device: mango.Device = .null,
-queues: std.EnumArray(mango.QueueFamily, mango.Queue) = .initFill(.null),
-top: SwapchainState = .{ .surface = .top_240x800 },
-bottom: SwapchainState = .{ .surface = .bottom_240x320 },
+// NOTE: Top display wide mode (240x800) is supported by the device IFF it is not an o2DS
+top: DisplayState = .{ .display = .top, .width = 240, .height = 400 },
+bottom: DisplayState = .{ .display = .bottom, .width = 240, .height = 320 },
 sync: bool = true,
 applet_released: bool = false,
 last_capture: ?GraphicsServerGpu.ScreenCapture = null,
@@ -66,10 +57,6 @@ pub fn init(self: *Self, _: u32, _: u32, _: [:0]const u8, _: bool, sync: bool, _
         self.device = .null;
     }
 
-    for (std.enums.values(mango.QueueFamily)) |family| {
-        self.queues.set(family, self.device.getQueue(family));
-    }
-
     self.init_swapchains() catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return error.SurfaceInitFailed,
@@ -83,8 +70,8 @@ pub fn deinit(self: *Self) void {
     if (self.applet_released and !closing) self.resume_from_applet();
 
     self.device.waitIdle();
-    self.deinit_swapchain(&self.bottom);
-    self.deinit_swapchain(&self.top);
+    self.deinit_display(&self.bottom);
+    self.deinit_display(&self.top);
     self.device.destroy();
     self.device = .null;
     self.applet_released = false;
@@ -133,19 +120,15 @@ pub fn set_vsync(self: *Self, sync: bool) !void {
     self.device.waitIdle();
 
     const old_sync = self.sync;
-    const top_surface = self.top.surface;
-    const bottom_surface = self.bottom.surface;
 
-    self.deinit_swapchain(&self.bottom);
-    self.deinit_swapchain(&self.top);
-    self.top = .{ .surface = top_surface };
-    self.bottom = .{ .surface = bottom_surface };
+    self.deinit_display(&self.bottom);
+    self.deinit_display(&self.top);
     self.sync = sync;
 
     self.init_swapchains() catch |err| {
         self.sync = old_sync;
-        self.top = .{ .surface = top_surface };
-        self.bottom = .{ .surface = bottom_surface };
+        self.top = .{ .display = .top, .width = 240, .height = 400 };
+        self.bottom = .{ .display = .bottom, .width = 240, .height = 320 };
         self.init_swapchains() catch |restore_err| {
             std.log.err("3DS Mango swapchain restore failed after vsync toggle: {s}", .{@errorName(restore_err)});
         };
@@ -154,9 +137,9 @@ pub fn set_vsync(self: *Self, sync: bool) !void {
 }
 
 fn init_swapchains(self: *Self) !void {
-    try self.init_swapchain(&self.top);
-    errdefer self.deinit_swapchain(&self.top);
-    try self.init_swapchain(&self.bottom);
+    try self.init_display(&self.top);
+    errdefer self.deinit_display(&self.top);
+    try self.init_display(&self.bottom);
 }
 
 pub fn get_width(_: *Self) u32 {
@@ -170,7 +153,7 @@ pub fn get_height(_: *Self) u32 {
 pub fn acquire(self: *Self, which: Screen) !void {
     const chain = self.screen(which);
     if (chain.acquired) return;
-    chain.image_index = self.device.acquireNextImage(chain.swapchain, ACQUIRE_TIMEOUT_NS) catch |err| {
+    chain.image_index = self.device.acquireNextImage(chain.display, ACQUIRE_TIMEOUT_NS) catch |err| {
         std.log.err("3DS Mango swapchain acquire stalled: screen={}", .{which});
         return err;
     };
@@ -183,12 +166,6 @@ pub fn current_image(self: *Self, which: Screen) mango.Image {
     return chain.images[chain.image_index];
 }
 
-pub fn current_view(self: *Self, which: Screen) mango.ImageView {
-    const chain = self.screen(which);
-    std.debug.assert(chain.acquired);
-    return chain.views[chain.image_index];
-}
-
 pub fn present(self: *Self, which: Screen, wait_value: u64, wait_semaphore: mango.Semaphore) !void {
     const chain = self.screen(which);
     if (!chain.acquired) return;
@@ -198,101 +175,56 @@ pub fn present(self: *Self, which: Screen, wait_value: u64, wait_semaphore: mang
     else
         .init(wait_semaphore, wait_value);
 
-    try self.queues.get(.present).present(.{
-        .wait_semaphore = if (wait_op) |*op| op else null,
-        .swapchain = chain.swapchain,
+    try self.device.present(if (wait_op) |*op| op else null, &.{
+        .display = chain.display,
         .image_index = chain.image_index,
         .flags = .{ .ignore_stereoscopic = true },
     });
     chain.acquired = false;
 }
 
-fn screen(self: *Self, which: Screen) *SwapchainState {
+fn screen(self: *Self, which: Screen) *DisplayState {
     return switch (which) {
         .top => &self.top,
         .bottom => &self.bottom,
     };
 }
 
-fn init_swapchain(self: *Self, chain: *SwapchainState) !void {
-    const dims = chain.dimensions();
-    const bytes_per_image = @as(u32, dims.width) * @as(u32, dims.height) * COLOR_BYTES_PER_PIXEL;
+fn init_display(self: *Self, state: *DisplayState) !void {
+    const bytes_per_image = @as(u32, state.width) * @as(u32, state.height) * COLOR_BYTES_PER_PIXEL;
+    const fcram = self.device.hostAllocator();
 
-    for (0..SWAP_IMAGE_COUNT) |i| {
-        const memory = try self.device.allocateMemory(.{
-            .allocation_size = .size(bytes_per_image),
-            .memory_type = .fcram_cached,
-        }, null);
-        errdefer self.device.freeMemory(memory, null);
+    state.memory = try fcram.alloc(u8, SWAP_IMAGE_COUNT * bytes_per_image);
+    errdefer fcram.free(state.memory);
 
-        chain.memories[i] = memory;
-        chain.memory_infos[i] = .{
-            .memory = memory,
-            .memory_offset = .size(0),
-        };
+    const gpu_display_memory = try self.device.hostToDevice(state.memory);
+
+    for (&state.memory_infos, 0..) |*info, i| {
+        info.* = gpu_display_memory.openSlice(i * bytes_per_image);
     }
-    errdefer for (chain.memories) |memory| {
-        if (memory != .null) self.device.freeMemory(memory, null);
-    };
 
-    chain.swapchain = try self.device.createSwapchain(.{
-        .surface = chain.surface,
+    try self.device.configureDisplay(state.display, &.{
+        .extent = .{ .width = state.width, .height = state.height },
         .present_mode = if (self.sync) .fifo else .mailbox,
-        .image_usage = .{
-            .transfer_dst = true,
-            .color_attachment = true,
-        },
         .image_format = COLOR_FORMAT,
         .image_array_layers = .@"1",
         .image_count = SWAP_IMAGE_COUNT,
-        .image_memory_info = &chain.memory_infos,
-    }, null);
-    errdefer {
-        self.device.destroySwapchain(chain.swapchain, null);
-        chain.swapchain = .null;
-    }
+        .image_memory = &state.memory_infos,
+    });
+    errdefer self.device.resetDisplay(state.display);
 
-    chain.image_count = try self.device.getSwapchainImages(chain.swapchain, &chain.images);
-    errdefer for (&chain.views) |*view| {
-        if (view.* != .null) {
-            self.device.destroyImageView(view.*, null);
-            view.* = .null;
-        }
-    };
-
-    for (chain.images[0..chain.image_count], 0..) |image, i| {
-        chain.views[i] = try self.device.createImageView(.{
-            .type = .@"2d",
-            .format = COLOR_FORMAT,
-            .image = image,
-            .subresource_range = .full,
-        }, null);
-    }
+    state.image_count = try self.device.getDisplayImages(state.display, &state.images);
 }
 
-fn deinit_swapchain(self: *Self, chain: *SwapchainState) void {
-    for (&chain.views) |*view| {
-        if (view.* != .null) {
-            self.device.destroyImageView(view.*, null);
-            view.* = .null;
-        }
-    }
+fn deinit_display(self: *Self, state: *DisplayState) void {
+    self.device.resetDisplay(state.display);
 
-    if (chain.swapchain != .null) {
-        self.device.destroySwapchain(chain.swapchain, null);
-        chain.swapchain = .null;
-    }
+    const fcram = self.device.hostAllocator();
+    fcram.free(state.memory);
+    state.memory = &.{};
 
-    for (&chain.memories) |*memory| {
-        if (memory.* != .null) {
-            self.device.freeMemory(memory.*, null);
-            memory.* = .null;
-        }
-    }
-
-    chain.images = @splat(.null);
-    chain.views = @splat(.null);
-    chain.image_count = 0;
-    chain.image_index = 0;
-    chain.acquired = false;
+    state.images = @splat(.null);
+    state.image_count = 0;
+    state.image_index = 0;
+    state.acquired = false;
 }
