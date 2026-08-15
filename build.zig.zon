@@ -83,8 +83,8 @@
             .hash = "zsflt-0.0.1-_pCibQ4wAABnfZskVOk2Y14F056VNJtuqVpAEzUNBGfl",
         },
         .zitrus = .{
-            .url = "git+https://codeberg.org/GasInfinity/zitrus#e2c90c0fbaff32e151e76351ecb522035939aae2",
-            .hash = "zitrus-0.0.0-Ewix9NNzHACfeAvGCedgdUIrUOY6_g1Oaus3TPNkHpHB",
+            .url = "git+https://codeberg.org/GasInfinity/zitrus.git?ref=simply-mango#c48239bb94e75ed9e77a03e82ad8d50f4694d546",
+            .hash = "zitrus-0.0.0-Ewix9P6pHAAbZmDwWDS-rhhtODvJ4ERuotARrZvtAseE",
         },
     },
     .paths = .{
