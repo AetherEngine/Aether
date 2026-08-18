@@ -170,7 +170,7 @@ pub fn present(self: *Self, which: Screen, wait_value: u64, wait_semaphore: mang
     const chain = self.screen(which);
     if (!chain.acquired) return;
 
-    const wait_op: ?mango.SemaphoreQueueOperation = if (wait_value == 0)
+    const wait_op: ?mango.SemaphoreOperation = if (wait_value == 0)
         null
     else
         .init(wait_semaphore, wait_value);

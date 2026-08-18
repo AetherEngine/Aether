@@ -14,9 +14,8 @@ const SlotSource = @import("../../audio/stream.zig").SlotSource;
 const PcmFormat = @import("../../audio/stream.zig").PcmFormat;
 
 const horizon = zitrus.horizon;
-const hardware = zitrus.hardware;
-const csnd_hw = hardware.csnd;
 const ChannelSound = horizon.services.ChannelSound;
+const CsndCommand = ChannelSound.Command;
 const Thread = thread_mod.Thread;
 
 const DEVICE_SAMPLE_RATE: u32 = 44_100;
@@ -49,13 +48,7 @@ const COMMAND_OFFSET: u32 = 0;
 const COMMAND_NONE: i16 = -1;
 const COMMAND_COMPLETION_POLL_COUNT: usize = 2048;
 
-const ChannelId = enum(u8) {
-    _,
-
-    fn init(value: u5) ChannelId {
-        return @enumFromInt(@as(u8, value));
-    }
-};
+const Channel = ChannelSound.Channel;
 
 const SlotState = enum(u8) {
     inactive = 0,
@@ -99,11 +92,11 @@ var slots: [NUM_SLOTS]Slot = init_slots();
 var audio_alloc: std.mem.Allocator = undefined;
 var audio_io: std.Io = undefined;
 var snd: ?ChannelSound = null;
-var snd_mutex: horizon.Object = .none;
+var snd_mutex: horizon.Mutex = .none;
 var snd_shm_block: horizon.MemoryBlock = .none;
 var snd_shm: ?[]align(horizon.heap.page_size) u8 = null;
 var output_data: ?[]align(horizon.heap.page_size) u8 = null;
-var channel: ChannelId = .init(0);
+var channel: Channel.Id = .channel(0);
 var audio_thread: ?Thread = null;
 var stream_io_thread: ?Thread = null;
 var running: std.atomic.Value(u8) = std.atomic.Value(u8).init(0);
@@ -145,8 +138,8 @@ pub fn init() audio_api.InitError!void {
     const shm_ptr = horizon.heap.allocShared(SHM_SIZE);
     const shm_slice = shm_ptr[0..SHM_SIZE];
 
-    const init_handles = send_initialize(snd.?) catch |err| return init_failed("initialize CSND", err);
-    snd_mutex = @bitCast(init_handles.mutex);
+    const init_handles = snd.?.sendInitialize(SHM_SIZE, STATUS_DSP_OFFSET, STATUS_CHANNEL_OFFSET, STATUS_CAPTURE_OFFSET, STATUS_EXTRA_OFFSET) catch |err| return init_failed("initialize CSND", err);
+    snd_mutex = init_handles.mutex;
     snd_shm_block = init_handles.shared_memory;
     errdefer {
         snd_shm_block.close();
@@ -160,7 +153,7 @@ pub fn init() audio_api.InitError!void {
     @memset(shm_slice, 0);
     snd_shm = shm_slice;
 
-    const mask = send_acquire_channels(snd.?) catch |err| return init_failed("acquire CSND channels", err);
+    const mask: u32 = @bitCast(snd.?.sendAcquireSoundChannels() catch |err| return init_failed("acquire CSND channels", err));
     channel = choose_channel(mask) orelse {
         std.debug.panic("3DS audio init failed: no CSND channel available, mask=0x{x:0>8}", .{mask});
     };
@@ -293,7 +286,7 @@ pub fn deinit() void {
         snd_shm_block.close();
         snd_shm_block = .none;
     }
-    if (object_is_valid(snd_mutex)) {
+    if (object_is_valid(snd_mutex.sync.obj)) {
         snd_mutex.close();
         snd_mutex = .none;
     }
@@ -663,14 +656,20 @@ fn start_looping_output() !void {
         });
     }
 
-    const flags = channel_flags(channel, DEVICE_SAMPLE_RATE, .loop);
-    const volumes = csnd_volume(1.0, 0.0);
-    try execute_commands(&.{raw_command(.set_channel, SetChannelParam{
-        .flags = flags,
+    const volumes: Channel.Volume = csnd_volume(1.0, 1.0);
+    try execute_commands(&.{.setChannelSound(.none, .{
+        .control = .{
+            .channel = channel,
+            .linearly_interpolate = true,
+            .repeat = .loop,
+            .format = .pcm16,
+            .disable_pause = true,
+            .sample_rate = .rate(DEVICE_SAMPLE_RATE),
+        },
         .channel_volume = volumes,
         .capture_volume = volumes,
-        .address0 = physical_addr,
-        .address1 = physical_addr,
+        .address = physical,
+        .second_address = physical,
         .size = TOTAL_OUTPUT_BYTES,
     })});
 }
@@ -688,7 +687,7 @@ fn reset_looping_output() !void {
 fn stop_channel() void {
     if (snd == null or snd_shm == null) return;
     stream_started.store(0, .release);
-    execute_commands(&.{channel_command(.set_channel_playback, channel, PlaybackParam{ .operation = .stop })}) catch {};
+    execute_commands(&.{.setChannelPlayback(.none, .playback(channel, .stop))}) catch {};
 }
 
 fn samples_since(start_ns: u96) u64 {
@@ -722,9 +721,9 @@ fn execute_commands(cmds: []const CsndCommand) !void {
         const dst: *CsndCommand = @ptrCast(@alignCast(shm[off..].ptr));
         dst.* = cmd_value;
         dst.next = if (i + 1 == cmds.len)
-            COMMAND_NONE
+            .none
         else
-            @intCast(COMMAND_OFFSET + (i + 1) * @sizeOf(CsndCommand));
+            .offset(@intCast(COMMAND_OFFSET + (i + 1) * @sizeOf(CsndCommand)));
         dst.first_finished = false;
     }
     flush_cache_or_panic("CSND command list", bytes);
@@ -745,15 +744,13 @@ fn unlock_command_buffer() void {
 }
 
 fn lock_csnd_mutex() void {
-    const mutex: horizon.Mutex = @bitCast(snd_mutex);
-    mutex.wait(.none) catch |err| {
+    snd_mutex.wait(.none) catch |err| {
         std.debug.panic("3DS audio command failed: wait CSND mutex: {s}", .{@errorName(err)});
     };
 }
 
 fn unlock_csnd_mutex() void {
-    const mutex: horizon.Mutex = @bitCast(snd_mutex);
-    mutex.release();
+    snd_mutex.release();
 }
 
 fn wait_command_completion_or_panic(shm: []align(horizon.heap.page_size) u8, bytes: []u8, cmd_count: usize) void {
@@ -771,102 +768,23 @@ fn wait_command_completion_or_panic(shm: []align(horizon.heap.page_size) u8, byt
         @tagName(first.id),
         second_id,
         cmd_count,
-        @as(u16, @bitCast(first.next)),
+        @as(u16, @intFromEnum(first.next)),
     });
-}
-
-fn channel_command(id: CommandId, ch: ChannelId, payload: anytype) CsndCommand {
-    var cmd_value: CsndCommand = .{
-        .next = COMMAND_NONE,
-        .id = id,
-        .first_finished = false,
-        ._padding0 = @splat(0),
-        .parameters = @splat(0),
-    };
-    std.mem.writeInt(u32, cmd_value.parameters[0..4], @intFromEnum(ch), .little);
-    const bytes = std.mem.asBytes(&payload);
-    if (4 + bytes.len > cmd_value.parameters.len) {
-        @compileError("CSND channel command payload is too large");
-    }
-    @memcpy(cmd_value.parameters[4..][0..bytes.len], bytes);
-    return cmd_value;
-}
-
-fn raw_command(id: CommandId, payload: anytype) CsndCommand {
-    var cmd_value: CsndCommand = .{
-        .next = COMMAND_NONE,
-        .id = id,
-        .first_finished = false,
-        ._padding0 = @splat(0),
-        .parameters = @splat(0),
-    };
-    const bytes = std.mem.asBytes(&payload);
-    if (bytes.len > cmd_value.parameters.len) {
-        @compileError("CSND raw command payload is too large");
-    }
-    @memcpy(cmd_value.parameters[0..bytes.len], bytes);
-    return cmd_value;
-}
-
-fn send_initialize(sound: ChannelSound) !ChannelSound.Handles {
-    const data = horizon.tls.get();
-    return switch ((try data.ipc.sendRequest(sound.session, ChannelSound.command.Initialize, .{
-        .shared_memory_size = SHM_SIZE,
-        .dsp_state_offset = STATUS_DSP_OFFSET,
-        .channel_state_offset = STATUS_CHANNEL_OFFSET,
-        .capture_unit_state_offset = STATUS_CAPTURE_OFFSET,
-        .direct_sound_state_offset = STATUS_EXTRA_OFFSET,
-    }, .{})).cases()) {
-        .success => |s| s.value.handles.wrapped,
-        .failure => |code| horizon.unexpectedResult(code),
-    };
-}
-
-fn send_acquire_channels(sound: ChannelSound) !u32 {
-    const data = horizon.tls.get();
-    return switch ((try data.ipc.sendRequest(sound.session, AcquireSoundChannels, .{}, .{})).cases()) {
-        .success => |s| s.value.available,
-        .failure => |code| horizon.unexpectedResult(code),
-    };
 }
 
 fn object_is_valid(obj: horizon.Object) bool {
     return @as(u32, @bitCast(obj)) != 0;
 }
 
-fn choose_channel(mask: u32) ?ChannelId {
+fn choose_channel(mask: u32) ?Channel.Id {
     if (mask == 0) return null;
-    return .init(@intCast(@ctz(mask)));
+    return .channel(@intCast(@ctz(mask)));
 }
 
-fn sample_rate_timer(rate: u32) csnd_hw.SampleRate {
-    return .rate(@intCast(sample_rate_timer_raw(rate)));
-}
-
-fn sample_rate_timer_raw(rate: u32) u32 {
-    return std.math.clamp(67_027_964 / rate, 0x42, 0xFFFF);
-}
-
-fn channel_flags(ch: ChannelId, rate: u32, loop_mode: csnd_hw.Channel.Repeat) u32 {
-    const SOUND_LINEAR_INTERP: u32 = 1 << 6;
-    const SOUND_ENABLE: u32 = 1 << 14;
-    const SOUND_FORMAT_16BIT: u32 = 1 << 12;
-    return (@intFromEnum(ch) & 0x1F) |
-        SOUND_LINEAR_INTERP |
-        (@as(u32, @intFromEnum(loop_mode)) << 10) |
-        SOUND_FORMAT_16BIT |
-        SOUND_ENABLE |
-        (sample_rate_timer_raw(rate) << 16);
-}
-
-fn csnd_volume(volume: f32, pan: f32) u32 {
-    if (volume == 1.0 and pan == 0.0) return 0x40004000;
-
-    const vol = std.math.clamp(volume, 0.0, 1.0);
-    const rpan = std.math.clamp((pan + 1.0) / 2.0, 0.0, 1.0);
-    const left: u32 = @intFromFloat(vol * (1.0 - rpan) * @as(f32, 32768.0));
-    const right: u32 = @intFromFloat(vol * rpan * @as(f32, 32768.0));
-    return left | (right << 16);
+fn csnd_volume(volume: f32, pan: f32) Channel.Volume {
+    const vol_norm: u15 = @trunc(std.math.clamp(volume * 32767.0, 0, std.math.maxInt(i16)));
+    const pan_norm: i16 = @trunc(std.math.clamp(pan * 32767.0, std.math.minInt(i16), std.math.maxInt(i16)));
+    return .init(vol_norm, pan_norm);
 }
 
 fn is_linear_audio_ptr(ptr: usize) bool {
@@ -1122,68 +1040,3 @@ fn stream_io_thread_fn() void {
         observed_wakeup = stream_wakeup_sequence.load(.acquire);
     }
 }
-
-const CommandId = enum(u16) {
-    set_channel_playback = 0x0000,
-    set_channel_paused = 0x0001,
-    set_channel_format = 0x0002,
-    set_channel_second_buffer = 0x0003,
-    set_channel_repeat = 0x0004,
-    set_channel_sample_rate = 0x0008,
-    set_channel_volume = 0x0009,
-    set_channel_buffer = 0x000A,
-    set_channel = 0x000E,
-};
-
-const AcquireSoundChannels = horizon.ipc.Command(ChannelSound.command.Id, .acquire_sound_channels, struct {}, struct {
-    available: u32,
-});
-
-const CsndCommand = extern struct {
-    next: i16,
-    id: CommandId,
-    first_finished: bool,
-    _padding0: [3]u8,
-    parameters: [24]u8,
-};
-
-const PlaybackParam = extern struct {
-    const Operation = enum(u32) { stop = 0, start = 1 };
-    operation: Operation,
-    _unused0: [16]u8 = @splat(0),
-};
-
-const FormatParam = extern struct {
-    format: hardware.LsbRegister(csnd_hw.Channel.Format),
-    _unused0: [16]u8 = @splat(0),
-};
-
-const RepeatParam = extern struct {
-    repeat: hardware.LsbRegister(csnd_hw.Channel.Repeat),
-    _unused0: [16]u8 = @splat(0),
-};
-
-const SampleRateParam = extern struct {
-    sample_rate: hardware.LsbRegister(csnd_hw.SampleRate),
-    _unused0: [16]u8 = @splat(0),
-};
-
-const VolumeParam = extern struct {
-    volume: csnd_hw.Channel.Volume,
-    _unused0: [16]u8 = @splat(0),
-};
-
-const BufferParam = extern struct {
-    address: hardware.PhysicalAddress,
-    size: u32,
-    _unused0: [12]u8 = @splat(0),
-};
-
-const SetChannelParam = extern struct {
-    flags: u32,
-    channel_volume: u32,
-    capture_volume: u32,
-    address0: u32,
-    address1: u32,
-    size: u32,
-};
