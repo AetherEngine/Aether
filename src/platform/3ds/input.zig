@@ -8,7 +8,7 @@ const gfx = @import("../gfx.zig");
 
 const horizon = zitrus.horizon;
 const Hid = horizon.services.Hid;
-const IrRst = @import("irrst.zig");
+const IrRst = horizon.services.IrRst;
 const SoftwareKeyboard = horizon.services.Applet.Application.SoftwareKeyboard;
 
 const IR_UPDATE_MS = 10;
