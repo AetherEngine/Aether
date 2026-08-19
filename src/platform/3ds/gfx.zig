@@ -94,6 +94,8 @@ pub const DrawState = struct {
     mat: Mat4,
     tex_id: u32,
     fog_enabled: u32 = 0,
+    fog_near: f32 = 0.0,
+    fog_far: f32 = 0.0,
     fog_start: f32 = 0.0,
     fog_end: f32 = 0.0,
     fog_color: [3]f32 = .{ 0.0, 0.0, 0.0 },
@@ -290,31 +292,39 @@ pub fn set_depth_write(enabled: bool) void {
     }
 }
 
-// NOTE: Fog is really inaccurate if not near, this is because the LUT has only 128 entries
-// and we're using non-linear depth causing the relevant entries to fall within only
-// 1 or 2 entries. This is amplified by using large far distances in the perspective projection.
-//
-// Either use non-linear depth (W-Buffering is supported), in which case the
-// projection matrix must be changed for this (we don't control it here); or 
-// have nearer far distances in the perspective projection.
-pub fn set_fog(enabled: bool, start: f32, end: f32, r: f32, g: f32, b: f32) void {
+pub fn set_fog(enabled: bool, near: f32, far: f32, start: f32, end: f32, r: f32, g: f32, b: f32) void {
+    const linear_depth = far > near and far > 0.0;
+    std.debug.assert(!enabled or linear_depth);
     draw_state.fog_enabled = @intFromBool(enabled);
+    draw_state.fog_near = near;
+    draw_state.fog_far = far;
     draw_state.fog_start = start;
     draw_state.fog_end = end;
     draw_state.fog_color = .{ r, g, b };
 
     const state = screen_state(current_screen);
     if (initialized and state.recording) {
+        const dims = screen_dimensions(current_screen);
+        // PICA W-buffering multiplies post-divide Z by clip W. Mapping the
+        // depth range to 1/far therefore produces
+        // (view_depth - near) / (far - near).
+        state.command_buffer.setDepthMode(if (linear_depth) .w_buffer else .z_buffer);
+        state.command_buffer.setViewport(.{
+            .rect = .{
+                .offset = .{ .x = 0, .y = 0 },
+                .extent = .{ .width = dims.width, .height = dims.height },
+            },
+            .min_depth = 0.0,
+            .max_depth = if (linear_depth) 1.0 / far else 1.0,
+        });
         state.command_buffer.setTextureCombinersEffect(if (enabled) .fog else .none);
 
         if (enabled) {
-            state.command_buffer.setFogColor(&.{@trunc(r * 255), @trunc(g * 255), @trunc(b * 255)});
+            state.command_buffer.setFogColor(&.{ @trunc(r * 255), @trunc(g * 255), @trunc(b * 255) });
 
-            // NOTE: Why? to recreate or destroy a LUT it must not be referenced by the command buffer.
+            // A fog table cannot be recreated while it is bound in Mango's state.
             state.command_buffer.bindFogTable(.null);
-
-            // HACK: hardcoded
-            var ctx: FogTableContext = .{ .near = 0.1, .far = 256, .start = start, .end = end };
+            var ctx: FogTableContext = .{ .near = near, .far = far, .start = start, .end = end };
             gfx.surface.device.recreateFogLookupTable(fog_lut, .{
                 .map = &FogTableContext.map,
                 .context = &ctx,
@@ -331,9 +341,9 @@ const FogTableContext = struct {
     end: f32,
 
     pub fn map(raw: ?*anyopaque, x: f32) callconv(.c) f32 {
-        const ctx: *const FogTableContext = @alignCast(@ptrCast(raw));
-        const z = ctx.far*ctx.near/((1.0-x)*(ctx.far-ctx.near)+ctx.near);
-        return std.math.clamp((ctx.end-z)/(ctx.end-ctx.start), 0.0, 1.0);
+        const ctx: *const FogTableContext = @ptrCast(@alignCast(raw));
+        const view_depth = ctx.near + x * (ctx.far - ctx.near);
+        return std.math.clamp((ctx.end - view_depth) / (ctx.end - ctx.start), 0.0, 1.0);
     }
 };
 
@@ -377,7 +387,7 @@ pub fn set_render_state(state: *const Rendering.RenderState) void {
     set_culling(state.cull);
     set_clip_planes(state.clip_planes);
     set_uv_offset(state.uv_offset[0], state.uv_offset[1]);
-    set_fog(state.fog.enabled, state.fog.start, state.fog.end, state.fog.color[0], state.fog.color[1], state.fog.color[2]);
+    set_fog(state.fog.enabled, state.fog.near, state.fog.far, state.fog.start, state.fog.end, state.fog.color[0], state.fog.color[1], state.fog.color[2]);
     set_proj_matrix(&state.proj);
     set_view_matrix(&state.view);
     bind_texture(if (state.texture.is_null()) Texture.Default.handle else state.texture);
@@ -590,7 +600,7 @@ fn create_mesh_buffer_data(data: []const u8, label: []const u8) ?MeshBufferData 
     gfx.surface.device.flushCachedMemoryRanges(&.{data}) catch {};
 
     const gpu_memory = gfx.surface.device.hostToDevice(data) catch {
-        std.log.err("3DS Mango {s} mesh update received non-linear memory; use std.process.Init.gpa for mesh storage", .{ label });
+        std.log.err("3DS Mango {s} mesh update received non-linear memory; use std.process.Init.gpa for mesh storage", .{label});
         return null;
     };
 
@@ -793,6 +803,16 @@ fn begin_screen_recording(screen: gfx.Surface.Screen) !mango.CommandBuffer {
 
     state.recording = true;
     state.render_open = true;
+    set_fog(
+        draw_state.fog_enabled != 0,
+        draw_state.fog_near,
+        draw_state.fog_far,
+        draw_state.fog_start,
+        draw_state.fog_end,
+        draw_state.fog_color[0],
+        draw_state.fog_color[1],
+        draw_state.fog_color[2],
+    );
     return cmd;
 }
 
@@ -854,14 +874,15 @@ fn set_default_graphics_state(cmd: mango.CommandBuffer, screen: gfx.Surface.Scre
         .offset = .{ .x = 0, .y = 0 },
         .extent = .{ .width = dims.width, .height = dims.height },
     };
-    cmd.setDepthMode(.z_buffer);
+    const linear_depth = draw_state.fog_far > draw_state.fog_near and draw_state.fog_far > 0.0;
+    cmd.setDepthMode(if (linear_depth) .w_buffer else .z_buffer);
     // Front face is CCW so we cull CW faces.
     cmd.setCullMode(if (culling_enabled) .cw else .none);
     cmd.setPrimitiveTopology(.triangle_list);
     cmd.setViewport(.{
         .rect = rect,
         .min_depth = 0.0,
-        .max_depth = 1.0,
+        .max_depth = if (linear_depth) 1.0 / draw_state.fog_far else 1.0,
     });
     cmd.setScissor(.inside(rect));
     bind_primary_color_state(state, cmd);
@@ -1026,11 +1047,11 @@ fn mat4_to_uniform_rows(mat: Mat4) [4][4]f32 {
 // - z -> [0, 1] to [0, -1]
 fn get_projection_transform() Mat4 {
     return .{ .data = .{
-        .{0, -1, 0, 0},
-        .{1, 0, 0,  0},
-        .{0, 0, -1, 0},
-        .{0, 0, 0,  1},
-    }};
+        .{ 0, -1, 0, 0 },
+        .{ 1, 0, 0, 0 },
+        .{ 0, 0, -1, 0 },
+        .{ 0, 0, 0, 1 },
+    } };
 }
 
 fn screen_dimensions(screen: gfx.Surface.Screen) mango.Extent2D {

@@ -797,7 +797,7 @@ pub fn set_uv_offset(u: f32, v: f32) void {
     advance_stall();
 }
 
-pub fn set_fog(enabled: bool, start: f32, end: f32, r: f32, g: f32, b: f32) void {
+pub fn set_fog(enabled: bool, _: f32, _: f32, start: f32, end: f32, r: f32, g: f32, b: f32) void {
     if (enabled) {
         const ri: u32 = @intFromFloat(@max(0.0, @min(1.0, r)) * 255.0);
         const gi: u32 = @intFromFloat(@max(0.0, @min(1.0, g)) * 255.0);
@@ -842,7 +842,7 @@ pub fn set_render_state(state: *const Rendering.RenderState) void {
     set_culling(state.cull);
     set_clip_planes(state.clip_planes);
     set_uv_offset(state.uv_offset[0], state.uv_offset[1]);
-    set_fog(state.fog.enabled, state.fog.start, state.fog.end, state.fog.color[0], state.fog.color[1], state.fog.color[2]);
+    set_fog(state.fog.enabled, state.fog.near, state.fog.far, state.fog.start, state.fog.end, state.fog.color[0], state.fog.color[1], state.fog.color[2]);
     set_proj_matrix(&state.proj);
     set_view_matrix(&state.view);
     bind_texture(if (state.texture.is_null()) Texture.Default.handle else state.texture);
