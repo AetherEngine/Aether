@@ -8,6 +8,10 @@ pub const BlendMode = enum {
 
 pub const FogState = struct {
     enabled: bool = false,
+    /// A valid near/far pair also selects linear W-buffer depth on 3DS.
+    /// Leave both at zero for non-perspective passes with fog disabled.
+    near: f32 = 0.0,
+    far: f32 = 0.0,
     start: f32 = 0.0,
     end: f32 = 0.0,
     color: [3]f32 = .{ 0.0, 0.0, 0.0 },

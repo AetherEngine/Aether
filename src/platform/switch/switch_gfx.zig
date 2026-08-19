@@ -247,7 +247,7 @@ pub fn set_depth_write(enabled: bool) void {
     if (initialized and swapchain.recording) bind_depth_state();
 }
 
-pub fn set_fog(enabled: bool, start: f32, end: f32, r: f32, g: f32, b: f32) void {
+pub fn set_fog(enabled: bool, _: f32, _: f32, start: f32, end: f32, r: f32, g: f32, b: f32) void {
     draw_state.fog_enabled = @intFromBool(enabled);
     draw_state.fog_start = start;
     draw_state.fog_end = end;
@@ -280,7 +280,7 @@ pub fn set_render_state(state: *const Rendering.RenderState) void {
     set_culling(state.cull);
     set_clip_planes(state.clip_planes);
     set_uv_offset(state.uv_offset[0], state.uv_offset[1]);
-    set_fog(state.fog.enabled, state.fog.start, state.fog.end, state.fog.color[0], state.fog.color[1], state.fog.color[2]);
+    set_fog(state.fog.enabled, state.fog.near, state.fog.far, state.fog.start, state.fog.end, state.fog.color[0], state.fog.color[1], state.fog.color[2]);
     set_proj_matrix(&state.proj);
     set_view_matrix(&state.view);
     bind_texture(if (state.texture.is_null()) Texture.Default.handle else state.texture);
