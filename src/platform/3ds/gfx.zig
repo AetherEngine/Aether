@@ -176,7 +176,7 @@ pub fn init() gfx_api.InitError!void {
     _ = render_io;
     command_pool = gfx.surface.device.createCommandPool(.{
         .initial_command_buffers = COMMAND_BUFFER_COUNT,
-    }, null) catch |err| switch (err) {
+    }) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return error.GfxInitFailed,
     };
@@ -192,8 +192,8 @@ pub fn init() gfx_api.InitError!void {
     top_state.command_buffer = command_buffers[0];
     bottom_state.command_buffer = command_buffers[1];
 
-    fog_lut = gfx.surface.device.createFogLookupTable(.{}, null) catch return error.GfxInitFailed;
-    basic_shader = gfx.surface.device.createShader(.init(.psh, &basic_vert, "main"), null) catch return error.GfxInitFailed;
+    fog_lut = gfx.surface.device.createFogLookupTable(.{}) catch return error.GfxInitFailed;
+    basic_shader = gfx.surface.device.createShader(.init(.psh, &basic_vert, "main")) catch return error.GfxInitFailed;
     vertex_input = create_vertex_input() catch return error.GfxInitFailed;
     texture_sampler = gfx.surface.device.createSampler(.{
         .mag_filter = .nearest,
@@ -205,21 +205,21 @@ pub fn init() gfx_api.InitError!void {
         .min_lod = 0,
         .max_lod = 0,
         .border_color = @splat(0),
-    }, null) catch return error.GfxInitFailed;
+    }) catch return error.GfxInitFailed;
 
-    top_frame_semaphore = gfx.surface.device.createSemaphore(.initial_zero, null) catch return error.GfxInitFailed;
+    top_frame_semaphore = gfx.surface.device.createSemaphore(.initial_zero) catch return error.GfxInitFailed;
     errdefer {
-        gfx.surface.device.destroySemaphore(top_frame_semaphore, null);
+        gfx.surface.device.destroySemaphore(top_frame_semaphore);
         top_frame_semaphore = .null;
     }
-    bottom_frame_semaphore = gfx.surface.device.createSemaphore(.initial_zero, null) catch return error.GfxInitFailed;
+    bottom_frame_semaphore = gfx.surface.device.createSemaphore(.initial_zero) catch return error.GfxInitFailed;
     errdefer {
-        gfx.surface.device.destroySemaphore(bottom_frame_semaphore, null);
+        gfx.surface.device.destroySemaphore(bottom_frame_semaphore);
         bottom_frame_semaphore = .null;
     }
-    texture_upload_semaphore = gfx.surface.device.createSemaphore(.initial_zero, null) catch return error.GfxInitFailed;
+    texture_upload_semaphore = gfx.surface.device.createSemaphore(.initial_zero) catch return error.GfxInitFailed;
     errdefer {
-        gfx.surface.device.destroySemaphore(texture_upload_semaphore, null);
+        gfx.surface.device.destroySemaphore(texture_upload_semaphore);
         texture_upload_semaphore = .null;
     }
     top_next_sync_value = 0;
@@ -304,19 +304,12 @@ pub fn set_fog(enabled: bool, near: f32, far: f32, start: f32, end: f32, r: f32,
 
     const state = screen_state(current_screen);
     if (initialized and state.recording) {
-        const dims = screen_dimensions(current_screen);
         // PICA W-buffering multiplies post-divide Z by clip W. Mapping the
         // depth range to 1/far therefore produces
         // (view_depth - near) / (far - near).
         state.command_buffer.setDepthMode(if (linear_depth) .w_buffer else .z_buffer);
-        state.command_buffer.setViewport(.{
-            .rect = .{
-                .offset = .{ .x = 0, .y = 0 },
-                .extent = .{ .width = dims.width, .height = dims.height },
-            },
-            .min_depth = 0.0,
-            .max_depth = if (linear_depth) 1.0 / far else 1.0,
-        });
+        // [0, -1.0] -> [0, 1]
+        state.command_buffer.setDepthParameters(if (linear_depth) -1.0 / far else -1.0, 0);
         state.command_buffer.setTextureCombinersEffect(if (enabled) .fog else .none);
 
         if (enabled) {
@@ -782,7 +775,7 @@ fn create_vertex_input() !mango.VertexInputLayout {
             .offset = @offsetOf(vertex.Vertex, "uv"),
         },
     };
-    return gfx.surface.device.createVertexInputLayout(.init(&bindings, &attributes, &.{}), null);
+    return gfx.surface.device.createVertexInputLayout(.init(&bindings, &attributes, &.{}));
 }
 
 fn begin_screen_recording(screen: gfx.Surface.Screen) !mango.CommandBuffer {
@@ -879,11 +872,7 @@ fn set_default_graphics_state(cmd: mango.CommandBuffer, screen: gfx.Surface.Scre
     // Front face is CCW so we cull CW faces.
     cmd.setCullMode(if (culling_enabled) .cw else .none);
     cmd.setPrimitiveTopology(.triangle_list);
-    cmd.setViewport(.{
-        .rect = rect,
-        .min_depth = 0.0,
-        .max_depth = if (linear_depth) 1.0 / draw_state.fog_far else 1.0,
-    });
+    cmd.setViewport(rect);
     cmd.setScissor(.inside(rect));
     bind_primary_color_state(state, cmd);
     cmd.setBlendEquation(normal_blend_equation());
@@ -891,7 +880,8 @@ fn set_default_graphics_state(cmd: mango.CommandBuffer, screen: gfx.Surface.Scre
     cmd.setDepthTestEnable(true);
     cmd.setDepthCompareOp(.lt);
     cmd.setDepthWriteEnable(depth_write_enabled);
-    cmd.setDepthBias(0.0);
+    // [0, -1] -> [0, 1]
+    cmd.setDepthParameters(if (linear_depth) -1.0 / draw_state.fog_far else -1.0, 0.0);
     cmd.setLogicOpEnable(false);
     cmd.setLogicOp(.copy);
     apply_alpha_test_state(cmd);
@@ -1210,36 +1200,36 @@ fn cleanup_renderer_resources() void {
     destroy_render_target(&top_target);
 
     if (fog_lut != .null) {
-        gfx.surface.device.destroyFogLookupTable(fog_lut, null);
+        gfx.surface.device.destroyFogLookupTable(fog_lut);
         fog_lut = .null;
     }
     if (vertex_input != .null) {
-        gfx.surface.device.destroyVertexInputLayout(vertex_input, null);
+        gfx.surface.device.destroyVertexInputLayout(vertex_input);
         vertex_input = .null;
     }
     if (basic_shader != .null) {
-        gfx.surface.device.destroyShader(basic_shader, null);
+        gfx.surface.device.destroyShader(basic_shader);
         basic_shader = .null;
     }
     if (texture_sampler != .null) {
-        gfx.surface.device.destroySampler(texture_sampler, null);
+        gfx.surface.device.destroySampler(texture_sampler);
         texture_sampler = .null;
     }
     if (bottom_frame_semaphore != .null) {
-        gfx.surface.device.destroySemaphore(bottom_frame_semaphore, null);
+        gfx.surface.device.destroySemaphore(bottom_frame_semaphore);
         bottom_frame_semaphore = .null;
     }
     if (texture_upload_semaphore != .null) {
-        gfx.surface.device.destroySemaphore(texture_upload_semaphore, null);
+        gfx.surface.device.destroySemaphore(texture_upload_semaphore);
         texture_upload_semaphore = .null;
     }
     if (top_frame_semaphore != .null) {
-        gfx.surface.device.destroySemaphore(top_frame_semaphore, null);
+        gfx.surface.device.destroySemaphore(top_frame_semaphore);
         top_frame_semaphore = .null;
     }
     if (command_pool != .null) {
         gfx.surface.device.freeCommandBuffers(command_pool, &command_buffers);
-        gfx.surface.device.destroyCommandPool(command_pool, null);
+        gfx.surface.device.destroyCommandPool(command_pool);
         command_pool = .null;
     }
     command_buffers = @splat(.null);
@@ -1301,9 +1291,9 @@ fn create_render_target(screen: gfx.Surface.Screen) !RenderTarget {
         .format = .a8b8g8r8_unorm,
         .mip_levels = .@"1",
         .array_layers = .@"1",
-    }, null);
+    });
     errdefer {
-        device.destroyImage(target.color_image, null);
+        device.destroyImage(target.color_image);
         target.color_image = .null;
     }
     try device.bindImageMemory(target.color_image, target.gpu_color_memory);
@@ -1318,9 +1308,9 @@ fn create_render_target(screen: gfx.Surface.Screen) !RenderTarget {
         .format = .d24_unorm_s8_uint,
         .mip_levels = .@"1",
         .array_layers = .@"1",
-    }, null);
+    });
     errdefer {
-        device.destroyImage(target.depth_image, null);
+        device.destroyImage(target.depth_image);
         target.depth_image = .null;
     }
     try device.bindImageMemory(target.depth_image, target.gpu_depth_memory);
@@ -1330,9 +1320,9 @@ fn create_render_target(screen: gfx.Surface.Screen) !RenderTarget {
         .format = .a8b8g8r8_unorm,
         .image = target.color_image,
         .subresource_range = .full,
-    }, null);
+    });
     errdefer {
-        device.destroyImageView(target.color_view, null);
+        device.destroyImageView(target.color_view);
         target.color_view = .null;
     }
 
@@ -1341,9 +1331,9 @@ fn create_render_target(screen: gfx.Surface.Screen) !RenderTarget {
         .format = .d24_unorm_s8_uint,
         .image = target.depth_image,
         .subresource_range = .full,
-    }, null);
+    });
     errdefer {
-        device.destroyImageView(target.depth_view, null);
+        device.destroyImageView(target.depth_view);
         target.depth_view = .null;
     }
 
@@ -1353,16 +1343,16 @@ fn create_render_target(screen: gfx.Surface.Screen) !RenderTarget {
 fn destroy_render_target(target: *RenderTarget) void {
     if (gfx.surface.device != .null) {
         if (target.depth_view != .null) {
-            gfx.surface.device.destroyImageView(target.depth_view, null);
+            gfx.surface.device.destroyImageView(target.depth_view);
         }
         if (target.color_view != .null) {
-            gfx.surface.device.destroyImageView(target.color_view, null);
+            gfx.surface.device.destroyImageView(target.color_view);
         }
         if (target.depth_image != .null) {
-            gfx.surface.device.destroyImage(target.depth_image, null);
+            gfx.surface.device.destroyImage(target.depth_image);
         }
         if (target.color_image != .null) {
-            gfx.surface.device.destroyImage(target.color_image, null);
+            gfx.surface.device.destroyImage(target.color_image);
         }
         if (target.depth_memory.len != 0) {
             gfx.surface.device.freePrivate(target.depth_memory);
@@ -1396,9 +1386,9 @@ fn create_texture_resources(texture: *TextureData) !void {
         .format = .a8b8g8r8_unorm,
         .mip_levels = .@"1",
         .array_layers = .@"1",
-    }, null);
+    });
     errdefer {
-        device.destroyImage(texture.image, null);
+        device.destroyImage(texture.image);
         texture.image = .null;
     }
 
@@ -1409,7 +1399,7 @@ fn create_texture_resources(texture: *TextureData) !void {
         .format = .a8b8g8r8_unorm,
         .image = texture.image,
         .subresource_range = .full,
-    }, null);
+    });
 }
 
 fn upload_texture_pixels(texture: *TextureData, data: []const u8) !void {
@@ -1440,10 +1430,10 @@ fn upload_texture_pixels(texture: *TextureData, data: []const u8) !void {
 fn destroy_texture_data(texture: *TextureData) void {
     if (gfx.surface.device != .null) {
         if (texture.view != .null) {
-            gfx.surface.device.destroyImageView(texture.view, null);
+            gfx.surface.device.destroyImageView(texture.view);
         }
         if (texture.image != .null) {
-            gfx.surface.device.destroyImage(texture.image, null);
+            gfx.surface.device.destroyImage(texture.image);
         }
         if (texture.memory.len != 0) {
             gfx.surface.device.freePrivate(texture.memory);
