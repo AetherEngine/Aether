@@ -10,7 +10,7 @@ pub const InitError = error{
 /// instance state (window handle, dimensions, etc.) so methods take a
 /// `*Backend` self pointer. This struct is never instantiated -- it
 /// exists purely to drive `assertImpl` at comptime.
-pub fn Interface(comptime Backend: type) type {
+pub fn InterfaceType(comptime Backend: type) type {
     return struct {
         init: fn (*Backend, u32, u32, [:0]const u8, bool, bool, bool) InitError!void,
         deinit: fn (*Backend) void,
@@ -24,7 +24,7 @@ pub fn Interface(comptime Backend: type) type {
 /// Verify at comptime that `Backend` exposes every decl in `Interface`
 /// with the exact expected signature.
 pub fn assert_impl(comptime Backend: type) void {
-    const I = Interface(Backend);
+    const I = InterfaceType(Backend);
     inline for (std.meta.fields(I)) |f| {
         if (!@hasDecl(Backend, f.name)) {
             @compileError("surface backend " ++ @typeName(Backend) ++ " is missing decl: " ++ f.name);

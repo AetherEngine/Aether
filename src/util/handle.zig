@@ -1,28 +1,29 @@
 const std = @import("std");
+const assert = std.debug.assert;
 
-pub fn Handle(comptime Tag: type) type {
+pub fn HandleType(comptime Tag: type) type {
     return packed struct(u32) {
-        const Self = @This();
+        const Handle = @This();
 
         index: u24 = 0,
         generation: u8 = 0,
 
         pub const TagType = Tag;
-        pub const none: Self = .{};
+        pub const none: Handle = .{};
 
-        pub fn from_index(index: usize, generation: u8) Self {
-            std.debug.assert(index <= std.math.maxInt(u24));
+        pub fn from_index(index: usize, generation: u8) Handle {
+            assert(index <= std.math.maxInt(u24));
             return .{
                 .index = @intCast(index),
                 .generation = generation,
             };
         }
 
-        pub fn is_null(self: Self) bool {
+        pub fn is_null(self: Handle) bool {
             return self.index == 0;
         }
 
-        pub fn raw_index(self: Self) usize {
+        pub fn raw_index(self: Handle) usize {
             return self.index;
         }
     };
@@ -33,7 +34,7 @@ pub fn Handle(comptime Tag: type) type {
 /// Slot 0 is reserved for the null handle. A removed slot increments its
 /// generation before it can be reused, so old handles fail validation instead
 /// of silently naming the new occupant.
-pub fn ResourceTable(comptime T: type, comptime SIZE: usize, comptime H: type) type {
+pub fn ResourceTableType(comptime T: type, comptime SIZE: usize, comptime H: type) type {
     comptime {
         if (SIZE < 2)
             @compileError("SIZE must be >= 2 (index 0 is reserved as the null handle).");
@@ -42,14 +43,14 @@ pub fn ResourceTable(comptime T: type, comptime SIZE: usize, comptime H: type) t
     }
 
     return struct {
-        const Self = @This();
+        const ResourceTable = @This();
 
         slots: [SIZE]?T = undefined,
         generations: [SIZE]u8 = undefined,
         head: usize = 1,
         count: usize = 0,
 
-        pub fn init() Self {
+        pub fn init() ResourceTable {
             return .{
                 .slots = @splat(null),
                 .generations = @splat(1),
@@ -58,7 +59,7 @@ pub fn ResourceTable(comptime T: type, comptime SIZE: usize, comptime H: type) t
             };
         }
 
-        pub fn clear(self: *Self) void {
+        pub fn clear(self: *ResourceTable) void {
             for (1..SIZE) |i| {
                 if (self.slots[i] != null) {
                     self.bump_generation(i);
@@ -69,20 +70,20 @@ pub fn ResourceTable(comptime T: type, comptime SIZE: usize, comptime H: type) t
             self.count = 0;
         }
 
-        pub fn len(self: *const Self) usize {
+        pub fn len(self: *const ResourceTable) usize {
             return self.count;
         }
 
-        pub fn capacity(self: *const Self) usize {
+        pub fn capacity(self: *const ResourceTable) usize {
             _ = self;
             return SIZE - 1;
         }
 
-        pub fn is_full(self: *const Self) bool {
+        pub fn is_full(self: *const ResourceTable) bool {
             return self.count == self.capacity();
         }
 
-        pub fn add(self: *Self, value: T) ?H {
+        pub fn add(self: *ResourceTable, value: T) ?H {
             if (self.is_full()) return null;
 
             var idx = self.head;
@@ -98,7 +99,7 @@ pub fn ResourceTable(comptime T: type, comptime SIZE: usize, comptime H: type) t
             return null;
         }
 
-        pub fn remove(self: *Self, handle: H) bool {
+        pub fn remove(self: *ResourceTable, handle: H) bool {
             const idx = self.valid_index(handle) orelse return false;
             self.slots[idx] = null;
             if (self.count > 0) self.count -= 1;
@@ -107,28 +108,28 @@ pub fn ResourceTable(comptime T: type, comptime SIZE: usize, comptime H: type) t
             return true;
         }
 
-        pub fn get(self: *const Self, handle: H) ?T {
+        pub fn get(self: *const ResourceTable, handle: H) ?T {
             const idx = self.valid_index(handle) orelse return null;
             return self.slots[idx];
         }
 
-        pub fn get_ptr(self: *Self, handle: H) ?*T {
+        pub fn get_ptr(self: *ResourceTable, handle: H) ?*T {
             const idx = self.valid_index(handle) orelse return null;
             if (self.slots[idx]) |*value| return value;
             return null;
         }
 
-        pub fn update(self: *Self, handle: H, value: T) bool {
+        pub fn update(self: *ResourceTable, handle: H, value: T) bool {
             const ptr = self.get_ptr(handle) orelse return false;
             ptr.* = value;
             return true;
         }
 
-        pub fn raw_index(self: *const Self, handle: H) ?usize {
+        pub fn raw_index(self: *const ResourceTable, handle: H) ?usize {
             return self.valid_index(handle);
         }
 
-        fn valid_index(self: *const Self, handle: H) ?usize {
+        fn valid_index(self: *const ResourceTable, handle: H) ?usize {
             const idx = handle.raw_index();
             if (idx == 0 or idx >= SIZE) return null;
             if (self.generations[idx] != handle.generation) return null;
@@ -136,7 +137,7 @@ pub fn ResourceTable(comptime T: type, comptime SIZE: usize, comptime H: type) t
             return idx;
         }
 
-        fn bump_generation(self: *Self, idx: usize) void {
+        fn bump_generation(self: *ResourceTable, idx: usize) void {
             self.generations[idx] +%= 1;
             if (self.generations[idx] == 0) self.generations[idx] = 1;
         }
@@ -151,8 +152,8 @@ pub fn ResourceTable(comptime T: type, comptime SIZE: usize, comptime H: type) t
 
 test "resource table rejects stale handles after slot reuse" {
     const TextureTag = enum {};
-    const TextureHandle = Handle(TextureTag);
-    const Table = ResourceTable(u32, 3, TextureHandle);
+    const TextureHandle = HandleType(TextureTag);
+    const Table = ResourceTableType(u32, 3, TextureHandle);
 
     var table = Table.init();
     const first = table.add(10) orelse return error.TestExpectedNonNull;

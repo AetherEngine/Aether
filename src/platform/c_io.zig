@@ -15,7 +15,7 @@ const platform_paths = switch (options.config.platform) {
     else => unreachable,
 };
 
-const nintendo_c = @import("nintendo_c.zig");
+const nintendo_c = @import("switch/c.zig");
 const c = nintendo_c.c;
 const switch_c = nintendo_c.switch_c;
 const log = std.log.scoped(.aether_io);
@@ -587,6 +587,7 @@ fn netInterfaceName(_: ?*anyopaque, _: net.Interface) net.Interface.NameError!ne
 
 fn netLookup(_: ?*anyopaque, host_name: net.HostName, resolved: *Io.Queue(net.HostName.LookupResult), opts: net.HostName.LookupOptions) net.HostName.LookupError!void {
     defer resolved.close(io());
+
     try ensureNetworking();
 
     var name_buf: [net.HostName.max_len:0]u8 = undefined;

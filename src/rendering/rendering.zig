@@ -1,6 +1,6 @@
 pub const mesh = @import("mesh.zig");
-pub const Mesh = mesh.Mesh;
-pub const MeshData = mesh.MeshData;
+pub const MeshType = mesh.MeshType;
+pub const MeshDataType = mesh.MeshDataType;
 pub const vertex = @import("Vertex.zig");
 pub const Vertex = vertex.Vertex;
 pub const Transform = @import("transform.zig");
@@ -17,7 +17,7 @@ pub fn set_state(state: *const RenderState) void {
     gfx.api.set_render_state(state);
 }
 
-pub fn draw(comptime V: type, m: *Mesh(V), model: *const @import("../math/math.zig").Mat4) void {
+pub fn draw(comptime V: type, m: *MeshType(V), model: *const @import("../math/math.zig").Mat4) void {
     m.draw(model);
 }
 

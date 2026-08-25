@@ -37,7 +37,7 @@ pub const Config = struct {
     allocator: ?std.mem.Allocator = null,
 };
 
-pub fn Interface(comptime Backend: type) type {
+pub fn InterfaceType(comptime Backend: type) type {
     return struct {
         join: fn (Backend.Handle) void,
         set_priority: fn (Backend.Handle, Priority) anyerror!void,
@@ -53,7 +53,7 @@ pub fn assert_impl(comptime Backend: type) void {
         @compileError("thread backend " ++ @typeName(Backend) ++ " is missing decl: Handle");
     }
 
-    const I = Interface(Backend);
+    const I = InterfaceType(Backend);
     inline for (std.meta.fields(I)) |f| {
         if (!@hasDecl(Backend, f.name)) {
             @compileError("thread backend " ++ @typeName(Backend) ++ " is missing decl: " ++ f.name);

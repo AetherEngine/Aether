@@ -123,9 +123,9 @@ var tex_set: vk.DescriptorSet = .null_handle;
 var tex_sampler: vk.Sampler = .null_handle;
 
 const TextureRec = struct { image: vk.Image, memory: vk.DeviceMemory, view: vk.ImageView, width: u32, height: u32 };
-var textures = Util.ResourceTable(TextureRec, TEXTURE_CAP, Texture.Handle).init();
+var textures = Util.ResourceTableType(TextureRec, TEXTURE_CAP, Texture.Handle).init();
 
-var meshes = Util.ResourceTable(MeshData, 8192, Mesh.Handle).init();
+var meshes = Util.ResourceTableType(MeshData, 8192, Mesh.Handle).init();
 var render_pipeline: PipelineData = .{};
 
 var swap_state: Swapchain.PresentState = .optimal;
@@ -862,6 +862,7 @@ fn init_pipeline(layout: vertex.VertexLayout) !PipelineData {
 
     const vertex_attribute_descriptions = try render_alloc.alloc(vk.VertexInputAttributeDescription, layout.attributes.len);
     defer render_alloc.free(vertex_attribute_descriptions);
+
     for (vertex_attribute_descriptions, 0..) |*desc, i| {
         const attr = layout.attributes[i];
 
@@ -1211,6 +1212,7 @@ pub fn create_texture(desc: *const Texture.UploadDesc) gfx_api.CreateTextureErro
     {
         const mapped = context.logical_device.mapMemory(staging_mem, 0, vk.WHOLE_SIZE, .{}) catch return error.GfxInitFailed;
         defer context.logical_device.unmapMemory(staging_mem);
+
         const dst: [*]u8 = @ptrCast(@alignCast(mapped));
         @memcpy(dst, data);
     }
@@ -1387,6 +1389,7 @@ pub fn update_texture(handle: Texture.Handle, data: []align(16) u8) void {
     {
         const mapped = context.logical_device.mapMemory(staging_mem, 0, vk.WHOLE_SIZE, .{}) catch return;
         defer context.logical_device.unmapMemory(staging_mem);
+
         const dst: [*]u8 = @ptrCast(@alignCast(mapped));
         @memcpy(dst, data);
     }

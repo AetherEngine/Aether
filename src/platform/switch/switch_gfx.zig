@@ -132,8 +132,8 @@ var image_descriptor_count: u32 = 1;
 var image_descriptors_dirty = true;
 var image_descriptor_table_indices: [Swapchain.MAX_FRAMES]u32 = @splat(0);
 
-var meshes = Util.ResourceTable(MeshData, 8192, Mesh.Handle).init();
-var texture_slots = Util.ResourceTable(TextureData, MAX_TEXTURES, Texture.Handle).init();
+var meshes = Util.ResourceTableType(MeshData, 8192, Mesh.Handle).init();
+var texture_slots = Util.ResourceTableType(TextureData, MAX_TEXTURES, Texture.Handle).init();
 var retired_texture_slots: std.ArrayList(RetiredTextureSlot) = .empty;
 var render_pipeline: PipelineData = undefined;
 var render_pipeline_initialized = false;

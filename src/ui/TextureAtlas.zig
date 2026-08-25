@@ -1,4 +1,6 @@
 const std = @import("std");
+const assert = std.debug.assert;
+
 const SNORM_UV_MAX: i32 = 32767;
 const SNORM_UV_STEPS: i32 = SNORM_UV_MAX + 1;
 // Avoid exact atlas boundaries without visibly cropping the source tile. The
@@ -19,10 +21,10 @@ pub const TextureAtlas = struct {
     max_guard_v: u16,
 
     pub fn init(res_x: u32, res_y: u32, rows: u32, cols: u32) TextureAtlas {
-        std.debug.assert(std.math.isPowerOfTwo(res_x));
-        std.debug.assert(std.math.isPowerOfTwo(res_y));
-        std.debug.assert(std.math.isPowerOfTwo(rows));
-        std.debug.assert(std.math.isPowerOfTwo(cols));
+        assert(std.math.isPowerOfTwo(res_x));
+        assert(std.math.isPowerOfTwo(res_y));
+        assert(std.math.isPowerOfTwo(rows));
+        assert(std.math.isPowerOfTwo(cols));
         const guards = edge_guards();
         return .{
             .col_log2 = @intCast(@ctz(cols)),
@@ -46,13 +48,13 @@ pub const TextureAtlas = struct {
 
     /// SNORM16 U coordinate for the left edge of tile column x.
     pub fn tileU(self: TextureAtlas, x: u32) i16 {
-        std.debug.assert(x < (@as(u32, 1) << self.col_log2));
+        assert(x < (@as(u32, 1) << self.col_log2));
         return @intCast(@as(i32, @intCast(x)) * self.tileSpanU() + @as(i32, self.min_guard_u));
     }
 
     /// SNORM16 V coordinate for the top edge of tile row y.
     pub fn tileV(self: TextureAtlas, y: u32) i16 {
-        std.debug.assert(y < (@as(u32, 1) << self.row_log2));
+        assert(y < (@as(u32, 1) << self.row_log2));
         return @intCast(@as(i32, @intCast(y)) * self.tileSpanV() + @as(i32, self.min_guard_v));
     }
 

@@ -1,3 +1,6 @@
+const std = @import("std");
+const assert = std.debug.assert;
+
 pub const Color = packed struct(u32) {
     r: u8,
     g: u8,
@@ -16,5 +19,5 @@ pub const Color = packed struct(u32) {
 };
 
 comptime {
-    @import("std").debug.assert(@sizeOf(Color) == 4);
+    assert(@sizeOf(Color) == 4);
 }

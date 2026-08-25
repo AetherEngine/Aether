@@ -43,6 +43,8 @@ pub const TextInputSession = struct {
     }
 
     pub fn deinit(self: *TextInputSession, alloc: std.mem.Allocator) void {
+        defer self.* = undefined;
+
         self.buffer.deinit(alloc);
     }
 

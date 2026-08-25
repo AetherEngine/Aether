@@ -28,7 +28,7 @@ const required_device_extensions = if (is_macos)
 else
     [_][*:0]const u8{ vk.extensions.khr_swapchain.name, vk.extensions.khr_synchronization_2.name, vk.extensions.khr_create_renderpass_2.name, vk.extensions.ext_extended_dynamic_state_3.name };
 
-const Self = @This();
+const Context = @This();
 
 allocator: std.mem.Allocator,
 vkb: BaseWrapper,
@@ -42,7 +42,7 @@ graphics_queue: Queue,
 present_queue: Queue,
 memory_properties: vk.PhysicalDeviceMemoryProperties,
 
-fn create_instance(self: *Self, name: [:0]const u8) !void {
+fn create_instance(self: *Context, name: [:0]const u8) !void {
     // Initialize Vulkan instance
     const get_proc_addr: GetInstanceProcAddrFn = @ptrCast(@alignCast(try sdl3.vulkan.getVkGetInstanceProcAddr()));
     self.vkb = vk.BaseWrapper.load(get_proc_addr);
@@ -107,7 +107,7 @@ fn create_instance(self: *Self, name: [:0]const u8) !void {
 }
 
 const gfx = @import("../../gfx.zig");
-fn create_surface(self: *Self) !void {
+fn create_surface(self: *Context) !void {
     // Create a window surface. SDL's Vk handle types come from its own
     // translate-c headers, so bridge to the vulkan-zig enums via usize.
     var raw_surface: sdl3.c.VkSurfaceKHR = undefined;
@@ -141,7 +141,7 @@ const DeviceCandidate = struct {
     queues: QueueAllocation,
 };
 
-fn pick_device(self: *Self) !DeviceCandidate {
+fn pick_device(self: *Context) !DeviceCandidate {
     const physical_devices = try self.instance.enumeratePhysicalDevicesAlloc(self.allocator);
     defer self.allocator.free(physical_devices);
 
@@ -154,7 +154,7 @@ fn pick_device(self: *Self) !DeviceCandidate {
     return error.NoSuitableDeviceFound;
 }
 
-fn is_device_suitable(self: *Self, p_device: vk.PhysicalDevice) !?DeviceCandidate {
+fn is_device_suitable(self: *Context, p_device: vk.PhysicalDevice) !?DeviceCandidate {
     if (!try self.check_device_extensions_support(p_device)) {
         return null;
     }
@@ -175,7 +175,7 @@ fn is_device_suitable(self: *Self, p_device: vk.PhysicalDevice) !?DeviceCandidat
     return null;
 }
 
-fn check_device_extensions_support(self: *Self, p_device: vk.PhysicalDevice) !bool {
+fn check_device_extensions_support(self: *Context, p_device: vk.PhysicalDevice) !bool {
     const properties_list = try self.instance.enumerateDeviceExtensionPropertiesAlloc(p_device, null, self.allocator);
     defer self.allocator.free(properties_list);
 
@@ -192,7 +192,7 @@ fn check_device_extensions_support(self: *Self, p_device: vk.PhysicalDevice) !bo
     return true;
 }
 
-fn check_device_surface_support(self: *Self, p_device: vk.PhysicalDevice) !bool {
+fn check_device_surface_support(self: *Context, p_device: vk.PhysicalDevice) !bool {
     var format_count: u32 = undefined;
     _ = try self.instance.getPhysicalDeviceSurfaceFormatsKHR(p_device, self.surface, &format_count, null);
 
@@ -202,7 +202,7 @@ fn check_device_surface_support(self: *Self, p_device: vk.PhysicalDevice) !bool 
     return format_count > 0 and present_mode_count > 0;
 }
 
-fn allocate_queues(self: *Self, p_device: vk.PhysicalDevice) !?QueueAllocation {
+fn allocate_queues(self: *Context, p_device: vk.PhysicalDevice) !?QueueAllocation {
     const families = try self.instance.getPhysicalDeviceQueueFamilyPropertiesAlloc(p_device, self.allocator);
     defer self.allocator.free(families);
 
@@ -231,11 +231,11 @@ fn allocate_queues(self: *Self, p_device: vk.PhysicalDevice) !?QueueAllocation {
     return null;
 }
 
-fn device_name(self: *const Self) []const u8 {
+fn device_name(self: *const Context) []const u8 {
     return std.mem.sliceTo(&self.physical_properties.device_name, 0);
 }
 
-fn create_logical_device(self: *Self, candidate: *const DeviceCandidate) !void {
+fn create_logical_device(self: *Context, candidate: *const DeviceCandidate) !void {
     const priority = [_]f32{1};
     const qci = [_]vk.DeviceQueueCreateInfo{
         .{
@@ -308,14 +308,14 @@ fn create_logical_device(self: *Self, candidate: *const DeviceCandidate) !void {
     self.logical_device = Device.init(device, vkd);
 }
 
-pub fn allocate_gpu_buffer(self: *Self, requirements: vk.MemoryRequirements, flags: vk.MemoryPropertyFlags) !vk.DeviceMemory {
+pub fn allocate_gpu_buffer(self: *Context, requirements: vk.MemoryRequirements, flags: vk.MemoryPropertyFlags) !vk.DeviceMemory {
     return try self.logical_device.allocateMemory(&.{
         .allocation_size = requirements.size,
         .memory_type_index = try self.find_memory_type_index(requirements.memory_type_bits, flags),
     }, null);
 }
 
-pub fn find_memory_type_index(self: *Self, memory_type_bits: u32, flags: vk.MemoryPropertyFlags) !u32 {
+pub fn find_memory_type_index(self: *Context, memory_type_bits: u32, flags: vk.MemoryPropertyFlags) !u32 {
     for (self.memory_properties.memory_types[0..self.memory_properties.memory_type_count], 0..) |mem_type, i| {
         if (memory_type_bits & (@as(u32, 1) << @truncate(i)) != 0 and mem_type.property_flags.contains(flags)) {
             return @truncate(i);
@@ -325,8 +325,8 @@ pub fn find_memory_type_index(self: *Self, memory_type_bits: u32, flags: vk.Memo
     return error.NoSuitableMemoryType;
 }
 
-pub fn init(allocator: std.mem.Allocator, name: [:0]const u8) !Self {
-    var self: Self = undefined;
+pub fn init(allocator: std.mem.Allocator, name: [:0]const u8) !Context {
+    var self: Context = undefined;
     self.allocator = allocator;
 
     try self.create_instance(name);
@@ -352,7 +352,9 @@ pub fn init(allocator: std.mem.Allocator, name: [:0]const u8) !Self {
     return self;
 }
 
-pub fn deinit(self: *Self) void {
+pub fn deinit(self: *Context) void {
+    defer self.* = undefined;
+
     self.logical_device.destroyDevice(null);
 
     self.instance.destroySurfaceKHR(self.surface, null);

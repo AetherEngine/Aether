@@ -1,8 +1,9 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const surface_api = @import("../surface.zig");
 const zitrus = @import("zitrus");
 const app_3ds = @import("app.zig");
-const Self = @This();
+const Surface = @This();
 
 const horizon = zitrus.horizon;
 const mango = zitrus.mango;
@@ -41,7 +42,7 @@ sync: bool = true,
 applet_released: bool = false,
 last_capture: ?GraphicsServerGpu.ScreenCapture = null,
 
-pub fn init(self: *Self, _: u32, _: u32, _: [:0]const u8, _: bool, sync: bool, _: bool) surface_api.InitError!void {
+pub fn init(self: *Surface, _: u32, _: u32, _: [:0]const u8, _: bool, sync: bool, _: bool) surface_api.InitError!void {
     const app = app_3ds.currentApplication() orelse return error.SurfaceInitFailed;
 
     self.sync = sync;
@@ -63,7 +64,9 @@ pub fn init(self: *Self, _: u32, _: u32, _: [:0]const u8, _: bool, sync: bool, _
     };
 }
 
-pub fn deinit(self: *Self) void {
+pub fn deinit(self: *Surface) void {
+    defer self.* = undefined;
+
     if (self.device == .null) return;
 
     const closing = self.is_system_closing();
@@ -78,12 +81,12 @@ pub fn deinit(self: *Self) void {
     self.last_capture = null;
 }
 
-pub fn is_system_closing(_: *const Self) bool {
+pub fn is_system_closing(_: *const Surface) bool {
     const app = app_3ds.currentApplication() orelse return true;
     return app.app.flags.must_close;
 }
 
-pub fn suspend_for_applet(self: *Self) !GraphicsServerGpu.ScreenCapture {
+pub fn suspend_for_applet(self: *Surface) !GraphicsServerGpu.ScreenCapture {
     if (self.device == .null) return error.GraphicsNotInitialized;
     if (self.applet_released) return self.last_capture orelse error.GraphicsNotInitialized;
 
@@ -93,7 +96,7 @@ pub fn suspend_for_applet(self: *Self) !GraphicsServerGpu.ScreenCapture {
     return capture;
 }
 
-pub fn resume_from_applet(self: *Self) void {
+pub fn resume_from_applet(self: *Surface) void {
     if (!self.applet_released or self.device == .null) return;
 
     self.device.reacquire() catch |err| {
@@ -104,13 +107,13 @@ pub fn resume_from_applet(self: *Self) void {
     self.last_capture = null;
 }
 
-pub fn update(_: *Self) bool {
+pub fn update(_: *Surface) bool {
     return true;
 }
 
-pub fn draw(_: *Self) void {}
+pub fn draw(_: *Surface) void {}
 
-pub fn set_vsync(self: *Self, sync: bool) !void {
+pub fn set_vsync(self: *Surface, sync: bool) !void {
     if (self.sync == sync) return;
     if (self.device == .null) {
         self.sync = sync;
@@ -136,21 +139,21 @@ pub fn set_vsync(self: *Self, sync: bool) !void {
     };
 }
 
-fn init_swapchains(self: *Self) !void {
+fn init_swapchains(self: *Surface) !void {
     try self.init_display(&self.top);
     errdefer self.deinit_display(&self.top);
     try self.init_display(&self.bottom);
 }
 
-pub fn get_width(_: *Self) u32 {
+pub fn get_width(_: *Surface) u32 {
     return VIRTUAL_WIDTH;
 }
 
-pub fn get_height(_: *Self) u32 {
+pub fn get_height(_: *Surface) u32 {
     return VIRTUAL_HEIGHT;
 }
 
-pub fn acquire(self: *Self, which: Screen) !void {
+pub fn acquire(self: *Surface, which: Screen) !void {
     const chain = self.screen(which);
     if (chain.acquired) return;
     chain.image_index = self.device.acquireNextImage(chain.display, ACQUIRE_TIMEOUT_NS) catch |err| {
@@ -160,13 +163,13 @@ pub fn acquire(self: *Self, which: Screen) !void {
     chain.acquired = true;
 }
 
-pub fn current_image(self: *Self, which: Screen) mango.Image {
+pub fn current_image(self: *Surface, which: Screen) mango.Image {
     const chain = self.screen(which);
-    std.debug.assert(chain.acquired);
+    assert(chain.acquired);
     return chain.images[chain.image_index];
 }
 
-pub fn present(self: *Self, which: Screen, wait_value: u64, wait_semaphore: mango.Semaphore) !void {
+pub fn present(self: *Surface, which: Screen, wait_value: u64, wait_semaphore: mango.Semaphore) !void {
     const chain = self.screen(which);
     if (!chain.acquired) return;
 
@@ -183,14 +186,14 @@ pub fn present(self: *Self, which: Screen, wait_value: u64, wait_semaphore: mang
     chain.acquired = false;
 }
 
-fn screen(self: *Self, which: Screen) *DisplayState {
+fn screen(self: *Surface, which: Screen) *DisplayState {
     return switch (which) {
         .top => &self.top,
         .bottom => &self.bottom,
     };
 }
 
-fn init_display(self: *Self, state: *DisplayState) !void {
+fn init_display(self: *Surface, state: *DisplayState) !void {
     const bytes_per_image = @as(u32, state.width) * @as(u32, state.height) * COLOR_BYTES_PER_PIXEL;
     const fcram = self.device.hostAllocator();
 
@@ -216,7 +219,7 @@ fn init_display(self: *Self, state: *DisplayState) !void {
     state.image_count = try self.device.getDisplayImages(state.display, &state.images);
 }
 
-fn deinit_display(self: *Self, state: *DisplayState) void {
+fn deinit_display(self: *Surface, state: *DisplayState) void {
     self.device.resetDisplay(state.display);
 
     const fcram = self.device.hostAllocator();

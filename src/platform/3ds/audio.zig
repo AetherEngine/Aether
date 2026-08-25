@@ -5,6 +5,7 @@
 //! small pages ahead of the play cursor.
 
 const std = @import("std");
+const assert = std.debug.assert;
 const zitrus = @import("zitrus");
 const app_3ds = @import("app.zig");
 const audio_api = @import("../audio_api.zig");
@@ -45,7 +46,6 @@ const STATUS_CAPTURE_OFFSET: u32 = STATUS_CHANNEL_OFFSET + 12 * 32;
 const STATUS_EXTRA_OFFSET: u32 = STATUS_CAPTURE_OFFSET + 8 * 2;
 const SHM_SIZE: usize = std.mem.alignForward(usize, STATUS_EXTRA_OFFSET + 0x3c, horizon.heap.page_size);
 const COMMAND_OFFSET: u32 = 0;
-const COMMAND_NONE: i16 = -1;
 const COMMAND_COMPLETION_POLL_COUNT: usize = 2048;
 
 const Channel = ChannelSound.Channel;
@@ -853,7 +853,7 @@ fn read_source_short(slot: *Slot, slot_index: usize, dst: []u8) SourceRead {
             const available = fifo.readable();
             const n = (@min(dst.len, available) / frame_size) * frame_size;
             const copied = fifo.read(dst[0..n]);
-            std.debug.assert(copied == n);
+            assert(copied == n);
             if (fifo.readable() < fifo.capacity() / 2) notify_stream_worker();
 
             if (copied == dst.len) break :blk .{ .bytes_read = copied, .status = .ok };
@@ -878,7 +878,7 @@ fn read_source_exact(slot: *Slot, slot_index: usize, dst: []u8) SourceReadStatus
             const fifo = &stream_fifos[slot_index];
             if (fifo.readable() < dst.len) return stream_short_read_status(slot);
             const copied = fifo.read(dst);
-            std.debug.assert(copied == dst.len);
+            assert(copied == dst.len);
             if (fifo.readable() < fifo.capacity() / 2) notify_stream_worker();
             return .ok;
         },
@@ -1001,7 +1001,7 @@ fn worker_refill_slot(slot_index: usize, scratch: []u8, progress: *StreamWorkerP
     if (!stream_slot_is_current(slot, generation)) return n != 0;
 
     const copied = fifo.write(scratch[0..n]);
-    std.debug.assert(copied == n);
+    assert(copied == n);
     progress.bytes_read += n;
 
     if (n == 0 or (stream.byte_length != null and progress.bytes_read >= stream.byte_length.?)) {

@@ -1,6 +1,7 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const c_io = @import("c_io.zig");
-const c = @import("nintendo_c.zig").c;
+const c = @import("switch/c.zig").c;
 
 const ProcessHeap = struct {
     fn alloc(alignment: usize, size: usize) ?*anyopaque {
@@ -53,11 +54,11 @@ fn alloc(
     alignment: std.mem.Alignment,
     _: usize,
 ) ?[*]u8 {
-    std.debug.assert(len > 0);
+    assert(len > 0);
 
     const effective_alignment = @max(alignment.toByteUnits(), @sizeOf(usize));
     const ptr = ProcessHeap.alloc(effective_alignment, len) orelse return null;
-    std.debug.assert(alignment.check(@intFromPtr(ptr)));
+    assert(alignment.check(@intFromPtr(ptr)));
     return @ptrCast(ptr);
 }
 
@@ -68,8 +69,8 @@ fn resize(
     new_len: usize,
     _: usize,
 ) bool {
-    std.debug.assert(memory.len > 0);
-    std.debug.assert(new_len > 0);
+    assert(memory.len > 0);
+    assert(new_len > 0);
     return new_len <= memory.len;
 }
 
@@ -80,8 +81,8 @@ fn remap(
     new_len: usize,
     _: usize,
 ) ?[*]u8 {
-    std.debug.assert(memory.len > 0);
-    std.debug.assert(new_len > 0);
+    assert(memory.len > 0);
+    assert(new_len > 0);
     return if (new_len <= memory.len) memory.ptr else null;
 }
 
@@ -91,6 +92,6 @@ fn dealloc(
     _: std.mem.Alignment,
     _: usize,
 ) void {
-    std.debug.assert(memory.len > 0);
+    assert(memory.len > 0);
     ProcessHeap.free(memory.ptr);
 }

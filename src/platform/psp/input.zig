@@ -83,10 +83,6 @@ pub fn end_text_input_session(_: *core.InputSystem) void {}
 
 // -- helpers -----------------------------------------------------------------
 
-fn buttons_eq_for(field: []const u8, prev: anytype, now: anytype) bool {
-    return @field(prev, field) == @field(now, field);
-}
-
 fn diff_buttons(input: *core.InputSystem, now: ctrl.Data) void {
     const Pair = struct { field: []const u8, button: core.Button };
     const map = [_]Pair{

@@ -163,6 +163,8 @@ pub const InputSystem = struct {
     }
 
     pub fn deinit(self: *InputSystem) void {
+        defer self.* = undefined;
+
         if (!self.initialised) return;
         self.initialised = false;
 
@@ -746,6 +748,7 @@ test "input systems keep device and action state independent" {
     var second = InputSystem{};
     try first.init(std.testing.allocator);
     defer first.deinit();
+
     try second.init(std.testing.allocator);
     defer second.deinit();
 

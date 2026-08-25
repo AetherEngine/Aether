@@ -132,6 +132,8 @@ const NetworkContext = struct {
     }
 
     fn deinit(self: *NetworkContext) void {
+        defer self.* = undefined;
+
         horizon.Io.global.deinitNetwork();
         self.soc.sendDeinitialize();
         self.memory.close();

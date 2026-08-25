@@ -1,9 +1,8 @@
 const std = @import("std");
-const builtin = @import("builtin");
 const vk = @import("vulkan");
 const Context = @import("context.zig");
 
-const Self = @This();
+const SwapChain = @This();
 
 pub const PresentState = enum {
     optimal,
@@ -19,7 +18,7 @@ swap_images: []SwapImage,
 next_image_acquired: vk.Semaphore,
 image_index: u32,
 
-fn choose_swap_surface_format(self: *Self) !vk.SurfaceFormatKHR {
+fn choose_swap_surface_format(self: *SwapChain) !vk.SurfaceFormatKHR {
     const preferred = vk.SurfaceFormatKHR{
         .format = .b8g8r8a8_unorm,
         .color_space = .srgb_nonlinear_khr,
@@ -41,9 +40,8 @@ fn choose_swap_surface_format(self: *Self) !vk.SurfaceFormatKHR {
     return surface_formats[0]; // There must always be at least one supported surface format
 }
 
-const Surface = @import("../surface.zig");
 const gfx = @import("../../gfx.zig");
-fn choose_swap_extent(self: *Self) !vk.Extent2D {
+fn choose_swap_extent(self: *SwapChain) !vk.Extent2D {
     const surface_capabilities = self.surface_capabilities;
 
     // Choose the swap extent
@@ -56,7 +54,7 @@ fn choose_swap_extent(self: *Self) !vk.Extent2D {
     };
 }
 
-fn choose_present_mode(self: *Self) !vk.PresentModeKHR {
+fn choose_present_mode(self: *SwapChain) !vk.PresentModeKHR {
     if (self.vsync) return .fifo_khr;
 
     const present_modes = try self.context.instance.getPhysicalDeviceSurfacePresentModesAllocKHR(
@@ -80,7 +78,7 @@ fn choose_present_mode(self: *Self) !vk.PresentModeKHR {
     return .fifo_khr;
 }
 
-fn create_swapchain(self: *Self, old_handle: vk.SwapchainKHR) !void {
+fn create_swapchain(self: *SwapChain, old_handle: vk.SwapchainKHR) !void {
     self.surface_capabilities = try self.context.instance.getPhysicalDeviceSurfaceCapabilitiesKHR(
         self.context.physical_device,
         self.context.surface,
@@ -133,7 +131,7 @@ fn create_swapchain(self: *Self, old_handle: vk.SwapchainKHR) !void {
     self.swap_images = try self.create_swapchain_images(surface_format.format);
 }
 
-fn acquire_initial_image(self: *Self) !void {
+fn acquire_initial_image(self: *SwapChain) !void {
     var next_image_acquired = try self.context.logical_device.createSemaphore(&.{}, null);
     errdefer self.context.logical_device.destroySemaphore(next_image_acquired, null);
 
@@ -149,12 +147,12 @@ fn acquire_initial_image(self: *Self) !void {
     self.image_index = result.image_index;
 }
 
-fn destroy_swapchain_images(self: *Self) void {
+fn destroy_swapchain_images(self: *SwapChain) void {
     for (self.swap_images) |si| si.deinit(self.context);
     self.context.allocator.free(self.swap_images);
 }
 
-fn create_swapchain_images(self: *Self, format: vk.Format) ![]SwapImage {
+fn create_swapchain_images(self: *SwapChain, format: vk.Format) ![]SwapImage {
     const images = try self.context.logical_device.getSwapchainImagesAllocKHR(self.chain, self.context.allocator);
     defer self.context.allocator.free(images);
 
@@ -172,8 +170,8 @@ fn create_swapchain_images(self: *Self, format: vk.Format) ![]SwapImage {
     return swap_images;
 }
 
-pub fn init(context: *Context, vsync: bool) !Self {
-    var self: Self = undefined;
+pub fn init(context: *Context, vsync: bool) !SwapChain {
+    var self: SwapChain = undefined;
     self.context = context;
     self.vsync = vsync;
 
@@ -184,7 +182,7 @@ pub fn init(context: *Context, vsync: bool) !Self {
     return self;
 }
 
-pub fn recreate(self: *Self) !void {
+pub fn recreate(self: *SwapChain) !void {
     self.context.logical_device.deviceWaitIdle() catch {};
 
     if (self.chain != .null_handle) {
@@ -207,22 +205,24 @@ pub fn recreate(self: *Self) !void {
     };
 }
 
-pub fn deinit(self: *Self) void {
+pub fn deinit(self: *SwapChain) void {
+    defer self.* = undefined;
+
     if (self.chain == .null_handle) return;
     self.destroy_swapchain_images();
     self.context.logical_device.destroySemaphore(self.next_image_acquired, null);
     self.context.logical_device.destroySwapchainKHR(self.chain, null);
 }
 
-pub fn currentImage(self: *Self) vk.Image {
+pub fn currentImage(self: *SwapChain) vk.Image {
     return self.swap_images[self.image_index].image;
 }
 
-pub fn currentSwapImage(self: *Self) *const SwapImage {
+pub fn currentSwapImage(self: *SwapChain) *const SwapImage {
     return &self.swap_images[self.image_index];
 }
 
-pub fn present(self: *Self, cmdbuf: vk.CommandBuffer) !PresentState {
+pub fn present(self: *SwapChain, cmdbuf: vk.CommandBuffer) !PresentState {
     // // Step 1: Make sure the current frame has finished rendering
     const current = self.currentSwapImage();
 

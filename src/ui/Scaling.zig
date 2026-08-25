@@ -1,12 +1,14 @@
 const std = @import("std");
+const assert = std.debug.assert;
+
 const Rendering = @import("../rendering/rendering.zig");
 
 pub const ref_width: u32 = 400;
 pub const ref_height: u32 = 240;
 
 comptime {
-    std.debug.assert(ref_width > 0);
-    std.debug.assert(ref_height > 0);
+    assert(ref_width > 0);
+    assert(ref_height > 0);
 }
 
 /// Returns the current integral scale derived from the active surface dimensions.

@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 
 pub const cache_line_bytes: usize = 64;
 
@@ -13,12 +14,12 @@ pub const Range = struct {
 /// cover complete lines, even when the producer's allocation is only
 /// naturally aligned for its element type.
 pub fn covering_range(ptr: *const anyopaque, len: usize) Range {
-    std.debug.assert(len > 0);
+    assert(len > 0);
 
     const start = std.mem.alignBackward(usize, @intFromPtr(ptr), cache_line_bytes);
     const end = std.mem.alignForward(usize, @intFromPtr(ptr) + len, cache_line_bytes);
     const span = end - start;
-    std.debug.assert(span <= std.math.maxInt(u32));
+    assert(span <= std.math.maxInt(u32));
 
     return .{
         .ptr = @ptrFromInt(start),

@@ -4,7 +4,7 @@ const Util = @import("../util/util.zig");
 const stream_mod = @import("stream.zig");
 
 pub const SoundHandleTag = enum {};
-pub const SoundHandle = Util.Handle(SoundHandleTag);
+pub const SoundHandle = Util.HandleType(SoundHandleTag);
 
 pub const SoundBufferHandle = stream_mod.SoundBufferHandle;
 pub const StreamingSoundHandle = stream_mod.StreamingSoundHandle;
@@ -72,15 +72,15 @@ const VoiceSource = union(enum) {
 /// and assigns the highest-priority ones to real backend slots each tick.
 ///
 /// `Backend` must satisfy the slot-based audio_api.Interface.
-pub fn Mixer(comptime Backend: type) type {
+pub fn MixerType(comptime Backend: type) type {
     return struct {
         pub const MAX_VOICES: usize = 64;
         pub const MAX_BUFFERS: usize = 256;
         pub const MAX_STREAMS: usize = 64;
         const MAX_SLOTS: usize = 32;
 
-        const BufferTable = Util.ResourceTable(SoundBufferResource, MAX_BUFFERS + 1, SoundBufferHandle);
-        const StreamTable = Util.ResourceTable(StreamingSoundResource, MAX_STREAMS + 1, StreamingSoundHandle);
+        const BufferTable = Util.ResourceTableType(SoundBufferResource, MAX_BUFFERS + 1, SoundBufferHandle);
+        const StreamTable = Util.ResourceTableType(StreamingSoundResource, MAX_STREAMS + 1, StreamingSoundHandle);
 
         const VirtualVoice = struct {
             source: VoiceSource,
@@ -501,7 +501,7 @@ test "mixer buffer playback and destroy stop voices" {
         }
     };
 
-    const Mix = Mixer(Backend);
+    const Mix = MixerType(Backend);
     try Mix.init();
     defer Mix.deinit();
 
@@ -539,7 +539,7 @@ test "mixer rejects stale buffers and active stream replay" {
         }
     };
 
-    const Mix = Mixer(Backend);
+    const Mix = MixerType(Backend);
     try Mix.init();
     defer Mix.deinit();
 

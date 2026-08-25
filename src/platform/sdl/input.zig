@@ -200,6 +200,7 @@ pub fn init() input_api.InitError!void {
     // take over from here.
     if (sdl3.gamepad.getGamepads()) |ids| {
         defer sdl3.free(ids);
+
         if (ids.len > 0) open_gamepad(ids[0]);
     } else |_| {}
 

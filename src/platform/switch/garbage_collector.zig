@@ -15,13 +15,13 @@ shared: std.ArrayList(SharedItem) = .empty,
 frame_index: usize = 0,
 completed_frames: u64 = 0,
 
-const Self = @This();
+const GarbageCollector = @This();
 
-pub fn init(allocator: std.mem.Allocator, context: *Context) Self {
+pub fn init(allocator: std.mem.Allocator, context: *Context) GarbageCollector {
     return .{ .allocator = allocator, .context = context };
 }
 
-pub fn defer_destroy_mem_block_after_frame_mask(self: *Self, pending_frame_mask: u32, mem_block: dk.DkMemBlock) !void {
+pub fn defer_destroy_mem_block_after_frame_mask(self: *GarbageCollector, pending_frame_mask: u32, mem_block: dk.DkMemBlock) !void {
     const ptr = mem_block orelse return;
     if ((pending_frame_mask & ((1 << MAX_FRAMES) - 1)) == 0) {
         dk.dkMemBlockDestroy(ptr);
@@ -33,7 +33,7 @@ pub fn defer_destroy_mem_block_after_frame_mask(self: *Self, pending_frame_mask:
     });
 }
 
-pub fn retire_frame(self: *Self, frame_index: usize, was_submitted: bool) void {
+pub fn retire_frame(self: *GarbageCollector, frame_index: usize, was_submitted: bool) void {
     self.frame_index = frame_index % MAX_FRAMES;
     if (was_submitted) self.completed_frames += 1;
     const retired_bit: u32 = @as(u32, 1) << @intCast(self.frame_index);
@@ -53,14 +53,16 @@ pub fn retire_frame(self: *Self, frame_index: usize, was_submitted: bool) void {
     self.shared.shrinkRetainingCapacity(write);
 }
 
-pub fn collect_all(self: *Self) void {
+pub fn collect_all(self: *GarbageCollector) void {
     for (self.shared.items) |item| {
         dk.dkMemBlockDestroy(item.mem_block);
     }
     self.shared.clearRetainingCapacity();
 }
 
-pub fn deinit(self: *Self) void {
+pub fn deinit(self: *GarbageCollector) void {
+    defer self.* = undefined;
+
     self.context.wait_idle("switch gc deinit");
     for (self.shared.items) |item| {
         dk.dkMemBlockDestroy(item.mem_block);

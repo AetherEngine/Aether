@@ -64,6 +64,8 @@ pub const FrameBuffer = struct {
     }
 
     pub fn deinit(self: *FrameBuffer) void {
+        defer self.* = undefined;
+
         self.events_a.deinit(self.alloc);
         self.events_b.deinit(self.alloc);
         self.strings_a.deinit(self.alloc);
@@ -80,10 +82,6 @@ pub const FrameBuffer = struct {
 
     fn pub_events(self: *FrameBuffer) *std.ArrayList(RawEvent) {
         return if (self.accum_is_a) &self.events_b else &self.events_a;
-    }
-
-    fn pub_strings(self: *FrameBuffer) *std.ArrayList(u8) {
-        return if (self.accum_is_a) &self.strings_b else &self.strings_a;
     }
 
     /// Allocate a sequence number and append an event whose `kind` does

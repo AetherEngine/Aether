@@ -10,6 +10,8 @@ pub const Image = struct {
     mode: ColorMode,
 
     pub fn deinit(self: *Image, allocator: std.mem.Allocator) void {
+        defer self.* = undefined;
+
         allocator.free(self.data);
     }
 };
@@ -111,6 +113,7 @@ pub fn load_png_ex(scratch: std.mem.Allocator, render: std.mem.Allocator, reader
         } else if (std.mem.eql(u8, chunk_type, "PLTE")) {
             const chunk_data = try scratch.alloc(u8, length);
             defer scratch.free(chunk_data);
+
             try reader.readSliceAll(chunk_data);
             palette_len = @intCast(length / 3);
             for (0..palette_len) |i| {
@@ -121,6 +124,7 @@ pub fn load_png_ex(scratch: std.mem.Allocator, render: std.mem.Allocator, reader
         } else if (std.mem.eql(u8, chunk_type, "tRNS")) {
             const chunk_data = try scratch.alloc(u8, length);
             defer scratch.free(chunk_data);
+
             try reader.readSliceAll(chunk_data);
             has_trns = true;
             switch (color_type) {
@@ -176,6 +180,7 @@ pub fn load_png_ex(scratch: std.mem.Allocator, render: std.mem.Allocator, reader
     var in_reader: std.Io.Reader = .fixed(idat_buf.items);
     var aw: std.Io.Writer.Allocating = .init(allocator);
     defer aw.deinit();
+
     var decomp: flate.Decompress = .init(&in_reader, .zlib, &.{});
     _ = try decomp.reader.streamRemaining(&aw.writer);
     const raw = aw.written();

@@ -39,10 +39,6 @@ inline fn div_ceil(a: usize, b: usize) usize {
     return (a + b - 1) / b;
 }
 
-inline fn roundup(n: usize, a: usize) usize {
-    return (n + a - 1) & ~(a - 1);
-}
-
 inline fn block_index_for_aligned_address(data: [*]u8, block_idx: u32, alignment: usize) u32 {
     if (alignment <= BLOCK_SIZE) return block_idx;
 
@@ -189,26 +185,6 @@ pub const PoolAlloc = struct {
             }
         }
         return @as(usize, largest) * BLOCK_SIZE;
-    }
-
-    // -- internal: bit manipulation -------------------------------------------
-
-    /// Clear bit `bit` in L0 word `word_idx` and update L1.
-    inline fn clear_bit(self: *PoolAlloc, word_idx: u32, bit: u5) void {
-        self.l0[word_idx] &= ~(@as(u32, 1) << bit);
-        if (self.l0[word_idx] == 0) {
-            const l1_idx = word_idx / WORD_BITS;
-            const l1_bit: u5 = @intCast(word_idx & WORD_MASK);
-            self.l1[l1_idx] &= ~(@as(u32, 1) << l1_bit);
-        }
-    }
-
-    /// Set bit `bit` in L0 word `word_idx` and update L1.
-    inline fn set_bit(self: *PoolAlloc, word_idx: u32, bit: u5) void {
-        self.l0[word_idx] |= @as(u32, 1) << bit;
-        const l1_idx = word_idx / WORD_BITS;
-        const l1_bit: u5 = @intCast(word_idx & WORD_MASK);
-        self.l1[l1_idx] |= @as(u32, 1) << l1_bit;
     }
 
     /// Clear a contiguous range of blocks [start, start+count) in L0/L1.

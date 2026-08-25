@@ -9,7 +9,7 @@ const psp_gfx = if (builtin.os.tag == .psp) @import("../platform/psp/psp_gfx_ge.
 const use_streaming_file_reader = options.config.platform == .nintendo_switch;
 
 pub const TextureHandleTag = enum {};
-pub const Handle = Util.Handle(TextureHandleTag);
+pub const Handle = Util.HandleType(TextureHandleTag);
 
 const Texture = @This();
 
@@ -186,6 +186,8 @@ pub fn load_from_reader(alloc: std.mem.Allocator, reader: *std.Io.Reader, desc: 
 
 /// Frees GPU resources and the pixel buffer.
 pub fn deinit(self: *Texture, alloc: std.mem.Allocator) void {
+    defer self.* = undefined;
+
     gfx.api.destroy_texture(self.handle);
     if (self.backing) |data| alloc.free(data);
     self.backing = null;

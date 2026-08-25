@@ -1,4 +1,3 @@
-const std = @import("std");
 const Vec3 = @import("vec3.zig");
 
 x: f32,
@@ -6,13 +5,13 @@ y: f32,
 z: f32,
 w: f32,
 
-const Self = @This();
+const Quat = @This();
 
-pub fn identity() Self {
+pub fn identity() Quat {
     return .{ .x = 0, .y = 0, .z = 0, .w = 1 };
 }
 
-pub fn fromAxisAngle(axis: Vec3, angle: f32) Self {
+pub fn fromAxisAngle(axis: Vec3, angle: f32) Quat {
     const half = angle * 0.5;
     const s = @sin(half);
     const n = axis.normalize();
@@ -20,7 +19,7 @@ pub fn fromAxisAngle(axis: Vec3, angle: f32) Self {
 }
 
 /// Euler angles in radians: pitch (X), yaw (Y), roll (Z), applied in ZXY order.
-pub fn fromEuler(pitch: f32, yaw: f32, roll: f32) Self {
+pub fn fromEuler(pitch: f32, yaw: f32, roll: f32) Quat {
     const hp = pitch * 0.5;
     const hy = yaw * 0.5;
     const hr = roll * 0.5;
@@ -38,7 +37,7 @@ pub fn fromEuler(pitch: f32, yaw: f32, roll: f32) Self {
     };
 }
 
-pub fn mul(a: Self, b: Self) Self {
+pub fn mul(a: Quat, b: Quat) Quat {
     return .{
         .x = a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
         .y = a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
@@ -47,16 +46,16 @@ pub fn mul(a: Self, b: Self) Self {
     };
 }
 
-pub fn normalize(q: Self) Self {
+pub fn normalize(q: Quat) Quat {
     const len = @sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
     return .{ .x = q.x / len, .y = q.y / len, .z = q.z / len, .w = q.w / len };
 }
 
-pub fn conjugate(q: Self) Self {
+pub fn conjugate(q: Quat) Quat {
     return .{ .x = -q.x, .y = -q.y, .z = -q.z, .w = q.w };
 }
 
-pub fn rotateVec3(q: Self, v: Vec3) Vec3 {
+pub fn rotateVec3(q: Quat, v: Vec3) Vec3 {
     const qv = Vec3.new(q.x, q.y, q.z);
     const t = Vec3.cross(qv, v).scale(2.0);
     return Vec3.add(Vec3.add(v, t.scale(q.w)), Vec3.cross(qv, t));

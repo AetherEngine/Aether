@@ -32,6 +32,8 @@ pub const StateMachine = struct {
     }
 
     pub fn deinit(self: *StateMachine, engine: *Engine) void {
+        defer self.* = undefined;
+
         if (!self.initialized) return;
 
         if (self.has_current) {
@@ -285,6 +287,7 @@ test "state machines keep pending transitions independent" {
 
     try first.init(&engine, &a_state);
     defer first.deinit(&engine);
+
     try second.init(&engine, &b_state);
     defer second.deinit(&engine);
 

@@ -1,4 +1,3 @@
-const std = @import("std");
 const options = @import("options");
 
 pub const gfx = @import("gfx.zig");

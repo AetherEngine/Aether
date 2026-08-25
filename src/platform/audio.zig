@@ -26,7 +26,7 @@ comptime {
 }
 
 /// Platform-independent voice scheduler, wired to the selected backend.
-pub const mix = mixer_mod.Mixer(Api);
+pub const mix = mixer_mod.MixerType(Api);
 
 pub fn init(alloc: std.mem.Allocator, io: std.Io) audio_api.InitError!void {
     Api.setup(alloc, io);

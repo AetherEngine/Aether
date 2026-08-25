@@ -38,8 +38,8 @@ extern "aether_host" fn aether_canvas_height() u32;
 
 var render_alloc: std.mem.Allocator = undefined;
 var render_io: std.Io = undefined;
-var meshes = Util.ResourceTable(u32, MAX_MESHES, Mesh.Handle).init();
-var textures = Util.ResourceTable(u32, 4096, Texture.Handle).init();
+var meshes = Util.ResourceTableType(u32, MAX_MESHES, Mesh.Handle).init();
+var textures = Util.ResourceTableType(u32, 4096, Texture.Handle).init();
 
 pub fn setup(alloc: std.mem.Allocator, io: std.Io) void {
     render_alloc = alloc;

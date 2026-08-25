@@ -24,6 +24,7 @@
 //! per project style guide they go through `std.Io` / `std.process`.
 
 const std = @import("std");
+const assert = std.debug.assert;
 const options = @import("options");
 
 const Io = std.Io;
@@ -80,7 +81,7 @@ pub fn resolve(
     environ_map: *const std.process.Environ.Map,
     app_name: []const u8,
 ) Error!Dirs {
-    std.debug.assert(app_name.len > 0);
+    assert(app_name.len > 0);
 
     // Build-time `-Duse-cwd=true` short-circuits the platform layout and
     // points both dirs at CWD. Handy for `zig build run-game` iteration

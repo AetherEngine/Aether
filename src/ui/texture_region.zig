@@ -2,6 +2,7 @@
 //! destinations.
 
 const std = @import("std");
+const assert = std.debug.assert;
 
 /// Texel-space rect inside a texture atlas. Kept distinct from logical-pixel
 /// destination rects so the two domains can't silently interconvert.
@@ -45,18 +46,18 @@ pub const ElidedSpans = struct {
 /// Asymmetric split (left = dst_w/2, right = dst_w - left) keeps odd
 /// destinations exact.
 pub fn elide_center(region: TextureRegion, dst_w: i16, params: CenterElide) ElidedSpans {
-    std.debug.assert(region.w >= params.min_w);
-    std.debug.assert(region.w <= params.max_w);
-    std.debug.assert(dst_w >= params.min_w);
-    std.debug.assert(dst_w <= params.max_w);
-    std.debug.assert(dst_w <= region.w);
+    assert(region.w >= params.min_w);
+    assert(region.w <= params.max_w);
+    assert(dst_w >= params.min_w);
+    assert(dst_w <= params.max_w);
+    assert(dst_w <= region.w);
 
     const left_w: i16 = @divTrunc(dst_w, 2);
     const right_w: i16 = dst_w - left_w;
 
-    std.debug.assert(left_w >= 1);
-    std.debug.assert(right_w >= 1);
-    std.debug.assert(left_w + right_w == dst_w);
+    assert(left_w >= 1);
+    assert(right_w >= 1);
+    assert(left_w + right_w == dst_w);
 
     return .{
         .left = .{ .x = region.x, .y = region.y, .w = left_w, .h = region.h },

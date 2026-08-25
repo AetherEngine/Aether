@@ -13,10 +13,10 @@ pub const PcmFormat = struct {
 };
 
 pub const SoundBufferHandleTag = enum {};
-pub const SoundBufferHandle = Util.Handle(SoundBufferHandleTag);
+pub const SoundBufferHandle = Util.HandleType(SoundBufferHandleTag);
 
 pub const StreamingSoundHandleTag = enum {};
-pub const StreamingSoundHandle = Util.Handle(StreamingSoundHandleTag);
+pub const StreamingSoundHandle = Util.HandleType(StreamingSoundHandleTag);
 
 pub const SoundBufferDesc = struct {
     format: PcmFormat,

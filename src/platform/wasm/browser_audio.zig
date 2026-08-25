@@ -51,6 +51,7 @@ pub fn play_slot(slot: u8, source: SlotSource) audio_api.PlaySlotError!void {
             const len = stream.byte_length orelse return error.AudioHostRejectedStream;
             const data = std.heap.wasm_allocator.alloc(u8, @intCast(len)) catch return error.OutOfMemory;
             defer std.heap.wasm_allocator.free(data);
+
             stream.reader.readSliceAll(data) catch return error.AudioHostRejectedStream;
 
             if (!aether_audio_play_slot(slot, data.ptr, data.len, stream.format.sample_rate, stream.format.channels, stream.format.bit_depth)) {

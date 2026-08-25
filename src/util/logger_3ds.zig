@@ -5,6 +5,8 @@
 //! worker and never holds the producer queue mutex while it performs I/O.
 
 const std = @import("std");
+const assert = std.debug.assert;
+
 const options = @import("options");
 const Thread = @import("thread.zig").Thread;
 
@@ -119,8 +121,11 @@ pub fn init(io: std.Io, data_dir: std.Io.Dir, allocator: std.mem.Allocator) Erro
         .{},
     ) catch |err| {
         lifecycle.store(.failed, .release);
-        if (err == error.OutOfMemory) return error.OutOfMemory;
-        return error.ThreadStartFailed;
+
+        return switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            else => error.ThreadStartFailed,
+        };
     };
 
     startup_complete.waitUncancelable(io);
@@ -228,7 +233,7 @@ fn append_bootstrap(message: LogMessage) bool {
 
 fn finish_bootstrap_write() void {
     const prior = bootstrap_writers.fetchSub(1, .release);
-    std.debug.assert(prior > 0);
+    assert(prior > 0);
 
     if (prior == 1 and lifecycle.load(.acquire) != .bootstrap) {
         log_io.futexWake(u32, &bootstrap_writers.raw, 1);

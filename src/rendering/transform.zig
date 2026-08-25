@@ -7,9 +7,9 @@ pos: Vec3,
 rot: Vec3,
 scale: Vec3,
 
-const Self = @This();
+const Transform = @This();
 
-pub fn new() Self {
+pub fn new() Transform {
     return .{
         .pos = Vec3.zero(),
         .rot = Vec3.zero(),
@@ -18,7 +18,7 @@ pub fn new() Self {
 }
 
 /// Computes and returns the transformation matrix combining scaling, rotation, and translation.
-pub fn get_matrix(self: *const Self) Mat4 {
+pub fn get_matrix(self: *const Transform) Mat4 {
     const s = Mat4.scaling(self.scale.x, self.scale.y, self.scale.z);
     const rx = Mat4.rotationX(std.math.degreesToRadians(self.rot.x));
     const ry = Mat4.rotationY(std.math.degreesToRadians(self.rot.y));

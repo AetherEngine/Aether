@@ -262,6 +262,8 @@ pub const Engine = struct {
     }
 
     pub fn deinit(self: *Engine) void {
+        defer self.* = undefined;
+
         self.states.deinit(self);
         self.frame_scratch.deinit();
         Rendering.Texture.Default.deinit(self.allocator(.render));
@@ -670,6 +672,7 @@ pub const Engine = struct {
         }
         if (drew_frame) {
             defer Platform.gfx.frame_active = false;
+
             const draw_start_ns = clock.now(self.io).toNanoseconds();
             if (trace_loop) {
                 Util.engine_logger.info("trace: engine loop {d} draw begin", .{trace_loop_index});

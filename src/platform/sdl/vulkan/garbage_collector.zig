@@ -13,17 +13,17 @@ allocator: std.mem.Allocator,
 buckets: [MaxFrames]std.ArrayList(GcItem) = .{ .empty, .empty, .empty },
 frame_index: usize = 0,
 
-const Self = @This();
+const GarbageCollector = @This();
 
-pub fn init(allocator: std.mem.Allocator) Self {
+pub fn init(allocator: std.mem.Allocator) GarbageCollector {
     return .{ .allocator = allocator };
 }
 
-pub fn defer_destroy_buffer(self: *Self, buf: vk.Buffer, mem: vk.DeviceMemory) !void {
+pub fn defer_destroy_buffer(self: *GarbageCollector, buf: vk.Buffer, mem: vk.DeviceMemory) !void {
     try self.buckets[self.frame_index].append(self.allocator, .{ .buffer = .{ .buf = buf, .mem = mem } });
 }
 
-pub fn collect(self: *Self) void {
+pub fn collect(self: *GarbageCollector) void {
     // Call this after fence[self.frame_index] is signaled.
     var list = &self.buckets[self.frame_index];
     for (list.items) |it| switch (it) {
@@ -35,7 +35,9 @@ pub fn collect(self: *Self) void {
     list.clearRetainingCapacity();
 }
 
-pub fn deinit(self: *Self) void {
+pub fn deinit(self: *GarbageCollector) void {
+    defer self.* = undefined;
+
     for (&self.buckets) |*list| {
         for (list.items) |it| switch (it) {
             .buffer => |b| {

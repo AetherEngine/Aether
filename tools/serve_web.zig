@@ -12,6 +12,7 @@ pub fn main(init: std.process.Init) !void {
 
     var args = try std.process.Args.Iterator.initAllocator(init.minimal.args, gpa);
     defer args.deinit();
+
     _ = args.next();
 
     const root_path = args.next() orelse "zig-out/web";

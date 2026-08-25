@@ -4,7 +4,7 @@ const surface_api = @import("../surface.zig");
 const Util = @import("../../util/util.zig");
 const sdl3 = @import("sdl3");
 
-const Self = @This();
+const Surface = @This();
 const api = @import("options").config.gfx;
 
 const SDL_VIDEO_FLAGS = sdl3.InitFlags{ .video = true, .gamepad = true };
@@ -18,7 +18,7 @@ should_quit: bool = false,
 
 pub var on_resize: ?*const fn () void = null;
 
-pub fn init(self: *Self, width: u32, height: u32, title: [:0]const u8, fullscreen: bool, sync: bool, resizable: bool) surface_api.InitError!void {
+pub fn init(self: *Surface, width: u32, height: u32, title: [:0]const u8, fullscreen: bool, sync: bool, resizable: bool) surface_api.InitError!void {
     sdl3.init(SDL_VIDEO_FLAGS) catch return error.SurfaceInitFailed;
 
     const version = sdl3.c.SDL_GetVersion();
@@ -79,7 +79,9 @@ pub fn init(self: *Self, width: u32, height: u32, title: [:0]const u8, fullscree
     self.refresh_size();
 }
 
-pub fn deinit(self: *Self) void {
+pub fn deinit(self: *Surface) void {
+    defer self.* = undefined;
+
     if (self.gl_context) |ctx| {
         ctx.deinit() catch {};
         self.gl_context = null;
@@ -89,39 +91,39 @@ pub fn deinit(self: *Self) void {
     sdl3.quit(SDL_VIDEO_FLAGS);
 }
 
-pub fn update(self: *Self) bool {
+pub fn update(self: *Surface) bool {
     self.refresh_size();
     return !self.should_quit;
 }
 
-pub fn draw(self: *Self) void {
+pub fn draw(self: *Surface) void {
     sdl3.video.gl.swapWindow(self.window) catch {};
 }
 
-pub fn get_width(self: *Self) u32 {
+pub fn get_width(self: *Surface) u32 {
     return @intCast(self.width);
 }
 
-pub fn get_height(self: *Self) u32 {
+pub fn get_height(self: *Surface) u32 {
     return @intCast(self.height);
 }
 
 /// Called by the input backend when SDL reports a quit/close event. Takes
 /// effect on the next `update` call, mirroring the old glfwWindowShouldClose
 /// polling behavior.
-pub fn request_quit(self: *Self) void {
+pub fn request_quit(self: *Surface) void {
     self.should_quit = true;
 }
 
 /// Called by the input backend when the drawable size changes. Fires the
 /// resize hook the Vulkan backend uses to flag swapchain recreation.
-pub fn notify_resized(self: *Self, width: c_int, height: c_int) void {
+pub fn notify_resized(self: *Surface, width: c_int, height: c_int) void {
     self.width = width;
     self.height = height;
     if (on_resize) |cb| cb();
 }
 
-fn refresh_size(self: *Self) void {
+fn refresh_size(self: *Surface) void {
     const pixel_width, const pixel_height = self.window.getSizeInPixels() catch return;
     self.width = @intCast(pixel_width);
     self.height = @intCast(pixel_height);

@@ -2,7 +2,6 @@
 //! action set the game polls. Lower layers are masked completely; pushing
 //! a layer hides everything below it.
 
-const std = @import("std");
 const action = @import("action.zig");
 
 pub const CursorMode = enum(u8) {

@@ -3,7 +3,7 @@ const Util = @import("../../util/util.zig");
 const logger = @import("../../util/logger.zig");
 const dk = @import("deko.zig");
 
-const Self = @This();
+const Context = @This();
 const ENABLE_GPU_MARKERS = false;
 const DEBUG_GPU_MARKER_SLOT_STRIDE = 64;
 const DEBUG_GPU_MARKER_SLOTS = 10;
@@ -43,7 +43,7 @@ const GpuMarkerSlot = enum(usize) {
     uniform_slot = 9,
 };
 
-var active_context: ?*Self = null;
+var active_context: ?*Context = null;
 
 allocator: std.mem.Allocator,
 device: dk.DkDevice = null,
@@ -53,7 +53,7 @@ gpu_marker_gpu_addr: dk.DkGpuAddr = 0,
 gpu_marker_cpu: ?[*]volatile u32 = null,
 gpu_marker_sequence: u32 = 0,
 
-fn dump_gpu_markers(self: *Self) void {
+fn dump_gpu_markers(self: *Context) void {
     if (!ENABLE_GPU_MARKERS) return;
     Util.engine_logger.err(
         "Switch GPU markers: phase=0x{x} sequence={d} frame={d} image={d} draw={d} mesh={d} vertices={d} texture={d} buffer={d} uniform={d}",
@@ -80,16 +80,16 @@ fn gpu_marker_cpu_index(slot: GpuMarkerSlot) usize {
     return gpu_marker_offset(slot) / @sizeOf(u32);
 }
 
-fn read_gpu_marker(self: *Self, slot: GpuMarkerSlot) u32 {
+fn read_gpu_marker(self: *Context, slot: GpuMarkerSlot) u32 {
     const cpu = self.gpu_marker_cpu orelse return 0;
     return cpu[gpu_marker_cpu_index(slot)];
 }
 
-fn report_gpu_marker_value(self: *Self, command_buffer: dk.DkCmdBuf, slot: GpuMarkerSlot, value: u32) void {
+fn report_gpu_marker_value(self: *Context, command_buffer: dk.DkCmdBuf, slot: GpuMarkerSlot, value: u32) void {
     dk.dkCmdBufReportValue(command_buffer, value, self.gpu_marker_gpu_addr + gpu_marker_offset(slot));
 }
 
-fn gpu_fatal(self: ?*Self, comptime format: []const u8, args: anytype) noreturn {
+fn gpu_fatal(self: ?*Context, comptime format: []const u8, args: anytype) noreturn {
     Util.engine_logger.err(format, args);
     if (self) |ctx| ctx.dump_gpu_markers() else if (active_context) |ctx| ctx.dump_gpu_markers();
     logger.flush();
@@ -105,8 +105,8 @@ fn deko_debug_callback(_: ?*anyopaque, context: [*c]const u8, result: dk.DkResul
     gpu_fatal(null, "deko3d {s}: {s} ({d})", .{ c_string(context), c_string(message), result });
 }
 
-pub fn init(allocator: std.mem.Allocator) !Self {
-    var self = Self{ .allocator = allocator };
+pub fn init(allocator: std.mem.Allocator) !Context {
+    var self = Context{ .allocator = allocator };
 
     var device_maker = dk.DkDeviceMaker{
         .userData = null,
@@ -145,7 +145,9 @@ pub fn init(allocator: std.mem.Allocator) !Self {
     return self;
 }
 
-pub fn deinit(self: *Self) void {
+pub fn deinit(self: *Context) void {
+    defer self.* = undefined;
+
     if (active_context == self) active_context = null;
     self.wait_idle("context deinit");
     if (ENABLE_GPU_MARKERS) self.destroy_gpu_markers();
@@ -159,7 +161,7 @@ pub fn deinit(self: *Self) void {
     }
 }
 
-pub fn assert_queue_ok(self: *Self, comptime where: []const u8) void {
+pub fn assert_queue_ok(self: *Context, comptime where: []const u8) void {
     if (self.queue) |queue| {
         if (dk.dkQueueIsInErrorState(queue)) {
             gpu_fatal(self, "deko3d queue entered error state after {s}", .{where});
@@ -167,7 +169,7 @@ pub fn assert_queue_ok(self: *Self, comptime where: []const u8) void {
     }
 }
 
-pub fn wait_idle(self: *Self, comptime where: []const u8) void {
+pub fn wait_idle(self: *Context, comptime where: []const u8) void {
     if (self.queue) |queue| {
         var fence = dk.emptyFence();
         dk.dkQueueSignalFence(queue, &fence, true);
@@ -177,14 +179,14 @@ pub fn wait_idle(self: *Self, comptime where: []const u8) void {
     }
 }
 
-pub fn flush_queue(self: *Self, comptime where: []const u8) void {
+pub fn flush_queue(self: *Context, comptime where: []const u8) void {
     if (self.queue) |queue| {
         dk.dkQueueFlush(queue);
         self.assert_queue_ok(where);
     }
 }
 
-pub fn wait_fence(self: *Self, fence: *dk.DkFence, comptime where: []const u8) void {
+pub fn wait_fence(self: *Context, fence: *dk.DkFence, comptime where: []const u8) void {
     var waited_ns: i64 = 0;
     while (true) {
         const result = dk.dkFenceWait(fence, FENCE_POLL_NS);
@@ -205,11 +207,11 @@ pub fn panic_gpu(comptime format: []const u8, args: anytype) noreturn {
     gpu_fatal(active_context, format, args);
 }
 
-pub fn activate(self: *Self) void {
+pub fn activate(self: *Context) void {
     active_context = self;
 }
 
-pub fn mark_gpu(self: *Self, command_buffer: dk.DkCmdBuf, marker: Marker) void {
+pub fn mark_gpu(self: *Context, command_buffer: dk.DkCmdBuf, marker: Marker) void {
     if (!ENABLE_GPU_MARKERS) return;
     if (self.gpu_marker_gpu_addr == 0) return;
     self.gpu_marker_sequence +%= 1;
@@ -218,7 +220,7 @@ pub fn mark_gpu(self: *Self, command_buffer: dk.DkCmdBuf, marker: Marker) void {
 }
 
 pub fn mark_gpu_draw(
-    self: *Self,
+    self: *Context,
     command_buffer: dk.DkCmdBuf,
     marker: Marker,
     frame_index: u32,
@@ -245,7 +247,7 @@ pub fn mark_gpu_draw(
     self.report_gpu_marker_value(command_buffer, .phase, @intFromEnum(marker));
 }
 
-pub fn create_mem_block(self: *Self, size: u32, flags: u32) !dk.DkMemBlock {
+pub fn create_mem_block(self: *Context, size: u32, flags: u32) !dk.DkMemBlock {
     var maker = dk.DkMemBlockMaker{
         .device = self.device,
         .size = dk.alignForward(size, dk.MemBlockAlignment),
@@ -257,7 +259,7 @@ pub fn create_mem_block(self: *Self, size: u32, flags: u32) !dk.DkMemBlock {
     return mem;
 }
 
-fn create_gpu_markers(self: *Self) !void {
+fn create_gpu_markers(self: *Context) !void {
     self.gpu_marker_mem = try self.create_mem_block(DEBUG_GPU_MARKER_BYTES, dk.MemCpuUncached | dk.MemGpuUncached | dk.MemZeroFillInit);
     errdefer {
         dk.dkMemBlockDestroy(self.gpu_marker_mem);
@@ -272,7 +274,7 @@ fn create_gpu_markers(self: *Self) !void {
     _ = dk.dkMemBlockFlushCpuCache(self.gpu_marker_mem, 0, DEBUG_GPU_MARKER_BYTES);
 }
 
-fn destroy_gpu_markers(self: *Self) void {
+fn destroy_gpu_markers(self: *Context) void {
     self.gpu_marker_cpu = null;
     self.gpu_marker_gpu_addr = 0;
     self.gpu_marker_sequence = 0;

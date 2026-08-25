@@ -239,6 +239,8 @@ const Swapchain = struct {
     }
 
     fn deinit(self: *Swapchain) void {
+        defer self.* = undefined;
+
         if (self.vblank_registered) {
             sdk.kernel.disable_sub_intr(PSP_VBLANK_INT, PSP_DISPLAY_SUBINT) catch {};
             sdk.kernel.release_sub_intr_handler(PSP_VBLANK_INT, PSP_DISPLAY_SUBINT) catch {};
@@ -954,7 +956,7 @@ const MeshData = struct {
     index_count: usize,
 };
 
-var meshes = Util.ResourceTable(MeshData, 2048, Mesh.Handle).init();
+var meshes = Util.ResourceTableType(MeshData, 2048, Mesh.Handle).init();
 
 pub fn create_mesh(_: *const Mesh.Desc) gfx_api.CreateMeshError!Mesh.Handle {
     return meshes.add(.{
@@ -1104,7 +1106,7 @@ pub fn swizzled_offset(x: u32, y: u32, width: u32) usize {
     return block_start + local_y * 16 + local_x;
 }
 
-var textures = Util.ResourceTable(TextureData, 64, Texture.Handle).init();
+var textures = Util.ResourceTableType(TextureData, 64, Texture.Handle).init();
 var bound_texture: Texture.Handle = .none;
 
 pub fn create_texture(desc: *const Texture.UploadDesc) gfx_api.CreateTextureError!Texture.Handle {

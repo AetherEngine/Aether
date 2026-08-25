@@ -4,6 +4,7 @@
 //! references.
 
 const std = @import("std");
+const assert = std.debug.assert;
 const data = @import("data.zig");
 const binding_mod = @import("binding.zig");
 
@@ -94,27 +95,26 @@ pub const ActionSetHandle = enum(u32) { _ };
 /// insertion-order index in the set's name map. Actions are never removed, so
 /// this remains stable across map growth and rehashing.
 pub const ActionHandle = packed struct(u64) {
-    const Self = @This();
     const null_index = std.math.maxInt(u32);
 
     set_index: u32 = null_index,
     action_index: u32 = null_index,
 
-    pub const none: Self = .{};
+    pub const none: ActionHandle = .{};
 
-    pub fn from_parts(action_set: ActionSetHandle, action_index: usize) Self {
-        std.debug.assert(action_index <= std.math.maxInt(u32));
+    pub fn from_parts(action_set: ActionSetHandle, action_index: usize) ActionHandle {
+        assert(action_index <= std.math.maxInt(u32));
         return .{
             .set_index = @intFromEnum(action_set),
             .action_index = @intCast(action_index),
         };
     }
 
-    pub fn is_null(self: Self) bool {
+    pub fn is_null(self: ActionHandle) bool {
         return self.set_index == null_index or self.action_index == null_index;
     }
 
-    pub fn set(self: Self) ActionSetHandle {
+    pub fn set(self: ActionHandle) ActionSetHandle {
         return @enumFromInt(self.set_index);
     }
 };
@@ -133,6 +133,8 @@ pub const DeviceState = struct {
     focused: bool = true,
 
     pub fn deinit(self: *DeviceState, alloc: std.mem.Allocator) void {
+        defer self.* = undefined;
+
         self.keys.deinit(alloc);
     }
 

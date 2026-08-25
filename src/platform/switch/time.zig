@@ -1,5 +1,5 @@
 const std = @import("std");
-const c = @import("../nintendo_c.zig").switch_c;
+const c = @import("c.zig").switch_c;
 
 pub fn now(clock: std.Io.Clock) std.Io.Timestamp {
     return switch (clock) {

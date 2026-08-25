@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const options = @import("options");
 const Math = @import("../math/math.zig");
 const Rendering = @import("../rendering/rendering.zig");
@@ -12,7 +13,7 @@ pub const Vertex = Rendering.Vertex;
 pub const BatchMesh = Rendering.Mesh(Vertex);
 pub const BatchMeshData = Rendering.MeshData(Vertex);
 
-const Self = @This();
+const SpriteBatcher = @This();
 
 pub const Anchor = layout.Anchor;
 pub const TextureRegion = texture_region.TextureRegion;
@@ -34,7 +35,7 @@ pub const Sprite = extern struct {
 
     comptime {
         // 1 pointer + 4 Ranges (16 bytes) + Color (4) + 4 u8 = ptr_size + 24
-        std.debug.assert(@sizeOf(Sprite) == @sizeOf(*anyopaque) + 24);
+        assert(@sizeOf(Sprite) == @sizeOf(*anyopaque) + 24);
     }
 };
 
@@ -56,8 +57,8 @@ last_screen_h: u32,
 batches: std.ArrayList(TextureBatch),
 allocator: std.mem.Allocator,
 
-pub fn init(allocator: std.mem.Allocator) !Self {
-    return Self{
+pub fn init(allocator: std.mem.Allocator) !SpriteBatcher {
+    return SpriteBatcher{
         .sprites = undefined,
         .count = 0,
         .prev_count = 0,
@@ -69,7 +70,9 @@ pub fn init(allocator: std.mem.Allocator) !Self {
     };
 }
 
-pub fn deinit(self: *Self) void {
+pub fn deinit(self: *SpriteBatcher) void {
+    defer self.* = undefined;
+
     for (self.batches.items) |*batch| {
         batch.mesh.deinit();
         batch.mesh_data.deinit(self.allocator);
@@ -77,8 +80,8 @@ pub fn deinit(self: *Self) void {
     self.batches.deinit(self.allocator);
 }
 
-pub fn add_sprite(self: *Self, sprite: *const Sprite) void {
-    std.debug.assert(self.count < MAX_SPRITES);
+pub fn add_sprite(self: *SpriteBatcher, sprite: *const Sprite) void {
+    assert(self.count < MAX_SPRITES);
     self.sprites[self.current][self.count] = sprite.*;
     self.count += 1;
 }
@@ -96,9 +99,9 @@ pub const ElidedSprite = struct {
     sizing: CenterElide = .{},
 };
 
-pub fn add_sprite_elided(self: *Self, sprite: *const ElidedSprite) void {
-    std.debug.assert(sprite.dst_w > 0);
-    std.debug.assert(sprite.dst_h > 0);
+pub fn add_sprite_elided(self: *SpriteBatcher, sprite: *const ElidedSprite) void {
+    assert(sprite.dst_w > 0);
+    assert(sprite.dst_h > 0);
 
     const spans = texture_region.elide_center(sprite.region, sprite.dst_w, sprite.sizing);
 
@@ -133,13 +136,13 @@ pub fn add_sprite_elided(self: *Self, sprite: *const ElidedSprite) void {
     });
 }
 
-pub fn clear(self: *Self) void {
+pub fn clear(self: *SpriteBatcher) void {
     self.prev_count = self.count;
     self.current ^= 1;
     self.count = 0;
 }
 
-pub fn update(self: *Self) !void {
+pub fn update(self: *SpriteBatcher) !void {
     if (self.count == 0) return;
 
     const screen_w = Rendering.gfx.surface.get_width();
@@ -159,7 +162,7 @@ pub fn update(self: *Self) !void {
     }
 }
 
-pub fn draw(self: *Self) void {
+pub fn draw(self: *SpriteBatcher) void {
     if (self.count == 0) return;
 
     Rendering.gfx.api.set_proj_matrix(&Math.Mat4.identity());
@@ -172,12 +175,12 @@ pub fn draw(self: *Self) void {
     }
 }
 
-pub fn flush(self: *Self) !void {
+pub fn flush(self: *SpriteBatcher) !void {
     try self.update();
     self.draw();
 }
 
-fn rebuild_batches(self: *Self, screen_w: u32, screen_h: u32) !void {
+fn rebuild_batches(self: *SpriteBatcher, screen_w: u32, screen_h: u32) !void {
     const sprites = self.sprites[self.current][0..self.count];
     const scale = Scaling.compute(screen_w, screen_h);
     var batch_idx: u16 = 0;

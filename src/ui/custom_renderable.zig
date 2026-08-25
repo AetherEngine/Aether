@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const layout = @import("layout.zig");
 
 pub const RendererId = enum(u8) {
@@ -55,8 +56,8 @@ pub const Command = struct {
     }
 
     pub fn read(self: *const Command, comptime T: type) T {
-        std.debug.assert(self.payload_len == @sizeOf(T));
-        std.debug.assert(self.payload_align == @alignOf(T));
+        assert(self.payload_len == @sizeOf(T));
+        assert(self.payload_align == @alignOf(T));
         return std.mem.bytesToValue(T, self.payload[0..@sizeOf(T)]);
     }
 };

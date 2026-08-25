@@ -14,28 +14,28 @@ const VTable = struct {
     draw: *const fn (ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetContext) anyerror!void,
 };
 
-const Self = @This();
+const State = @This();
 
-pub fn init(self: *const Self, engine: *Engine) anyerror!void {
+pub fn init(self: *const State, engine: *Engine) anyerror!void {
     try self.tab.init(self.ptr, engine);
 }
 
-pub fn deinit(self: *const Self, engine: *Engine) void {
+pub fn deinit(self: *const State, engine: *Engine) void {
     self.tab.deinit(self.ptr, engine);
 }
 
-pub fn tick(self: *const Self, engine: *Engine) anyerror!void {
+pub fn tick(self: *const State, engine: *Engine) anyerror!void {
     try self.tab.tick(self.ptr, engine);
 }
 
-pub fn update(self: *const Self, engine: *Engine, dt: f32, budget: *const Util.BudgetContext) anyerror!void {
+pub fn update(self: *const State, engine: *Engine, dt: f32, budget: *const Util.BudgetContext) anyerror!void {
     try self.tab.update(self.ptr, engine, dt, budget);
 }
 
-pub fn ui_update(self: *const Self, engine: *Engine, dt: f32, budget: *const Util.BudgetContext) anyerror!void {
+pub fn ui_update(self: *const State, engine: *Engine, dt: f32, budget: *const Util.BudgetContext) anyerror!void {
     if (self.tab.ui_update) |f| try f(self.ptr, engine, dt, budget);
 }
 
-pub fn draw(self: *const Self, engine: *Engine, dt: f32, budget: *const Util.BudgetContext) anyerror!void {
+pub fn draw(self: *const State, engine: *Engine, dt: f32, budget: *const Util.BudgetContext) anyerror!void {
     try self.tab.draw(self.ptr, engine, dt, budget);
 }

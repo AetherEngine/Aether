@@ -5,6 +5,7 @@
 //! and backend resources.
 
 const std = @import("std");
+const assert = std.debug.assert;
 const zitrus = @import("zitrus");
 const gfx_api = @import("../gfx_api.zig");
 const Util = @import("../../util/util.zig");
@@ -22,9 +23,6 @@ const mango = zitrus.mango;
 const pica = zitrus.hardware.pica;
 
 const MAX_TEXTURES = 256;
-const PAGE_SIZE = 4096;
-const SCREEN_WIDTH: u32 = 400;
-const SCREEN_HEIGHT: u32 = 240;
 // The framebuffer is 480x400 and is later downsampled to 240x400.
 // We're performing SSAA, which works on all consoles of the 3DS family
 const FRAMEBUFFER_TOP_WIDTH = 480;
@@ -121,11 +119,11 @@ const ScreenState = struct {
 var render_alloc: std.mem.Allocator = undefined;
 var render_io: std.Io = undefined;
 
-var meshes = Util.ResourceTable(MeshData, 8192, Mesh.Handle).init();
-var texture_slots = Util.ResourceTable(TextureData, MAX_TEXTURES, Texture.Handle).init();
-var retired_textures = Util.CircularBuffer(TextureData, MAX_TEXTURES * 2).init();
+var meshes = Util.ResourceTableType(MeshData, 8192, Mesh.Handle).init();
+var texture_slots = Util.ResourceTableType(TextureData, MAX_TEXTURES, Texture.Handle).init();
+var retired_textures = Util.CircularBufferType(TextureData, MAX_TEXTURES * 2).init();
 var retired_texture_overflow: std.ArrayList(TextureData) = .empty;
-var pending_texture_uploads = Util.CircularBuffer(PendingTextureUpload, MAX_TEXTURES * 2).init();
+var pending_texture_uploads = Util.CircularBufferType(PendingTextureUpload, MAX_TEXTURES * 2).init();
 
 pub var draw_state = DrawState{
     .mat = Mat4.identity(),
@@ -294,7 +292,7 @@ pub fn set_depth_write(enabled: bool) void {
 
 pub fn set_fog(enabled: bool, near: f32, far: f32, start: f32, end: f32, r: f32, g: f32, b: f32) void {
     const linear_depth = far > near and far > 0.0;
-    std.debug.assert(!enabled or linear_depth);
+    assert(!enabled or linear_depth);
     draw_state.fog_enabled = @intFromBool(enabled);
     draw_state.fog_near = near;
     draw_state.fog_far = far;
@@ -954,17 +952,6 @@ fn normal_blend_equation() mango.ColorBlendEquation {
     };
 }
 
-fn keep_destination_blend_equation() mango.ColorBlendEquation {
-    return .{
-        .src_color_factor = .zero,
-        .dst_color_factor = .one,
-        .color_op = .add,
-        .src_alpha_factor = .zero,
-        .dst_alpha_factor = .one,
-        .alpha_op = .add,
-    };
-}
-
 fn primary_color_combiner() mango.TextureCombinerUnit {
     return .{
         .color_src = @splat(.primary_color),
@@ -1487,10 +1474,6 @@ fn tiled_pixel_offset(width: u32, x: u32, y: u32) usize {
 
 fn float_to_u8(v: f32) u8 {
     return @intFromFloat(std.math.clamp(v, 0.0, 1.0) * 255.0);
-}
-
-fn float_to_snorm16(v: f32) i16 {
-    return @intFromFloat(std.math.clamp(v, -1.0, 1.0) * 32767.0);
 }
 
 fn unorm8_scale() f32 {

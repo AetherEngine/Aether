@@ -40,6 +40,8 @@ pub const CaptureNextInputSession = struct {
     result: CaptureResult = undefined,
 
     pub fn deinit(self: *CaptureNextInputSession, alloc: std.mem.Allocator) void {
+        defer self.* = undefined;
+
         self.held_at_start.deinit(alloc);
         self.armed.deinit(alloc);
     }

@@ -3,6 +3,7 @@
 //! is the real-time mixer thread.
 
 const std = @import("std");
+const assert = std.debug.assert;
 
 pub const ByteFifo = struct {
     bytes: []u8,
@@ -10,7 +11,7 @@ pub const ByteFifo = struct {
     write_count: std.atomic.Value(usize) = .init(0),
 
     pub fn init(bytes: []u8) ByteFifo {
-        std.debug.assert(bytes.len > 0);
+        assert(bytes.len > 0);
         return .{ .bytes = bytes };
     }
 
@@ -36,7 +37,7 @@ pub const ByteFifo = struct {
         const write_pos = self.write_count.load(.acquire);
         const read_pos = self.read_count.load(.monotonic);
         const count = write_pos -% read_pos;
-        std.debug.assert(count <= self.bytes.len);
+        assert(count <= self.bytes.len);
         return count;
     }
 
@@ -45,7 +46,7 @@ pub const ByteFifo = struct {
         const read_pos = self.read_count.load(.acquire);
         const write_pos = self.write_count.load(.monotonic);
         const used = write_pos -% read_pos;
-        std.debug.assert(used <= self.bytes.len);
+        assert(used <= self.bytes.len);
         return self.bytes.len - used;
     }
 
@@ -55,7 +56,7 @@ pub const ByteFifo = struct {
         const write_pos = self.write_count.load(.monotonic);
         const read_pos = self.read_count.load(.acquire);
         const used = write_pos -% read_pos;
-        std.debug.assert(used <= self.bytes.len);
+        assert(used <= self.bytes.len);
 
         const n = @min(src.len, self.bytes.len - used);
         copy_in(self.bytes, write_pos % self.bytes.len, src[0..n]);
@@ -69,7 +70,7 @@ pub const ByteFifo = struct {
         const read_pos = self.read_count.load(.monotonic);
         const write_pos = self.write_count.load(.acquire);
         const available = write_pos -% read_pos;
-        std.debug.assert(available <= self.bytes.len);
+        assert(available <= self.bytes.len);
 
         const n = @min(dst.len, available);
         copy_out(dst[0..n], self.bytes, read_pos % self.bytes.len);

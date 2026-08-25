@@ -11,22 +11,22 @@ yaw: f32,
 pitch: f32,
 target: *const Vec3,
 
-const Self = @This();
+const Camera = @This();
 
 /// A simple 3D camera with position and orientation.
-pub fn update(self: *Self) void {
+pub fn update(self: *Camera) void {
     _ = self;
 }
 
 /// Computes and returns the camera's projection matrix based on its field of view and the current aspect ratio.
-pub fn get_projection_matrix(self: *Self) Mat4 {
+pub fn get_projection_matrix(self: *Camera) Mat4 {
     const width: f32 = @floatFromInt(gfx.surface.get_width());
     const height: f32 = @floatFromInt(gfx.surface.get_height());
     return Mat4.perspectiveFovRh(std.math.degreesToRadians(self.fov), width / height, 0.3, 250.0);
 }
 
 /// Computes and returns the camera's view matrix based on its yaw and pitch angles, from the perspective of the target position.
-pub fn get_view_matrix(self: *Self) Mat4 {
+pub fn get_view_matrix(self: *Camera) Mat4 {
     const yaw = std.math.degreesToRadians(self.yaw);
     const pitch = std.math.degreesToRadians(self.pitch);
 

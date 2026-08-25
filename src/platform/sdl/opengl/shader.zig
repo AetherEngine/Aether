@@ -1,7 +1,8 @@
 const std = @import("std");
+const assert = std.debug.assert;
+
 const gl = @import("gl");
 const Mat4 = @import("../../../math/math.zig").Mat4;
-const assert = std.debug.assert;
 const Util = @import("../../../util/util.zig");
 
 pub const ShaderState = struct {
@@ -85,6 +86,8 @@ pub const Shader = struct {
     }
 
     pub fn deinit(self: *Shader) void {
+        defer self.* = undefined;
+
         gl.DeleteProgram(self.shader_program);
         self.shader_program = 0;
     }

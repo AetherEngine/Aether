@@ -17,8 +17,8 @@ pub const aether_options: ae.Options = .{
 };
 
 const Vertex = Rendering.Vertex;
-const MyMesh = Rendering.Mesh(Vertex);
-const MyMeshData = Rendering.MeshData(Vertex);
+const MyMesh = Rendering.MeshType(Vertex);
+const MyMeshData = Rendering.MeshDataType(Vertex);
 
 const BATCH_A_TRIANGLES = 61;
 const BATCH_B_TRIANGLES = 78;
@@ -370,6 +370,7 @@ pub fn main(init: std.process.Init) !void {
         else => return err,
     };
     defer engine.deinit();
+
     engine.run() catch |err| switch (err) {
         error.StateTransitionFailed => {
             if (engine.last_transition_failure()) |state_err| {

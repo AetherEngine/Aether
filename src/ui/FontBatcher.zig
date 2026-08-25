@@ -1,4 +1,6 @@
 const std = @import("std");
+const assert = std.debug.assert;
+
 const Math = @import("../math/math.zig");
 const Rendering = @import("../rendering/rendering.zig");
 
@@ -16,6 +18,8 @@ pub const TextMesh = struct {
     mesh: BatchMesh,
 
     pub fn deinit(self: *TextMesh, allocator: std.mem.Allocator) void {
+        defer self.* = undefined;
+
         self.mesh.deinit();
         self.data.deinit(allocator);
     }
@@ -25,7 +29,7 @@ pub const TextMesh = struct {
     }
 };
 
-const Self = @This();
+const FontBatcher = @This();
 
 // --- Constants ---
 
@@ -107,9 +111,9 @@ allocator: std.mem.Allocator,
 
 // --- Public API ---
 
-pub fn init(allocator: std.mem.Allocator, texture: *const Rendering.Texture) !Self {
-    std.debug.assert(texture.width == 128);
-    std.debug.assert(texture.height == 128);
+pub fn init(allocator: std.mem.Allocator, texture: *const Rendering.Texture) !FontBatcher {
+    assert(texture.width == 128);
+    assert(texture.height == 128);
     var mesh_data = try BatchMeshData.init(allocator);
     errdefer mesh_data.deinit(allocator);
     return .{
@@ -130,7 +134,9 @@ pub fn init(allocator: std.mem.Allocator, texture: *const Rendering.Texture) !Se
     };
 }
 
-pub fn deinit(self: *Self) void {
+pub fn deinit(self: *FontBatcher) void {
+    defer self.* = undefined;
+
     self.mesh.deinit();
     self.mesh_data.deinit(self.allocator);
 }
@@ -138,7 +144,7 @@ pub fn deinit(self: *Self) void {
 /// Recompute glyph widths from the current `texture` pixel data.
 /// Call after the underlying font texture has been swapped (e.g. resource
 /// pack switch) so that string layout matches the new glyph art.
-pub fn refresh(self: *Self) void {
+pub fn refresh(self: *FontBatcher) void {
     self.glyph_widths = compute_glyph_widths(self.texture);
     // Force the next flush to rebuild geometry: clear our previous-frame
     // diff so the entries_equal short-circuit can't keep a stale mesh.
@@ -147,7 +153,7 @@ pub fn refresh(self: *Self) void {
     self.last_screen_h = 0;
 }
 
-pub fn clear(self: *Self) void {
+pub fn clear(self: *FontBatcher) void {
     self.prev_count = self.count;
     self.current ^= 1;
     self.count = 0;
@@ -155,14 +161,14 @@ pub fn clear(self: *Self) void {
 }
 
 /// Force the next flush to rebuild the mesh regardless of entry equality.
-pub fn mark_dirty(self: *Self) void {
+pub fn mark_dirty(self: *FontBatcher) void {
     self.prev_count = 0;
 }
 
-pub fn add_text(self: *Self, entry: *const TextEntry) void {
-    std.debug.assert(self.count < MAX_ENTRIES);
-    std.debug.assert(entry.str.len > 0);
-    std.debug.assert(entry.str.len <= MAX_TEXT_BYTES - self.text_used[self.current]);
+pub fn add_text(self: *FontBatcher, entry: *const TextEntry) void {
+    assert(self.count < MAX_ENTRIES);
+    assert(entry.str.len > 0);
+    assert(entry.str.len <= MAX_TEXT_BYTES - self.text_used[self.current]);
 
     if (self.count >= MAX_ENTRIES) return;
     if (entry.str.len > MAX_TEXT_BYTES) return;
@@ -180,7 +186,7 @@ pub fn add_text(self: *Self, entry: *const TextEntry) void {
     self.text_used[self.current] = end;
 }
 
-pub fn update(self: *Self) !void {
+pub fn update(self: *FontBatcher) !void {
     if (self.count == 0) return;
 
     const screen_w = Rendering.gfx.surface.get_width();
@@ -198,7 +204,7 @@ pub fn update(self: *Self) !void {
     }
 }
 
-pub fn draw(self: *Self) void {
+pub fn draw(self: *FontBatcher) void {
     if (self.count == 0) return;
 
     Rendering.gfx.api.set_proj_matrix(&Math.Mat4.identity());
@@ -207,16 +213,16 @@ pub fn draw(self: *Self) void {
     self.mesh.draw(&Math.Mat4.identity());
 }
 
-pub fn flush(self: *Self) !void {
+pub fn flush(self: *FontBatcher) !void {
     try self.update();
     self.draw();
 }
 
 /// Returns the width of a string in logical pixels, accounting for per-glyph
 /// variable widths, inter-character spacing, and text scale.
-pub fn string_width(self: *const Self, str: []const u8, spacing: i8, text_scale: u8) i16 {
+pub fn string_width(self: *const FontBatcher, str: []const u8, spacing: i8, text_scale: u8) i16 {
     if (str.len == 0) return 0;
-    std.debug.assert(text_scale > 0);
+    assert(text_scale > 0);
     const s: i32 = text_scale;
     var total: i32 = 0;
     var visible: u32 = 0;
@@ -239,9 +245,9 @@ pub fn string_width(self: *const Self, str: []const u8, spacing: i8, text_scale:
 /// Returns the byte length of the longest prefix of `str` whose rendered
 /// width fits within `max_w`. Walks per-glyph so a `&x` color escape is
 /// never split across the truncation point. No allocation.
-pub fn fit_width(self: *const Self, str: []const u8, max_w: i16, spacing: i8, text_scale: u8) usize {
+pub fn fit_width(self: *const FontBatcher, str: []const u8, max_w: i16, spacing: i8, text_scale: u8) usize {
     if (max_w <= 0 or str.len == 0) return 0;
-    std.debug.assert(text_scale > 0);
+    assert(text_scale > 0);
     const s: i32 = text_scale;
     const advance: i32 = (@as(i32, DEFAULT_SPACING) + @as(i32, spacing)) * s;
     var total: i32 = 0;
@@ -271,15 +277,15 @@ pub fn fit_width(self: *const Self, str: []const u8, max_w: i16, spacing: i8, te
 /// The caller owns the returned mesh and must call `mesh.deinit()` when done.
 /// Draw with `mesh.draw(&model_matrix)` after binding the font texture.
 pub fn build_mesh(
-    self: *const Self,
+    self: *const FontBatcher,
     str: []const u8,
     color: Color,
     shadow_color: Color,
     spacing: i8,
     text_scale: u8,
 ) !TextMesh {
-    std.debug.assert(str.len > 0);
-    std.debug.assert(text_scale > 0);
+    assert(str.len > 0);
+    assert(text_scale > 0);
     var data = try BatchMeshData.init(self.allocator);
     errdefer data.deinit(self.allocator);
     var mesh = try BatchMesh.init(&.{});
@@ -296,7 +302,7 @@ pub fn build_mesh(
     const s: i32 = text_scale;
     const text_w: i32 = self.string_width(str, spacing, text_scale);
     const text_h: i32 = @as(i32, GLYPH_SIZE) * s;
-    std.debug.assert(text_w > 0);
+    assert(text_w > 0);
 
     // Extend extent to include shadow so all vertices stay within [-1,1].
     const pad: i32 = if (has_shadow) s else 0;
@@ -317,7 +323,7 @@ pub fn build_mesh(
 /// Applies R * S * T order (rotate in unit space, then aspect-correct scale,
 /// then translate) so non-uniform aspect scaling does not shear the rotation.
 pub fn mesh_matrix(
-    self: *const Self,
+    self: *const FontBatcher,
     str: []const u8,
     spacing: i8,
     text_scale: u8,
@@ -385,7 +391,7 @@ fn entries_equal(a: []const TextEntry, b: []const TextEntry) bool {
     return true;
 }
 
-fn rebuild(self: *Self, screen_w: u32, screen_h: u32) !void {
+fn rebuild(self: *FontBatcher, screen_w: u32, screen_h: u32) !void {
     const scale = Scaling.compute(screen_w, screen_h);
     const entries = self.entries[self.current][0..self.count];
 
@@ -405,14 +411,14 @@ fn rebuild(self: *Self, screen_w: u32, screen_h: u32) !void {
 }
 
 fn emit_text(
-    self: *const Self,
+    self: *const FontBatcher,
     mesh: *BatchMeshData,
     entry: *const TextEntry,
     screen_w: u32,
     screen_h: u32,
     ui_scale: u32,
 ) void {
-    std.debug.assert(entry.scale > 0);
+    assert(entry.scale > 0);
     const str = entry.str;
     const ts: i16 = entry.scale;
     const text_w = self.string_width(str, entry.spacing, entry.scale);
@@ -437,7 +443,7 @@ fn emit_text(
 }
 
 fn emit_string_screen(
-    self: *const Self,
+    self: *const FontBatcher,
     mesh: *BatchMeshData,
     str: []const u8,
     spacing: i8,
@@ -502,7 +508,7 @@ fn emit_string_screen(
 }
 
 fn emit_string_local(
-    self: *const Self,
+    self: *const FontBatcher,
     mesh: *BatchMeshData,
     str: []const u8,
     spacing: i8,
@@ -546,7 +552,7 @@ fn emit_string_local(
     }
 }
 
-fn glyph_uvs(self: *const Self, byte: u8, gw: u8) [4]i16 {
+fn glyph_uvs(self: *const FontBatcher, byte: u8, gw: u8) [4]i16 {
     const gx: u32 = @as(u32, byte) % GLYPH_COLS;
     const gy: u32 = @as(u32, byte) / GLYPH_COLS;
     const stride_u: i32 = @as(i32, 32767) >> self.atlas.col_log2;
@@ -585,8 +591,8 @@ fn emit_quad(
 /// Scans each glyph tile in the font texture to find the rightmost column
 /// containing a non-transparent pixel. This gives per-character variable widths.
 fn compute_glyph_widths(texture: *const Rendering.Texture) [GLYPH_COUNT]u8 {
-    std.debug.assert(texture.width == 128);
-    std.debug.assert(texture.height == 128);
+    assert(texture.width == 128);
+    assert(texture.height == 128);
 
     var widths: [GLYPH_COUNT]u8 = [1]u8{0} ** GLYPH_COUNT;
 

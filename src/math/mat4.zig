@@ -2,15 +2,13 @@
 // Memory layout matches zmath's Mat ([4]@Vector(4,f32)), so pointers can be
 // cast directly to *f32 for OpenGL/Vulkan UBO and push-constant uploads.
 
-const std = @import("std");
-const Vec3 = @import("vec3.zig");
 const Quat = @import("quat.zig");
 
 data: [4][4]f32,
 
-const Self = @This();
+const Mat4 = @This();
 
-pub fn identity() Self {
+pub fn identity() Mat4 {
     return .{ .data = .{
         .{ 1, 0, 0, 0 },
         .{ 0, 1, 0, 0 },
@@ -19,8 +17,8 @@ pub fn identity() Self {
     } };
 }
 
-pub fn mul(a: Self, b: Self) Self {
-    var result: Self = undefined;
+pub fn mul(a: Mat4, b: Mat4) Mat4 {
+    var result: Mat4 = undefined;
     inline for (0..4) |i| {
         inline for (0..4) |j| {
             var sum: f32 = 0;
@@ -31,7 +29,7 @@ pub fn mul(a: Self, b: Self) Self {
     return result;
 }
 
-pub fn translation(x: f32, y: f32, z: f32) Self {
+pub fn translation(x: f32, y: f32, z: f32) Mat4 {
     return .{ .data = .{
         .{ 1, 0, 0, 0 },
         .{ 0, 1, 0, 0 },
@@ -40,7 +38,7 @@ pub fn translation(x: f32, y: f32, z: f32) Self {
     } };
 }
 
-pub fn scaling(x: f32, y: f32, z: f32) Self {
+pub fn scaling(x: f32, y: f32, z: f32) Mat4 {
     return .{ .data = .{
         .{ x, 0, 0, 0 },
         .{ 0, y, 0, 0 },
@@ -49,77 +47,77 @@ pub fn scaling(x: f32, y: f32, z: f32) Self {
     } };
 }
 
-pub fn rotationX(angle: f32) Self {
+pub fn rotationX(angle: f32) Mat4 {
     const s = @sin(angle);
     const c = @cos(angle);
     return .{ .data = .{
-        .{ 1, 0,  0, 0 },
-        .{ 0, c,  s, 0 },
+        .{ 1, 0, 0, 0 },
+        .{ 0, c, s, 0 },
         .{ 0, -s, c, 0 },
-        .{ 0, 0,  0, 1 },
+        .{ 0, 0, 0, 1 },
     } };
 }
 
-pub fn rotationY(angle: f32) Self {
+pub fn rotationY(angle: f32) Mat4 {
     const s = @sin(angle);
     const c = @cos(angle);
     return .{ .data = .{
-        .{ c,  0, -s, 0 },
-        .{ 0,  1,  0, 0 },
-        .{ s,  0,  c, 0 },
-        .{ 0,  0,  0, 1 },
+        .{ c, 0, -s, 0 },
+        .{ 0, 1, 0, 0 },
+        .{ s, 0, c, 0 },
+        .{ 0, 0, 0, 1 },
     } };
 }
 
-pub fn rotationZ(angle: f32) Self {
+pub fn rotationZ(angle: f32) Mat4 {
     const s = @sin(angle);
     const c = @cos(angle);
     return .{ .data = .{
-        .{  c, s, 0, 0 },
+        .{ c, s, 0, 0 },
         .{ -s, c, 0, 0 },
-        .{  0, 0, 1, 0 },
-        .{  0, 0, 0, 1 },
+        .{ 0, 0, 1, 0 },
+        .{ 0, 0, 0, 1 },
     } };
 }
 
 /// Right-handed perspective, z in [0, 1].
 /// fov is the full vertical field-of-view in radians.
-pub fn perspectiveFovRh(fov: f32, aspect: f32, near: f32, far: f32) Self {
+pub fn perspectiveFovRh(fov: f32, aspect: f32, near: f32, far: f32) Mat4 {
     const f = 1.0 / @tan(fov * 0.5);
     return .{ .data = .{
-        .{ f / aspect, 0, 0,                          0  },
-        .{ 0,          f, 0,                          0  },
-        .{ 0,          0, far / (near - far),        -1  },
-        .{ 0,          0, near * far / (near - far),  0  },
+        .{ f / aspect, 0, 0, 0 },
+        .{ 0, f, 0, 0 },
+        .{ 0, 0, far / (near - far), -1 },
+        .{ 0, 0, near * far / (near - far), 0 },
     } };
 }
 
 /// Right-handed orthographic, z in [0, 1].
 /// width and height are the full extents of the view volume.
-pub fn orthographicRh(width: f32, height: f32, near: f32, far: f32) Self {
+pub fn orthographicRh(width: f32, height: f32, near: f32, far: f32) Mat4 {
     return .{ .data = .{
-        .{ 2.0 / width, 0,            0,                   0 },
-        .{ 0,           2.0 / height, 0,                   0 },
-        .{ 0,           0,            1.0 / (near - far),  0 },
-        .{ 0,           0,            near / (near - far), 1 },
+        .{ 2.0 / width, 0, 0, 0 },
+        .{ 0, 2.0 / height, 0, 0 },
+        .{ 0, 0, 1.0 / (near - far), 0 },
+        .{ 0, 0, near / (near - far), 1 },
     } };
 }
 
 /// Build a rotation matrix from a unit quaternion.
-pub fn fromQuat(q: Quat) Self {
+pub fn fromQuat(q: Quat) Mat4 {
     const x = q.x;
     const y = q.y;
     const z = q.z;
     const w = q.w;
     return .{ .data = .{
-        .{ 1 - 2*(y*y + z*z),  2*(x*y + w*z),      2*(x*z - w*y),      0 },
-        .{ 2*(x*y - w*z),      1 - 2*(x*x + z*z),  2*(y*z + w*x),      0 },
-        .{ 2*(x*z + w*y),      2*(y*z - w*x),      1 - 2*(x*x + y*y),  0 },
-        .{ 0,                  0,                  0,                  1 },
+        .{ 1 - 2 * (y * y + z * z), 2 * (x * y + w * z), 2 * (x * z - w * y), 0 },
+        .{ 2 * (x * y - w * z), 1 - 2 * (x * x + z * z), 2 * (y * z + w * x), 0 },
+        .{ 2 * (x * z + w * y), 2 * (y * z - w * x), 1 - 2 * (x * x + y * y), 0 },
+        .{ 0, 0, 0, 1 },
     } };
 }
 
 /// Returns a pointer to the first element for GPU uploads.
-pub fn ptr(self: *const Self) *const f32 {
+pub fn ptr(self: *const Mat4) *const f32 {
     return &self.data[0][0];
 }
