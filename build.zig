@@ -50,6 +50,16 @@ pub fn build(b: *std.Build) void {
     const web_host = b.option([]const u8, "web-host", "serve-web: bind host (default: 127.0.0.1)") orelse "127.0.0.1";
     const web_port = b.option(u16, "web-port", "serve-web: bind port (default: 8080)") orelse 8080;
 
+    const lint_dep = b.dependency("lint", .{
+        .target = b.graph.host,
+        .optimize = .ReleaseSafe,
+    });
+    const run_lint = b.addRunArtifact(lint_dep.artifact("lint"));
+    run_lint.addArg(".");
+
+    const lint_step = b.step("lint", "Lint the codebase with tiger_lint");
+    lint_step.dependOn(&run_lint.step);
+
     const overrides: config.Config.Overrides = .{
         .gfx = b.option(config.Gfx, "gfx", "Graphics backend override (default: auto-detect from target)"),
         .audio = b.option(config.Audio, "audio", "Audio backend override (default: platform default)"),

@@ -1,0 +1,32 @@
+{
+  "exclude_dirs": [],
+  "exclude_files": [],
+  "exclude_paths": [],
+  "banned": [],
+  "symbol_bans": [],
+  "max_line_length": 100,
+  "max_function_lines": 70,
+  "max_file_size_mib": 1,
+  "rules": {
+    "control_characters": true,
+    "error_comparison": false,
+    "debug_assert": false,
+    "self_type": false,
+    "comptime_not": true,
+    "configured_text_bans": true,
+    "leftover_reminders": true,
+    "symbol_bans": false,
+    "packed_fields": false,
+    "line_length": false,
+    "trailing_whitespace": true,
+    "type_function_names": false,
+    "function_names": false,
+    "dead_declarations": false,
+    "function_length": false,
+    "operator_precedence": false,
+    "defer_newline": false,
+    "deinit_undefined": false,
+    "dead_files": false,
+    "file_size": true
+  }
+}
