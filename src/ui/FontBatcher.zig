@@ -11,8 +11,8 @@ const TextureAtlas = @import("TextureAtlas.zig").TextureAtlas;
 pub const Anchor = layout.Anchor;
 pub const Color = @import("Color.zig").Color;
 pub const Vertex = Rendering.Vertex;
-pub const BatchMesh = Rendering.Mesh(Vertex);
-pub const BatchMeshData = Rendering.MeshData(Vertex);
+pub const BatchMesh = Rendering.MeshType(Vertex);
+pub const BatchMeshData = Rendering.MeshDataType(Vertex);
 pub const TextMesh = struct {
     data: BatchMeshData,
     mesh: BatchMesh,

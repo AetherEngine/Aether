@@ -10,8 +10,8 @@ const texture_region = @import("texture_region.zig");
 
 pub const Color = @import("Color.zig").Color;
 pub const Vertex = Rendering.Vertex;
-pub const BatchMesh = Rendering.Mesh(Vertex);
-pub const BatchMeshData = Rendering.MeshData(Vertex);
+pub const BatchMesh = Rendering.MeshType(Vertex);
+pub const BatchMeshData = Rendering.MeshDataType(Vertex);
 
 const SpriteBatcher = @This();
 
