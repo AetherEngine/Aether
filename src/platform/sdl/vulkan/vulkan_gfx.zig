@@ -115,7 +115,7 @@ var descriptor_set_layout: vk.DescriptorSetLayout = .null_handle;
 var descriptor_pool: vk.DescriptorPool = .null_handle;
 var descriptor_sets: []vk.DescriptorSet = undefined;
 
-const TEXTURE_CAP: u32 = 4096;
+const TEXTURE_CAP: u32 = 1024;
 
 var tex_set_layout: vk.DescriptorSetLayout = .null_handle;
 var tex_pool: vk.DescriptorPool = .null_handle;
@@ -125,7 +125,7 @@ var tex_sampler: vk.Sampler = .null_handle;
 const TextureRec = struct { image: vk.Image, memory: vk.DeviceMemory, view: vk.ImageView, width: u32, height: u32 };
 var textures = Util.ResourceTableType(TextureRec, TEXTURE_CAP, Texture.Handle).init();
 
-var meshes = Util.ResourceTableType(MeshData, 8192, Mesh.Handle).init();
+var meshes = Util.ResourceTableType(MeshData, 32768, Mesh.Handle).init();
 var render_pipeline: PipelineData = .{};
 
 var swap_state: Swapchain.PresentState = .optimal;

@@ -28,8 +28,8 @@ pub fn setup(alloc: std.mem.Allocator, io: std.Io) void {
 var procs: gl.ProcTable = undefined;
 var last_width: u32 = 0;
 var last_height: u32 = 0;
-var meshes = Util.ResourceTableType(MeshInternal, 8192, Mesh.Handle).init();
-var textures = Util.ResourceTableType(gl.uint, 8192, Texture.Handle).init();
+var meshes = Util.ResourceTableType(MeshInternal, 32768, Mesh.Handle).init();
+var textures = Util.ResourceTableType(gl.uint, 1024, Texture.Handle).init();
 var alpha_blend_enabled: bool = true;
 var cull_face_enabled: bool = true;
 var depth_write_enabled: bool = true;
