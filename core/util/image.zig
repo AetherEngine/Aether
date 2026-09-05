@@ -9,10 +9,125 @@ pub const Image = struct {
     data: []align(16) u8,
     mode: ColorMode,
 
+    pub fn view(self: *const Image) View {
+        return .{ .width = self.width, .height = self.height, .data = self.data, .mode = self.mode };
+    }
+
+    pub fn mutable_view(self: *Image) MutableView {
+        return .{ .width = self.width, .height = self.height, .data = self.data, .mode = self.mode };
+    }
+
+    pub fn copy_region(self: *Image, source: View, region: Region, x: u32, y: u32) RegionError!void {
+        return self.mutable_view().copy_region(source, region, x, y);
+    }
+
     pub fn deinit(self: *Image, allocator: std.mem.Allocator) void {
         defer self.* = undefined;
 
         allocator.free(self.data);
+    }
+};
+
+pub const RegionError = error{ InvalidDimensions, InsufficientData, RegionOutOfBounds, FormatMismatch, AliasedImages };
+
+pub const Region = struct {
+    x: u32 = 0,
+    y: u32 = 0,
+    width: u32,
+    height: u32,
+
+    pub fn validate(self: Region, width: u32, height: u32) RegionError!void {
+        if (self.x > width or self.y > height or self.width > width - self.x or self.height > height - self.y)
+            return error.RegionOutOfBounds;
+    }
+};
+
+pub fn bytes_per_pixel(mode: ColorMode) usize {
+    return if (mode == .rgba8) 4 else 2;
+}
+
+/// Borrowed, tightly packed, row-major pixels. Unlike Texture backing storage,
+/// this layout is always linear, including on targets with swizzled textures.
+pub const View = struct {
+    width: u32,
+    height: u32,
+    data: []const u8,
+    mode: ColorMode = .rgba8,
+
+    pub fn validate(self: View) RegionError!void {
+        if (self.width == 0 or self.height == 0) return error.InvalidDimensions;
+        const pixels = std.math.mul(usize, self.width, self.height) catch return error.InvalidDimensions;
+        const size = std.math.mul(usize, pixels, bytes_per_pixel(self.mode)) catch return error.InvalidDimensions;
+        if (self.data.len < size) return error.InsufficientData;
+    }
+
+    pub fn get_pixel(self: View, x: u32, y: u32) RegionError![4]u8 {
+        try self.validate();
+        try (Region{ .x = x, .y = y, .width = 1, .height = 1 }).validate(self.width, self.height);
+        return self.read_pixel(x, y);
+    }
+
+    /// Requires validate() and in-bounds coordinates; useful in validated loops.
+    pub fn read_pixel(self: View, x: u32, y: u32) [4]u8 {
+        const offset = (@as(usize, y) * self.width + x) * bytes_per_pixel(self.mode);
+        if (self.mode == .rgba8) return self.data[offset..][0..4].*;
+        const value = std.mem.readInt(u16, self.data[offset..][0..2], .little);
+        return switch (self.mode) {
+            .rgba5551 => .{
+                expand5(@intCast(value >> 11)),
+                expand5(@intCast((value >> 6) & 31)),
+                expand5(@intCast((value >> 1) & 31)),
+                if (value & 1 != 0) 255 else 0,
+            },
+            .rgba4444 => .{
+                @as(u8, @intCast(value & 15)) * 17,
+                @as(u8, @intCast((value >> 4) & 15)) * 17,
+                @as(u8, @intCast((value >> 8) & 15)) * 17,
+                @as(u8, @intCast(value >> 12)) * 17,
+            },
+            .rgba8 => unreachable,
+        };
+    }
+
+    fn expand5(v: u8) u8 {
+        return (v << 3) | (v >> 2);
+    }
+};
+
+pub const MutableView = struct {
+    width: u32,
+    height: u32,
+    data: []u8,
+    mode: ColorMode = .rgba8,
+
+    pub fn view(self: MutableView) View {
+        return .{ .width = self.width, .height = self.height, .data = self.data, .mode = self.mode };
+    }
+
+    /// Copies equal-format pixels without allocation. In-place moves are safe.
+    /// Distinct views with overlapping backing storage are rejected. Validation
+    /// completes before any pixels change; empty regions are valid no-ops.
+    pub fn copy_region(self: MutableView, source: View, region: Region, x: u32, y: u32) RegionError!void {
+        try self.view().validate();
+        try source.validate();
+        try region.validate(source.width, source.height);
+        try (Region{ .x = x, .y = y, .width = region.width, .height = region.height }).validate(self.width, self.height);
+        if (self.mode != source.mode) return error.FormatMismatch;
+        if (region.width == 0 or region.height == 0) return;
+        const same_image = self.data.ptr == source.data.ptr and self.width == source.width and self.height == source.height;
+        const overlap = @intFromPtr(self.data.ptr) < @intFromPtr(source.data.ptr) + source.data.len and
+            @intFromPtr(source.data.ptr) < @intFromPtr(self.data.ptr) + self.data.len;
+        if (overlap and !same_image) return error.AliasedImages;
+        const bpp = bytes_per_pixel(self.mode);
+        const row_size = @as(usize, region.width) * bpp;
+        for (0..region.height) |i| {
+            const row = if (same_image and y > region.y) region.height - 1 - i else i;
+            const dst_offset = ((@as(usize, y) + row) * self.width + x) * bpp;
+            const src_offset = ((@as(usize, region.y) + row) * source.width + region.x) * bpp;
+            const dst = self.data[dst_offset..][0..row_size];
+            const src = source.data[src_offset..][0..row_size];
+            if (same_image and dst_offset > src_offset) std.mem.copyBackwards(u8, dst, src) else std.mem.copyForwards(u8, dst, src);
+        }
     }
 };
 
@@ -395,4 +510,30 @@ test "PNG 8-bit and 16-bit alpha channels survive decoding" {
         try std.testing.expectEqual(@as(u32, 1), decoded.height);
         try std.testing.expectEqualSlices(u8, case.rgba, decoded.data);
     }
+}
+
+test "region copy validates before mutation and supports overlapping moves" {
+    var pixels: [4 * 4 * 2]u8 = undefined;
+    for (&pixels, 0..) |*pixel, i| pixel.* = @intCast(i);
+    const original = pixels;
+    const view: MutableView = .{ .width = 4, .height = 4, .data = &pixels, .mode = .rgba4444 };
+    try std.testing.expectError(error.RegionOutOfBounds, view.copy_region(view.view(), .{ .width = 3, .height = 4 }, 2, 0));
+    try std.testing.expectEqual(original, pixels);
+    try view.copy_region(view.view(), .{ .width = 3, .height = 3 }, 1, 1);
+    for (0..3) |y| for (0..3) |x| {
+        try std.testing.expectEqualSlices(u8, original[(y * 4 + x) * 2 ..][0..2], pixels[((y + 1) * 4 + x + 1) * 2 ..][0..2]);
+    };
+    const shifted = pixels;
+    try view.copy_region(view.view(), .{ .x = 1, .y = 1, .width = 3, .height = 3 }, 0, 0);
+    for (0..3) |y| for (0..3) |x| {
+        try std.testing.expectEqualSlices(u8, shifted[((y + 1) * 4 + x + 1) * 2 ..][0..2], pixels[(y * 4 + x) * 2 ..][0..2]);
+    };
+    try std.testing.expectError(error.InsufficientData, (View{ .width = 4, .height = 4, .data = &pixels }).validate());
+}
+
+test "image views decode compact formats" {
+    const rgba5551: View = .{ .width = 1, .height = 1, .data = &.{ 0x01, 0xf8 }, .mode = .rgba5551 };
+    try std.testing.expectEqual([4]u8{ 255, 0, 0, 255 }, try rgba5551.get_pixel(0, 0));
+    const rgba4444: View = .{ .width = 1, .height = 1, .data = &.{ 0x21, 0x43 }, .mode = .rgba4444 };
+    try std.testing.expectEqual([4]u8{ 17, 34, 51, 68 }, try rgba4444.get_pixel(0, 0));
 }

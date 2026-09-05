@@ -6,6 +6,12 @@ pub const State = @import("State.zig");
 pub const input = @import("input/input.zig");
 pub const InputSystem = input.InputSystem;
 pub const paths = @import("platform").paths;
+pub const System = @import("platform").system;
+pub const Network = @import("platform").network;
+pub const FileExport = @import("platform").file_export;
+pub const Storage = @import("storage.zig");
+pub const Jobs = @import("jobs.zig");
+pub const Resources = @import("resources/resources.zig");
 
 pub const Engine = @import("engine.zig").Engine;
 pub const AppOptions = @import("app_options.zig");
@@ -16,3 +22,10 @@ pub const Util = @import("util/util.zig");
 
 /// Shared low-level math primitives, also available through the engine API.
 pub const Math = @import("platform").math;
+
+test {
+    const testing = @import("std").testing;
+    testing.refAllDecls(Storage);
+    testing.refAllDecls(Jobs);
+    testing.refAllDecls(Resources);
+}

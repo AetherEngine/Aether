@@ -31,6 +31,18 @@ pub const LogicalRect = struct {
     }
 };
 
+/// Empty intersections have zero extent; rectangles must have ordered edges.
+pub fn intersection(a: LogicalRect, optional_b: ?LogicalRect) LogicalRect {
+    const b = optional_b orelse return a;
+    const x0 = @max(a.x0, b.x0);
+    const y0 = @max(a.y0, b.y0);
+    return .{ .x0 = x0, .y0 = y0, .x1 = @max(x0, @min(a.x1, b.x1)), .y1 = @max(y0, @min(a.y1, b.y1)) };
+}
+
+pub fn contains_rect(outer: LogicalRect, inner: LogicalRect) bool {
+    return inner.x0 >= outer.x0 and inner.y0 >= outer.y0 and inner.x1 <= outer.x1 and inner.y1 <= outer.y1;
+}
+
 pub fn anchor_point(anchor: Anchor, ex: i16, ey: i16) Point {
     return switch (anchor) {
         .top_left => .{ .x = 0, .y = 0 },

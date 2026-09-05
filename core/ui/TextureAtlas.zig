@@ -19,6 +19,11 @@ pub const TextureAtlas = struct {
     pub fn init(res_x: u32, res_y: u32, rows: u32, cols: u32) TextureAtlas {
         assert(std.math.isPowerOfTwo(res_x));
         assert(std.math.isPowerOfTwo(res_y));
+        return init_grid(rows, cols);
+    }
+
+    /// Normalized tile coordinates depend on the grid, not image resolution.
+    pub fn init_grid(rows: u32, cols: u32) TextureAtlas {
         assert(std.math.isPowerOfTwo(rows));
         assert(std.math.isPowerOfTwo(cols));
         return .{

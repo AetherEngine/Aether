@@ -41,6 +41,9 @@ pub fn main(init: Application) !void {
     };
     defer if (network) |*ctx| ctx.deinit();
 
+    aether.N3ds.set_network_available(network != null);
+    defer aether.N3ds.set_network_available(false);
+
     zitrus.horizon.Io.global.mountSelfRomFs("romfs") catch {};
     zitrus.horizon.Io.global.mountArchive("sdmc", .sdmc, .empty, &.{}) catch {};
 

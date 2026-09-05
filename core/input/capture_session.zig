@@ -60,18 +60,6 @@ pub fn eligible_to_complete(session: *const CaptureNextInputSession, src: bindin
 }
 
 pub fn format_label(buf: *[64]u8, src: binding_mod.BindingSource, mods: data.ModifierSet) u8 {
-    var stream = std.Io.Writer.fixed(buf);
-    if (mods.contains(.ctrl)) stream.writeAll("Ctrl+") catch {};
-    if (mods.contains(.shift)) stream.writeAll("Shift+") catch {};
-    if (mods.contains(.alt)) stream.writeAll("Alt+") catch {};
-    if (mods.contains(.super)) stream.writeAll("Super+") catch {};
-    switch (src) {
-        .key => |k| stream.print("{s}", .{@tagName(k)}) catch {},
-        .mouse_button => |mb| stream.print("Mouse {s}", .{@tagName(mb)}) catch {},
-        .mouse_wheel => |ax| stream.print("Wheel {s}", .{@tagName(ax)}) catch {},
-        .mouse_delta => |ax| stream.print("Mouse Delta {s}", .{@tagName(ax)}) catch {},
-        .gamepad_button => |gb| stream.print("Pad {s}", .{@tagName(gb)}) catch {},
-        .gamepad_axis => |ga| stream.print("Pad Axis {s}", .{@tagName(ga)}) catch {},
-    }
-    return @intCast(stream.end);
+    const label = @import("display.zig").format_label(buf, src, mods, .readable) catch return 0;
+    return @intCast(label.len);
 }

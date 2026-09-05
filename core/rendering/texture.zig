@@ -182,3 +182,85 @@ pub fn set_pixel(self: *Texture, x: u32, y: u32, rgba: [4]u8) Error!void {
     const data = try self.mutable_cpu_pixels();
     native_pixels.write(data, native_pixels.offset(self.width, self.height, x, y), rgba);
 }
+
+pub const RegionError = Error || Image.RegionError;
+
+/// Copies a linear image region into native CPU storage, converting pixel
+/// format/layout as needed. Call update() once after all edits; uploads still
+/// transfer the entire texture. Source and texture backing must not overlap.
+pub fn copy_image_region(self: *Texture, source: Image.View, region: Image.Region, x: u32, y: u32) RegionError!void {
+    try source.validate();
+    try region.validate(source.width, source.height);
+    try (Image.Region{ .x = x, .y = y, .width = region.width, .height = region.height }).validate(self.width, self.height);
+    const data = try self.mutable_cpu_pixels();
+    try self.validate_backing(data);
+    if (@intFromPtr(data.ptr) < @intFromPtr(source.data.ptr) + source.data.len and
+        @intFromPtr(source.data.ptr) < @intFromPtr(data.ptr) + data.len) return error.AliasedImages;
+    try self.validate_region_offsets(data.len, .{ .x = x, .y = y, .width = region.width, .height = region.height });
+    for (0..region.height) |row| for (0..region.width) |column| {
+        const ix: u32 = @intCast(column);
+        const iy: u32 = @intCast(row);
+        const rgba = source.read_pixel(region.x + ix, region.y + iy);
+        native_pixels.write(data, native_pixels.offset(self.width, self.height, x + ix, y + iy), rgba);
+    };
+}
+
+/// Native CPU texture-to-texture copy. In-place overlapping moves are safe;
+/// read and write permissions are checked before any pixels change.
+pub fn copy_region(self: *Texture, source: *const Texture, region: Image.Region, x: u32, y: u32) RegionError!void {
+    try region.validate(source.width, source.height);
+    try (Image.Region{ .x = x, .y = y, .width = region.width, .height = region.height }).validate(self.width, self.height);
+    const src = try source.cpu_pixels();
+    const dst = try self.mutable_cpu_pixels();
+    try self.validate_backing(dst);
+    try source.validate_backing(src);
+    const same_image = src.ptr == dst.ptr and source.width == self.width and source.height == self.height;
+    const overlap = @intFromPtr(dst.ptr) < @intFromPtr(src.ptr) + src.len and @intFromPtr(src.ptr) < @intFromPtr(dst.ptr) + dst.len;
+    if (overlap and !same_image) return error.AliasedImages;
+    try source.validate_region_offsets(src.len, region);
+    try self.validate_region_offsets(dst.len, .{ .x = x, .y = y, .width = region.width, .height = region.height });
+    for (0..region.height) |row| for (0..region.width) |column| {
+        const ix: u32 = @intCast(if (same_image and x > region.x) region.width - 1 - column else column);
+        const iy: u32 = @intCast(if (same_image and y > region.y) region.height - 1 - row else row);
+        const rgba = native_pixels.read(src, native_pixels.offset(source.width, source.height, region.x + ix, region.y + iy));
+        native_pixels.write(dst, native_pixels.offset(self.width, self.height, x + ix, y + iy), rgba);
+    };
+}
+
+fn validate_backing(self: *const Texture, data: []const u8) Image.RegionError!void {
+    const pixels = @as(u64, self.width) * self.height;
+    // Native offset calculations use u32; reject dimensions that overflow it.
+    if (self.width == 0 or self.height == 0 or pixels > std.math.maxInt(u32) / native_pixels.bytes_per_pixel) return error.InvalidDimensions;
+    const size = pixels * native_pixels.bytes_per_pixel;
+    if (data.len < size) return error.InsufficientData;
+}
+
+fn validate_region_offsets(self: *const Texture, len: usize, region: Image.Region) Image.RegionError!void {
+    for (0..region.height) |row| for (0..region.width) |column| {
+        const offset = native_pixels.offset(self.width, self.height, region.x + @as(u32, @intCast(column)), region.y + @as(u32, @intCast(row)));
+        if (offset > len or native_pixels.bytes_per_pixel > len - offset) return error.InsufficientData;
+    };
+}
+
+test "texture region copy converts images and moves overlapping CPU pixels" {
+    var pixels: [4 * 4 * native_pixels.bytes_per_pixel]u8 align(16) = @splat(0);
+    var texture_value: Texture = .{
+        .width = 4,
+        .height = 4,
+        .handle = .{},
+        .cpu_access = .read_write,
+        .residency = .backend_default,
+        .backing = &pixels,
+    };
+    const source: Image.View = .{ .width = 2, .height = 1, .mode = .rgba4444, .data = &.{ 0x0f, 0xf0, 0xf0, 0xf0 } };
+    try texture_value.copy_image_region(source, .{ .width = 2, .height = 1 }, 0, 0);
+    try std.testing.expectEqual([4]u8{ 255, 0, 0, 255 }, try texture_value.get_pixel(0, 0));
+    try texture_value.copy_region(&texture_value, .{ .width = 2, .height = 1 }, 1, 0);
+    try std.testing.expectEqual([4]u8{ 255, 0, 0, 255 }, try texture_value.get_pixel(1, 0));
+    try std.testing.expectEqual([4]u8{ 0, 255, 0, 255 }, try texture_value.get_pixel(2, 0));
+    const before = pixels;
+    try std.testing.expectError(error.RegionOutOfBounds, texture_value.copy_image_region(source, .{ .width = 2, .height = 1 }, 3, 0));
+    try std.testing.expectEqual(before, pixels);
+    texture_value.cpu_access = .read;
+    try std.testing.expectError(error.CpuWriteAccessDenied, texture_value.copy_image_region(source, .{ .width = 2, .height = 1 }, 0, 0));
+}

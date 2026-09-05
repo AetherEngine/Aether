@@ -25,20 +25,24 @@ the named Platform dependency remain covered.
 | --- | --- |
 | `core/engine.zig`, `core/State.zig`, `core/state_machine.zig` | Subsystem lifetime, frame scheduling, state transitions, memory accounting |
 | `core/app_options.zig` | Application configuration |
-| `core/input/` | Actions, bindings, contexts, capture, text editing sessions, and event evaluation |
-| `core/rendering/` | Mesh and texture ownership, CPU mesh editing, texture loading/defaults, cameras, transforms |
-| `core/audio/` | Streams, WAV loading, voices, software mixing, spatial audio |
-| `core/ui/` | Layout, sprite/font batching, texture atlases, UI colors |
-| `core/util/` | Image decoding, budget configuration, estimates, and public utility aliases |
+| `core/input/` | Actions, bindings, contexts, capture, text editing sessions, event evaluation, display labels, and versioned binding records |
+| `core/rendering/` | Mesh/texture ownership, CPU mesh editing, texture loading, cameras/frustums, flipbooks, and billboard batches |
+| `core/audio/` | Borrowed/owned streams, buffer and streaming WAV parsing, voices, software mixing, spatial audio |
+| `core/ui/` | Widget state/layout, input adaptation, ordered draw lists, clipping, prompts, text wrapping, sprite/font batching, and atlases |
+| `core/resources/` | Borrowed asset-source contracts, independent reader owners, and staged decoded asset stores |
+| `core/storage.zig`, `core/jobs.zig` | Replacement-write/JSON ownership and bounded serial job execution |
+| `core/util/` | Image decoding/regions, indexed ZIP readers, budget configuration, estimates, and public utility aliases |
 | `platform/*_api.zig` | Backend interfaces and error sets, checked at compile time |
-| `platform/graphics/` | Mesh/texture handles and descriptors, vertex layouts, render state, pixel formats |
+| `platform/graphics/` | Mesh/texture handles and descriptors, vertex layouts/position encoding, render state, pixel formats |
 | `platform/input/` | Device identifiers, raw events, frame storage, event sink, native text input requests |
-| `platform/math/` | Shared vectors, matrices, quaternions, bounds, and frustum calculations |
+| `platform/math/` | Shared vectors, matrices, quaternions, bounds, ray/sweep queries, and frustum calculations |
 | `platform/util/` | Pool allocation, generational handles, resource tables, circular buffers, logging helpers |
 | `platform/logging.zig`, `platform/logging/`, `platform/thread.zig` | Logging and thread lifetime/dispatch |
 | `platform/paths.zig`, `platform/surface.zig` | Application directories and surface contract |
+| `platform/system.zig`, `platform/network.zig`, `platform/filesystem.zig`, `platform/file_export.zig` | Hardware facts, network-session dispatch, rename behavior, and browser export dispatch |
 | `platform/<target>/` | SDK calls, devices, event translation, native graphics/audio/thread implementations |
 | `platform/shaders/` | Shared built-in shader sources; target-specific shaders stay under their target |
+| `build/packaging.zig` | Target artifact packaging and copying application-supplied resources |
 
 Math and storage primitives belong to Platform because both backends and Core
 use them. They have no dependency on engine objects. Core exposes them through
@@ -73,11 +77,38 @@ owns sound loading, mixing, voices, and spatial calculations. Platform logging
 and threads can therefore be used by audio and graphics backends without
 depending on the engine utility barrel.
 
+Resource sources are borrowed interfaces; each open transfers an independent
+reader owner. Core's archive and WAV adapters keep decoder state at stable
+addresses. Owned audio streams release these readers only after backend access
+has stopped. Asset stores close loader readers after decoding and stage all
+requested values before replacing one store's active set. Source retirement and
+transactions across stores/audio remain application responsibilities.
+Resource-pack conventions, asset names, archive creation, and pack selection
+also belong to applications. ZIP readers and resource stores impose no pack
+format or game asset schema.
+
+UI contexts own interaction policy over existing input text sessions. Draw lists
+copy labels and prepare geometry in insertion order. Ordinary geometry clips in
+Core; custom renderers explicitly advertise and implement partial clipping.
+Prepared geometry owns its meshes and borrows textures and renderer state.
+Engine text is literal by default. Applications supply any markup parser and
+color palette; markup syntax and continuation rules are not engine policy.
+
+Core storage helpers choose Platform's rename behavior and own temporary/backup
+file cleanup. Core job executors own their queues and completion protocol while
+borrowing jobs and callback inputs. Thread creation, native priorities, cwd
+inheritance, networking SDK calls, and browser download integration remain in
+Platform. Hardware capabilities describe mechanisms, not application budgets or
+quality choices.
+
 ## API compatibility
 
 The high-level `aether.Engine`, `Core.InputSystem`, `Audio`, `Rendering`, `Ui`,
 `Util`, and `Math` entry points remain available. Source files have moved, so
 code importing implementation files by relative path must use their new paths.
+`Resources`, `Storage`, `Jobs`, `System`, `Network`, and `FileExport` are available
+through both Core and the public facade. Their source declarations document
+ownership, validation, and lifetime requirements.
 
 Custom input backends must implement the sink/request signatures in
 `PlatformApi.input.Interface`. Engine-managed input attaches these services
@@ -120,10 +151,18 @@ listed SDKs and tools in addition to the Zig package dependencies.
 | `zig build` | Vulkan desktop build |
 | `zig build test` | Desktop unit tests and architecture checks |
 | `zig build test -Dgfx=headless -Daudio=none` | Headless unit tests and architecture checks |
+| `zig build test-api -Dgfx=headless -Daudio=none` | CPU geometry, worker cwd setup, and serial job lifetime probes on the host |
+| `zig build check-api` | Compile public service, resource, audio, UI, and rendering probes; accepts the same target flags as the sample build |
 | `zig build -Dgfx=opengl` | OpenGL desktop build |
 | `zig build web` | WASM/WebGL bundle, using Slang and spirv-cross |
 | `node --test tools/test_web_render_state.mjs` | WebGL command-recording tests for uniforms, texture updates, and depth clears |
+| `node --test tools/test_web_file_export.mjs` | Virtual file export bytes, filename/MIME, initiation failure, and URL cleanup |
 | `zig build -Dtarget=mipsel-psp` | PSP build, using Zig and the Zig-PSP/pspsdk package tools |
 | `zig build -Dtarget=arm-3ds` | 3DS build, using Zig and the zitrus package/toolchain |
 | `zig build -Dtarget=aarch64-freestanding-none -Dnintendo-switch=true` | Switch build, using devkitA64, libnx, and uam |
 | `zig build lint` | Lint and architecture scan |
+
+Browser API probes use `zig build check-api -Dtarget=wasm32-wasi
+-Dcpu=baseline+atomics+bulk_memory`. The native/GPU probe exports compile without
+being executed by `test-api`; they require a separately initialized harness.
+Target compilation does not verify console hardware behavior or visual output.

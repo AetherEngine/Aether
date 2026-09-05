@@ -22,3 +22,15 @@ pub fn set_priority(_: Handle, _: api.Priority) anyerror!void {}
 pub fn current_priority() api.Priority {
     return .normal;
 }
+
+pub fn change_current_priority(_: api.Priority) anyerror!i32 {
+    return error.UnsupportedPlatform;
+}
+
+pub fn change_current_priority_by(_: i32) anyerror!i32 {
+    return error.UnsupportedPlatform;
+}
+
+pub fn restore_current_priority(_: i32) anyerror!void {
+    return error.UnsupportedPlatform;
+}

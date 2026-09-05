@@ -2,6 +2,7 @@ const std = @import("std");
 const Vec3 = @import("platform").math.Vec3;
 const Util = @import("../util/util.zig");
 const stream_mod = @import("stream.zig");
+const resources = @import("../resources/source.zig");
 
 pub const SoundHandleTag = enum {};
 pub const SoundHandle = Util.HandleType(SoundHandleTag);
@@ -36,6 +37,8 @@ pub const CreateBufferError = error{
 
 pub const CreateStreamError = error{
     TooManyStreamingSounds,
+    SourceClosed,
+    InvalidSoundData,
 };
 
 pub const PlayError = error{
@@ -61,6 +64,7 @@ const StreamingSoundResource = struct {
     format: stream_mod.PcmFormat,
     byte_length: ?u64,
     active_voice: ?SoundHandle = null,
+    owned: ?resources.Reader = null,
 };
 
 const VoiceSource = union(enum) {
@@ -114,6 +118,14 @@ pub fn MixerType(comptime Backend: type) type {
                 }
             }
             buffers.clear();
+            for (1..max_streams + 1) |i| {
+                if (streams.slots[i]) |resource| {
+                    if (resource.owned) |owned| {
+                        var source = owned;
+                        source.close();
+                    }
+                }
+            }
             streams.clear();
         }
 
@@ -153,6 +165,7 @@ pub fn MixerType(comptime Backend: type) type {
         }
 
         pub fn create_stream(desc: *const StreamingSoundDesc) CreateStreamError!StreamingSoundHandle {
+            try validate_stream(desc.format, desc.byte_length);
             return streams.add(.{
                 .reader = desc.reader,
                 .format = desc.format,
@@ -160,11 +173,42 @@ pub fn MixerType(comptime Backend: type) type {
             }) orelse error.TooManyStreamingSounds;
         }
 
+        /// Transfers ownership only on success; the caller's Reader is marked
+        /// closed. The one-shot stream and its reader are destroyed when its
+        /// voice stops/completes, destroy_stream is called, or Audio shuts down.
+        /// A stream that has not been played remains owned until destruction.
+        pub fn create_owned_stream(source: *resources.Reader, format: stream_mod.PcmFormat, byte_length: ?u64) CreateStreamError!StreamingSoundHandle {
+            if (source.closed) return error.SourceClosed;
+            try validate_stream(format, byte_length);
+            const handle = streams.add(.{
+                .reader = source.reader,
+                .format = format,
+                .byte_length = byte_length,
+                .owned = source.*,
+            }) orelse return error.TooManyStreamingSounds;
+            source.closed = true;
+            return handle;
+        }
+
+        /// Opens and parses a resource without loading its complete PCM payload.
+        /// The resulting one-shot handle has create_owned_stream lifetime rules.
+        pub fn create_wav_stream(allocator: std.mem.Allocator, source: resources.Source, path: []const u8) !StreamingSoundHandle {
+            var owned = try @import("wav.zig").open_source(allocator, source, path);
+            defer owned.source.close();
+
+            return create_owned_stream(&owned.source, owned.info.format, owned.info.byte_length);
+        }
+
         pub fn destroy_stream(handle: StreamingSoundHandle) void {
             if (streams.get(handle)) |resource| {
                 if (resource.active_voice) |voice| stop(voice);
             }
+            const resource = streams.get(handle) orelse return;
             _ = streams.remove(handle);
+            if (resource.owned) |owned| {
+                var source = owned;
+                source.close();
+            }
         }
 
         pub fn set_listener(pos: Vec3, forward: Vec3, up: Vec3) void {
@@ -278,7 +322,10 @@ pub fn MixerType(comptime Backend: type) type {
                     const slot: u8 = for (used[0..max_slots], 0..) |occupied, slot| {
                         if (!occupied) break @intCast(slot);
                     } else continue;
-                    Backend.play_slot(slot, source) catch continue;
+                    Backend.play_slot(slot, source) catch {
+                        release_voice(vi);
+                        continue;
+                    };
                     voices[vi].?.slot = slot;
                     used[slot] = true;
                 }
@@ -297,6 +344,14 @@ pub fn MixerType(comptime Backend: type) type {
         fn validate_buffer(format: stream_mod.PcmFormat, pcm: []const u8) CreateBufferError!void {
             const frame_size = format.frame_size();
             if (frame_size == 0 or pcm.len == 0 or pcm.len % frame_size != 0) return error.InvalidSoundData;
+        }
+
+        fn validate_stream(format: stream_mod.PcmFormat, byte_length: ?u64) CreateStreamError!void {
+            if (format.sample_rate == 0 or (format.channels != 1 and format.channels != 2)) return error.InvalidSoundData;
+            if (format.bit_depth != 8 and format.bit_depth != 16 and format.bit_depth != 24 and format.bit_depth != 32) return error.InvalidSoundData;
+            if (byte_length) |length| {
+                if (length % format.frame_size() != 0) return error.InvalidSoundData;
+            }
         }
 
         fn play_internal(source: VoiceSource, pos: ?Vec3, opts: *const PlayOptions) PlayError!SoundHandle {
@@ -371,6 +426,11 @@ pub fn MixerType(comptime Backend: type) type {
                 if (voice.source == .stream) {
                     if (streams.get_ptr(voice.source.stream)) |stream| {
                         if (stream.active_voice == voice.handle) stream.active_voice = null;
+                        if (stream.owned) |owned| {
+                            _ = streams.remove(voice.source.stream);
+                            var source = owned;
+                            source.close();
+                        }
                     }
                 }
             }
@@ -539,4 +599,108 @@ test "mixer stops the backend before freeing owned PCM" {
 
     try std.testing.expect(Backend.pcm_was_live);
     try std.testing.expectEqual(@as(usize, 0), allocator.end_index);
+}
+
+test "owned streams close once after stop completion destroy failure and shutdown" {
+    const Backend = struct {
+        var active: bool = false;
+        var reject: bool = false;
+        pub fn init(_: std.mem.Allocator, _: std.Io) @import("platform").audio_api.InitError!void {
+            active = false;
+            reject = false;
+        }
+        pub fn deinit() void {
+            active = false;
+        }
+        pub fn update() void {}
+        pub fn max_voices() u32 {
+            return 1;
+        }
+        pub fn play_slot(_: u8, _: SlotSource) @import("platform").audio_api.PlaySlotError!void {
+            if (reject) return error.UnsupportedFormat;
+            active = true;
+        }
+        pub fn stop_slot(_: u8) void {
+            active = false;
+        }
+        pub fn set_slot_gain_pan(_: u8, _: f32, _: f32) void {}
+        pub fn is_slot_active(_: u8) bool {
+            return active;
+        }
+    };
+    const Probe = struct {
+        closes: usize = 0,
+        closed_while_active: bool = false,
+        fn close(context: ?*anyopaque) void {
+            const self: *@This() = @ptrCast(@alignCast(context.?));
+            self.closes += 1;
+            self.closed_while_active = Backend.active;
+        }
+    };
+    const Mix = MixerType(Backend);
+    const endings = enum { stop, complete, destroy, reject, shutdown, unplayed };
+    inline for (std.meta.tags(endings)) |ending| {
+        try Mix.init(std.testing.allocator, std.testing.io);
+        var probe: Probe = .{};
+        var input: std.Io.Reader = .fixed(&.{ 0, 0 });
+        var owner: resources.Reader = .{ .reader = &input, .context = &probe, .close_fn = Probe.close };
+        const handle = try Mix.create_owned_stream(&owner, .{ .sample_rate = 44100, .channels = 1, .bit_depth = 16 }, 2);
+        try std.testing.expect(owner.closed);
+        owner.close();
+        try std.testing.expectEqual(@as(usize, 0), probe.closes);
+        if (ending != .unplayed) {
+            const voice = try Mix.play_stream(handle, &.{});
+            Backend.reject = ending == .reject;
+            Mix.update();
+            switch (ending) {
+                .stop => Mix.stop(voice),
+                .complete => {
+                    Backend.active = false;
+                    Mix.update();
+                },
+                .destroy => Mix.destroy_stream(handle),
+                .reject => {},
+                .shutdown => {},
+                .unplayed => unreachable,
+            }
+            if (ending != .shutdown) {
+                try std.testing.expect(!Mix.is_playing(voice));
+                try std.testing.expectEqual(@as(usize, 1), probe.closes);
+                try std.testing.expectError(error.InvalidStreamingSound, Mix.play_stream(handle, &.{}));
+                Mix.destroy_stream(handle);
+            }
+        }
+        Mix.deinit();
+        try std.testing.expectEqual(@as(usize, 1), probe.closes);
+        try std.testing.expect(!probe.closed_while_active);
+    }
+}
+
+test "owned stream creation failure retains caller ownership" {
+    const Backend = struct {
+        pub fn deinit() void {}
+    };
+    const Probe = struct {
+        closes: usize = 0,
+        fn close(context: ?*anyopaque) void {
+            const self: *@This() = @ptrCast(@alignCast(context.?));
+            self.closes += 1;
+        }
+    };
+    const Mix = MixerType(Backend);
+    defer Mix.deinit();
+
+    var input: std.Io.Reader = .fixed(&.{ 0, 0 });
+    const format: stream_mod.PcmFormat = .{ .sample_rate = 44100, .channels = 1, .bit_depth = 16 };
+    for (0..Mix.max_streams) |_| {
+        _ = try Mix.create_stream(&.{ .reader = &input, .format = format, .byte_length = 2 });
+    }
+    var probe: Probe = .{};
+    var owner: resources.Reader = .{ .reader = &input, .context = &probe, .close_fn = Probe.close };
+    try std.testing.expectError(error.TooManyStreamingSounds, Mix.create_owned_stream(&owner, format, 2));
+    try std.testing.expect(!owner.closed);
+    owner.close();
+    owner.close();
+    try std.testing.expectEqual(@as(usize, 1), probe.closes);
+    try std.testing.expectError(error.SourceClosed, Mix.create_owned_stream(&owner, format, 2));
 }

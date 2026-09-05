@@ -95,3 +95,23 @@ pub fn current_priority() api.Priority {
     if (c.svcGetThreadPriority(&p, c.threadGetCurHandle()) != 0) return .normal;
     return priority_from_switch(p);
 }
+
+pub fn change_current_priority(priority: api.Priority) anyerror!i32 {
+    var previous: c.s32 = undefined;
+    if (c.svcGetThreadPriority(&previous, c.threadGetCurHandle()) != 0) return error.SystemResources;
+    if (c.svcSetThreadPriority(c.threadGetCurHandle(), @intCast(priority_to_switch(priority))) != 0) return error.SystemResources;
+    return previous;
+}
+
+pub fn change_current_priority_by(delta: i32) anyerror!i32 {
+    var previous: c.s32 = undefined;
+    if (c.svcGetThreadPriority(&previous, c.threadGetCurHandle()) != 0) return error.SystemResources;
+    const next = try api.relative_priority(previous, delta, 0, 63);
+    if (c.svcSetThreadPriority(c.threadGetCurHandle(), @intCast(next)) != 0) return error.SystemResources;
+    return previous;
+}
+
+pub fn restore_current_priority(token: i32) anyerror!void {
+    if (token < 0 or token > 63) return error.InvalidPriority;
+    if (c.svcSetThreadPriority(c.threadGetCurHandle(), @intCast(token)) != 0) return error.SystemResources;
+}

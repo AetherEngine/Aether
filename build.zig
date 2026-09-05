@@ -116,6 +116,20 @@ pub fn build(b: *std.Build) void {
         .overrides = overrides,
     });
 
+    const api_smoke = modules.add_game(b, b, .{
+        .name = "aether-api-smoke",
+        .root_source_file = b.path("test/api_smoke.zig"),
+        .target = target,
+        .optimize = optimize,
+        .overrides = overrides,
+    });
+    b.step("check-api", "Compile public API probes for the selected target").dependOn(&api_smoke.step);
+    if (resolved_config.platform == .linux or resolved_config.platform == .macos or resolved_config.platform == .windows) {
+        const run_api_smoke = b.addRunArtifact(api_smoke);
+        run_api_smoke.addArg("--exercise");
+        b.step("test-api", "Run CPU geometry and thread lifetime probes").dependOn(&run_api_smoke.step);
+    }
+
     const nintendo_romfs = b.addWriteFiles();
     _ = nintendo_romfs.addCopyFile(b.path("test/test.png"), "test.png");
     _ = nintendo_romfs.addCopyFile(b.path("test/calm1.wav"), "calm1.wav");

@@ -37,6 +37,8 @@ pub const create_buffer = mix.create_buffer;
 pub const adopt_buffer = mix.adopt_buffer;
 pub const destroy_buffer = mix.destroy_buffer;
 pub const create_stream = mix.create_stream;
+pub const create_owned_stream = mix.create_owned_stream;
+pub const create_wav_stream = mix.create_wav_stream;
 pub const destroy_stream = mix.destroy_stream;
 pub const stop = mix.stop;
 pub const set_position = mix.set_position;
@@ -53,7 +55,9 @@ pub fn load_wav(io: std.Io, dir: anytype, allocator: std.mem.Allocator, path: []
 
     var riff_hdr: [8]u8 = undefined;
     try reader.interface.readSliceAll(&riff_hdr);
-    const file_size: usize = @as(usize, std.mem.readInt(u32, riff_hdr[4..8], .little)) + 8;
+    if (!std.mem.eql(u8, riff_hdr[0..4], "RIFF")) return error.InvalidWav;
+    const file_size = std.math.add(usize, std.mem.readInt(u32, riff_hdr[4..8], .little), 8) catch return error.InvalidWav;
+    if (file_size < 12) return error.InvalidWav;
 
     const bytes = try allocator.alloc(u8, file_size);
     errdefer allocator.free(bytes);

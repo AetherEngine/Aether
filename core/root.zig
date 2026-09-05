@@ -8,6 +8,12 @@ pub const Util = Core.Util;
 pub const Rendering = Core.Rendering;
 pub const Ui = Core.Ui;
 pub const Audio = Core.Audio;
+pub const System = Core.System;
+pub const Network = Core.Network;
+pub const FileExport = Core.FileExport;
+pub const Storage = Core.Storage;
+pub const Jobs = Core.Jobs;
+pub const Resources = Core.Resources;
 pub const Math = Core.Math;
 pub const Engine = Core.Engine;
 pub const AppOptions = Core.AppOptions;
@@ -23,6 +29,8 @@ pub const PlatformApi = struct {
     pub const surface = @import("platform").surface;
     pub const thread = @import("platform").thread_api;
     pub const graphics = @import("platform").graphics;
+    pub const system = @import("platform").system.api;
+    pub const network = @import("platform").network.api;
 };
 
 /// PSP system dialogs (keyboard and network configuration).

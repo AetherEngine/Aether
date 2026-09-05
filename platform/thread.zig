@@ -21,6 +21,32 @@ comptime {
 pub const Priority = thread_api.Priority;
 pub const Config = thread_api.Config;
 
+/// Restore on the same thread, in reverse nesting order. The token retains
+/// the native priority exactly, including values between priority buckets.
+/// Returns UnsupportedPlatform on desktop/browser backends, which do not
+/// implement native scheduler priority changes.
+pub const PriorityScope = struct {
+    previous: ?i32,
+
+    pub fn enter(priority: Priority) !PriorityScope {
+        return .{ .previous = try Api.change_current_priority(priority) };
+    }
+
+    /// Add delta in native scheduler units, retaining the exact previous
+    /// value. Negative deltas raise priority on PSP, 3DS, and Switch. Invalid
+    /// ranges/overflow fail without changing priority; desktop/browser report
+    /// UnsupportedPlatform, including for a zero delta.
+    pub fn enter_relative(delta: i32) !PriorityScope {
+        return .{ .previous = try Api.change_current_priority_by(delta) };
+    }
+
+    pub fn restore(self: *PriorityScope) !void {
+        const previous = self.previous orelse return;
+        try Api.restore_current_priority(previous);
+        self.previous = null;
+    }
+};
+
 pub const Thread = struct {
     handle: Api.Handle,
 
@@ -52,6 +78,47 @@ test "spawn/join roundtrip" {
     }.run, .{&counter});
     t.join();
     try std.testing.expectEqual(@as(u32, 1), counter.load(.seq_cst));
+}
+
+test "scoped priorities restore nested calling-thread priorities" {
+    if (!@import("system.zig").info().native_thread_priority) {
+        try std.testing.expectError(error.UnsupportedPlatform, PriorityScope.enter(.low));
+        try std.testing.expectError(error.UnsupportedPlatform, PriorityScope.enter_relative(-10));
+        try std.testing.expectError(error.UnsupportedPlatform, PriorityScope.enter_relative(0));
+        return;
+    }
+    const original = Thread.current_priority();
+    var outer = try PriorityScope.enter(.low);
+    defer outer.restore() catch unreachable;
+
+    var inner = try PriorityScope.enter(.highest);
+    try std.testing.expectEqual(Priority.highest, Thread.current_priority());
+    try inner.restore();
+    try inner.restore();
+    try std.testing.expectEqual(Priority.low, Thread.current_priority());
+    try outer.restore();
+    try std.testing.expectEqual(original, Thread.current_priority());
+}
+
+test "relative priority scopes retain exact values between priority buckets" {
+    if (!@import("system.zig").info().native_thread_priority) return error.SkipZigTest;
+    var base = try PriorityScope.enter(.normal);
+    defer base.restore() catch unreachable;
+
+    var first = try PriorityScope.enter_relative(1);
+    defer first.restore() catch unreachable;
+
+    var second = try PriorityScope.enter_relative(1);
+    defer second.restore() catch unreachable;
+
+    try std.testing.expectEqual(first.previous.? + 1, second.previous.?);
+    const intermediate = second.previous.?;
+    try second.restore();
+    var observed = try PriorityScope.enter_relative(0);
+    defer observed.restore() catch unreachable;
+
+    try std.testing.expectEqual(intermediate, observed.previous.?);
+    try std.testing.expectError(error.InvalidPriority, PriorityScope.enter_relative(std.math.maxInt(i32)));
 }
 
 test "current_priority defaults to normal on the calling thread" {

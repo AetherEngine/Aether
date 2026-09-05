@@ -27,6 +27,8 @@ pub const Command = struct {
     layer: u8,
     clip: ClipMode = .inherit,
     sequence: u16 = 0,
+    /// Effective logical clip supplied by DrawList preparation.
+    resolved_clip: ?layout.LogicalRect = null,
     payload_len: u8 = 0,
     payload_align: u8 = 1,
     payload: [max_payload_bytes]u8 = [_]u8{0} ** max_payload_bytes,
@@ -63,6 +65,8 @@ pub const Command = struct {
 };
 
 pub const Renderer = struct {
+    /// Draw implements Command.resolved_clip for partially clipped bounds.
+    supports_clipping: bool = false,
     ctx: *anyopaque,
     reset: *const fn (ctx: *anyopaque) void,
     prepare: *const fn (ctx: *anyopaque, commands: []const Command) anyerror!void,

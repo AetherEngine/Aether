@@ -39,38 +39,16 @@ const space_width: u8 = 4;
 const default_spacing: i8 = 1;
 const max_entries: u16 = 1024;
 const max_text_bytes: u16 = 8192;
-const color_prefix: u8 = '&';
-
-fn is_color_hex(c: u8) bool {
-    return (c >= '0' and c <= '9') or (c >= 'a' and c <= 'f');
-}
-
-const ColorPair = struct { fg: Color, bg: Color };
-
-fn color_for_code(c: u8) ColorPair {
-    return switch (c) {
-        '0' => .{ .fg = Color.rgba(0, 0, 0, 255), .bg = Color.rgba(0, 0, 0, 255) },
-        '1' => .{ .fg = Color.rgba(0, 0, 170, 255), .bg = Color.rgba(0, 0, 42, 255) },
-        '2' => .{ .fg = Color.rgba(0, 170, 0, 255), .bg = Color.rgba(0, 42, 0, 255) },
-        '3' => .{ .fg = Color.rgba(0, 170, 170, 255), .bg = Color.rgba(0, 42, 42, 255) },
-        '4' => .{ .fg = Color.rgba(170, 0, 0, 255), .bg = Color.rgba(42, 0, 0, 255) },
-        '5' => .{ .fg = Color.rgba(170, 0, 170, 255), .bg = Color.rgba(42, 0, 42, 255) },
-        '6' => .{ .fg = Color.rgba(170, 170, 0, 255), .bg = Color.rgba(42, 42, 0, 255) },
-        '7' => .{ .fg = Color.rgba(170, 170, 170, 255), .bg = Color.rgba(42, 42, 42, 255) },
-        '8' => .{ .fg = Color.rgba(85, 85, 85, 255), .bg = Color.rgba(21, 21, 21, 255) },
-        '9' => .{ .fg = Color.rgba(85, 85, 255, 255), .bg = Color.rgba(21, 21, 63, 255) },
-        'a' => .{ .fg = Color.rgba(85, 255, 85, 255), .bg = Color.rgba(21, 63, 21, 255) },
-        'b' => .{ .fg = Color.rgba(85, 255, 255, 255), .bg = Color.rgba(21, 63, 63, 255) },
-        'c' => .{ .fg = Color.rgba(255, 85, 85, 255), .bg = Color.rgba(63, 21, 21, 255) },
-        'd' => .{ .fg = Color.rgba(255, 85, 255, 255), .bg = Color.rgba(63, 21, 63, 255) },
-        'e' => .{ .fg = Color.rgba(255, 255, 85, 255), .bg = Color.rgba(63, 63, 21, 255) },
-        'f' => .{ .fg = Color.rgba(255, 255, 255, 255), .bg = Color.rgba(63, 63, 63, 255) },
-        else => unreachable,
-    };
-}
+/// Optional application-owned inline styling. A control consumes no glyph width.
+/// Return null for literal text; lengths outside 1..text.len are ignored.
+pub const StyleControl = struct {
+    length: usize,
+    color: ?Color = null,
+    shadow_color: ?Color = null,
+};
+pub const StyleParser = *const fn (text: []const u8) ?StyleControl;
 
 pub const TextEntry = struct {
-    /// `&0` through `&f` select colors and occupy no glyph width.
     str: []const u8,
     color: Color,
     shadow_color: Color,
@@ -81,6 +59,8 @@ pub const TextEntry = struct {
     scale: u8 = 1,
     reference: Anchor,
     origin: Anchor,
+    /// Clips individual glyphs and shadows, including their UVs.
+    clip: ?layout.LogicalRect = null,
 };
 
 glyph_widths: [glyph_count]u8,
@@ -97,6 +77,8 @@ last_screen_h: u32,
 mesh_data: BatchMeshData,
 mesh: BatchMesh,
 allocator: std.mem.Allocator,
+/// Null renders every byte literally. Set before measurement and rendering.
+style_parser: ?StyleParser = null,
 
 pub fn init(allocator: std.mem.Allocator, texture: *const Rendering.Texture) !FontBatcher {
     assert(texture.width == 128);
@@ -200,7 +182,19 @@ pub fn flush(self: *FontBatcher) !void {
     self.draw();
 }
 
-/// Measures logical pixels, including spacing and scale but excluding color escapes.
+/// Changes the application parser and invalidates cached geometry.
+pub fn set_style_parser(self: *FontBatcher, parser: ?StyleParser) void {
+    self.style_parser = parser;
+    self.mark_dirty();
+}
+fn parse_style(self: *const FontBatcher, text: []const u8) ?StyleControl {
+    const parser = self.style_parser orelse return null;
+    const control = parser(text) orelse return null;
+    return if (control.length > 0 and control.length <= text.len) control else null;
+}
+
+/// Measures logical pixels, including spacing and scale. Application styling
+/// controls, when configured, occupy no glyph width.
 pub fn string_width(self: *const FontBatcher, str: []const u8, spacing: i8, text_scale: u8) i16 {
     if (str.len == 0) return 0;
     assert(text_scale > 0);
@@ -209,8 +203,8 @@ pub fn string_width(self: *const FontBatcher, str: []const u8, spacing: i8, text
     var visible: u32 = 0;
     var i: usize = 0;
     while (i < str.len) {
-        if (str[i] == color_prefix and i + 1 < str.len and is_color_hex(str[i + 1])) {
-            i += 2;
+        if (self.parse_style(str[i..])) |control| {
+            i += control.length;
             continue;
         }
         total += @as(i32, self.glyph_widths[str[i]]) * s;
@@ -223,7 +217,7 @@ pub fn string_width(self: *const FontBatcher, str: []const u8, spacing: i8, text
     return @intCast(@min(total, std.math.maxInt(i16)));
 }
 
-/// Returns the longest prefix fitting `max_w`, in bytes, without splitting color escapes.
+/// Returns the longest prefix fitting `max_w`, in bytes, without splitting application styling controls.
 pub fn fit_width(self: *const FontBatcher, str: []const u8, max_w: i16, spacing: i8, text_scale: u8) usize {
     if (max_w <= 0 or str.len == 0) return 0;
     assert(text_scale > 0);
@@ -234,8 +228,8 @@ pub fn fit_width(self: *const FontBatcher, str: []const u8, max_w: i16, spacing:
     var i: usize = 0;
     var last_fit: usize = 0;
     while (i < str.len) {
-        if (str[i] == color_prefix and i + 1 < str.len and is_color_hex(str[i + 1])) {
-            i += 2;
+        if (self.parse_style(str[i..])) |control| {
+            i += control.length;
             last_fit = i;
             continue;
         }
@@ -279,7 +273,6 @@ pub fn build_mesh(
     const s: i32 = text_scale;
     const text_w: i32 = self.string_width(str, spacing, text_scale);
     const text_h: i32 = @as(i32, glyph_size) * s;
-    assert(text_w > 0);
 
     // Extend extent to include shadow so all vertices stay within [-1,1].
     const pad: i32 = if (has_shadow) s else 0;
@@ -320,8 +313,8 @@ pub fn mesh_matrix(
     const ts: i16 = text_scale;
     const tw_i = self.string_width(str, spacing, text_scale);
     const th_i: i16 = @as(i16, glyph_size) * ts;
-    const max_lx: i16 = @intCast(screen_w / ui_scale);
-    const max_ly: i16 = @intCast(screen_h / ui_scale);
+    const max_lx: i16 = @intCast(layout.logical_width(screen_w, ui_scale));
+    const max_ly: i16 = @intCast(layout.logical_height(screen_h, ui_scale));
 
     const ref = anchor_point(reference, max_lx, max_ly);
     const orig = anchor_point(origin, tw_i, th_i);
@@ -355,6 +348,7 @@ fn entries_equal(a: []const TextEntry, b: []const TextEntry) bool {
         if (x.scale != y.scale) return false;
         if (x.reference != y.reference) return false;
         if (x.origin != y.origin) return false;
+        if (!std.meta.eql(x.clip, y.clip)) return false;
     }
     return true;
 }
@@ -373,12 +367,12 @@ fn rebuild(self: *FontBatcher, screen_w: u32, screen_h: u32) !void {
     try self.mesh_data.ensure_quad_capacity(self.allocator, @as(usize, total_quads));
 
     for (entries) |*e| {
-        emit_text(self, &self.mesh_data, e, screen_w, screen_h, scale);
+        append_geometry(self, &self.mesh_data, e, screen_w, screen_h, scale);
     }
     self.mesh.update(&self.mesh_data);
 }
 
-fn emit_text(
+pub fn append_geometry(
     self: *const FontBatcher,
     mesh: *BatchMeshData,
     entry: *const TextEntry,
@@ -392,22 +386,22 @@ fn emit_text(
     const text_w = self.string_width(str, entry.spacing, entry.scale);
     const text_h: i16 = @as(i16, glyph_size) * ts;
 
-    const max_lx: i16 = @intCast(screen_w / ui_scale);
-    const max_ly: i16 = @intCast(screen_h / ui_scale);
+    const max_lx: i16 = @intCast(layout.logical_width(screen_w, ui_scale));
+    const max_ly: i16 = @intCast(layout.logical_height(screen_h, ui_scale));
 
     const ref = anchor_point(entry.reference, max_lx, max_ly);
     const orig = anchor_point(entry.origin, text_w, text_h);
-    const base_x: i16 = ref.x + entry.pos_x - orig.x;
-    const base_y: i16 = ref.y + entry.pos_y - orig.y;
+    const base_x: i32 = @as(i32, ref.x) + entry.pos_x - orig.x;
+    const base_y: i32 = @as(i32, ref.y) + entry.pos_y - orig.y;
 
     // Two z-levels per layer: shadow behind, text in front.
     const shadow_z: i16 = 32766 - @as(i16, entry.layer) * 2;
     const text_z: i16 = shadow_z - 1;
 
     if (entry.shadow_color.a > 0) {
-        emit_string_screen(self, mesh, str, entry.spacing, @as(i32, base_x) + ts, @as(i32, base_y) + ts, shadow_z, entry.shadow_color, true, screen_w, screen_h, ui_scale, entry.scale);
+        emit_string_screen(self, mesh, str, entry.spacing, @as(i32, base_x) + ts, @as(i32, base_y) + ts, shadow_z, entry.shadow_color, true, screen_w, screen_h, ui_scale, entry.scale, entry.clip);
     }
-    emit_string_screen(self, mesh, str, entry.spacing, @as(i32, base_x), @as(i32, base_y), text_z, entry.color, false, screen_w, screen_h, ui_scale, entry.scale);
+    emit_string_screen(self, mesh, str, entry.spacing, @as(i32, base_x), @as(i32, base_y), text_z, entry.color, false, screen_w, screen_h, ui_scale, entry.scale, entry.clip);
 }
 
 fn emit_string_screen(
@@ -424,13 +418,13 @@ fn emit_string_screen(
     screen_h: u32,
     ui_scale: u32,
     text_scale: u8,
+    clip: ?layout.LogicalRect,
 ) void {
-    const max_lx: i16 = @intCast(screen_w / ui_scale);
-    const max_ly: i16 = @intCast(screen_h / ui_scale);
+    const bounds = layout.intersection(.{ .x0 = 0, .y0 = 0, .x1 = @intCast(layout.logical_width(screen_w, ui_scale)), .y1 = @intCast(layout.logical_height(screen_h, ui_scale)) }, clip);
     const ts: i32 = text_scale;
 
-    const y0: i16 = @intCast(@min(@max(start_y, 0), @as(i32, max_ly)));
-    const y1: i16 = @intCast(@min(start_y + @as(i32, glyph_size) * ts, @as(i32, max_ly)));
+    const y0: i16 = @intCast(@min(@max(start_y, bounds.y0), bounds.y1));
+    const y1: i16 = @intCast(@max(bounds.y0, @min(start_y + @as(i32, glyph_size) * ts, bounds.y1)));
     if (y0 >= y1) return;
     const sy0 = logical_to_snorm_y(y0, screen_h, ui_scale);
     const sy1 = logical_to_snorm_y(y1, screen_h, ui_scale);
@@ -440,13 +434,12 @@ fn emit_string_screen(
 
     var i: usize = 0;
     while (i < str.len) {
-        if (str[i] == color_prefix and i + 1 < str.len and is_color_hex(str[i + 1])) {
-            const pair = color_for_code(str[i + 1]);
-            color = @bitCast(if (is_shadow) pair.bg else pair.fg);
-            i += 2;
+        if (self.parse_style(str[i..])) |control| {
+            if (if (is_shadow) control.shadow_color else control.color) |replacement| color = @bitCast(replacement);
+            i += control.length;
             continue;
         }
-        if (cursor >= @as(i32, max_lx)) break;
+        if (cursor >= bounds.x1 and advance >= 0) break;
         const byte = str[i];
         i += 1;
         const gw = self.glyph_widths[byte];
@@ -455,8 +448,8 @@ fn emit_string_screen(
             continue;
         }
         const scaled_w: i32 = @as(i32, gw) * ts;
-        const x0: i16 = @intCast(@max(cursor, 0));
-        const x1: i16 = @intCast(@min(cursor + scaled_w, @as(i32, max_lx)));
+        const x0: i16 = @intCast(@min(bounds.x1, @max(cursor, bounds.x0)));
+        const x1: i16 = @intCast(@max(bounds.x0, @min(cursor + scaled_w, bounds.x1)));
         if (x0 < x1) {
             const base = glyph_uvs(self, byte, gw);
             const uv_span: i32 = @as(i32, base[2]) - @as(i32, base[0]);
@@ -464,7 +457,10 @@ fn emit_string_screen(
             const vis_r: i32 = @as(i32, x1) - cursor;
             const uv_l: i16 = @intCast(@as(i32, base[0]) + @divTrunc(uv_span * vis_l, scaled_w));
             const uv_r: i16 = @intCast(@as(i32, base[0]) + @divTrunc(uv_span * vis_r, scaled_w));
-            emit_quad(mesh, logical_to_snorm_x(x0, screen_w, ui_scale), sy0, logical_to_snorm_x(x1, screen_w, ui_scale), sy1, z, uv_l, base[1], uv_r, base[3], color);
+            const uv_h: i32 = @as(i32, base[3]) - base[1];
+            const uv_t: i16 = @intCast(@as(i32, base[1]) + @divTrunc(uv_h * (@as(i32, y0) - start_y), @as(i32, glyph_size) * ts));
+            const uv_b: i16 = @intCast(@as(i32, base[1]) + @divTrunc(uv_h * (@as(i32, y1) - start_y), @as(i32, glyph_size) * ts));
+            emit_quad(mesh, logical_to_snorm_x(x0, screen_w, ui_scale), sy0, logical_to_snorm_x(x1, screen_w, ui_scale), sy1, z, uv_l, uv_t, uv_r, uv_b, color);
         }
         cursor += scaled_w + advance;
     }
@@ -493,10 +489,9 @@ fn emit_string_local(
 
     var i: usize = 0;
     while (i < str.len) {
-        if (str[i] == color_prefix and i + 1 < str.len and is_color_hex(str[i + 1])) {
-            const pair = color_for_code(str[i + 1]);
-            color = @bitCast(if (is_shadow) pair.bg else pair.fg);
-            i += 2;
+        if (self.parse_style(str[i..])) |control| {
+            if (if (is_shadow) control.shadow_color else control.color) |replacement| color = @bitCast(replacement);
+            i += control.length;
             continue;
         }
         const byte = str[i];
@@ -599,4 +594,52 @@ fn local_to_snorm_x(x: i32, extent_w: i32) i16 {
 /// Maps [0, extent] to [32767, -32767] (Y-flipped for top-left origin).
 fn local_to_snorm_y(y: i32, extent_h: i32) i16 {
     return @intCast(@divTrunc((extent_h - 2 * y) * 32767, extent_h));
+}
+
+test "glyph clips trim horizontal and vertical texture coordinates" {
+    var font: FontBatcher = undefined;
+    font.style_parser = null;
+    font.glyph_widths = @splat(8);
+    font.atlas = TextureAtlas.init_grid(16, 16);
+    var data = try BatchMeshData.init(std.testing.allocator);
+    defer data.deinit(std.testing.allocator);
+
+    try data.ensure_quad_capacity(std.testing.allocator, 2);
+    font.append_geometry(&data, &.{ .str = "A", .color = Color.rgba(255, 255, 255, 255), .shadow_color = Color.rgba(0, 0, 0, 0), .pos_x = 50, .pos_y = 50, .spacing = 0, .layer = 0, .reference = .top_left, .origin = .middle_center, .clip = .{ .x0 = 48, .y0 = 48, .x1 = 52, .y1 = 52 } }, 100, 100, 1);
+    const vertices = data.vertices.items;
+    try std.testing.expect(vertices.len >= 4);
+    const base = glyph_uvs(&font, 'A', 8);
+    try std.testing.expectEqual(@as(i16, base[0] + 511), vertices[0].uv[0]);
+    try std.testing.expectEqual(@as(i16, base[1] + 511), vertices[0].uv[1]);
+    try std.testing.expectEqual(@as(i16, base[3] - 512), vertices[1].uv[1]);
+}
+
+test "font measurement fitting and geometry treat ampersands literally by default" {
+    var font: FontBatcher = undefined;
+    font.style_parser = null;
+    font.glyph_widths = @splat(4);
+    font.atlas = TextureAtlas.init_grid(16, 16);
+    try std.testing.expectEqual(19, font.string_width("A&cB", 0, 1));
+    try std.testing.expectEqual(2, font.fit_width("A&cB", 9, 0, 1));
+    var data = try BatchMeshData.init(std.testing.allocator);
+    defer data.deinit(std.testing.allocator);
+
+    try data.ensure_quad_capacity(std.testing.allocator, 4);
+    const color = Color.rgba(18, 52, 86, 255);
+    font.append_geometry(&data, &.{ .str = "A&cB", .color = color, .shadow_color = Color.rgba(0, 0, 0, 0), .pos_x = 0, .pos_y = 0, .spacing = 0, .layer = 0, .reference = .top_left, .origin = .top_left }, 100, 100, 1);
+    try std.testing.expectEqual(@as(usize, 4 * (if (Rendering.mesh.indexing_enabled) @as(usize, 4) else 6)), data.vertices.items.len);
+    for (data.vertices.items) |vertex| try std.testing.expectEqual(@as(u32, @bitCast(color)), vertex.color);
+}
+
+test "invalid application styling lengths remain literal and never stall" {
+    const Invalid = struct {
+        fn parse(text: []const u8) ?StyleControl {
+            return .{ .length = if (text[0] == '!') 0 else text.len + 1 };
+        }
+    };
+    var font: FontBatcher = undefined;
+    font.glyph_widths = @splat(1);
+    font.style_parser = Invalid.parse;
+    try std.testing.expectEqual(3, font.string_width("!?", 0, 1));
+    try std.testing.expectEqual(1, font.fit_width("!?", 1, 0, 1));
 }

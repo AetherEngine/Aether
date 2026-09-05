@@ -378,7 +378,7 @@ fn operate(_: ?*anyopaque, operation: Io.Operation) Io.Cancelable!Io.Operation.R
     };
 }
 
-fn ensureNetworking() error{ NetworkDown, SystemResources }!void {
+pub fn ensureNetworking() error{ NetworkDown, SystemResources }!void {
     while (true) {
         switch (net_init_state.load(.acquire)) {
             2 => return,

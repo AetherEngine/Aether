@@ -215,17 +215,24 @@ fn rebuild_batches(self: *SpriteBatcher, screen_w: u32, screen_h: u32) !void {
 }
 
 fn emit_sprite_vertices(mesh: *BatchMeshData, sprite: *const Sprite, screen_w: u32, screen_h: u32, scale: u32) void {
+    append_geometry(mesh, sprite, screen_w, screen_h, scale, null);
+}
+
+/// Appends at most one quad. Caller reserves quad capacity first. Anchors and
+/// clipping are resolved before proportional texture coordinates are generated.
+pub fn append_geometry(mesh: *BatchMeshData, sprite: *const Sprite, screen_w: u32, screen_h: u32, scale: u32, clip: ?layout.LogicalRect) void {
     const max_lx: i16 = @intCast(layout.logical_width(screen_w, scale));
     const max_ly: i16 = @intCast(layout.logical_height(screen_h, scale));
 
     const ref = layout.anchor_point(sprite.reference, max_lx, max_ly);
     const orig = layout.anchor_point(sprite.origin, sprite.pos_extent.x, sprite.pos_extent.y);
-    const raw_x0: i16 = ref.x + sprite.pos_offset.x - orig.x;
-    const raw_y0: i16 = ref.y + sprite.pos_offset.y - orig.y;
-    const x0: i16 = @max(raw_x0, 0);
-    const y0: i16 = @max(raw_y0, 0);
-    const x1: i16 = @intCast(@min(@as(i32, raw_x0) + @as(i32, sprite.pos_extent.x), @as(i32, max_lx)));
-    const y1: i16 = @intCast(@min(@as(i32, raw_y0) + @as(i32, sprite.pos_extent.y), @as(i32, max_ly)));
+    const raw_x0: i32 = @as(i32, ref.x) + sprite.pos_offset.x - orig.x;
+    const raw_y0: i32 = @as(i32, ref.y) + sprite.pos_offset.y - orig.y;
+    const bounds = layout.intersection(.{ .x0 = 0, .y0 = 0, .x1 = max_lx, .y1 = max_ly }, clip);
+    const x0: i16 = @intCast(@min(bounds.x1, @max(raw_x0, bounds.x0)));
+    const y0: i16 = @intCast(@min(bounds.y1, @max(raw_y0, bounds.y0)));
+    const x1: i16 = @intCast(@max(bounds.x0, @min(raw_x0 + sprite.pos_extent.x, bounds.x1)));
+    const y1: i16 = @intCast(@max(bounds.y0, @min(raw_y0 + sprite.pos_extent.y, bounds.y1)));
 
     if (x0 >= x1 or y0 >= y1) return;
 
@@ -266,4 +273,18 @@ fn texel_to_snorm(texel: i32, dim: u32) i16 {
 fn sprite_before(_: void, a: Sprite, b: Sprite) bool {
     if (a.layer != b.layer) return a.layer < b.layer;
     return @intFromPtr(a.texture) < @intFromPtr(b.texture);
+}
+
+test "sprite clips resolve non top-left anchors and proportional UVs" {
+    var texture: Rendering.Texture = undefined;
+    texture.width = 100;
+    texture.height = 100;
+    var data = try BatchMeshData.init(std.testing.allocator);
+    defer data.deinit(std.testing.allocator);
+
+    try data.ensure_quad_capacity(std.testing.allocator, 1);
+    append_geometry(&data, &.{ .texture = &texture, .pos_offset = .{ .x = 0, .y = 0 }, .pos_extent = .{ .x = 20, .y = 20 }, .tex_offset = .{ .x = 0, .y = 0 }, .tex_extent = .{ .x = 100, .y = 100 }, .color = Color.rgba(255, 255, 255, 255), .layer = 0, .reference = .middle_center, .origin = .middle_center }, 100, 100, 1, .{ .x0 = 45, .y0 = 45, .x1 = 55, .y1 = 55 });
+    try std.testing.expect(data.vertices.items.len >= 4);
+    try std.testing.expectEqual(@as(i16, 8191), data.vertices.items[0].uv[0]);
+    try std.testing.expectEqual(@as(i16, 8191), data.vertices.items[0].uv[1]);
 }

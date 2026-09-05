@@ -2,6 +2,9 @@
 //! device events through `deliver_*` and publishes each pump with
 //! `signal_frame_boundary`; Engine calls `update` before game code runs.
 
+pub const display = @import("display.zig");
+pub const serialization = @import("serialization.zig");
+
 const std = @import("std");
 const platform_input = @import("platform").input;
 const input_api = @import("platform").input_api;
@@ -875,4 +878,9 @@ test "capture ignores held inputs and repeats until a fresh edge" {
 
 comptime {
     std.testing.refAllDecls(@This());
+}
+
+test {
+    std.testing.refAllDecls(display);
+    std.testing.refAllDecls(serialization);
 }

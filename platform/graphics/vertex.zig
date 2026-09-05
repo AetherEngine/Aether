@@ -118,3 +118,68 @@ fn make_attribute(
         .usage = usage,
     };
 }
+
+/// Most backends normalize signed positions by 32767; PSP GE divides by
+/// 32768. Select this explicitly when generating data for a different consumer.
+pub const PositionNormalization = enum {
+    snorm16,
+    psp_ge,
+
+    pub fn divisor(self: PositionNormalization) f32 {
+        return if (self == .snorm16) 32767 else 32768;
+    }
+};
+pub const native_position_normalization: PositionNormalization = if (options.config.platform == .psp) .psp_ge else .snorm16;
+
+/// Quantizes origin-relative world coordinates into the existing 16-byte
+/// Vertex layout. The model matrix restores world units using model_scale().
+/// No saturation occurs: a quad that exceeds the range can be culled by its
+/// caller. snorm16 excludes -32768 to avoid its asymmetric clamped endpoint.
+pub const PositionEncoding = struct {
+    const std = @import("std");
+    const Vec3 = @import("../math/vec3.zig");
+    pub const Error = error{ InvalidScale, PositionOutOfRange };
+
+    units_per_world_unit: f32,
+    normalization: PositionNormalization,
+
+    pub fn init(units_per_world_unit: f32, normalization: PositionNormalization) Error!PositionEncoding {
+        if (!std.math.isFinite(units_per_world_unit) or units_per_world_unit <= 0 or
+            !std.math.isFinite(normalization.divisor() / units_per_world_unit)) return error.InvalidScale;
+        return .{ .units_per_world_unit = units_per_world_unit, .normalization = normalization };
+    }
+
+    pub fn model_scale(self: PositionEncoding) f32 {
+        return self.normalization.divisor() / self.units_per_world_unit;
+    }
+
+    pub fn encode_component(self: PositionEncoding, value: f32) Error!i16 {
+        const scaled = @round(value * self.units_per_world_unit);
+        const minimum: f32 = if (self.normalization == .snorm16) -32767 else -32768;
+        if (!std.math.isFinite(scaled) or scaled < minimum or scaled > 32767) return error.PositionOutOfRange;
+        return @intFromFloat(scaled);
+    }
+
+    pub fn encode(self: PositionEncoding, value: Vec3) Error![3]i16 {
+        return .{ try self.encode_component(value.x), try self.encode_component(value.y), try self.encode_component(value.z) };
+    }
+
+    pub fn decode(self: PositionEncoding, value: [3]i16) Vec3 {
+        return Vec3.new(@as(f32, @floatFromInt(value[0])) / self.units_per_world_unit, @as(f32, @floatFromInt(value[1])) / self.units_per_world_unit, @as(f32, @floatFromInt(value[2])) / self.units_per_world_unit);
+    }
+};
+
+test "compact position ranges rounding and native model scale are explicit" {
+    const std = @import("std");
+    const encoding = try PositionEncoding.init(128, .snorm16);
+    try std.testing.expectEqual(@as(i16, 128), try encoding.encode_component(1));
+    try std.testing.expectEqual(@as(i16, -129), try encoding.encode_component(-1.004));
+    try std.testing.expectError(error.PositionOutOfRange, encoding.encode_component(256));
+    try std.testing.expectError(error.PositionOutOfRange, encoding.encode_component(-256));
+    const psp = try PositionEncoding.init(128, .psp_ge);
+    try std.testing.expectEqual(@as(i16, -32768), try psp.encode_component(-256));
+    try std.testing.expectEqual(@as(f32, 256), psp.model_scale());
+    try std.testing.expectApproxEqAbs(@as(f32, 1), @as(f32, 128) / 32767 * encoding.model_scale(), 0.00001);
+    try std.testing.expectError(error.PositionOutOfRange, encoding.encode_component(std.math.nan(f32)));
+    try std.testing.expectError(error.InvalidScale, PositionEncoding.init(0, .snorm16));
+}

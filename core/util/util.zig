@@ -7,6 +7,7 @@ pub const CircularBufferType = platform_util.CircularBufferType;
 pub const HandleType = platform_util.HandleType;
 pub const ResourceTableType = platform_util.ResourceTableType;
 pub const Image = @import("image.zig");
+pub const Zip = @import("zip.zig");
 pub const MemoryConfig = memory.MemoryConfig;
 pub const Pool = memory.Pool;
 pub const Estimator = @import("estimator.zig").Estimator;
@@ -15,6 +16,7 @@ pub const BudgetContext = @import("budget_context.zig").BudgetContext;
 pub const Thread = platform_thread.Thread;
 pub const ThreadConfig = platform_thread.Config;
 pub const ThreadPriority = platform_thread.Priority;
+pub const PriorityScope = platform_thread.PriorityScope;
 
 comptime {
     std.testing.refAllDecls(@This());

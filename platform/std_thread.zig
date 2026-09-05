@@ -50,3 +50,17 @@ pub fn set_priority(_: Handle, p: api.Priority) anyerror!void {
 pub fn current_priority() api.Priority {
     return current_prio;
 }
+
+pub fn change_current_priority(_: api.Priority) anyerror!i32 {
+    // The legacy priority API above only tracks a requested value. A native
+    // scope must report that this backend cannot change the scheduler priority.
+    return error.UnsupportedPlatform;
+}
+
+pub fn change_current_priority_by(_: i32) anyerror!i32 {
+    return error.UnsupportedPlatform;
+}
+
+pub fn restore_current_priority(_: i32) anyerror!void {
+    return error.UnsupportedPlatform;
+}

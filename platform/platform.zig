@@ -10,6 +10,10 @@ pub const util = @import("util/util.zig");
 pub const logging = @import("logging.zig");
 pub const thread = @import("thread.zig");
 pub const paths = @import("paths.zig");
+pub const system = @import("system.zig");
+pub const network = @import("network.zig");
+pub const file_export = @import("file_export.zig");
+pub const filesystem = @import("filesystem.zig");
 pub const gfx_api = @import("gfx_api.zig");
 pub const audio_api = @import("audio_api.zig");
 pub const input_api = @import("input_api.zig");
@@ -64,6 +68,9 @@ pub fn yield_thread() void {
 
 test {
     @import("std").testing.refAllDecls(@This());
+    @import("std").testing.refAllDecls(system);
+    @import("std").testing.refAllDecls(network);
+    @import("std").testing.refAllDecls(file_export);
     // Core no longer brings these nested files into Platform's test root.
     @import("std").testing.refAllDecls(input_api.frame);
     @import("std").testing.refAllDecls(gfx.texture_pixels);

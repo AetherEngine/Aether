@@ -5,6 +5,8 @@ pub const vertex = @import("platform").graphics.vertex;
 pub const Vertex = vertex.Vertex;
 pub const Transform = @import("transform.zig");
 pub const Camera = @import("camera.zig");
+pub const Flipbook = @import("flipbook.zig");
+pub const BillboardBatcher = @import("billboard_batcher.zig");
 pub const Texture = @import("texture.zig");
 const render_state = @import("platform").graphics;
 pub const RenderState = render_state.RenderState;
@@ -37,4 +39,10 @@ pub fn surface_size() struct { width: u32, height: u32 } {
 pub fn aspect_ratio() f32 {
     const size = surface_size();
     return @as(f32, @floatFromInt(size.width)) / @as(f32, @floatFromInt(size.height));
+}
+
+test {
+    @import("std").testing.refAllDecls(Camera);
+    @import("std").testing.refAllDecls(Flipbook);
+    @import("std").testing.refAllDecls(BillboardBatcher);
 }

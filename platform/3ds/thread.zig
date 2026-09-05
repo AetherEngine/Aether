@@ -80,3 +80,27 @@ pub fn current_priority() api.Priority {
         .failure => current_prio,
     };
 }
+
+pub fn change_current_priority(priority: api.Priority) anyerror!i32 {
+    const previous = switch (horizon.getThreadPriority(.current).cases()) {
+        .success => |s| s.value,
+        .failure => return error.SystemResources,
+    };
+    if (!horizon.setThreadPriority(.current, @intFromEnum(priority_to_3ds(priority))).isSuccess()) return error.SystemResources;
+    return previous;
+}
+
+pub fn change_current_priority_by(delta: i32) anyerror!i32 {
+    const previous = switch (horizon.getThreadPriority(.current).cases()) {
+        .success => |s| s.value,
+        .failure => return error.SystemResources,
+    };
+    const next = try api.relative_priority(previous, delta, 0, 63);
+    if (!horizon.setThreadPriority(.current, @intCast(next)).isSuccess()) return error.SystemResources;
+    return previous;
+}
+
+pub fn restore_current_priority(token: i32) anyerror!void {
+    if (token < 0 or token > 63) return error.InvalidPriority;
+    if (!horizon.setThreadPriority(.current, @intCast(token)).isSuccess()) return error.SystemResources;
+}

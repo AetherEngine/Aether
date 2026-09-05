@@ -497,6 +497,29 @@ function initUniformBlocks() {
 }
 
 const host = {
+  aether_download_file(pathPtr, pathLen, namePtr, nameLen, typePtr, typeLen) {
+    const data = files.get(normalizePath(str(pathPtr, pathLen)));
+    const filename = str(namePtr, nameLen);
+    const contentType = str(typePtr, typeLen);
+    if (!data || !filename || !contentType) return false;
+    let url;
+    let link;
+    try {
+      url = URL.createObjectURL(new Blob([data], { type: contentType }));
+      link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      link.style.display = "none";
+      document.body.appendChild(link);
+      link.click();
+      return true;
+    } catch {
+      return false;
+    } finally {
+      if (link) link.remove();
+      if (url) setTimeout(() => URL.revokeObjectURL(url), 0);
+    }
+  },
   aether_input_apply_cursor_mode(mode) {
     requestedCursorMode = mode;
     if (mode === CURSOR_CAPTURED) {

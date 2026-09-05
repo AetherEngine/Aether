@@ -20,6 +20,8 @@ See [the architecture guide](ARCHITECTURE.md) for ownership and extension rules.
 
 The existing `aether.Engine`, `Audio`, `Rendering`, `Ui`, `Util`, and `Math`
 exports remain available; these are also grouped under `aether.Core`.
+Text markup and resource-pack formats belong to applications. The engine provides
+content-neutral text, resource loading, streaming audio, and native services.
 
 ## Features
 
@@ -29,10 +31,12 @@ exports remain available; these are also grouped under `aether.Core`.
 - **Action-based input system**: keyboard, mouse, and gamepad with callback bindings
 - **Generic mesh & pipeline API**: define vertex layouts from structs using comptime reflection
 - **Budgeted memory pools**: render, audio, game, user, and scratch -- no hidden heap allocations
+- **Reusable application helpers**: bounded UI widgets and draw lists, ZIP asset
+  sources and staged reloads, owned WAV streams, replacement writes, and serial jobs
 
 ## Requirements
 
-- Zig **0.16.0-dev** or later (see `build.zig.zon` for exact minimum)
+- Zig **0.16.0** or later (see `build.zig.zon` for exact minimum)
 - Vulkan SDK (for Vulkan headers; on macOS, MoltenVK is used)
 
 Desktop windowing, input, and audio use SDL3, which the build compiles from
