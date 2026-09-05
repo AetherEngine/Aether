@@ -1,7 +1,16 @@
 {
   "exclude_dirs": [],
-  "exclude_files": ["web_main.zig", "services.zig"],
-  "exclude_paths": [],
+  "exclude_files": [],
+  "exclude_paths": [
+    "src/platform/c_io.zig",
+    "src/platform/psp/constants.zig",
+    "src/platform/sdl/opengl/constants.zig",
+    "src/platform/sdl/vulkan/constants.zig",
+    "src/platform/switch/c.zig",
+    "src/platform/switch/deko.zig",
+    "src/platform/switch/services.zig",
+    "test/web_main.zig"
+  ],
   "banned": [],
   "symbol_bans": [],
   "max_line_length": 100,
@@ -25,8 +34,10 @@
     "deinit_undefined": true,
     "self_type": true,
     "type_function_names": true,
-    "function_names": false,
+    "function_names": true,
     "function_length": false,
-    "line_length": false
+    "line_length": false,
+    "ascii_only": true,
+    "shouty_case": true
   }
 }

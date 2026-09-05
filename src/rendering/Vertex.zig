@@ -86,28 +86,28 @@ pub const VertexLayout = struct {
     attributes: []const Attribute,
 };
 
-pub const Attributes = attributesFromVertex(Vertex);
+pub const Attributes = attributes_from_vertex(Vertex);
 pub const Layout = VertexLayout{
     .stride = @sizeOf(Vertex),
     .attributes = &Attributes,
 };
 
-fn attributesFromVertex(comptime V: type) [3]Attribute {
+fn attributes_from_vertex(comptime V: type) [3]Attribute {
     return .{
-        makeAttribute(V, "pos", 0, .position, 3),
-        makeAttribute(V, "color", 1, .color, 4),
-        makeAttribute(V, "uv", 2, .uv, 2),
+        make_attribute(V, "pos", 0, .position, 3),
+        make_attribute(V, "color", 1, .color, 4),
+        make_attribute(V, "uv", 2, .uv, 2),
     };
 }
 
-fn makeAttribute(
+fn make_attribute(
     comptime V: type,
     comptime field_name: []const u8,
     comptime location: u8,
     comptime usage: AttributeUsage,
     comptime expected_count: usize,
 ) Attribute {
-    if (!hasField(V, field_name)) {
+    if (!has_field(V, field_name)) {
         @compileError("Rendering.Vertex is missing required field '" ++ field_name ++ "'");
     }
 
@@ -125,7 +125,7 @@ fn makeAttribute(
     };
 }
 
-fn hasField(comptime T: type, comptime field_name: []const u8) bool {
+fn has_field(comptime T: type, comptime field_name: []const u8) bool {
     const info = @typeInfo(T);
     if (info != .@"struct") return false;
 

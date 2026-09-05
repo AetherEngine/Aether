@@ -214,17 +214,17 @@ pub fn deinit(self: *SwapChain) void {
     self.context.logical_device.destroySwapchainKHR(self.chain, null);
 }
 
-pub fn currentImage(self: *SwapChain) vk.Image {
+pub fn current_image(self: *SwapChain) vk.Image {
     return self.swap_images[self.image_index].image;
 }
 
-pub fn currentSwapImage(self: *SwapChain) *const SwapImage {
+pub fn current_swap_image(self: *SwapChain) *const SwapImage {
     return &self.swap_images[self.image_index];
 }
 
 pub fn present(self: *SwapChain, cmdbuf: vk.CommandBuffer) !PresentState {
     // // Step 1: Make sure the current frame has finished rendering
-    const current = self.currentSwapImage();
+    const current = self.current_swap_image();
 
     // Step 2: Submit the command buffer
     const wait_stage = [_]vk.PipelineStageFlags{.{ .color_attachment_output_bit = true }};
@@ -307,14 +307,14 @@ const SwapImage = struct {
     }
 
     fn deinit(self: SwapImage, context: *const Context) void {
-        self.waitForFence(context) catch return;
+        self.wait_for_fence(context) catch return;
         context.logical_device.destroyImageView(self.view, null);
         context.logical_device.destroySemaphore(self.image_acquired, null);
         context.logical_device.destroySemaphore(self.render_finished, null);
         context.logical_device.destroyFence(self.frame_fence, null);
     }
 
-    fn waitForFence(self: SwapImage, context: *const Context) !void {
+    fn wait_for_fence(self: SwapImage, context: *const Context) !void {
         _ = try context.logical_device.waitForFences(@ptrCast(&self.frame_fence), .true, std.math.maxInt(u64));
     }
 };

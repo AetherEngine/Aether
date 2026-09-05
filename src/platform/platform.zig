@@ -26,7 +26,7 @@ const AppletCallbacks = if (options.config.platform == .nintendo_3ds) struct {
         const capture = if (@hasDecl(gfx.Surface, "suspend_for_applet"))
             try gfx.surface.suspend_for_applet()
         else blk: {
-            const app = app_3ds.currentApplication() orelse return error.NoCurrentApplication;
+            const app = app_3ds.current_application() orelse return error.NoCurrentApplication;
             break :blk try app.gsp.sendImportDisplayCaptureInfo();
         };
         audio.Api.suspend_for_applet();

@@ -22,7 +22,7 @@ pub fn update(self: *Camera) void {
 pub fn get_projection_matrix(self: *Camera) Mat4 {
     const width: f32 = @floatFromInt(gfx.surface.get_width());
     const height: f32 = @floatFromInt(gfx.surface.get_height());
-    return Mat4.perspectiveFovRh(std.math.degreesToRadians(self.fov), width / height, 0.3, 250.0);
+    return Mat4.perspective_fov_rh(std.math.degreesToRadians(self.fov), width / height, 0.3, 250.0);
 }
 
 /// Computes and returns the camera's view matrix based on its yaw and pitch angles, from the perspective of the target position.
@@ -34,8 +34,8 @@ pub fn get_view_matrix(self: *Camera) Mat4 {
     const t = Mat4.translation(-self.target.x, -self.target.y, -self.target.z);
 
     // Negative because we want to rotate the world opposite to the camera
-    const ry = Mat4.rotationY(yaw);
-    const rx = Mat4.rotationX(pitch);
+    const ry = Mat4.rotation_y(yaw);
+    const rx = Mat4.rotation_x(pitch);
 
     return Mat4.mul(Mat4.mul(t, ry), rx);
 }

@@ -12,7 +12,7 @@ const gfx = @import("psp_gfx_ge.zig");
 
 // ---- common dialog base struct helper -------------------------------------
 
-fn makeDialogCommon(comptime size: usize) utility.DialogCommon {
+fn make_dialog_common(comptime size: usize) utility.DialogCommon {
     var base = std.mem.zeroes(utility.DialogCommon);
     base.size = @intCast(size);
     base.language = utility.get_system_param_int(.int_language) catch 1;
@@ -26,9 +26,9 @@ fn makeDialogCommon(comptime size: usize) utility.DialogCommon {
 
 // ---- Network --------------------------------------------------------------
 
-pub fn showNetDialog() bool {
+pub fn show_net_dialog() bool {
     var data = std.mem.zeroes(utility.NetconfData);
-    data.base = makeDialogCommon(@sizeOf(utility.NetconfData));
+    data.base = make_dialog_common(@sizeOf(utility.NetconfData));
     data.action = 0; // PSP_NETCONF_ACTION_CONNECTAP
 
     var adhoc = std.mem.zeroes(sdk.c.types.pspUtilityNetconfAdhoc);
@@ -59,7 +59,7 @@ pub fn showNetDialog() bool {
 
 // ---- On-Screen Keyboard ---------------------------------------------------
 
-pub fn showOSK(description: []const u16, in_text: []const u16, out_text: []u16, max_text_limit: c_int) c_int {
+pub fn show_osk(description: []const u16, in_text: []const u16, out_text: []u16, max_text_limit: c_int) c_int {
     var empty_text = [_]u16{0};
     var osk_data = std.mem.zeroes(sdk.c.types.SceUtilityOskData);
     osk_data.language = 0; // PSP_UTILITY_OSK_LANGUAGE_DEFAULT
@@ -76,7 +76,7 @@ pub fn showOSK(description: []const u16, in_text: []const u16, out_text: []u16, 
     osk_data.outtext = @ptrCast(out_text.ptr);
 
     var osk_params = std.mem.zeroes(utility.OskParams);
-    osk_params.base = makeDialogCommon(@sizeOf(utility.OskParams));
+    osk_params.base = make_dialog_common(@sizeOf(utility.OskParams));
     osk_params.datacount = 1;
     osk_params.data = &osk_data;
 

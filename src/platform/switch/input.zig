@@ -7,39 +7,39 @@ const core = @import("../../core/input/input.zig");
 const Util = @import("../../util/util.zig");
 const c = @import("c.zig").switch_c;
 
-const HID_NPAD_STYLE_STANDARD: u32 = c.HidNpadStyleTag_NpadFullKey |
+const hid_npad_style_standard: u32 = c.HidNpadStyleTag_NpadFullKey |
     c.HidNpadStyleTag_NpadHandheld |
     c.HidNpadStyleTag_NpadJoyDual |
     c.HidNpadStyleTag_NpadJoyLeft |
     c.HidNpadStyleTag_NpadJoyRight;
 
-const DEFAULT_PAD_MASK: u64 = (@as(u64, 1) << c.HidNpadIdType_No1) |
+const default_pad_mask: u64 = (@as(u64, 1) << c.HidNpadIdType_No1) |
     (@as(u64, 1) << c.HidNpadIdType_Handheld);
 
-const BUTTON_A: u64 = c.HidNpadButton_A;
-const BUTTON_B: u64 = c.HidNpadButton_B;
-const BUTTON_X: u64 = c.HidNpadButton_X;
-const BUTTON_Y: u64 = c.HidNpadButton_Y;
-const BUTTON_STICK_L: u64 = c.HidNpadButton_StickL;
-const BUTTON_STICK_R: u64 = c.HidNpadButton_StickR;
-const BUTTON_L: u64 = c.HidNpadButton_L;
-const BUTTON_R: u64 = c.HidNpadButton_R;
-const BUTTON_ZL: u64 = c.HidNpadButton_ZL;
-const BUTTON_ZR: u64 = c.HidNpadButton_ZR;
-const BUTTON_PLUS: u64 = c.HidNpadButton_Plus;
-const BUTTON_MINUS: u64 = c.HidNpadButton_Minus;
-const BUTTON_LEFT: u64 = c.HidNpadButton_Left;
-const BUTTON_UP: u64 = c.HidNpadButton_Up;
-const BUTTON_RIGHT: u64 = c.HidNpadButton_Right;
-const BUTTON_DOWN: u64 = c.HidNpadButton_Down;
-const BUTTON_LEFT_SL: u64 = c.HidNpadButton_LeftSL;
-const BUTTON_LEFT_SR: u64 = c.HidNpadButton_LeftSR;
-const BUTTON_RIGHT_SL: u64 = c.HidNpadButton_RightSL;
-const BUTTON_RIGHT_SR: u64 = c.HidNpadButton_RightSR;
+const button_a: u64 = c.HidNpadButton_A;
+const button_b: u64 = c.HidNpadButton_B;
+const button_x: u64 = c.HidNpadButton_X;
+const button_y: u64 = c.HidNpadButton_Y;
+const button_stick_l: u64 = c.HidNpadButton_StickL;
+const button_stick_r: u64 = c.HidNpadButton_StickR;
+const button_l: u64 = c.HidNpadButton_L;
+const button_r: u64 = c.HidNpadButton_R;
+const button_zl: u64 = c.HidNpadButton_ZL;
+const button_zr: u64 = c.HidNpadButton_ZR;
+const button_plus: u64 = c.HidNpadButton_Plus;
+const button_minus: u64 = c.HidNpadButton_Minus;
+const button_left: u64 = c.HidNpadButton_Left;
+const button_up: u64 = c.HidNpadButton_Up;
+const button_right: u64 = c.HidNpadButton_Right;
+const button_down: u64 = c.HidNpadButton_Down;
+const button_left_sl: u64 = c.HidNpadButton_LeftSL;
+const button_left_sr: u64 = c.HidNpadButton_LeftSR;
+const button_right_sl: u64 = c.HidNpadButton_RightSL;
+const button_right_sr: u64 = c.HidNpadButton_RightSR;
 
-const JOYSTICK_MAX: f32 = @floatFromInt(c.JOYSTICK_MAX);
-const MAX_TEXT_BYTES: usize = 1024;
-const SWKBD_CONFIG_BYTES: usize = 0x600;
+const joystick_max: f32 = @floatFromInt(c.joystick_max);
+const max_text_bytes: usize = 1024;
+const swkbd_config_bytes: usize = 0x600;
 
 const axis_count = @typeInfo(core.Axis).@"enum".fields.len;
 
@@ -66,8 +66,8 @@ pub fn setup(_: std.mem.Allocator, _: std.Io, input: *core.InputSystem) void {
 pub fn init() input_api.InitError!void {
     if (c.hidInitialize() != 0) return error.InputInitFailed;
     c.hidInitializeTouchScreen();
-    c.padConfigureInput(1, HID_NPAD_STYLE_STANDARD);
-    c.padInitializeWithMask(&pad, DEFAULT_PAD_MASK);
+    c.padConfigureInput(1, hid_npad_style_standard);
+    c.padInitializeWithMask(&pad, default_pad_mask);
     initialized = true;
 }
 
@@ -121,16 +121,16 @@ pub fn handle_docked_mode_entered(input: *core.InputSystem) void {
         });
     }
 
-    c.padConfigureInput(1, HID_NPAD_STYLE_STANDARD);
-    c.padInitializeWithMask(&pad, DEFAULT_PAD_MASK);
+    c.padConfigureInput(1, hid_npad_style_standard);
+    c.padInitializeWithMask(&pad, default_pad_mask);
     reset_previous_input_state();
 }
 
 pub fn begin_text_input_session(input: *core.InputSystem, target: *const core.TextInputTarget, options: *const core.TextInputOptions) input_api.TextSessionError!void {
-    var config_buf: [SWKBD_CONFIG_BYTES]u8 align(8) = @splat(0);
+    var config_buf: [swkbd_config_bytes]u8 align(8) = @splat(0);
     const config: *anyopaque = @ptrCast(&config_buf);
 
-    var initial_buf: [MAX_TEXT_BYTES:0]u8 = @splat(0);
+    var initial_buf: [max_text_bytes:0]u8 = @splat(0);
     const initial_len = copy_current_text(input, &initial_buf);
     const initial = initial_buf[0..initial_len :0];
 
@@ -149,7 +149,7 @@ pub fn begin_text_input_session(input: *core.InputSystem, target: *const core.Te
     c.swkbdConfigSetGuideText(config, target_text.ptr);
     c.swkbdConfigSetInitialText(config, initial.ptr);
 
-    var out_buf: [MAX_TEXT_BYTES:0]u8 = @splat(0);
+    var out_buf: [max_text_bytes:0]u8 = @splat(0);
     const out_size = output_buffer_size(options.max_bytes);
     if (c.swkbdShow(config, out_buf[0..].ptr, out_size) == 0) {
         const len = bounded_z_len(out_buf[0..out_size]);
@@ -166,20 +166,20 @@ fn diff_buttons(input: *core.InputSystem, buttons: u64) void {
     const map = [_]Pair{
         // A/B actions follow Nintendo labels. X/Y are swapped so Aether's
         // semantic X=left, Y=top layout matches Nintendo face positions.
-        .{ .mask = BUTTON_A, .button = .A },
-        .{ .mask = BUTTON_B, .button = .B },
-        .{ .mask = BUTTON_X, .button = .Y },
-        .{ .mask = BUTTON_Y, .button = .X },
-        .{ .mask = BUTTON_L | BUTTON_LEFT_SL | BUTTON_RIGHT_SL, .button = .LButton },
-        .{ .mask = BUTTON_R | BUTTON_LEFT_SR | BUTTON_RIGHT_SR, .button = .RButton },
-        .{ .mask = BUTTON_MINUS, .button = .Back },
-        .{ .mask = BUTTON_PLUS, .button = .Start },
-        .{ .mask = BUTTON_STICK_L, .button = .LeftThumb },
-        .{ .mask = BUTTON_STICK_R, .button = .RightThumb },
-        .{ .mask = BUTTON_UP, .button = .DpadUp },
-        .{ .mask = BUTTON_RIGHT, .button = .DpadRight },
-        .{ .mask = BUTTON_DOWN, .button = .DpadDown },
-        .{ .mask = BUTTON_LEFT, .button = .DpadLeft },
+        .{ .mask = button_a, .button = .A },
+        .{ .mask = button_b, .button = .B },
+        .{ .mask = button_x, .button = .Y },
+        .{ .mask = button_y, .button = .X },
+        .{ .mask = button_l | button_left_sl | button_right_sl, .button = .LButton },
+        .{ .mask = button_r | button_left_sr | button_right_sr, .button = .RButton },
+        .{ .mask = button_minus, .button = .Back },
+        .{ .mask = button_plus, .button = .Start },
+        .{ .mask = button_stick_l, .button = .LeftThumb },
+        .{ .mask = button_stick_r, .button = .RightThumb },
+        .{ .mask = button_up, .button = .DpadUp },
+        .{ .mask = button_right, .button = .DpadRight },
+        .{ .mask = button_down, .button = .DpadDown },
+        .{ .mask = button_left, .button = .DpadLeft },
     };
 
     inline for (map) |entry| {
@@ -199,8 +199,8 @@ fn pump_axes(input: *core.InputSystem, buttons: u64) void {
     deliver_axis(input, .LeftY, -normalize_stick(left.y));
     deliver_axis(input, .RightX, normalize_stick(right.x));
     deliver_axis(input, .RightY, -normalize_stick(right.y));
-    deliver_axis(input, .LeftTrigger, if (buttons & BUTTON_ZL != 0) 1.0 else 0.0);
-    deliver_axis(input, .RightTrigger, if (buttons & BUTTON_ZR != 0) 1.0 else 0.0);
+    deliver_axis(input, .LeftTrigger, if (buttons & button_zl != 0) 1.0 else 0.0);
+    deliver_axis(input, .RightTrigger, if (buttons & button_zr != 0) 1.0 else 0.0);
 }
 
 fn pump_touch(input: *core.InputSystem) void {
@@ -263,12 +263,12 @@ fn reset_previous_input_state() void {
 }
 
 fn normalize_stick(raw: i32) f32 {
-    const value = @as(f32, @floatFromInt(raw)) / JOYSTICK_MAX;
+    const value = @as(f32, @floatFromInt(raw)) / joystick_max;
     return std.math.clamp(value, -1.0, 1.0);
 }
 
 fn output_buffer_size(limit: ?usize) usize {
-    const max = @min(limit orelse (MAX_TEXT_BYTES - 1), MAX_TEXT_BYTES - 1);
+    const max = @min(limit orelse (max_text_bytes - 1), max_text_bytes - 1);
     return max + 1;
 }
 

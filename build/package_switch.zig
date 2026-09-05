@@ -4,11 +4,11 @@ const tools = @import("tool_options.zig");
 
 const ExportOptions = package_options.ExportOptions;
 
-fn cBackendOptimizeMode(exe: *std.Build.Step.Compile) std.builtin.OptimizeMode {
+fn c_backend_optimize_mode(exe: *std.Build.Step.Compile) std.builtin.OptimizeMode {
     return exe.root_module.optimize orelse .Debug;
 }
 
-fn cBackendGccOptimizeArg(optimize: std.builtin.OptimizeMode) []const u8 {
+fn c_backend_gcc_optimize_arg(optimize: std.builtin.OptimizeMode) []const u8 {
     return switch (optimize) {
         .Debug => "-O0",
         .ReleaseSafe, .ReleaseFast => "-O2",
@@ -16,14 +16,14 @@ fn cBackendGccOptimizeArg(optimize: std.builtin.OptimizeMode) []const u8 {
     };
 }
 
-fn cBackendGccDebugArg(optimize: std.builtin.OptimizeMode) []const u8 {
+fn c_backend_gcc_debug_arg(optimize: std.builtin.OptimizeMode) []const u8 {
     return if (optimize == .Debug or optimize == .ReleaseSafe) "-g" else "-g0";
 }
 
 /// Compiles the zig-emitted C with devkitA64, links against libnx, and
 /// packages the ELF plus a NACP and optional RomFS into a `.nro` homebrew
 /// bundle.
-pub fn nroPipeline(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOptions) void {
+pub fn nro_pipeline(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOptions) void {
     // aarch64 GCC supports __int128 natively, so we don't need the `zig.h`
     // integer-alignment patch used by old 32-bit ARM C pipelines. We do still
     // need a compiler_rt object because zig.h calls helpers like
@@ -57,7 +57,7 @@ pub fn nroPipeline(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOpti
         }),
     });
 
-    const dkp = tools.devkitProPath(b);
+    const dkp = tools.devkit_pro_path(b);
 
     const strip_libc = b.addSystemCommand(&.{
         b.pathJoin(&.{ dkp, "devkitA64/bin/aarch64-none-elf-objcopy" }),
@@ -94,7 +94,7 @@ pub fn nroPipeline(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOpti
         "-march=armv8-a+crc+crypto", "-mtune=cortex-a57", "-mtp=soft", "-fPIE", "-fno-omit-frame-pointer",
     };
 
-    const exe_optimize = cBackendOptimizeMode(exe);
+    const exe_optimize = c_backend_optimize_mode(exe);
 
     const link = b.addSystemCommand(&.{gcc});
     link.addArgs(&arch);
@@ -103,8 +103,8 @@ pub fn nroPipeline(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOpti
         "-fdata-sections",
         "-D_FORTIFY_SOURCE=0",
         "-D__SWITCH__",
-        cBackendGccOptimizeArg(exe_optimize),
-        cBackendGccDebugArg(exe_optimize),
+        c_backend_gcc_optimize_arg(exe_optimize),
+        c_backend_gcc_debug_arg(exe_optimize),
         b.fmt("-specs={s}", .{libnx_specs}),
         "-T",
     });

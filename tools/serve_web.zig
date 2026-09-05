@@ -31,13 +31,13 @@ pub fn main(init: std.process.Init) !void {
 
     while (true) {
         const stream = try server.accept(io);
-        handleConnection(io, gpa, root_dir, stream) catch |err| {
+        handle_connection(io, gpa, root_dir, stream) catch |err| {
             std.debug.print("web connection error: {s}\n", .{@errorName(err)});
         };
     }
 }
 
-fn handleConnection(io: Io, gpa: std.mem.Allocator, root_dir: Io.Dir, stream: net.Stream) !void {
+fn handle_connection(io: Io, gpa: std.mem.Allocator, root_dir: Io.Dir, stream: net.Stream) !void {
     defer {
         var s = stream;
         s.close(io);
@@ -54,35 +54,35 @@ fn handleConnection(io: Io, gpa: std.mem.Allocator, root_dir: Io.Dir, stream: ne
             error.HttpConnectionClosing => return,
             else => return err,
         };
-        try serveRequest(io, gpa, root_dir, &request);
+        try serve_request(io, gpa, root_dir, &request);
     }
 }
 
-fn serveRequest(io: Io, gpa: std.mem.Allocator, root_dir: Io.Dir, request: *http.Server.Request) !void {
-    const path = sanitizeTarget(request.head.target) orelse {
-        try respondText(request, .bad_request, "bad request");
+fn serve_request(io: Io, gpa: std.mem.Allocator, root_dir: Io.Dir, request: *http.Server.Request) !void {
+    const path = sanitize_target(request.head.target) orelse {
+        try respond_text(request, .bad_request, "bad request");
         return;
     };
 
     const file_contents = root_dir.readFileAlloc(io, path, gpa, .limited(max_file_size)) catch |err| switch (err) {
         error.FileNotFound => {
-            try respondText(request, .not_found, "not found");
+            try respond_text(request, .not_found, "not found");
             return;
         },
         else => return err,
     };
     defer gpa.free(file_contents);
 
-    const content_type = contentType(path);
-    const headers = commonHeaders(content_type);
+    const content_type = content_type_for_path(path);
+    const headers = common_headers(content_type);
     try request.respond(file_contents, .{
         .keep_alive = false,
         .extra_headers = &headers,
     });
 }
 
-fn respondText(request: *http.Server.Request, status: http.Status, text: []const u8) !void {
-    const headers = commonHeaders("text/plain; charset=utf-8");
+fn respond_text(request: *http.Server.Request, status: http.Status, text: []const u8) !void {
+    const headers = common_headers("text/plain; charset=utf-8");
     try request.respond(text, .{
         .status = status,
         .keep_alive = false,
@@ -90,7 +90,7 @@ fn respondText(request: *http.Server.Request, status: http.Status, text: []const
     });
 }
 
-fn sanitizeTarget(target: []const u8) ?[]const u8 {
+fn sanitize_target(target: []const u8) ?[]const u8 {
     const no_query = if (std.mem.indexOfScalar(u8, target, '?')) |i| target[0..i] else target;
     if (no_query.len == 0 or no_query[0] != '/') return null;
     const path = if (std.mem.eql(u8, no_query, "/")) "index.html" else no_query[1..];
@@ -101,7 +101,7 @@ fn sanitizeTarget(target: []const u8) ?[]const u8 {
     return path;
 }
 
-fn contentType(path: []const u8) []const u8 {
+fn content_type_for_path(path: []const u8) []const u8 {
     if (std.mem.endsWith(u8, path, ".html")) return "text/html; charset=utf-8";
     if (std.mem.endsWith(u8, path, ".js")) return "text/javascript; charset=utf-8";
     if (std.mem.endsWith(u8, path, ".wasm")) return "application/wasm";
@@ -112,7 +112,7 @@ fn contentType(path: []const u8) []const u8 {
     return "application/octet-stream";
 }
 
-fn commonHeaders(content_type: []const u8) [6]http.Header {
+fn common_headers(content_type: []const u8) [6]http.Header {
     return .{
         .{ .name = "Content-Type", .value = content_type },
         .{ .name = "Content-Security-Policy", .value = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; img-src 'self' data:; media-src 'self'; style-src 'self' 'unsafe-inline'" },

@@ -25,6 +25,7 @@ pub fn setup(alloc: std.mem.Allocator, io: std.Io) void {
 }
 
 const sdk = @import("pspsdk");
+const sdk_constants = @import("constants.zig");
 const ge = sdk.ge;
 const ge_list = sdk.ge_list;
 const display = sdk.display;
@@ -35,7 +36,7 @@ const gfx = @import("../gfx.zig");
 // constants. All other state goes through the ge_list API.
 const gu_types = sdk.gu.types;
 
-const VRAM_ALIGNMENT: usize = 16;
+const vram_alignment: usize = 16;
 
 fn dcache_writeback(ptr: *const anyopaque, len: usize) void {
     if (len == 0) return;
@@ -83,9 +84,9 @@ fn vram_free(slice: []align(16) u8) void {
     vram_pool_ally.free(slice);
 }
 
-const SCREEN_WIDTH = sdk.extra.constants.SCREEN_WIDTH;
-const SCREEN_HEIGHT = sdk.extra.constants.SCREEN_HEIGHT;
-const SCR_BUF_WIDTH = sdk.extra.constants.SCR_BUF_WIDTH;
+const screen_width = sdk_constants.screen_width;
+const screen_height = sdk_constants.screen_height;
+const scr_buf_width = sdk_constants.scr_buf_width;
 
 const options = @import("options");
 
@@ -144,16 +145,16 @@ var clear_color: u24 = 0x000000;
 
 // ---- swapchain -------------------------------------------------------------
 
-const PSP_VBLANK_INT = 30;
-const PSP_DISPLAY_SUBINT = 0;
-const SWAPCHAIN_BUFFER_COUNT: usize = switch (options.config.psp_display_mode) {
+const psp_vblank_int = 30;
+const psp_display_subint = 0;
+const swapchain_buffer_count: usize = switch (options.config.psp_display_mode) {
     .rgba8888 => 2,
     .rgb565 => 3,
 };
 
 const Swapchain = struct {
-    const BUFFER_COUNT = SWAPCHAIN_BUFFER_COUNT;
-    const DISPLAY_LIST_WORDS = 0x4000;
+    const buffer_count = swapchain_buffer_count;
+    const display_list_words = 0x4000;
     const BufferIndex = u2;
 
     /// Backing storage for the GE display list. Always accessed through
@@ -161,16 +162,16 @@ const Swapchain = struct {
     /// to dcache-flush the list itself. This is shared across color buffers;
     /// `acquire_draw_buffer` waits for the previous GE submission to finish
     /// before allowing the list to be reused.
-    display_list: [DISPLAY_LIST_WORDS]u32 align(16) = @splat(0),
+    display_list: [display_list_words]u32 align(16) = @splat(0),
     list_uncached: []u32 = &.{},
 
-    buffers_rel: [BUFFER_COUNT]?*anyopaque = @splat(null),
-    buffers_abs: [BUFFER_COUNT]?[]align(16) u8 = @splat(null),
+    buffers_rel: [buffer_count]?*anyopaque = @splat(null),
+    buffers_abs: [buffer_count]?[]align(16) u8 = @splat(null),
     depth_buffer_rel: ?*anyopaque = null,
     draw_idx: BufferIndex = 1,
     front_idx: BufferIndex = 0,
     pending_idx: ?BufferIndex = null,
-    submitted_queue: [BUFFER_COUNT]BufferIndex = @splat(0),
+    submitted_queue: [buffer_count]BufferIndex = @splat(0),
     submitted_head: usize = 0,
     submitted_count: usize = 0,
     vblank_registered: bool = false,
@@ -181,7 +182,7 @@ const Swapchain = struct {
         const uncached: usize = 0x40000000;
 
         const uncached_ptr: [*]u32 = @ptrFromInt(@intFromPtr(&self.display_list) | uncached);
-        self.list_uncached = uncached_ptr[0..DISPLAY_LIST_WORDS];
+        self.list_uncached = uncached_ptr[0..display_list_words];
 
         self.front_idx = 0;
         self.draw_idx = 1;
@@ -197,17 +198,17 @@ const Swapchain = struct {
         // an allocator -- just deterministic offsets.
         const color_size = std.mem.alignForward(
             usize,
-            buffer_size_bytes(SCR_BUF_WIDTH, SCREEN_HEIGHT, vram_color_format),
-            VRAM_ALIGNMENT,
+            buffer_size_bytes(scr_buf_width, screen_height, vram_color_format),
+            vram_alignment,
         );
         const depth_size = std.mem.alignForward(
             usize,
-            buffer_size_bytes(SCR_BUF_WIDTH, SCREEN_HEIGHT, .Psm4444),
-            VRAM_ALIGNMENT,
+            buffer_size_bytes(scr_buf_width, screen_height, .Psm4444),
+            vram_alignment,
         );
 
         var offset: usize = 0;
-        for (0..BUFFER_COUNT) |i| {
+        for (0..buffer_count) |i| {
             self.buffers_rel[i] = @ptrFromInt(offset);
             const abs_ptr: [*]align(16) u8 = @ptrFromInt((offset + vram_base) | uncached);
             self.buffers_abs[i] = abs_ptr[0..color_size];
@@ -220,7 +221,7 @@ const Swapchain = struct {
 
         // Everything past the carve-out is handed to the VRAM pool for
         // texture / mip level allocations.
-        const carveout_end = std.mem.alignForward(usize, offset, VRAM_ALIGNMENT);
+        const carveout_end = std.mem.alignForward(usize, offset, vram_alignment);
         if (carveout_end >= edram_size) {
             std.debug.panic(
                 "psp_gfx_ge: VRAM carve-out exceeds EDRAM (carveout=0x{x} edram=0x{x})",
@@ -235,15 +236,15 @@ const Swapchain = struct {
 
     fn clear_buffer(self: *Swapchain, idx: BufferIndex) void {
         const buffer = self.buffers_abs[@intCast(idx)].?;
-        @memset(buffer[0 .. SCR_BUF_WIDTH * SCREEN_HEIGHT * frame_bpp], 0);
+        @memset(buffer[0 .. scr_buf_width * screen_height * frame_bpp], 0);
     }
 
     fn deinit(self: *Swapchain) void {
         defer self.* = undefined;
 
         if (self.vblank_registered) {
-            sdk.kernel.disable_sub_intr(PSP_VBLANK_INT, PSP_DISPLAY_SUBINT) catch {};
-            sdk.kernel.release_sub_intr_handler(PSP_VBLANK_INT, PSP_DISPLAY_SUBINT) catch {};
+            sdk.kernel.disable_sub_intr(psp_vblank_int, psp_display_subint) catch {};
+            sdk.kernel.release_sub_intr_handler(psp_vblank_int, psp_display_subint) catch {};
             self.vblank_registered = false;
         }
     }
@@ -253,16 +254,16 @@ const Swapchain = struct {
 
         sdk.kernel.register_user_space_intr_stack();
         const handler: *anyopaque = @ptrFromInt(@intFromPtr(&vblank_handler));
-        try sdk.kernel.register_sub_intr_handler(PSP_VBLANK_INT, PSP_DISPLAY_SUBINT, handler, self);
-        errdefer sdk.kernel.release_sub_intr_handler(PSP_VBLANK_INT, PSP_DISPLAY_SUBINT) catch {};
-        try sdk.kernel.enable_sub_intr(PSP_VBLANK_INT, PSP_DISPLAY_SUBINT);
+        try sdk.kernel.register_sub_intr_handler(psp_vblank_int, psp_display_subint, handler, self);
+        errdefer sdk.kernel.release_sub_intr_handler(psp_vblank_int, psp_display_subint) catch {};
+        try sdk.kernel.enable_sub_intr(psp_vblank_int, psp_display_subint);
         self.vblank_registered = true;
     }
 
     fn prime_display(self: *Swapchain) !void {
         try display.set_frame_buf(
             @ptrCast(self.buffers_abs[@intCast(self.front_idx)].?.ptr),
-            SCR_BUF_WIDTH,
+            scr_buf_width,
             display_pixel_format,
             .next_vblank,
         );
@@ -270,8 +271,8 @@ const Swapchain = struct {
 
     fn mark_submitted(self: *Swapchain) void {
         const flags = sdk.kernel.cpu_suspend_intr();
-        if (self.submitted_count >= BUFFER_COUNT) @panic("psp_gfx_ge: submitted queue overflow");
-        const tail = (self.submitted_head + self.submitted_count) % BUFFER_COUNT;
+        if (self.submitted_count >= buffer_count) @panic("psp_gfx_ge: submitted queue overflow");
+        const tail = (self.submitted_head + self.submitted_count) % buffer_count;
         self.submitted_queue[tail] = self.draw_idx;
         self.submitted_count += 1;
         sdk.kernel.cpu_resume_intr(flags);
@@ -287,10 +288,10 @@ const Swapchain = struct {
         // submitted one.
         if (self.submitted_count > 0) return false;
 
-        const start = (@as(usize, self.draw_idx) + 1) % BUFFER_COUNT;
+        const start = (@as(usize, self.draw_idx) + 1) % buffer_count;
         var offset: usize = 0;
-        while (offset < BUFFER_COUNT) : (offset += 1) {
-            const idx: BufferIndex = @intCast((start + offset) % BUFFER_COUNT);
+        while (offset < buffer_count) : (offset += 1) {
+            const idx: BufferIndex = @intCast((start + offset) % buffer_count);
             if (idx == self.front_idx) continue;
             if (self.pending_idx) |pending| {
                 if (idx == pending) continue;
@@ -300,12 +301,12 @@ const Swapchain = struct {
             return true;
         }
 
-        if (BUFFER_COUNT == 2 and allow_tear) {
+        if (buffer_count == 2 and allow_tear) {
             const pending = self.pending_idx orelse return false;
             const old_front = self.front_idx;
             display.set_frame_buf(
                 @ptrCast(self.buffers_abs[@intCast(pending)].?.ptr),
-                SCR_BUF_WIDTH,
+                scr_buf_width,
                 display_pixel_format,
                 .immediate,
             ) catch {};
@@ -321,7 +322,7 @@ const Swapchain = struct {
     fn is_submitted_locked(self: *const Swapchain, idx: BufferIndex) bool {
         var offset: usize = 0;
         while (offset < self.submitted_count) : (offset += 1) {
-            const queue_idx = (self.submitted_head + offset) % BUFFER_COUNT;
+            const queue_idx = (self.submitted_head + offset) % buffer_count;
             if (self.submitted_queue[queue_idx] == idx) return true;
         }
         return false;
@@ -331,7 +332,7 @@ const Swapchain = struct {
         const flags = sdk.kernel.cpu_suspend_intr();
         if (self.submitted_count > 0) {
             const idx = self.submitted_queue[self.submitted_head];
-            self.submitted_head = (self.submitted_head + 1) % BUFFER_COUNT;
+            self.submitted_head = (self.submitted_head + 1) % buffer_count;
             self.submitted_count -= 1;
             self.pending_idx = idx;
         }
@@ -343,7 +344,7 @@ const Swapchain = struct {
         if (self.pending_idx) |idx| {
             display.set_frame_buf(
                 @ptrCast(self.buffers_abs[@intCast(idx)].?.ptr),
-                SCR_BUF_WIDTH,
+                scr_buf_width,
                 display_pixel_format,
                 .immediate,
             ) catch {};
@@ -482,9 +483,9 @@ const ClearVertex = extern struct {
     pad: u16 = 0,
 };
 
-const CLEAR_COUNT: usize = ((SCREEN_WIDTH + 63) / 64) * 2;
-var clear_vertices: [Swapchain.BUFFER_COUNT][CLEAR_COUNT]ClearVertex align(16) = undefined;
-var clear_filter_for_buffer: [Swapchain.BUFFER_COUNT]u32 =
+const clear_count: usize = ((screen_width + 63) / 64) * 2;
+var clear_vertices: [Swapchain.buffer_count][clear_count]ClearVertex align(16) = undefined;
+var clear_filter_for_buffer: [Swapchain.buffer_count]u32 =
     @splat(0xFFFFFFFF); // sentinel forces an initial rebuild
 
 const clear_vertex_type = VertexType{
@@ -496,14 +497,14 @@ const clear_vertex_type = VertexType{
 fn build_clear_vertices(buffer_idx: Swapchain.BufferIndex, filter: u32) void {
     const buffer = @as(usize, buffer_idx);
     var i: usize = 0;
-    while (i < CLEAR_COUNT) : (i += 1) {
+    while (i < clear_count) : (i += 1) {
         const idx: u16 = @intCast(i);
         const j: u16 = idx >> 1;
         const k: u16 = idx & 1;
         clear_vertices[buffer][i] = .{
             .color = filter,
             .x = (j + k) * 64,
-            .y = k * @as(u16, @intCast(SCREEN_HEIGHT)),
+            .y = k * @as(u16, @intCast(screen_height)),
             .z = 1, // matches gu.clear_depth(1) in the existing backend
         };
     }
@@ -532,7 +533,7 @@ fn emit_clear(targets: ge_list.ClearFlags) void {
     must(cmd.emit_clear(true, targets));
     must(cmd.vertex_type(@bitCast(clear_vertex_type)));
     must(cmd.vertex_address(@intFromPtr(&clear_vertices[@intCast(buffer_idx)])));
-    must(cmd.primitive(.sprites, @intCast(CLEAR_COUNT)));
+    must(cmd.primitive(.sprites, @intCast(clear_count)));
     must(cmd.emit_clear(false, .{}));
     advance_stall();
 }
@@ -579,24 +580,24 @@ pub fn init() gfx_api.InitError!void {
     emit_ge_init_state();
 
     must(cmd.pixel_format(ge_pixel_format));
-    must(cmd.frame_buffer(swapchain.buffers_rel[swapchain.draw_idx], SCR_BUF_WIDTH));
-    must(cmd.depth_buffer(swapchain.depth_buffer_rel, SCR_BUF_WIDTH));
+    must(cmd.frame_buffer(swapchain.buffers_rel[swapchain.draw_idx], scr_buf_width));
+    must(cmd.depth_buffer(swapchain.depth_buffer_rel, scr_buf_width));
 
     // Equivalent to gu.disp_buffer's side effect of enabling LCD mode the
     // first time it is called.
-    display.set_mode(.lcd, SCREEN_WIDTH, SCREEN_HEIGHT) catch return error.GfxInitFailed;
+    display.set_mode(.lcd, screen_width, screen_height) catch return error.GfxInitFailed;
 
     // Drawing region (rasterizer bounds). gu emits this from inside
     // sceGuDispBuffer; we have to do it explicitly.
-    must(cmd.region(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT));
+    must(cmd.region(0, 0, screen_width, screen_height));
 
-    must(cmd.screen_offset(2048 - (SCREEN_WIDTH / 2), 2048 - (SCREEN_HEIGHT / 2)));
-    must(cmd.viewport(2048, 2048, SCREEN_WIDTH, SCREEN_HEIGHT));
+    must(cmd.screen_offset(2048 - (screen_width / 2), 2048 - (screen_height / 2)));
+    must(cmd.viewport(2048, 2048, screen_width, screen_height));
 
     // Reverse-Z, matching gu.depth_range(65535, 0) in psp_gfx.zig.
     emit_depth_range(65535, 0);
 
-    must(cmd.scissor(0, 0, SCREEN_WIDTH - 1, SCREEN_HEIGHT - 1));
+    must(cmd.scissor(0, 0, screen_width - 1, screen_height - 1));
     must(cmd.depth_func(.greater_or_equal));
     must(cmd.enable(.depth_test, true));
     must(cmd.shade_model(.smooth));
@@ -661,7 +662,7 @@ pub const DialogBufferInfo = struct {
 
 pub fn get_dialog_buffer_info() DialogBufferInfo {
     const front: usize = @intCast(swapchain.front_idx);
-    const back: usize = (front +% 1) % Swapchain.BUFFER_COUNT;
+    const back: usize = (front +% 1) % Swapchain.buffer_count;
     return .{
         .front_buffer_rel = swapchain.buffers_rel[front],
         .back_buffer_rel = swapchain.buffers_rel[back],
@@ -685,10 +686,10 @@ pub fn dialog_begin() void {
     swapchain.apply_pending_display();
     begin_list();
     must(cmd.pixel_format(ge_pixel_format));
-    must(cmd.frame_buffer(swapchain.buffers_rel[swapchain.draw_idx], SCR_BUF_WIDTH));
-    must(cmd.depth_buffer(swapchain.depth_buffer_rel, SCR_BUF_WIDTH));
-    must(cmd.region(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT));
-    must(cmd.scissor(0, 0, SCREEN_WIDTH - 1, SCREEN_HEIGHT - 1));
+    must(cmd.frame_buffer(swapchain.buffers_rel[swapchain.draw_idx], scr_buf_width));
+    must(cmd.depth_buffer(swapchain.depth_buffer_rel, scr_buf_width));
+    must(cmd.region(0, 0, screen_width, screen_height));
+    must(cmd.scissor(0, 0, screen_width - 1, screen_height - 1));
 }
 
 /// Emit a color-buffer clear into the active dialog list.
@@ -700,7 +701,7 @@ pub fn dialog_clear() void {
     must(cmd.emit_clear(true, .{ .color = true, .depth = true }));
     must(cmd.vertex_type(@bitCast(clear_vertex_type)));
     must(cmd.vertex_address(@intFromPtr(&clear_vertices[@intCast(buffer_idx)])));
-    must(cmd.primitive(.sprites, @intCast(CLEAR_COUNT)));
+    must(cmd.primitive(.sprites, @intCast(clear_count)));
     must(cmd.emit_clear(false, .{}));
     advance_stall();
 }
@@ -724,7 +725,7 @@ pub fn dialog_swap() void {
 
     display.set_frame_buf(
         @ptrCast(swapchain.buffers_abs[@intCast(new_front)].?.ptr),
-        SCR_BUF_WIDTH,
+        scr_buf_width,
         display_pixel_format,
         .next_vblank,
     ) catch {};
@@ -866,8 +867,8 @@ pub fn start_frame() bool {
     begin_list();
 
     must(cmd.pixel_format(ge_pixel_format));
-    must(cmd.frame_buffer(swapchain.buffers_rel[swapchain.draw_idx], SCR_BUF_WIDTH));
-    must(cmd.depth_buffer(swapchain.depth_buffer_rel, SCR_BUF_WIDTH));
+    must(cmd.frame_buffer(swapchain.buffers_rel[swapchain.draw_idx], scr_buf_width));
+    must(cmd.depth_buffer(swapchain.depth_buffer_rel, scr_buf_width));
     emit_clear(.{ .color = true, .stencil = true, .depth = true });
 
     return true;
@@ -1027,7 +1028,7 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
 /// Number of mip levels generated below the base level when a texture is
 /// forced VRAM-resident. The base counts as level 0; mip 1 is half-size,
 /// mip 2 is quarter-size, and mip 3 is eighth-size.
-const MAX_MIP_LEVELS: u8 = 3;
+const max_mip_levels: u8 = 3;
 
 const MipLevel = struct {
     width: u32,
@@ -1049,7 +1050,7 @@ const TextureData = struct {
     in_vram: bool,
     swizzled: bool,
     mip_count: u8,
-    mips: [MAX_MIP_LEVELS]MipLevel,
+    mips: [max_mip_levels]MipLevel,
 };
 
 fn swizzle_in_place(data: []align(16) u8, width: u32, height: u32) void {
@@ -1220,7 +1221,7 @@ fn count_supported_mips(base_w: u32, base_h: u32, base_swizzled: bool) u8 {
     var count: u8 = 0;
     var w = base_w;
     var h = base_h;
-    while (count < MAX_MIP_LEVELS) {
+    while (count < max_mip_levels) {
         const new_w = w / 2;
         const new_h = h / 2;
         if (new_w == 0 or new_h == 0) break;

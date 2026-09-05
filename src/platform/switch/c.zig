@@ -171,7 +171,7 @@ const SwitchC = struct {
     pub const HidNpadButton_RightSL: imported.u64 = 1 << 26;
     pub const HidNpadButton_RightSR: imported.u64 = 1 << 27;
 
-    pub const JOYSTICK_MAX: imported.s32 = 0x7FFF;
+    pub const joystick_max: imported.s32 = 0x7FFF;
 
     pub extern fn threadCreate(t: *Thread, entry: imported.ThreadFunc, arg: ?*anyopaque, stack_mem: ?*anyopaque, stack_sz: usize, prio: c_int, cpuid: c_int) imported.Result;
     pub extern fn threadStart(t: *Thread) imported.Result;

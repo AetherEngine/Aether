@@ -87,8 +87,8 @@
             .hash = "zitrus-0.0.0-Ewix9C2WHACB_SDYzcMHPhqVkOA2BlOJ7zjKOdKHmEdp",
         },
         .lint = .{
-            .url = "git+https://gitlab.com/hanabi_dev/tiger_lint#395f78b1af4b077d590ff9b2e02277b6f587db61",
-            .hash = "tiger_lint-0.0.0-bKhmM90fAgCH_uT2XmbaOAlyiTHA7WFfMoPiy07lH3Op",
+            .url = "git+https://gitlab.com/hanabi_dev/tiger_lint#562dbd73243798d7a6ebb119b7f7288b399b69fe",
+            .hash = "tiger_lint-0.0.0-bKhmM6VMAwA7achtADlIgOzjD891WKzCfoUeYKtbi_N8",
         },
     },
     .paths = .{

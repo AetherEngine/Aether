@@ -23,7 +23,7 @@ pub const std_options = entry.options.std_options;
 pub const panic = sdk.extra.debug.panic;
 pub const std_options_debug_threaded_io = null;
 pub const std_options_debug_io: std.Io = sdk.extra.Io.psp_io;
-pub const std_options_cwd = pspCwd;
+pub const std_options_cwd = psp_cwd;
 
 pub const psp_stack_size: u32 = entry.options.psp.stack_size;
 pub const psp_async_stack_size: u32 = entry.options.psp.async_stack_size;
@@ -34,6 +34,6 @@ pub fn main(init: std.process.Init) !void {
     try entry.call_main(init);
 }
 
-fn pspCwd() std.Io.Dir {
+fn psp_cwd() std.Io.Dir {
     return .{ .handle = -1 };
 }

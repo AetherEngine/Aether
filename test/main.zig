@@ -20,8 +20,8 @@ const Vertex = Rendering.Vertex;
 const MyMesh = Rendering.MeshType(Vertex);
 const MyMeshData = Rendering.MeshDataType(Vertex);
 
-const BATCH_A_TRIANGLES = 61;
-const BATCH_B_TRIANGLES = 78;
+const batch_a_triangles = 61;
+const batch_b_triangles = 78;
 const Vec3 = Math.Vec3;
 
 fn rgba(r: u8, g: u8, b: u8) u32 {
@@ -61,7 +61,7 @@ fn vertex(x: f32, y: f32, color: u32, u: f32, v: f32) Vertex {
     };
 }
 
-fn orientedPoint(cx: f32, cy: f32, lx: f32, ly: f32, angle: f32) [2]f32 {
+fn oriented_point(cx: f32, cy: f32, lx: f32, ly: f32, angle: f32) [2]f32 {
     const c = @cos(angle);
     const s = @sin(angle);
     return .{
@@ -70,7 +70,7 @@ fn orientedPoint(cx: f32, cy: f32, lx: f32, ly: f32, angle: f32) [2]f32 {
     };
 }
 
-fn appendOrientedTriangle(
+fn append_oriented_triangle(
     alloc: std.mem.Allocator,
     mesh: *MyMeshData,
     cx: f32,
@@ -82,9 +82,9 @@ fn appendOrientedTriangle(
     c1: u32,
     c2: u32,
 ) !void {
-    const a = orientedPoint(cx, cy, 0.0, sy, angle);
-    const b = orientedPoint(cx, cy, -sx, -sy, angle);
-    const c = orientedPoint(cx, cy, sx, -sy, angle);
+    const a = oriented_point(cx, cy, 0.0, sy, angle);
+    const b = oriented_point(cx, cy, -sx, -sy, angle);
+    const c = oriented_point(cx, cy, sx, -sy, angle);
     try mesh.add_tri(
         alloc,
         vertex(a[0], a[1], c0, 0.5, 0.0),
@@ -93,8 +93,8 @@ fn appendOrientedTriangle(
     );
 }
 
-fn buildBatchA(alloc: std.mem.Allocator, mesh: *MyMeshData) !void {
-    try mesh.vertices.ensureTotalCapacity(alloc, BATCH_A_TRIANGLES * 3);
+fn build_batch_a(alloc: std.mem.Allocator, mesh: *MyMeshData) !void {
+    try mesh.vertices.ensureTotalCapacity(alloc, batch_a_triangles * 3);
 
     try mesh.add_tri(
         alloc,
@@ -128,7 +128,7 @@ fn buildBatchA(alloc: std.mem.Allocator, mesh: *MyMeshData) !void {
         const angle = t * std.math.pi * 2.0;
         const radius = 0.56 + if (i % 2 == 0) @as(f32, 0.045) else -0.025;
         const size = 0.032 + @as(f32, @floatFromInt(i % 4)) * 0.006;
-        try appendOrientedTriangle(
+        try append_oriented_triangle(
             alloc,
             mesh,
             @cos(angle) * radius,
@@ -143,8 +143,8 @@ fn buildBatchA(alloc: std.mem.Allocator, mesh: *MyMeshData) !void {
     }
 }
 
-fn buildBatchB(alloc: std.mem.Allocator, mesh: *MyMeshData) !void {
-    try mesh.vertices.ensureTotalCapacity(alloc, BATCH_B_TRIANGLES * 3);
+fn build_batch_b(alloc: std.mem.Allocator, mesh: *MyMeshData) !void {
+    try mesh.vertices.ensureTotalCapacity(alloc, batch_b_triangles * 3);
 
     const cols = 9;
     const rows = 6;
@@ -158,7 +158,7 @@ fn buildBatchB(alloc: std.mem.Allocator, mesh: *MyMeshData) !void {
             const size = 0.04 + @as(f32, @floatFromInt((idx + row) % 5)) * 0.008;
             const angle = @as(f32, @floatFromInt(idx)) * 0.43 + @sin(fy * std.math.pi) * 0.35;
 
-            try appendOrientedTriangle(
+            try append_oriented_triangle(
                 alloc,
                 mesh,
                 x,
@@ -181,7 +181,7 @@ fn buildBatchB(alloc: std.mem.Allocator, mesh: *MyMeshData) !void {
         const size = 0.035 + @as(f32, @floatFromInt(i % 3)) * 0.007;
         const angle = t * std.math.pi * 4.0;
 
-        try appendOrientedTriangle(
+        try append_oriented_triangle(
             alloc,
             mesh,
             x,
@@ -228,8 +228,8 @@ pub const MyState = struct {
 
         self.texture = try Rendering.Texture.load(engine.io, engine.dirs.resources, render, "test.png", &.{});
 
-        try buildBatchA(render, &self.batch_a_data);
-        try buildBatchB(render, &self.batch_b_data);
+        try build_batch_a(render, &self.batch_a_data);
+        try build_batch_b(render, &self.batch_b_data);
         self.batch_a.update(&self.batch_a_data);
         self.batch_b.update(&self.batch_b_data);
 
@@ -314,7 +314,7 @@ pub const MyState = struct {
 
         Rendering.set_state(&.{
             .texture = self.texture.handle,
-            .proj = Math.Mat4.orthographicRh(
+            .proj = Math.Mat4.orthographic_rh(
                 2 * @as(f32, @floatFromInt(Rendering.gfx.surface.get_width())) / @as(f32, @floatFromInt(Rendering.gfx.surface.get_height())),
                 2,
                 0,
@@ -363,7 +363,7 @@ pub fn main(init: std.process.Init) !void {
     engine.init(init.io, init.environ_map, memory, &.{
         .memory = memory_config,
         .title = aether_options.title,
-        .app_name = ae.AppOptions.resolveAppName(aether_options),
+        .app_name = ae.AppOptions.resolve_app_name(aether_options),
         .resizable = true,
     }, &state.state()) catch |err| switch (err) {
         error.OutOfMemory => return error.EngineInitOutOfMemory,

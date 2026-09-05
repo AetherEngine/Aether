@@ -2,6 +2,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 
 const gl = @import("gl");
+const gl_constants = @import("constants.zig");
 const Mat4 = @import("../../../math/math.zig").Mat4;
 const Util = @import("../../../util/util.zig");
 
@@ -37,12 +38,12 @@ pub fn init() !void {
     initialized = true;
 
     gl.CreateBuffers(1, @ptrCast(&ubo));
-    gl.NamedBufferStorage(ubo, @sizeOf(ShaderState), &state, gl.DYNAMIC_STORAGE_BIT);
-    gl.BindBufferBase(gl.UNIFORM_BUFFER, 0, ubo);
+    gl.NamedBufferStorage(ubo, @sizeOf(ShaderState), &state, gl_constants.dynamic_storage_bit);
+    gl.BindBufferBase(gl_constants.uniform_buffer, 0, ubo);
 
     gl.CreateBuffers(1, @ptrCast(&per_object_ubo));
-    gl.NamedBufferStorage(per_object_ubo, @sizeOf(PerObject), &per_object, gl.DYNAMIC_STORAGE_BIT);
-    gl.BindBufferBase(gl.UNIFORM_BUFFER, 1, per_object_ubo);
+    gl.NamedBufferStorage(per_object_ubo, @sizeOf(PerObject), &per_object, gl_constants.dynamic_storage_bit);
+    gl.BindBufferBase(gl_constants.uniform_buffer, 1, per_object_ubo);
 
     assert(ubo != 0);
     assert(per_object_ubo != 0);
@@ -74,8 +75,8 @@ pub const Shader = struct {
     pub fn init(vs_src: [:0]const u8, fs_src: [:0]const u8) !Shader {
         var self = Shader{};
 
-        const vert = try compile_shader(vs_src, gl.VERTEX_SHADER);
-        const frag = try compile_shader(fs_src, gl.FRAGMENT_SHADER);
+        const vert = try compile_shader(vs_src, gl_constants.vertex_shader);
+        const frag = try compile_shader(fs_src, gl_constants.fragment_shader);
         self.shader_program = try link_shader(vert, frag);
 
         return self;
@@ -100,7 +101,7 @@ fn compile_shader(source: [:0]const u8, shader_type: gl.uint) !gl.uint {
     gl.CompileShader(s);
 
     var success: c_uint = 0;
-    gl.GetShaderiv(s, gl.COMPILE_STATUS, @ptrCast(&success));
+    gl.GetShaderiv(s, gl_constants.compile_status, @ptrCast(&success));
     if (success == 0) {
         var buf: [512]u8 = @splat(0);
         var len: c_uint = 0;
@@ -121,7 +122,7 @@ fn link_shader(vert: gl.uint, frag: gl.uint) !gl.uint {
     gl.LinkProgram(program);
 
     var success: c_uint = 0;
-    gl.GetProgramiv(program, gl.LINK_STATUS, @ptrCast(&success));
+    gl.GetProgramiv(program, gl_constants.link_status, @ptrCast(&success));
     if (success == 0) {
         var buf: [512]u8 = @splat(0);
         var len: c_uint = 0;

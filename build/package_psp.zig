@@ -7,7 +7,7 @@ const ExportOptions = package_options.ExportOptions;
 /// Runs the ELF -> PRX -> SFO -> EBOOT.PBP pipeline. Resolves tool artifacts
 /// from `psp_dep` but creates all build/install steps on `b` so they register
 /// on the downstream project's builder.
-pub fn ebootPipeline(b: *std.Build, exe: *std.Build.Step.Compile, psp_dep: *std.Build.Dependency, opts: ExportOptions) pspsdk.PspEboot {
+pub fn eboot_pipeline(b: *std.Build, exe: *std.Build.Step.Compile, psp_dep: *std.Build.Dependency, opts: ExportOptions) pspsdk.PspEboot {
     const mk_prx = b.addRunArtifact(psp_dep.artifact("zPRXGen"));
     mk_prx.addArtifactArg(exe);
     const prx_file = mk_prx.addOutputFileArg("app.prx");

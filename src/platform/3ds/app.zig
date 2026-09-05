@@ -9,20 +9,20 @@ var app_init: ?*const Application = null;
 var new_3ds = false;
 var stream_cache_bytes: usize = 512 * 1024;
 
-pub fn setApplication(app: Application, is_new_3ds: bool, cache_bytes: usize) void {
+pub fn set_application(app: Application, is_new_3ds: bool, cache_bytes: usize) void {
     app_init_storage = app;
     app_init = &app_init_storage;
     new_3ds = is_new_3ds;
     stream_cache_bytes = cache_bytes;
 }
 
-pub fn clearApplication() void {
+pub fn clear_application() void {
     app_init = null;
     new_3ds = false;
     stream_cache_bytes = 512 * 1024;
 }
 
-pub fn currentApplication() ?*const Application {
+pub fn current_application() ?*const Application {
     return app_init;
 }
 

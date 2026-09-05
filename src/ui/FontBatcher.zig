@@ -33,16 +33,16 @@ const FontBatcher = @This();
 
 // --- Constants ---
 
-const GLYPH_COLS: u32 = 16;
-const GLYPH_ROWS: u32 = 16;
-const GLYPH_COUNT: u32 = 256;
-const GLYPH_SIZE: u32 = 8;
-const SPACE_WIDTH: u8 = 4;
-const DEFAULT_SPACING: i8 = 1;
-const QUADS_PER_CHAR: u32 = 1;
-const MAX_ENTRIES: u16 = 1024;
-const MAX_TEXT_BYTES: u16 = 8192;
-const COLOR_PREFIX: u8 = '&';
+const glyph_cols: u32 = 16;
+const glyph_rows: u32 = 16;
+const glyph_count: u32 = 256;
+const glyph_size: u32 = 8;
+const space_width: u8 = 4;
+const default_spacing: i8 = 1;
+const quads_per_char: u32 = 1;
+const max_entries: u16 = 1024;
+const max_text_bytes: u16 = 8192;
+const color_prefix: u8 = '&';
 
 // --- Color codes ---
 
@@ -94,11 +94,11 @@ pub const TextEntry = struct {
 
 // --- Fields ---
 
-glyph_widths: [GLYPH_COUNT]u8,
+glyph_widths: [glyph_count]u8,
 atlas: TextureAtlas,
 texture: *const Rendering.Texture,
-entries: [2][MAX_ENTRIES]TextEntry,
-text_bufs: [2][MAX_TEXT_BYTES]u8,
+entries: [2][max_entries]TextEntry,
+text_bufs: [2][max_text_bytes]u8,
 text_used: [2]u16,
 count: u16,
 prev_count: u16,
@@ -118,7 +118,7 @@ pub fn init(allocator: std.mem.Allocator, texture: *const Rendering.Texture) !Fo
     errdefer mesh_data.deinit(allocator);
     return .{
         .glyph_widths = compute_glyph_widths(texture),
-        .atlas = TextureAtlas.init(128, 128, GLYPH_ROWS, GLYPH_COLS),
+        .atlas = TextureAtlas.init(128, 128, glyph_rows, glyph_cols),
         .texture = texture,
         .entries = undefined,
         .text_bufs = undefined,
@@ -166,14 +166,14 @@ pub fn mark_dirty(self: *FontBatcher) void {
 }
 
 pub fn add_text(self: *FontBatcher, entry: *const TextEntry) void {
-    assert(self.count < MAX_ENTRIES);
+    assert(self.count < max_entries);
     assert(entry.str.len > 0);
-    assert(entry.str.len <= MAX_TEXT_BYTES - self.text_used[self.current]);
+    assert(entry.str.len <= max_text_bytes - self.text_used[self.current]);
 
-    if (self.count >= MAX_ENTRIES) return;
-    if (entry.str.len > MAX_TEXT_BYTES) return;
+    if (self.count >= max_entries) return;
+    if (entry.str.len > max_text_bytes) return;
     const len: u16 = @intCast(entry.str.len);
-    if (len > MAX_TEXT_BYTES - self.text_used[self.current]) return;
+    if (len > max_text_bytes - self.text_used[self.current]) return;
 
     const start = self.text_used[self.current];
     const end = start + len;
@@ -228,7 +228,7 @@ pub fn string_width(self: *const FontBatcher, str: []const u8, spacing: i8, text
     var visible: u32 = 0;
     var i: usize = 0;
     while (i < str.len) {
-        if (str[i] == COLOR_PREFIX and i + 1 < str.len and is_color_hex(str[i + 1])) {
+        if (str[i] == color_prefix and i + 1 < str.len and is_color_hex(str[i + 1])) {
             i += 2;
             continue;
         }
@@ -238,7 +238,7 @@ pub fn string_width(self: *const FontBatcher, str: []const u8, spacing: i8, text
     }
     if (visible == 0) return 0;
     const gaps: i32 = @intCast(visible - 1);
-    total += gaps * (@as(i32, DEFAULT_SPACING) + @as(i32, spacing)) * s;
+    total += gaps * (@as(i32, default_spacing) + @as(i32, spacing)) * s;
     return @intCast(@min(total, std.math.maxInt(i16)));
 }
 
@@ -249,13 +249,13 @@ pub fn fit_width(self: *const FontBatcher, str: []const u8, max_w: i16, spacing:
     if (max_w <= 0 or str.len == 0) return 0;
     assert(text_scale > 0);
     const s: i32 = text_scale;
-    const advance: i32 = (@as(i32, DEFAULT_SPACING) + @as(i32, spacing)) * s;
+    const advance: i32 = (@as(i32, default_spacing) + @as(i32, spacing)) * s;
     var total: i32 = 0;
     var visible: u32 = 0;
     var i: usize = 0;
     var last_fit: usize = 0;
     while (i < str.len) {
-        if (str[i] == COLOR_PREFIX and i + 1 < str.len and is_color_hex(str[i + 1])) {
+        if (str[i] == color_prefix and i + 1 < str.len and is_color_hex(str[i + 1])) {
             // Color escapes do not advance the cursor; commit them
             // together so a fit boundary never lands between & and code.
             i += 2;
@@ -296,12 +296,12 @@ pub fn build_mesh(
     const mult: u32 = if (has_shadow) 2 else 1;
     try data.ensure_quad_capacity(
         self.allocator,
-        @as(usize, n_chars * QUADS_PER_CHAR * mult),
+        @as(usize, n_chars * quads_per_char * mult),
     );
 
     const s: i32 = text_scale;
     const text_w: i32 = self.string_width(str, spacing, text_scale);
-    const text_h: i32 = @as(i32, GLYPH_SIZE) * s;
+    const text_h: i32 = @as(i32, glyph_size) * s;
     assert(text_w > 0);
 
     // Extend extent to include shadow so all vertices stay within [-1,1].
@@ -344,7 +344,7 @@ pub fn mesh_matrix(
 
     const ts: i16 = text_scale;
     const tw_i = self.string_width(str, spacing, text_scale);
-    const th_i: i16 = @as(i16, GLYPH_SIZE) * ts;
+    const th_i: i16 = @as(i16, glyph_size) * ts;
     const max_lx: i16 = @intCast(screen_w / ui_scale);
     const max_ly: i16 = @intCast(screen_h / ui_scale);
 
@@ -360,7 +360,7 @@ pub fn mesh_matrix(
     // S_pixel: scale mesh from [-1,1] to pixel proportions for correct rotation.
     const s_pixel = Math.Mat4.scaling(tw / 2.0, th / 2.0, 1);
     // R: rotate in pixel space (uniform, no distortion).
-    const r = Math.Mat4.rotationZ(std.math.degreesToRadians(rot_z));
+    const r = Math.Mat4.rotation_z(std.math.degreesToRadians(rot_z));
     // S_ndc: convert pixel space to NDC, apply extra scale.
     const s_ndc = Math.Mat4.scaling(2.0 * us * extra_scale / sw, 2.0 * us * extra_scale / sh, 1);
     // T: translate to final NDC position with layer depth.
@@ -398,7 +398,7 @@ fn rebuild(self: *FontBatcher, screen_w: u32, screen_h: u32) !void {
     var total_quads: u32 = 0;
     for (entries) |*e| {
         const mult: u32 = if (e.shadow_color.a > 0) 2 else 1;
-        total_quads += @as(u32, @intCast(e.str.len)) * QUADS_PER_CHAR * mult;
+        total_quads += @as(u32, @intCast(e.str.len)) * quads_per_char * mult;
     }
 
     self.mesh_data.clear_retaining_capacity();
@@ -422,7 +422,7 @@ fn emit_text(
     const str = entry.str;
     const ts: i16 = entry.scale;
     const text_w = self.string_width(str, entry.spacing, entry.scale);
-    const text_h: i16 = @as(i16, GLYPH_SIZE) * ts;
+    const text_h: i16 = @as(i16, glyph_size) * ts;
 
     const max_lx: i16 = @intCast(screen_w / ui_scale);
     const max_ly: i16 = @intCast(screen_h / ui_scale);
@@ -463,11 +463,11 @@ fn emit_string_screen(
 
     // Y bounds are constant across all characters - hoist out of loop.
     const y0: i16 = @intCast(@min(@max(start_y, 0), @as(i32, max_ly)));
-    const y1: i16 = @intCast(@min(start_y + @as(i32, GLYPH_SIZE) * ts, @as(i32, max_ly)));
+    const y1: i16 = @intCast(@min(start_y + @as(i32, glyph_size) * ts, @as(i32, max_ly)));
     if (y0 >= y1) return;
     const sy0 = logical_to_snorm_y(y0, screen_h, ui_scale);
     const sy1 = logical_to_snorm_y(y1, screen_h, ui_scale);
-    const advance: i32 = (@as(i32, DEFAULT_SPACING) + @as(i32, spacing)) * ts;
+    const advance: i32 = (@as(i32, default_spacing) + @as(i32, spacing)) * ts;
     var cursor: i32 = start_x;
     var color: u32 = @bitCast(base_color);
 
@@ -475,7 +475,7 @@ fn emit_string_screen(
     while (i < str.len) {
         // '&' followed by [0-9a-f] swaps the active color and is not drawn
         // or advanced past as a glyph.
-        if (str[i] == COLOR_PREFIX and i + 1 < str.len and is_color_hex(str[i + 1])) {
+        if (str[i] == color_prefix and i + 1 < str.len and is_color_hex(str[i + 1])) {
             const pair = color_for_code(str[i + 1]);
             color = @bitCast(if (is_shadow) pair.bg else pair.fg);
             i += 2;
@@ -522,15 +522,15 @@ fn emit_string_local(
     text_scale: u8,
 ) void {
     const ts: i32 = text_scale;
-    const advance: i32 = (@as(i32, DEFAULT_SPACING) + @as(i32, spacing)) * ts;
+    const advance: i32 = (@as(i32, default_spacing) + @as(i32, spacing)) * ts;
     const sy0 = local_to_snorm_y(offset_y, extent_h);
-    const sy1 = local_to_snorm_y(offset_y + @as(i32, GLYPH_SIZE) * ts, extent_h);
+    const sy1 = local_to_snorm_y(offset_y + @as(i32, glyph_size) * ts, extent_h);
     var cursor: i32 = offset_x;
     var color: u32 = @bitCast(base_color);
 
     var i: usize = 0;
     while (i < str.len) {
-        if (str[i] == COLOR_PREFIX and i + 1 < str.len and is_color_hex(str[i + 1])) {
+        if (str[i] == color_prefix and i + 1 < str.len and is_color_hex(str[i + 1])) {
             const pair = color_for_code(str[i + 1]);
             color = @bitCast(if (is_shadow) pair.bg else pair.fg);
             i += 2;
@@ -553,8 +553,8 @@ fn emit_string_local(
 }
 
 fn glyph_uvs(self: *const FontBatcher, byte: u8, gw: u8) [4]i16 {
-    const gx: u32 = @as(u32, byte) % GLYPH_COLS;
-    const gy: u32 = @as(u32, byte) / GLYPH_COLS;
+    const gx: u32 = @as(u32, byte) % glyph_cols;
+    const gy: u32 = @as(u32, byte) / glyph_cols;
     const stride_u: i32 = @as(i32, 32767) >> self.atlas.col_log2;
     const stride_v: i32 = @as(i32, 32767) >> self.atlas.row_log2;
     const base_u: i32 = @as(i32, @intCast(gx)) * stride_u;
@@ -562,7 +562,7 @@ fn glyph_uvs(self: *const FontBatcher, byte: u8, gw: u8) [4]i16 {
     return .{
         @intCast(base_u),
         @intCast(base_v),
-        @intCast(base_u + @divTrunc(stride_u * @as(i32, gw), GLYPH_SIZE)),
+        @intCast(base_u + @divTrunc(stride_u * @as(i32, gw), glyph_size)),
         @intCast(base_v + stride_v),
     };
 }
@@ -590,30 +590,30 @@ fn emit_quad(
 
 /// Scans each glyph tile in the font texture to find the rightmost column
 /// containing a non-transparent pixel. This gives per-character variable widths.
-fn compute_glyph_widths(texture: *const Rendering.Texture) [GLYPH_COUNT]u8 {
+fn compute_glyph_widths(texture: *const Rendering.Texture) [glyph_count]u8 {
     assert(texture.width == 128);
     assert(texture.height == 128);
 
-    var widths: [GLYPH_COUNT]u8 = [1]u8{0} ** GLYPH_COUNT;
+    var widths: [glyph_count]u8 = [1]u8{0} ** glyph_count;
 
     var code: u32 = 0;
-    while (code < GLYPH_COUNT) : (code += 1) {
+    while (code < glyph_count) : (code += 1) {
         if (code == 0x20) {
-            widths[code] = SPACE_WIDTH;
+            widths[code] = space_width;
             continue;
         }
-        const gx = code % GLYPH_COLS;
-        const gy = code / GLYPH_COLS;
-        const bx = gx * GLYPH_SIZE;
-        const by = gy * GLYPH_SIZE;
+        const gx = code % glyph_cols;
+        const gy = code / glyph_cols;
+        const bx = gx * glyph_size;
+        const by = gy * glyph_size;
 
         // Scan columns right-to-left; first non-transparent pixel sets width.
         var max_col: u8 = 0;
-        var col: u32 = GLYPH_SIZE;
+        var col: u32 = glyph_size;
         while (col > 0) {
             col -= 1;
             var row: u32 = 0;
-            while (row < GLYPH_SIZE) : (row += 1) {
+            while (row < glyph_size) : (row += 1) {
                 const rgba = texture.get_pixel(bx + col, by + row) catch .{ 0, 0, 0, 0 };
                 if (rgba[3] > 0) {
                     max_col = @intCast(col + 1);

@@ -1,0 +1,44 @@
+//! Aliases for upstream constants. Keep foreign names in this binding file.
+
+const gl = @import("gl");
+
+pub const back = gl.BACK;
+pub const blend = gl.BLEND;
+pub const ccw = gl.CCW;
+pub const color_buffer_bit = gl.COLOR_BUFFER_BIT;
+pub const compile_status = gl.COMPILE_STATUS;
+pub const cull_face = gl.CULL_FACE;
+pub const depth_buffer_bit = gl.DEPTH_BUFFER_BIT;
+pub const depth_test = gl.DEPTH_TEST;
+pub const dynamic_storage_bit = gl.DYNAMIC_STORAGE_BIT;
+pub const false_value = gl.FALSE;
+pub const float = gl.FLOAT;
+pub const fragment_shader = gl.FRAGMENT_SHADER;
+pub const link_status = gl.LINK_STATUS;
+pub const lower_left = gl.LOWER_LEFT;
+pub const nearest = gl.NEAREST;
+pub const one_minus_src_alpha = gl.ONE_MINUS_SRC_ALPHA;
+pub const renderer = gl.RENDERER;
+pub const repeat = gl.REPEAT;
+pub const rgba = gl.RGBA;
+pub const rgba8 = gl.RGBA8;
+pub const shading_language_version = gl.SHADING_LANGUAGE_VERSION;
+pub const short = gl.SHORT;
+pub const src_alpha = gl.SRC_ALPHA;
+pub const static_draw = gl.STATIC_DRAW;
+pub const texture_2d = gl.TEXTURE_2D;
+pub const texture_height = gl.TEXTURE_HEIGHT;
+pub const texture_mag_filter = gl.TEXTURE_MAG_FILTER;
+pub const texture_min_filter = gl.TEXTURE_MIN_FILTER;
+pub const texture_width = gl.TEXTURE_WIDTH;
+pub const texture_wrap_s = gl.TEXTURE_WRAP_S;
+pub const texture_wrap_t = gl.TEXTURE_WRAP_T;
+pub const triangles = gl.TRIANGLES;
+pub const true_value = gl.TRUE;
+pub const uniform_buffer = gl.UNIFORM_BUFFER;
+pub const unsigned_byte = gl.UNSIGNED_BYTE;
+pub const unsigned_short = gl.UNSIGNED_SHORT;
+pub const vendor = gl.VENDOR;
+pub const version = gl.VERSION;
+pub const vertex_shader = gl.VERTEX_SHADER;
+pub const zero_to_one = gl.ZERO_TO_ONE;

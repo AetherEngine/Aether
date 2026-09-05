@@ -61,7 +61,7 @@ pub fn build(b: *std.Build) void {
 
     // Create a game executable -- this wires up the engine module
     // and all platform-specific dependencies (SDL3/Vulkan/OpenGL/pspsdk)
-    const exe = Aether.modules.addGame(ae_dep.builder, b, .{
+    const exe = Aether.modules.add_game(ae_dep.builder, b, .{
         .name = "my_game",
         .root_source_file = b.path("src/main.zig"),
         .target = target,
@@ -70,7 +70,7 @@ pub fn build(b: *std.Build) void {
     });
 
     // Export the artifact (produces EBOOT.PBP for PSP, install artifact otherwise)
-    Aether.packaging.exportArtifact(ae_dep.builder, b, exe, config, .{
+    Aether.packaging.export_artifact(ae_dep.builder, b, exe, config, .{
         .title = "My Game",
     });
 
@@ -80,17 +80,17 @@ pub fn build(b: *std.Build) void {
 }
 ```
 
-The first argument to `modules.addGame` and `packaging.exportArtifact` is the
+The first argument to `modules.add_game` and `packaging.export_artifact` is the
 dependency's builder (`ae_dep.builder`), and the second is your project's
 builder (`b`). This lets Aether resolve its own internal dependencies (SDL3,
 Vulkan, Slang, pspsdk) from its `build.zig.zon` while building artifacts that
 belong to your project.
 
 The returned executable root is Aether's platform entry shim. Add imports for
-your game root through `userRootModule`:
+your game root through `user_root_module`:
 
 ```zig
-Aether.modules.userRootModule(exe).addImport("my_module", my_module);
+Aether.modules.user_root_module(exe).addImport("my_module", my_module);
 ```
 
 Then write your game code:
@@ -138,7 +138,7 @@ pub fn main(init: std.process.Init) !void {
             .user = 16 * 1024 * 1024,
         },
         .title = "My Game",
-        .app_name = ae.AppOptions.resolveAppName(aether_options),
+        .app_name = ae.AppOptions.resolve_app_name(aether_options),
     }, &my_state.state());
     defer engine.deinit();
     engine.run() catch |err| switch (err) {
@@ -260,7 +260,7 @@ Static textures can use the default `.cpu_access = .none`; request
 
 ## Build API Reference
 
-### `Aether.modules.addGame(owner, b, opts) -> *Compile`
+### `Aether.modules.add_game(owner, b, opts) -> *Compile`
 
 Creates a game executable with the engine module and platform dependencies wired up.
 
@@ -272,7 +272,7 @@ Creates a game executable with the engine module and platform dependencies wired
 | `optimize` | `OptimizeMode` | Optimization level (default: `.Debug`) |
 | `overrides` | `config.Config.Overrides` | Graphics/display mode overrides (default: `.{}`) |
 
-### `Aether.packaging.exportArtifact(owner, b, exe, config, opts)`
+### `Aether.packaging.export_artifact(owner, b, exe, config, opts)`
 
 Exports the build artifact. For PSP targets, produces an `EBOOT.PBP`. For desktop, installs the artifact normally.
 
@@ -287,7 +287,7 @@ Exports the build artifact. For PSP targets, produces an `EBOOT.PBP`. For deskto
 
 ### `Aether.config.Config.resolve(target, overrides) -> Config`
 
-Resolves the full engine configuration (platform, graphics backend, audio, input) from the build target and any user overrides. Pass the result to `packaging.exportArtifact`.
+Resolves the full engine configuration (platform, graphics backend, audio, input) from the build target and any user overrides. Pass the result to `packaging.export_artifact`.
 
 ### `Aether.config.Config.Overrides`
 

@@ -21,14 +21,14 @@ pub const ExportResult = struct {
 /// Installs the game executable with platform-appropriate packaging.
 ///
 /// This compatibility entry point discards any generated package outputs.
-pub fn exportArtifact(
+pub fn export_artifact(
     owner: *std.Build,
     b: *std.Build,
     exe: *std.Build.Step.Compile,
     config: config_mod.Config,
     opts: ExportOptions,
 ) void {
-    _ = exportArtifactWithOutputs(owner, b, exe, config, opts);
+    _ = export_artifact_with_outputs(owner, b, exe, config, opts);
 }
 
 /// Installs the game executable with platform-appropriate packaging and
@@ -37,7 +37,7 @@ pub fn exportArtifact(
 /// - macOS: produces a `<name>.app` bundle under `zig-out/bin/`.
 /// - Other desktop: plain `b.installArtifact`, plus any `opts.resources`
 ///   copied alongside the exe.
-pub fn exportArtifactWithOutputs(
+pub fn export_artifact_with_outputs(
     owner: *std.Build,
     b: *std.Build,
     exe: *std.Build.Step.Compile,
@@ -46,19 +46,19 @@ pub fn exportArtifactWithOutputs(
 ) ExportResult {
     if (config.platform == .psp) {
         const psp_dep = owner.dependency("pspsdk", .{});
-        _ = psp.ebootPipeline(b, exe, psp_dep, opts);
+        _ = psp.eboot_pipeline(b, exe, psp_dep, opts);
     } else if (config.platform == .nintendo_3ds) {
         return .{ .nintendo_3dsx = threeds.pipeline(owner, b, exe, opts) };
     } else if (config.platform == .nintendo_switch) {
-        switch_pkg.nroPipeline(b, exe, opts);
+        switch_pkg.nro_pipeline(b, exe, opts);
     } else if (config.platform == .wasm) {
-        const install = web.addWebBundle(owner, b, exe, opts);
+        const install = web.add_web_bundle(owner, b, exe, opts);
         b.getInstallStep().dependOn(&install.step);
     } else if (config.platform == .macos) {
-        macos.appBundle(b, exe, opts);
+        macos.app_bundle(b, exe, opts);
     } else {
         if (config.platform == .windows) {
-            if (opts.windows_icon) |icon| windows.addIconResource(b, exe, icon);
+            if (opts.windows_icon) |icon| windows.add_icon_resource(b, exe, icon);
         }
         b.installArtifact(exe);
         for (opts.resources) |res| {
@@ -70,7 +70,7 @@ pub fn exportArtifactWithOutputs(
     return .{};
 }
 
-pub const addWebBundle = web.addWebBundle;
-pub const addServeWebStep = web.addServeWebStep;
+pub const add_web_bundle = web.add_web_bundle;
+pub const add_serve_web_step = web.add_serve_web_step;
 pub const Link3dsxOptions = threeds.Link3dsxOptions;
-pub const addLink3dsx = threeds.addLink3dsx;
+pub const add_link3dsx = threeds.add_link3dsx;

@@ -9,7 +9,7 @@ const Texture = Rendering.Texture;
 const basic_vert align(@alignOf(u32)) = @embedFile("aether_basic_vert").*;
 const basic_frag align(@alignOf(u32)) = @embedFile("aether_basic_frag").*;
 
-const MAX_MESHES = 8192;
+const max_meshes = 8192;
 pub const mesh_source_mode = Mesh.SourceMode.uploaded_copy;
 
 extern "aether_host" fn aether_webgl_init(vert_ptr: [*]const u8, vert_len: usize, frag_ptr: [*]const u8, frag_len: usize) bool;
@@ -38,7 +38,7 @@ extern "aether_host" fn aether_canvas_height() u32;
 
 var render_alloc: std.mem.Allocator = undefined;
 var render_io: std.Io = undefined;
-var meshes = Util.ResourceTableType(u32, MAX_MESHES, Mesh.Handle).init();
+var meshes = Util.ResourceTableType(u32, max_meshes, Mesh.Handle).init();
 var textures = Util.ResourceTableType(u32, 4096, Texture.Handle).init();
 
 pub fn setup(alloc: std.mem.Allocator, io: std.Io) void {

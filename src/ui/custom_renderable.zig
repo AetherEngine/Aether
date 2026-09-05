@@ -19,7 +19,7 @@ pub const ClipMode = enum(u8) {
     reject_bounds,
 };
 
-pub const MAX_PAYLOAD_BYTES: usize = 32;
+pub const max_payload_bytes: usize = 32;
 
 pub const Command = struct {
     renderer: RendererId,
@@ -29,12 +29,12 @@ pub const Command = struct {
     sequence: u16 = 0,
     payload_len: u8 = 0,
     payload_align: u8 = 1,
-    payload: [MAX_PAYLOAD_BYTES]u8 = [_]u8{0} ** MAX_PAYLOAD_BYTES,
+    payload: [max_payload_bytes]u8 = [_]u8{0} ** max_payload_bytes,
 
     pub fn init(renderer: RendererId, bounds: layout.LogicalRect, layer: u8, clip: ClipMode, sequence: u16, value: anytype) Command {
         const T = @TypeOf(value);
         comptime {
-            if (@sizeOf(T) > MAX_PAYLOAD_BYTES) {
+            if (@sizeOf(T) > max_payload_bytes) {
                 @compileError("custom UI payload exceeds MAX_PAYLOAD_BYTES");
             }
             if (@alignOf(T) > 16) {

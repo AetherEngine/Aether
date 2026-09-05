@@ -23,11 +23,11 @@ pub const HeadlessOptions = struct {
 
 const user_root_import_name = "aether_user_root";
 
-pub fn userRootModule(exe: *std.Build.Step.Compile) *std.Build.Module {
+pub fn user_root_module(exe: *std.Build.Step.Compile) *std.Build.Module {
     return exe.root_module.import_table.get(user_root_import_name) orelse exe.root_module;
 }
 
-fn entryRootSource(config: Config) []const u8 {
+fn entry_root_source(config: Config) []const u8 {
     return switch (config.platform) {
         .psp => "src/platform/psp/entry.zig",
         .nintendo_3ds => "src/platform/3ds/entry.zig",
@@ -37,7 +37,7 @@ fn entryRootSource(config: Config) []const u8 {
     };
 }
 
-fn addNintendoCImportPaths(_: *std.Build, mod: *std.Build.Module, config: Config, dkp: []const u8) void {
+fn add_nintendo_c_import_paths(_: *std.Build, mod: *std.Build.Module, config: Config, dkp: []const u8) void {
     const b = mod.owner;
     switch (config.platform) {
         .nintendo_switch => {
@@ -54,7 +54,7 @@ fn addNintendoCImportPaths(_: *std.Build, mod: *std.Build.Module, config: Config
 /// Creates an executable with the Aether engine module and all platform
 /// dependencies wired up. Returns the compile step so the caller can further
 /// customize it (install, add run steps, etc.).
-pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.Step.Compile {
+pub fn add_game(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.Step.Compile {
     const config = Config.resolve(opts.target, opts.overrides);
     const uses_nintendo_c_io = config.platform == .nintendo_switch;
     const uses_zitrus = config.platform == .nintendo_3ds;
@@ -158,7 +158,7 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
             mod.linkSystemLibrary("objc", .{});
 
             // Link MoltenVK directly as the Vulkan ICD -- no loader.
-            mod.addLibraryPath(.{ .cwd_relative = tools.macosMoltenVkPath(b) });
+            mod.addLibraryPath(.{ .cwd_relative = tools.macos_molten_vk_path(b) });
             mod.linkSystemLibrary("MoltenVK", .{});
 
             // rpath for the .app bundle layout.
@@ -173,9 +173,9 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
     }
 
     if (uses_nintendo_c_io) {
-        addNintendoCImportPaths(owner, mod, config, tools.devkitProPath(b));
+        add_nintendo_c_import_paths(owner, mod, config, tools.devkit_pro_path(b));
     }
-    shaders.addInternalShaderModule(owner, b, mod, config);
+    shaders.add_internal_shader_module(owner, b, mod, config);
 
     // --- user executable ---
     const user_mod = b.createModule(.{
@@ -204,7 +204,7 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
     }) else null;
 
     const root_mod = if (config.platform != .wasm) b.createModule(.{
-        .root_source_file = owner.path(entryRootSource(config)),
+        .root_source_file = owner.path(entry_root_source(config)),
         .target = target,
         .optimize = opts.optimize,
         .link_libc = if (uses_nintendo_c_io) true else null,
@@ -222,21 +222,25 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
         root_mod.addImport("zitrus", zd.module("zitrus"));
     }
     if (uses_nintendo_c_io) {
-        addNintendoCImportPaths(owner, root_mod, config, tools.devkitProPath(b));
+        add_nintendo_c_import_paths(owner, root_mod, config, tools.devkit_pro_path(b));
     }
 
+    // Zig 0.16's self-hosted linker cannot handle .sframe in newer glibc CRT objects.
+    const linux_glibc = target.result.os.tag == .linux and target.result.abi.isGnu();
     const exe = b.addExecutable(.{
         .name = opts.name,
         .root_module = root_mod,
         .zig_lib_dir = if (zitrus_dep) |zd| zd.namedLazyPath("juice/zig_lib") else null,
+        .use_llvm = if (linux_glibc) true else null,
+        .use_lld = if (linux_glibc) true else null,
     });
 
     if (psp_dep) |pd| {
         // Inline PSP config -- pspsdk.configurePspExecutable uses
         // dependencyFromBuildZig on exe.step.owner which fails when
         // the exe is owned by a downstream builder.
-        if (userRootModule(exe).import_table.get("pspsdk") == null) {
-            userRootModule(exe).addImport("pspsdk", mod.import_table.get("pspsdk").?);
+        if (user_root_module(exe).import_table.get("pspsdk") == null) {
+            user_root_module(exe).addImport("pspsdk", mod.import_table.get("pspsdk").?);
         }
         exe.link_eh_frame_hdr = true;
         exe.link_emit_relocs = true;
@@ -245,8 +249,8 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
     }
 
     if (zitrus_dep) |zd| {
-        if (userRootModule(exe).import_table.get("zitrus") == null) {
-            userRootModule(exe).addImport("zitrus", zd.module("zitrus"));
+        if (user_root_module(exe).import_table.get("zitrus") == null) {
+            user_root_module(exe).addImport("zitrus", zd.module("zitrus"));
         }
         exe.pie = true;
         exe.setLinkerScript(zd.namedLazyPath("horizon/ld"));
@@ -277,7 +281,7 @@ pub fn addGame(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.S
 /// Creates an executable with the Aether engine module in headless mode
 /// (no graphics, no windowing, no input). Useful for servers, tools, and
 /// tests that only need engine logic (math, state machine, allocator).
-pub fn addHeadless(owner: *std.Build, b: *std.Build, opts: HeadlessOptions) *std.Build.Step.Compile {
+pub fn add_headless(owner: *std.Build, b: *std.Build, opts: HeadlessOptions) *std.Build.Step.Compile {
     // Headless ignores any caller-supplied gfx/audio overrides -- those
     // backends are always stubbed in this mode. Other knobs (use_cwd,
     // PSP display/mip) flow through unchanged.
@@ -287,7 +291,7 @@ pub fn addHeadless(owner: *std.Build, b: *std.Build, opts: HeadlessOptions) *std
     const uses_nintendo_c_io = config.platform == .nintendo_switch;
     const uses_zitrus = config.platform == .nintendo_3ds;
 
-    // Switch forces ofmt=c (see addGame for details).
+    // Switch forces ofmt=c (see add_game for details).
     const target = if (uses_nintendo_c_io) blk: {
         var q = opts.target.query;
         q.ofmt = .c;
@@ -320,7 +324,7 @@ pub fn addHeadless(owner: *std.Build, b: *std.Build, opts: HeadlessOptions) *std
     }
 
     if (uses_nintendo_c_io) {
-        addNintendoCImportPaths(owner, mod, config, tools.devkitProPath(b));
+        add_nintendo_c_import_paths(owner, mod, config, tools.devkit_pro_path(b));
     }
 
     const user_mod = b.createModule(.{
@@ -349,7 +353,7 @@ pub fn addHeadless(owner: *std.Build, b: *std.Build, opts: HeadlessOptions) *std
     }) else null;
 
     const root_mod = if (config.platform != .wasm) b.createModule(.{
-        .root_source_file = owner.path(entryRootSource(config)),
+        .root_source_file = owner.path(entry_root_source(config)),
         .target = target,
         .optimize = opts.optimize,
         .link_libc = if (uses_nintendo_c_io) true else null,
@@ -367,18 +371,22 @@ pub fn addHeadless(owner: *std.Build, b: *std.Build, opts: HeadlessOptions) *std
         root_mod.addImport("zitrus", zd.module("zitrus"));
     }
     if (uses_nintendo_c_io) {
-        addNintendoCImportPaths(owner, root_mod, config, tools.devkitProPath(b));
+        add_nintendo_c_import_paths(owner, root_mod, config, tools.devkit_pro_path(b));
     }
 
+    // Keep headless executables on the same Linux glibc linker path as games.
+    const linux_glibc = target.result.os.tag == .linux and target.result.abi.isGnu();
     const exe = b.addExecutable(.{
         .name = opts.name,
         .root_module = root_mod,
         .zig_lib_dir = if (zitrus_dep) |zd| zd.namedLazyPath("juice/zig_lib") else null,
+        .use_llvm = if (linux_glibc) true else null,
+        .use_lld = if (linux_glibc) true else null,
     });
 
     if (psp_dep) |pd| {
-        if (userRootModule(exe).import_table.get("pspsdk") == null) {
-            userRootModule(exe).addImport("pspsdk", mod.import_table.get("pspsdk").?);
+        if (user_root_module(exe).import_table.get("pspsdk") == null) {
+            user_root_module(exe).addImport("pspsdk", mod.import_table.get("pspsdk").?);
         }
         exe.link_eh_frame_hdr = true;
         exe.link_emit_relocs = true;
@@ -387,8 +395,8 @@ pub fn addHeadless(owner: *std.Build, b: *std.Build, opts: HeadlessOptions) *std
     }
 
     if (zitrus_dep) |zd| {
-        if (userRootModule(exe).import_table.get("zitrus") == null) {
-            userRootModule(exe).addImport("zitrus", zd.module("zitrus"));
+        if (user_root_module(exe).import_table.get("zitrus") == null) {
+            user_root_module(exe).addImport("zitrus", zd.module("zitrus"));
         }
         exe.pie = true;
         exe.setLinkerScript(zd.namedLazyPath("horizon/ld"));

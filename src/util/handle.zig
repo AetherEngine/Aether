@@ -34,10 +34,10 @@ pub fn HandleType(comptime Tag: type) type {
 /// Slot 0 is reserved for the null handle. A removed slot increments its
 /// generation before it can be reused, so old handles fail validation instead
 /// of silently naming the new occupant.
-pub fn ResourceTableType(comptime T: type, comptime SIZE: usize, comptime H: type) type {
+pub fn ResourceTableType(comptime T: type, comptime slot_count: usize, comptime H: type) type {
     comptime {
-        if (SIZE < 2)
-            @compileError("SIZE must be >= 2 (index 0 is reserved as the null handle).");
+        if (slot_count < 2)
+            @compileError("slot_count must be >= 2 (index 0 is reserved as the null handle).");
         if (@sizeOf(H) != @sizeOf(u32) or !@hasDecl(H, "from_index"))
             @compileError("H must be a Util.Handle instantiation.");
     }
@@ -45,8 +45,8 @@ pub fn ResourceTableType(comptime T: type, comptime SIZE: usize, comptime H: typ
     return struct {
         const ResourceTable = @This();
 
-        slots: [SIZE]?T = undefined,
-        generations: [SIZE]u8 = undefined,
+        slots: [slot_count]?T = undefined,
+        generations: [slot_count]u8 = undefined,
         head: usize = 1,
         count: usize = 0,
 
@@ -60,7 +60,7 @@ pub fn ResourceTableType(comptime T: type, comptime SIZE: usize, comptime H: typ
         }
 
         pub fn clear(self: *ResourceTable) void {
-            for (1..SIZE) |i| {
+            for (1..slot_count) |i| {
                 if (self.slots[i] != null) {
                     self.bump_generation(i);
                 }
@@ -76,7 +76,7 @@ pub fn ResourceTableType(comptime T: type, comptime SIZE: usize, comptime H: typ
 
         pub fn capacity(self: *const ResourceTable) usize {
             _ = self;
-            return SIZE - 1;
+            return slot_count - 1;
         }
 
         pub fn is_full(self: *const ResourceTable) bool {
@@ -131,7 +131,7 @@ pub fn ResourceTableType(comptime T: type, comptime SIZE: usize, comptime H: typ
 
         fn valid_index(self: *const ResourceTable, handle: H) ?usize {
             const idx = handle.raw_index();
-            if (idx == 0 or idx >= SIZE) return null;
+            if (idx == 0 or idx >= slot_count) return null;
             if (self.generations[idx] != handle.generation) return null;
             if (self.slots[idx] == null) return null;
             return idx;
@@ -143,7 +143,7 @@ pub fn ResourceTableType(comptime T: type, comptime SIZE: usize, comptime H: typ
         }
 
         inline fn next_index(i: usize) usize {
-            var n = (i + 1) % SIZE;
+            var n = (i + 1) % slot_count;
             if (n == 0) n = 1;
             return n;
         }

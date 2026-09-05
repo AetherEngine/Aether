@@ -9,12 +9,12 @@ const horizon = zitrus.horizon;
 const mango = zitrus.mango;
 const GraphicsServerGpu = horizon.services.GraphicsServerGpu;
 
-const VIRTUAL_WIDTH = 400;
-const VIRTUAL_HEIGHT = 240;
-const SWAP_IMAGE_COUNT = 2;
-const COLOR_FORMAT = mango.Format.b8g8r8_unorm;
-const COLOR_BYTES_PER_PIXEL = 4;
-const ACQUIRE_TIMEOUT_NS = 2 * std.time.ns_per_s;
+const virtual_width = 400;
+const virtual_height = 240;
+const swap_image_count = 2;
+const color_format = mango.Format.b8g8r8_unorm;
+const color_bytes_per_pixel = 4;
+const acquire_timeout_ns = 2 * std.time.ns_per_s;
 
 pub const Screen = enum {
     top,
@@ -26,8 +26,8 @@ const DisplayState = struct {
     width: u16,
     height: u16,
     memory: []const u8 = &.{},
-    memory_infos: [SWAP_IMAGE_COUNT]mango.DeviceSlice = @splat(.empty),
-    images: [SWAP_IMAGE_COUNT]mango.Image = @splat(.null),
+    memory_infos: [swap_image_count]mango.DeviceSlice = @splat(.empty),
+    images: [swap_image_count]mango.Image = @splat(.null),
     image_index: u8 = 0,
     image_count: u8 = 0,
     acquired: bool = false,
@@ -43,7 +43,7 @@ applet_released: bool = false,
 last_capture: ?GraphicsServerGpu.ScreenCapture = null,
 
 pub fn init(self: *Surface, _: u32, _: u32, _: [:0]const u8, _: bool, sync: bool, _: bool) surface_api.InitError!void {
-    const app = app_3ds.currentApplication() orelse return error.SurfaceInitFailed;
+    const app = app_3ds.current_application() orelse return error.SurfaceInitFailed;
 
     self.sync = sync;
     self.device = mango.createHorizonBackedDevice(.{
@@ -82,7 +82,7 @@ pub fn deinit(self: *Surface) void {
 }
 
 pub fn is_system_closing(_: *const Surface) bool {
-    const app = app_3ds.currentApplication() orelse return true;
+    const app = app_3ds.current_application() orelse return true;
     return app.app.flags.must_close;
 }
 
@@ -146,17 +146,17 @@ fn init_swapchains(self: *Surface) !void {
 }
 
 pub fn get_width(_: *Surface) u32 {
-    return VIRTUAL_WIDTH;
+    return virtual_width;
 }
 
 pub fn get_height(_: *Surface) u32 {
-    return VIRTUAL_HEIGHT;
+    return virtual_height;
 }
 
 pub fn acquire(self: *Surface, which: Screen) !void {
     const chain = self.screen(which);
     if (chain.acquired) return;
-    chain.image_index = self.device.acquireNextImage(chain.display, ACQUIRE_TIMEOUT_NS) catch |err| {
+    chain.image_index = self.device.acquireNextImage(chain.display, acquire_timeout_ns) catch |err| {
         std.log.err("3DS Mango swapchain acquire stalled: screen={}", .{which});
         return err;
     };
@@ -194,10 +194,10 @@ fn screen(self: *Surface, which: Screen) *DisplayState {
 }
 
 fn init_display(self: *Surface, state: *DisplayState) !void {
-    const bytes_per_image = @as(u32, state.width) * @as(u32, state.height) * COLOR_BYTES_PER_PIXEL;
+    const bytes_per_image = @as(u32, state.width) * @as(u32, state.height) * color_bytes_per_pixel;
     const fcram = self.device.hostAllocator();
 
-    state.memory = try fcram.alloc(u8, SWAP_IMAGE_COUNT * bytes_per_image);
+    state.memory = try fcram.alloc(u8, swap_image_count * bytes_per_image);
     errdefer fcram.free(state.memory);
 
     const gpu_display_memory = try self.device.hostToDevice(state.memory);
@@ -209,9 +209,9 @@ fn init_display(self: *Surface, state: *DisplayState) !void {
     try self.device.configureDisplay(state.display, &.{
         .extent = .{ .width = state.width, .height = state.height },
         .present_mode = if (self.sync) .fifo else .mailbox,
-        .image_format = COLOR_FORMAT,
+        .image_format = color_format,
         .image_array_layers = .@"1",
-        .image_count = SWAP_IMAGE_COUNT,
+        .image_count = swap_image_count,
         .image_memory = &state.memory_infos,
     });
     errdefer self.device.resetDisplay(state.display);

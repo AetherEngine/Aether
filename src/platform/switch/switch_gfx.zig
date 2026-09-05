@@ -23,25 +23,25 @@ const GarbageCollector = @import("garbage_collector.zig");
 
 pub const mesh_source_mode = Mesh.SourceMode.uploaded_copy;
 
-const CODE_MEM_SIZE = 512 * 1024;
-const UPLOAD_CMD_MEM_SIZE = 64 * 1024;
-const MAX_VERTEX_ATTRIBS = 32;
-const MAX_VERTEX_BUFFERS = 16;
-const MAX_TEXTURES = 256;
-const UNIFORM_SLOTS = 4096;
-const RETAIN_PENDING_UPLOAD_LIMIT = 16 * 1024;
-const UNIFORM_STRIDE: u32 = dk.alignForward(@intCast(@sizeOf(DrawUniform)), dk.UniformBufferAlignment);
-const UNIFORM_FRAME_SIZE: u32 = UNIFORM_STRIDE * UNIFORM_SLOTS;
-const IMAGE_DESCRIPTOR_TABLES_PER_FRAME = 128;
-const IMAGE_DESCRIPTOR_TABLE_SIZE: u32 = dk.alignForward(MAX_TEXTURES * dk.ImageDescriptorSize, dk.ImageDescriptorAlignment);
-const IMAGE_DESCRIPTOR_FRAME_SIZE: u32 = IMAGE_DESCRIPTOR_TABLE_SIZE * IMAGE_DESCRIPTOR_TABLES_PER_FRAME;
+const code_mem_size = 512 * 1024;
+const upload_cmd_mem_size = 64 * 1024;
+const max_vertex_attribs = 32;
+const max_vertex_buffers = 16;
+const max_textures = 256;
+const uniform_slots = 4096;
+const retain_pending_upload_limit = 16 * 1024;
+const uniform_stride: u32 = dk.alignForward(@intCast(@sizeOf(DrawUniform)), dk.UniformBufferAlignment);
+const uniform_frame_size: u32 = uniform_stride * uniform_slots;
+const image_descriptor_tables_per_frame = 128;
+const image_descriptor_table_size: u32 = dk.alignForward(max_textures * dk.ImageDescriptorSize, dk.ImageDescriptorAlignment);
+const image_descriptor_frame_size: u32 = image_descriptor_table_size * image_descriptor_tables_per_frame;
 
 const PipelineData = struct {
     vertex_shader: dk.DkShader,
     fragment_shader: dk.DkShader,
-    attribs: [MAX_VERTEX_ATTRIBS]dk.DkVtxAttribState,
+    attribs: [max_vertex_attribs]dk.DkVtxAttribState,
     attrib_count: u32,
-    vtx_buffers: [MAX_VERTEX_BUFFERS]dk.DkVtxBufferState,
+    vtx_buffers: [max_vertex_buffers]dk.DkVtxBufferState,
     vtx_buffer_count: u32,
 };
 
@@ -127,13 +127,13 @@ var descriptor_cpu_addr: ?[*]u8 = null;
 var image_descriptor_base_gpu_addr: dk.DkGpuAddr = 0;
 var sampler_descriptor_gpu_addr: dk.DkGpuAddr = 0;
 var sampler_descriptor_offset: u32 = 0;
-var image_descriptors: [MAX_TEXTURES]dk.DkImageDescriptor = @splat(.{ ._storage = @splat(0) });
+var image_descriptors: [max_textures]dk.DkImageDescriptor = @splat(.{ ._storage = @splat(0) });
 var image_descriptor_count: u32 = 1;
 var image_descriptors_dirty = true;
-var image_descriptor_table_indices: [Swapchain.MAX_FRAMES]u32 = @splat(0);
+var image_descriptor_table_indices: [Swapchain.max_frames]u32 = @splat(0);
 
 var meshes = Util.ResourceTableType(MeshData, 8192, Mesh.Handle).init();
-var texture_slots = Util.ResourceTableType(TextureData, MAX_TEXTURES, Texture.Handle).init();
+var texture_slots = Util.ResourceTableType(TextureData, max_textures, Texture.Handle).init();
 var retired_texture_slots: std.ArrayList(RetiredTextureSlot) = .empty;
 var render_pipeline: PipelineData = undefined;
 var render_pipeline_initialized = false;
@@ -407,7 +407,7 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
     dk.dkCmdBufBindVtxAttribState(swapchain.command_buffer, pl.attribs[0..].ptr, pl.attrib_count);
     dk.dkCmdBufBindVtxBufferState(swapchain.command_buffer, pl.vtx_buffers[0..].ptr, pl.vtx_buffer_count);
 
-    var extents: [MAX_VERTEX_BUFFERS]dk.DkBufExtents = undefined;
+    var extents: [max_vertex_buffers]dk.DkBufExtents = undefined;
     for (extents[0..pl.vtx_buffer_count]) |*extent| {
         extent.* = .{ .addr = buffer.gpu_addr, .size = buffer.size };
     }
@@ -499,7 +499,7 @@ pub fn destroy_texture(handle: Texture.Handle) void {
     tex.alive = false;
     retired_texture_slots.append(render_alloc, .{
         .handle = handle,
-        .retire_after_completed_frames = gc.completed_frames + Swapchain.MAX_FRAMES,
+        .retire_after_completed_frames = gc.completed_frames + Swapchain.max_frames,
     }) catch {
         context.wait_idle("texture slot retirement fallback");
         _ = texture_slots.remove(handle);
@@ -549,7 +549,7 @@ fn collect_retired_texture_slots() void {
 }
 
 fn create_code_memory() !void {
-    code_mem = try context.create_mem_block(CODE_MEM_SIZE, dk.MemCpuUncached | dk.MemGpuCached | dk.MemCode);
+    code_mem = try context.create_mem_block(code_mem_size, dk.MemCpuUncached | dk.MemGpuCached | dk.MemCode);
     code_offset = 0;
 }
 
@@ -562,7 +562,7 @@ fn destroy_code_memory() void {
 }
 
 fn create_uniform_memory() !void {
-    uniform_mem = try context.create_mem_block(UNIFORM_FRAME_SIZE * Swapchain.MAX_FRAMES, dk.MemCpuUncached | dk.MemGpuCached);
+    uniform_mem = try context.create_mem_block(uniform_frame_size * Swapchain.max_frames, dk.MemCpuUncached | dk.MemGpuCached);
     uniform_gpu_addr = dk.dkMemBlockGetGpuAddr(uniform_mem);
 }
 
@@ -575,7 +575,7 @@ fn destroy_uniform_memory() void {
 }
 
 fn create_upload_command_buffer() !void {
-    upload_command_mem = try context.create_mem_block(UPLOAD_CMD_MEM_SIZE, dk.MemCpuUncached | dk.MemGpuCached);
+    upload_command_mem = try context.create_mem_block(upload_cmd_mem_size, dk.MemCpuUncached | dk.MemGpuCached);
     errdefer {
         dk.dkMemBlockDestroy(upload_command_mem);
         upload_command_mem = null;
@@ -602,7 +602,7 @@ fn destroy_upload_command_buffer() void {
 }
 
 fn create_descriptor_memory() !void {
-    const image_bytes = IMAGE_DESCRIPTOR_FRAME_SIZE * Swapchain.MAX_FRAMES;
+    const image_bytes = image_descriptor_frame_size * Swapchain.max_frames;
     const sampler_offset = dk.alignForward(image_bytes, dk.ImageDescriptorAlignment);
     const total_size = sampler_offset + dk.SamplerDescriptorSize;
     descriptor_mem = try context.create_mem_block(total_size, dk.MemCpuUncached | dk.MemGpuCached);
@@ -641,10 +641,10 @@ fn publish_image_descriptors_for_frame(frame_index: usize) void {
     const dst = descriptor_cpu_addr orelse return;
     const byte_count = image_descriptor_count * dk.ImageDescriptorSize;
     const offset: u32 = @intCast(
-        @as(dk.DkGpuAddr, @intCast(frame_index)) * IMAGE_DESCRIPTOR_FRAME_SIZE +
-            @as(dk.DkGpuAddr, image_descriptor_table_indices[frame_index]) * IMAGE_DESCRIPTOR_TABLE_SIZE,
+        @as(dk.DkGpuAddr, @intCast(frame_index)) * image_descriptor_frame_size +
+            @as(dk.DkGpuAddr, image_descriptor_table_indices[frame_index]) * image_descriptor_table_size,
     );
-    var published: [MAX_TEXTURES]dk.DkImageDescriptor = undefined;
+    var published: [max_textures]dk.DkImageDescriptor = undefined;
     const count: usize = @intCast(image_descriptor_count);
     for (published[0..count], 0..) |*descriptor, index| {
         if (is_texture_index_live(@intCast(index))) {
@@ -689,15 +689,15 @@ fn resolve_texture_index(index: u32) u32 {
 fn bind_current_image_descriptor_set() void {
     const frame_index = swapchain.frame_index;
     const addr = image_descriptor_base_gpu_addr +
-        @as(dk.DkGpuAddr, @intCast(frame_index)) * IMAGE_DESCRIPTOR_FRAME_SIZE +
-        @as(dk.DkGpuAddr, image_descriptor_table_indices[frame_index]) * IMAGE_DESCRIPTOR_TABLE_SIZE;
+        @as(dk.DkGpuAddr, @intCast(frame_index)) * image_descriptor_frame_size +
+        @as(dk.DkGpuAddr, image_descriptor_table_indices[frame_index]) * image_descriptor_table_size;
     dk.dkCmdBufBindImageDescriptorSet(swapchain.command_buffer, addr, image_descriptor_count);
 }
 
 fn ensure_image_descriptors_current() void {
     if (!image_descriptors_dirty or !swapchain.recording) return;
     const frame_index = swapchain.frame_index;
-    if (image_descriptor_table_indices[frame_index] + 1 < IMAGE_DESCRIPTOR_TABLES_PER_FRAME) {
+    if (image_descriptor_table_indices[frame_index] + 1 < image_descriptor_tables_per_frame) {
         image_descriptor_table_indices[frame_index] += 1;
     } else {
         Util.engine_logger.warn("Switch image descriptor table ring exhausted; reusing latest descriptor table", .{});
@@ -802,7 +802,7 @@ fn destroy_texture_data(tex: *TextureData, deferred: bool) void {
 
 fn begin_upload_commands() void {
     dk.dkCmdBufClear(upload_command_buffer);
-    dk.dkCmdBufAddMemory(upload_command_buffer, upload_command_mem, 0, UPLOAD_CMD_MEM_SIZE);
+    dk.dkCmdBufAddMemory(upload_command_buffer, upload_command_mem, 0, upload_cmd_mem_size);
 }
 
 fn submit_upload_commands(comptime where: []const u8) void {
@@ -877,7 +877,7 @@ fn upload_mesh_part(upload: *MeshUpload, frame_index: usize) !bool {
     _ = dk.dkMemBlockFlushCpuCache(target.mem_block, 0, needed);
     target.size = needed;
     if (upload.pending) |pending| {
-        if (pending.len > RETAIN_PENDING_UPLOAD_LIMIT) {
+        if (pending.len > retain_pending_upload_limit) {
             render_alloc.free(pending);
             upload.pending = null;
             upload.pending_size = 0;
@@ -962,7 +962,7 @@ fn recompute_image_descriptor_count() void {
 }
 
 fn bind_draw_uniform(texture_id: u32) bool {
-    if (next_uniform_slot >= UNIFORM_SLOTS) return false;
+    if (next_uniform_slot >= uniform_slots) return false;
 
     var uniform = DrawUniform{
         .model = draw_state.mat.data,
@@ -978,10 +978,10 @@ fn bind_draw_uniform(texture_id: u32) bool {
     };
 
     const addr = uniform_gpu_addr +
-        @as(dk.DkGpuAddr, @intCast(swapchain.frame_index)) * UNIFORM_FRAME_SIZE +
-        @as(dk.DkGpuAddr, next_uniform_slot) * UNIFORM_STRIDE;
-    dk.dkCmdBufPushConstants(swapchain.command_buffer, addr, UNIFORM_STRIDE, 0, @sizeOf(DrawUniform), &uniform);
-    const uniform_buffers = [_]dk.DkBufExtents{.{ .addr = addr, .size = UNIFORM_STRIDE }};
+        @as(dk.DkGpuAddr, @intCast(swapchain.frame_index)) * uniform_frame_size +
+        @as(dk.DkGpuAddr, next_uniform_slot) * uniform_stride;
+    dk.dkCmdBufPushConstants(swapchain.command_buffer, addr, uniform_stride, 0, @sizeOf(DrawUniform), &uniform);
+    const uniform_buffers = [_]dk.DkBufExtents{.{ .addr = addr, .size = uniform_stride }};
     dk.dkCmdBufBindUniformBuffers(swapchain.command_buffer, dk.StageVertex, 0, uniform_buffers[0..].ptr, uniform_buffers.len);
     dk.dkCmdBufBindUniformBuffers(swapchain.command_buffer, dk.StageFragment, 0, uniform_buffers[0..].ptr, uniform_buffers.len);
     next_uniform_slot += 1;
@@ -993,7 +993,7 @@ fn load_shader(shader: *dk.DkShader, code: []const u8) !void {
 
     const offset = dk.alignForward(code_offset, dk.ShaderCodeAlignment);
     const end = offset + dk.alignForward(@intCast(code.len), dk.ShaderCodeAlignment);
-    if (end > CODE_MEM_SIZE) return error.OutOfShaderMemory;
+    if (end > code_mem_size) return error.OutOfShaderMemory;
 
     const base: [*]u8 = @ptrCast(dk.dkMemBlockGetCpuAddr(code_mem) orelse return error.GfxInitFailed);
     @memcpy(base[offset..][0..code.len], code);
@@ -1014,7 +1014,7 @@ fn init_layout(data: *PipelineData, layout: vertex.VertexLayout) !void {
     var max_binding: u32 = 0;
 
     for (layout.attributes) |attr| {
-        if (attr.location >= MAX_VERTEX_ATTRIBS or attr.binding >= MAX_VERTEX_BUFFERS) {
+        if (attr.location >= max_vertex_attribs or attr.binding >= max_vertex_buffers) {
             return error.UnsupportedVertexLayout;
         }
 

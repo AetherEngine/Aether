@@ -9,15 +9,15 @@ const audio_api = @import("../audio_api.zig");
 const SlotSource = @import("../../audio/stream.zig").SlotSource;
 const PcmFormat = @import("../../audio/stream.zig").PcmFormat;
 
-const SDL_AUDIO_FLAGS = sdl3.InitFlags{ .audio = true };
-const DEVICE_SAMPLE_RATE: usize = 44_100;
-const DEVICE_CHANNELS: usize = 2;
-const NUM_SLOTS: usize = 32;
-const OUTPUT_FRAME_BYTES: usize = DEVICE_CHANNELS * @sizeOf(f32);
+const sdl_audio_flags = sdl3.InitFlags{ .audio = true };
+const device_sample_rate: usize = 44_100;
+const device_channels: usize = 2;
+const num_slots: usize = 32;
+const output_frame_bytes: usize = device_channels * @sizeOf(f32);
 /// Maximum frames mixed per callback chunk.
-const MAX_PERIOD_FRAMES: usize = 1024;
-/// Per-slot scratch buffer: room for MAX_PERIOD_FRAMES of stereo 32-bit PCM.
-const READ_BUF_SIZE: usize = MAX_PERIOD_FRAMES * 2 * 4;
+const max_period_frames: usize = 1024;
+/// Per-slot scratch buffer: room for max_period_frames of stereo 32-bit PCM.
+const read_buf_size: usize = max_period_frames * 2 * 4;
 
 // -- slot state (shared between game thread and audio thread) -----------------
 
@@ -36,13 +36,13 @@ const Slot = struct {
     gain: std.atomic.Value(u32) = std.atomic.Value(u32).init(@bitCast(@as(f32, 0))),
     pan: std.atomic.Value(u32) = std.atomic.Value(u32).init(@bitCast(@as(f32, 0))),
     source: SlotSource = undefined,
-    read_buf: [READ_BUF_SIZE]u8 = undefined,
+    read_buf: [read_buf_size]u8 = undefined,
 };
 
-var slots: [NUM_SLOTS]Slot = init_slots();
+var slots: [num_slots]Slot = init_slots();
 
-fn init_slots() [NUM_SLOTS]Slot {
-    var s: [NUM_SLOTS]Slot = undefined;
+fn init_slots() [num_slots]Slot {
+    var s: [num_slots]Slot = undefined;
     for (&s) |*slot| {
         slot.* = .{};
     }
@@ -53,22 +53,22 @@ fn init_slots() [NUM_SLOTS]Slot {
 
 var device_stream: ?sdl3.audio.Stream = null;
 var sdl_audio_initialized = false;
-var output_buf: [MAX_PERIOD_FRAMES * DEVICE_CHANNELS]f32 = undefined;
+var output_buf: [max_period_frames * device_channels]f32 = undefined;
 
 pub fn setup(_: std.mem.Allocator, _: std.Io) void {}
 
 pub fn init() audio_api.InitError!void {
-    sdl3.init(SDL_AUDIO_FLAGS) catch return error.AudioInitFailed;
+    sdl3.init(sdl_audio_flags) catch return error.AudioInitFailed;
     sdl_audio_initialized = true;
     errdefer {
-        sdl3.quit(SDL_AUDIO_FLAGS);
+        sdl3.quit(sdl_audio_flags);
         sdl_audio_initialized = false;
     }
 
     const spec = sdl3.audio.Spec{
         .format = .floating_32_bit,
-        .num_channels = DEVICE_CHANNELS,
-        .sample_rate = DEVICE_SAMPLE_RATE,
+        .num_channels = device_channels,
+        .sample_rate = device_sample_rate,
     };
 
     const stream = sdl3.audio.Device.default_playback.openStream(spec, anyopaque, data_callback, null) catch return error.AudioInitFailed;
@@ -88,7 +88,7 @@ pub fn deinit() void {
         device_stream = null;
     }
     if (sdl_audio_initialized) {
-        sdl3.quit(SDL_AUDIO_FLAGS);
+        sdl3.quit(sdl_audio_flags);
         sdl_audio_initialized = false;
     }
 }
@@ -96,29 +96,29 @@ pub fn deinit() void {
 pub fn update() void {}
 
 pub fn max_voices() u32 {
-    return NUM_SLOTS;
+    return num_slots;
 }
 
 pub fn play_slot(slot: u8, source: SlotSource) audio_api.PlaySlotError!void {
-    if (slot >= NUM_SLOTS) return error.InvalidArgs;
+    if (slot >= num_slots) return error.InvalidArgs;
     slots[slot].source = source;
     // Release ensures the stream write is visible to the audio thread.
     slots[slot].state.store(@intFromEnum(SlotState.pending), .release);
 }
 
 pub fn stop_slot(slot: u8) void {
-    if (slot >= NUM_SLOTS) return;
+    if (slot >= num_slots) return;
     slots[slot].state.store(@intFromEnum(SlotState.inactive), .release);
 }
 
 pub fn set_slot_gain_pan(slot: u8, gain: f32, pan: f32) void {
-    if (slot >= NUM_SLOTS) return;
+    if (slot >= num_slots) return;
     slots[slot].gain.store(@bitCast(gain), .release);
     slots[slot].pan.store(@bitCast(pan), .release);
 }
 
 pub fn is_slot_active(slot: u8) bool {
-    if (slot >= NUM_SLOTS) return false;
+    if (slot >= num_slots) return false;
     const state: SlotState = @enumFromInt(slots[slot].state.load(.acquire));
     return state != .inactive and state != .finished;
 }
@@ -134,10 +134,10 @@ fn data_callback(
     var bytes_remaining = additional_amount;
     while (bytes_remaining > 0) {
         const frames = @min(
-            MAX_PERIOD_FRAMES,
-            (bytes_remaining + OUTPUT_FRAME_BYTES - 1) / OUTPUT_FRAME_BYTES,
+            max_period_frames,
+            (bytes_remaining + output_frame_bytes - 1) / output_frame_bytes,
         );
-        const out = output_buf[0 .. frames * DEVICE_CHANNELS];
+        const out = output_buf[0 .. frames * device_channels];
         fill_output(out, frames);
 
         const bytes = std.mem.sliceAsBytes(out);
@@ -171,7 +171,7 @@ fn fill_output(out: []f32, frame_count: usize) void {
         const fmt = source_format(slot.source);
         const bytes_needed: usize = frame_count * @as(usize, fmt.frame_size());
 
-        if (bytes_needed > READ_BUF_SIZE) {
+        if (bytes_needed > read_buf_size) {
             slot.state.store(@intFromEnum(SlotState.finished), .release);
             continue;
         }

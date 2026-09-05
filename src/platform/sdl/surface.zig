@@ -7,7 +7,7 @@ const sdl3 = @import("sdl3");
 const Surface = @This();
 const api = @import("options").config.gfx;
 
-const SDL_VIDEO_FLAGS = sdl3.InitFlags{ .video = true, .gamepad = true };
+const sdl_video_flags = sdl3.InitFlags{ .video = true, .gamepad = true };
 
 alloc: std.mem.Allocator,
 window: sdl3.video.Window = undefined,
@@ -19,7 +19,7 @@ should_quit: bool = false,
 pub var on_resize: ?*const fn () void = null;
 
 pub fn init(self: *Surface, width: u32, height: u32, title: [:0]const u8, fullscreen: bool, sync: bool, resizable: bool) surface_api.InitError!void {
-    sdl3.init(SDL_VIDEO_FLAGS) catch return error.SurfaceInitFailed;
+    sdl3.init(sdl_video_flags) catch return error.SurfaceInitFailed;
 
     const version = sdl3.c.SDL_GetVersion();
     Util.engine_logger.debug("SDL {d}.{d}.{d}", .{
@@ -88,7 +88,7 @@ pub fn deinit(self: *Surface) void {
     }
     self.window.deinit();
     if (api == .vulkan) sdl3.vulkan.unloadLibrary();
-    sdl3.quit(SDL_VIDEO_FLAGS);
+    sdl3.quit(sdl_video_flags);
 }
 
 pub fn update(self: *Surface) bool {

@@ -130,14 +130,14 @@ pub const CategoryTracker = struct {
     }
 };
 
-const TRACKER_COUNT = @typeInfo(Pool).@"enum".fields.len;
+const tracker_count = @typeInfo(Pool).@"enum".fields.len;
 
 // -- engine -------------------------------------------------------------------
 
 pub const Engine = struct {
     io: std.Io,
     pool: memory.PoolAlloc,
-    trackers: [TRACKER_COUNT]CategoryTracker,
+    trackers: [tracker_count]CategoryTracker,
     frame_scratch: std.heap.ArenaAllocator,
     running: bool,
     vsync: bool,
@@ -367,7 +367,7 @@ pub const Engine = struct {
     }
 
     pub fn memory_diagnostics(self: *const Engine) MemoryDiagnostics {
-        var pools: [memory.POOL_COUNT]memory.PoolDiagnostics = undefined;
+        var pools: [memory.pool_count]memory.PoolDiagnostics = undefined;
         inline for (std.meta.fields(Pool), 0..) |f, i| {
             const tracker = self.trackers[i];
             pools[i] = .{
@@ -453,39 +453,39 @@ pub const Engine = struct {
         Util.engine_logger.info("--------------------", .{});
     }
 
-    pub fn beginRun(self: *Engine) void {
+    pub fn begin_run(self: *Engine) void {
         self.reset_frame_scratch();
         self.run_loop.reset(self.io);
     }
 
-    pub fn stepFrame(self: *Engine) !bool {
-        if (!self.run_loop.initialized) self.beginRun();
-        try self.stepFrameInternal(false);
+    pub fn step_frame(self: *Engine) !bool {
+        if (!self.run_loop.initialized) self.begin_run();
+        try self.step_frame_internal(false);
         return self.running;
     }
 
     pub fn run(self: *Engine) !void {
-        self.beginRun();
+        self.begin_run();
         while (self.running) {
-            try self.stepFrameInternal(true);
+            try self.step_frame_internal(true);
         }
     }
 
-    fn stepFrameInternal(self: *Engine, allow_sleep: bool) !void {
+    fn step_frame_internal(self: *Engine, allow_sleep: bool) !void {
         defer self.reset_frame_scratch();
 
-        const US_PER_S: u64 = std.time.us_per_s;
-        const NS_PER_US: i64 = 1000;
+        const us_per_s: u64 = std.time.us_per_s;
+        const ns_per_us: i64 = 1000;
 
         // Fixed-step rates -- handheld backends target 60 Hz displays.
-        const UPDATES_HZ: u32 = if (options.config.platform == .psp) 60 else 144;
-        const TICKS_HZ: u32 = 20;
-        const UPDATE_US: u64 = US_PER_S / UPDATES_HZ;
-        const TICK_US: u64 = US_PER_S / TICKS_HZ;
-        const update_budget_ns: i64 = @as(i64, @intCast(UPDATE_US)) * NS_PER_US;
+        const updates_hz: u32 = if (options.config.platform == .psp) 60 else 144;
+        const ticks_hz: u32 = 20;
+        const update_us: u64 = us_per_s / updates_hz;
+        const tick_interval_us: u64 = us_per_s / ticks_hz;
+        const update_budget_ns: i64 = @as(i64, @intCast(update_us)) * ns_per_us;
 
         var clock = std.Io.Clock.boot;
-        const fps_window_us: i64 = @intCast(US_PER_S);
+        const fps_window_us: i64 = @intCast(us_per_s);
 
         const report_fps = options.config.gfx != .headless;
 
@@ -494,20 +494,20 @@ pub const Engine = struct {
         if (trace_loop) {
             Util.engine_logger.info("trace: engine loop {d} begin update_us={d} tick_us={d}", .{
                 trace_loop_index,
-                UPDATE_US,
-                TICK_US,
+                update_us,
+                tick_interval_us,
             });
         }
 
-        var now_us = elapsedUsSince(self.run_loop.run_start_ns, clock.now(self.io).toNanoseconds());
-        var frame_dt_us = saturatingSubI64(now_us, self.run_loop.last_us);
+        var now_us = elapsed_us_since(self.run_loop.run_start_ns, clock.now(self.io).toNanoseconds());
+        var frame_dt_us = saturating_sub_i64(now_us, self.run_loop.last_us);
 
         if (frame_dt_us <= 0) {
             if (allow_sleep) {
                 try std.Io.sleep(self.io, .fromNanoseconds(std.time.ns_per_ms), clock);
             }
-            now_us = elapsedUsSince(self.run_loop.run_start_ns, clock.now(self.io).toNanoseconds());
-            frame_dt_us = @max(0, saturatingSubI64(now_us, self.run_loop.last_us));
+            now_us = elapsed_us_since(self.run_loop.run_start_ns, clock.now(self.io).toNanoseconds());
+            frame_dt_us = @max(0, saturating_sub_i64(now_us, self.run_loop.last_us));
             if (frame_dt_us <= 0) {
                 frame_dt_us = 1000;
             }
@@ -516,8 +516,8 @@ pub const Engine = struct {
         if (frame_dt_us > 500_000) frame_dt_us = 500_000;
         self.run_loop.last_us = now_us;
 
-        self.run_loop.update_accum = saturatingAddI64(self.run_loop.update_accum, frame_dt_us);
-        self.run_loop.tick_accum = saturatingAddI64(self.run_loop.tick_accum, frame_dt_us);
+        self.run_loop.update_accum = saturating_add_i64(self.run_loop.update_accum, frame_dt_us);
+        self.run_loop.tick_accum = saturating_add_i64(self.run_loop.tick_accum, frame_dt_us);
         if (trace_loop) {
             Util.engine_logger.info("trace: engine loop {d} time now_us={d} frame_dt_us={d} last_us={d} update_accum={d} tick_accum={d}", .{
                 trace_loop_index,
@@ -533,7 +533,7 @@ pub const Engine = struct {
         const platform_start_ns = clock.now(self.io).toNanoseconds();
         Platform.update(self);
         const platform_done_ns = clock.now(self.io).toNanoseconds();
-        var pre_update_elapsed_ns = elapsedNsBetween(platform_start_ns, platform_done_ns);
+        var pre_update_elapsed_ns = elapsed_ns_between(platform_start_ns, platform_done_ns);
         if (trace_loop) {
             Util.engine_logger.info("trace: engine loop {d} platform end running={}", .{ trace_loop_index, self.running });
         }
@@ -549,7 +549,7 @@ pub const Engine = struct {
         // ---- fixed-rate TICK steps (e.g., 20 Hz logic) ----
         var is_tick_frame = false;
         var tick_cost_ns: i64 = 0;
-        const tick_us: i64 = @intCast(TICK_US);
+        const tick_us: i64 = @intCast(tick_interval_us);
         var tick_steps: u32 = 0;
         while (self.run_loop.tick_accum >= tick_us) {
             @branchHint(.unpredictable);
@@ -566,7 +566,7 @@ pub const Engine = struct {
             try self.states.commit_pending(self);
             if (!self.running) return;
             const tick_end_ns = clock.now(self.io).toNanoseconds();
-            tick_cost_ns = saturatingAddI64(tick_cost_ns, elapsedNsBetween(tick_start_ns, tick_end_ns));
+            tick_cost_ns = saturating_add_i64(tick_cost_ns, elapsed_ns_between(tick_start_ns, tick_end_ns));
             self.run_loop.tick_accum -= tick_us;
             tick_steps += 1;
             if (trace_loop) {
@@ -579,9 +579,9 @@ pub const Engine = struct {
         }
 
         // ---- fixed-rate UPDATE steps (simulation & interpolation) ----
-        const UPDATE_DT_S: f32 = @as(f32, @floatFromInt(UPDATE_US)) / @as(f32, US_PER_S);
+        const update_dt_s: f32 = @as(f32, @floatFromInt(update_us)) / @as(f32, us_per_s);
         var update_steps: u32 = 0;
-        while (self.run_loop.update_accum >= UPDATE_US) {
+        while (self.run_loop.update_accum >= update_us) {
             @branchHint(.unpredictable);
 
             if (trace_loop) {
@@ -594,7 +594,7 @@ pub const Engine = struct {
             Platform.input.update(&self.input);
             self.input.update();
             const input_done_ns = clock.now(self.io).toNanoseconds();
-            const engine_elapsed_ns = saturatingAddI64(pre_update_elapsed_ns, elapsedNsBetween(input_start_ns, input_done_ns));
+            const engine_elapsed_ns = saturating_add_i64(pre_update_elapsed_ns, elapsed_ns_between(input_start_ns, input_done_ns));
             if (trace_loop) {
                 Util.engine_logger.info("trace: engine loop {d} input end running={}", .{ trace_loop_index, self.running });
             }
@@ -606,21 +606,21 @@ pub const Engine = struct {
                 .remaining_ns = update_budget_ns - engine_elapsed_ns,
                 .is_tick_frame = is_tick_frame,
                 .tick_cost_ns = tick_cost_ns,
-                .safety_margin_ns = Util.BudgetContext.DEFAULT_SAFETY_MARGIN_NS,
+                .safety_margin_ns = Util.BudgetContext.default_safety_margin_ns,
             };
 
             if (trace_loop) {
                 Util.engine_logger.info("trace: engine loop {d} update {d} begin dt_bits=0x{x}", .{
                     trace_loop_index,
                     update_steps + 1,
-                    @as(u32, @bitCast(UPDATE_DT_S)),
+                    @as(u32, @bitCast(update_dt_s)),
                 });
             }
-            try self.states.update(self, UPDATE_DT_S, &budget);
+            try self.states.update(self, update_dt_s, &budget);
             try self.states.commit_pending(self);
             if (!self.running) return;
             pre_update_elapsed_ns = 0;
-            self.run_loop.update_accum -= UPDATE_US;
+            self.run_loop.update_accum -= update_us;
             update_steps += 1;
             if (trace_loop) {
                 Util.engine_logger.info("trace: engine loop {d} update {d} end accum={d}", .{
@@ -632,11 +632,11 @@ pub const Engine = struct {
         }
 
         // ---- render ASAP (uncapped when vsync == false) ----
-        const frame_dt_s: f32 = @as(f32, @floatFromInt(frame_dt_us)) / @as(f32, US_PER_S);
+        const frame_dt_s: f32 = @as(f32, @floatFromInt(frame_dt_us)) / @as(f32, us_per_s);
         // Time until next update step is due.
-        const slack_us: i64 = @as(i64, @intCast(UPDATE_US)) - @max(0, self.run_loop.update_accum);
+        const slack_us: i64 = @as(i64, @intCast(update_us)) - @max(0, self.run_loop.update_accum);
         const draw_budget_ns: i64 = if (self.vsync)
-            slack_us * NS_PER_US
+            slack_us * ns_per_us
         else
             std.math.maxInt(i64);
 
@@ -646,7 +646,7 @@ pub const Engine = struct {
             .remaining_ns = draw_budget_ns,
             .is_tick_frame = is_tick_frame,
             .tick_cost_ns = tick_cost_ns,
-            .safety_margin_ns = Util.BudgetContext.DEFAULT_SAFETY_MARGIN_NS,
+            .safety_margin_ns = Util.BudgetContext.default_safety_margin_ns,
         };
 
         if (trace_loop) {
@@ -703,11 +703,11 @@ pub const Engine = struct {
             Platform.gfx.frame_active = false;
             if (allow_sleep) {
                 if (options.config.gfx == .headless) {
-                    const next_update = @as(i64, @intCast(UPDATE_US)) - self.run_loop.update_accum;
-                    const next_tick = @as(i64, @intCast(TICK_US)) - self.run_loop.tick_accum;
+                    const next_update = @as(i64, @intCast(update_us)) - self.run_loop.update_accum;
+                    const next_tick = @as(i64, @intCast(tick_interval_us)) - self.run_loop.tick_accum;
                     const sleep_us = @max(0, @min(next_update, next_tick));
                     if (sleep_us > 0) {
-                        const sleep_ns = sleep_us * NS_PER_US;
+                        const sleep_ns = sleep_us * ns_per_us;
                         try std.Io.sleep(self.io, .fromNanoseconds(@intCast(sleep_ns)), clock);
                     }
                 } else if (options.config.platform != .psp) {
@@ -728,11 +728,11 @@ pub const Engine = struct {
         // ---- FPS counting ----
         if (report_fps) {
             if (drew_frame) self.run_loop.fps_count += 1;
-            const end_us = elapsedUsSince(self.run_loop.run_start_ns, clock.now(self.io).toNanoseconds());
+            const end_us = elapsed_us_since(self.run_loop.run_start_ns, clock.now(self.io).toNanoseconds());
             if (end_us >= self.run_loop.fps_window_end) {
                 Util.engine_logger.info("FPS: {}", .{self.run_loop.fps_count});
                 self.run_loop.fps_count = 0;
-                self.run_loop.fps_window_end = saturatingAddI64(end_us, fps_window_us);
+                self.run_loop.fps_window_end = saturating_add_i64(end_us, fps_window_us);
             }
         }
     }
@@ -812,23 +812,23 @@ test "zero frame budget disables frame scratch allocations" {
     try std.testing.expectEqual(@as(usize, 0), engine.pool_used(.frame));
 }
 
-fn elapsedNsBetween(start_ns: i96, end_ns: i96) i64 {
-    return clampI96ToI64(end_ns - start_ns);
+fn elapsed_ns_between(start_ns: i96, end_ns: i96) i64 {
+    return clamp_i96_to_i64(end_ns - start_ns);
 }
 
-fn elapsedUsSince(start_ns: i96, end_ns: i96) i64 {
-    return @divTrunc(elapsedNsBetween(start_ns, end_ns), std.time.ns_per_us);
+fn elapsed_us_since(start_ns: i96, end_ns: i96) i64 {
+    return @divTrunc(elapsed_ns_between(start_ns, end_ns), std.time.ns_per_us);
 }
 
-fn saturatingAddI64(a: i64, b: i64) i64 {
-    return clampI96ToI64(@as(i96, a) + @as(i96, b));
+fn saturating_add_i64(a: i64, b: i64) i64 {
+    return clamp_i96_to_i64(@as(i96, a) + @as(i96, b));
 }
 
-fn saturatingSubI64(a: i64, b: i64) i64 {
-    return clampI96ToI64(@as(i96, a) - @as(i96, b));
+fn saturating_sub_i64(a: i64, b: i64) i64 {
+    return clamp_i96_to_i64(@as(i96, a) - @as(i96, b));
 }
 
-fn clampI96ToI64(value: i96) i64 {
+fn clamp_i96_to_i64(value: i96) i64 {
     const max: i96 = std.math.maxInt(i64);
     const min: i96 = std.math.minInt(i64);
     if (value > max) return std.math.maxInt(i64);

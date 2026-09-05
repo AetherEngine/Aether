@@ -22,20 +22,20 @@ pub const mesh_source_mode = Mesh.SourceMode.borrowed_cpu;
 const mango = zitrus.mango;
 const pica = zitrus.hardware.pica;
 
-const MAX_TEXTURES = 256;
+const max_textures = 256;
 // The framebuffer is 480x400 and is later downsampled to 240x400.
 // We're performing SSAA, which works on all consoles of the 3DS family
-const FRAMEBUFFER_TOP_WIDTH = 480;
-const FRAMEBUFFER_TOP_HEIGHT = 400;
-const FRAMEBUFFER_BOTTOM_WIDTH = 240;
-const FRAMEBUFFER_BOTTOM_HEIGHT = 320;
-const COMMAND_BUFFER_COUNT = 2;
-const FRAME_SYNC_TIMEOUT_NS = 2 * std.time.ns_per_s;
-const TEX_BPP = 4;
-const ALPHA_TEST_REFERENCE: u8 = 25;
-const POS_SCALE: [4]f32 = .{ snorm16_scale(), snorm16_scale(), snorm16_scale(), 1.0 };
-const UV_SCALE: [4]f32 = .{ snorm16_scale(), snorm16_scale(), 0.0, 0.0 };
-const COLOR_SCALE: [4]f32 = .{ unorm8_scale(), unorm8_scale(), unorm8_scale(), unorm8_scale() };
+const framebuffer_top_width = 480;
+const framebuffer_top_height = 400;
+const framebuffer_bottom_width = 240;
+const framebuffer_bottom_height = 320;
+const command_buffer_count = 2;
+const frame_sync_timeout_ns = 2 * std.time.ns_per_s;
+const tex_bpp = 4;
+const alpha_test_reference: u8 = 25;
+const pos_scale: [4]f32 = .{ snorm16_scale(), snorm16_scale(), snorm16_scale(), 1.0 };
+const uv_scale: [4]f32 = .{ snorm16_scale(), snorm16_scale(), 0.0, 0.0 };
+const color_scale: [4]f32 = .{ unorm8_scale(), unorm8_scale(), unorm8_scale(), unorm8_scale() };
 
 const MeshData = struct {
     vertex: MeshBufferData = .{},
@@ -120,10 +120,10 @@ var render_alloc: std.mem.Allocator = undefined;
 var render_io: std.Io = undefined;
 
 var meshes = Util.ResourceTableType(MeshData, 8192, Mesh.Handle).init();
-var texture_slots = Util.ResourceTableType(TextureData, MAX_TEXTURES, Texture.Handle).init();
-var retired_textures = Util.CircularBufferType(TextureData, MAX_TEXTURES * 2).init();
+var texture_slots = Util.ResourceTableType(TextureData, max_textures, Texture.Handle).init();
+var retired_textures = Util.CircularBufferType(TextureData, max_textures * 2).init();
 var retired_texture_overflow: std.ArrayList(TextureData) = .empty;
-var pending_texture_uploads = Util.CircularBufferType(PendingTextureUpload, MAX_TEXTURES * 2).init();
+var pending_texture_uploads = Util.CircularBufferType(PendingTextureUpload, max_textures * 2).init();
 
 pub var draw_state = DrawState{
     .mat = Mat4.identity(),
@@ -145,7 +145,7 @@ var depth_write_enabled = true;
 var culling_enabled = true;
 var current_texture: Texture.Handle = .none;
 var command_pool: mango.CommandPool = .null;
-var command_buffers: [COMMAND_BUFFER_COUNT]mango.CommandBuffer = @splat(.null);
+var command_buffers: [command_buffer_count]mango.CommandBuffer = @splat(.null);
 var top_frame_semaphore: mango.Semaphore = .null;
 var bottom_frame_semaphore: mango.Semaphore = .null;
 var texture_upload_semaphore: mango.Semaphore = .null;
@@ -173,7 +173,7 @@ pub fn setup(alloc: std.mem.Allocator, io: std.Io) void {
 pub fn init() gfx_api.InitError!void {
     _ = render_io;
     command_pool = gfx.surface.device.createCommandPool(.{
-        .initial_command_buffers = COMMAND_BUFFER_COUNT,
+        .initial_command_buffers = command_buffer_count,
     }) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return error.GfxInitFailed,
@@ -182,7 +182,7 @@ pub fn init() gfx_api.InitError!void {
 
     gfx.surface.device.allocateCommandBuffers(.{
         .pool = command_pool,
-        .command_buffer_count = COMMAND_BUFFER_COUNT,
+        .command_buffer_count = command_buffer_count,
     }, &command_buffers) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return error.GfxInitFailed,
@@ -693,7 +693,7 @@ fn wait_for_frame_sync() !void {
 fn wait_for_screen_sync(screen: gfx.Surface.Screen, wait_value: u64) !void {
     if (wait_value == 0) return;
     const semaphore = screen_semaphore(screen);
-    try gfx.surface.device.waitSemaphores(.init(&.{semaphore}, &.{wait_value}), FRAME_SYNC_TIMEOUT_NS);
+    try gfx.surface.device.waitSemaphores(.init(&.{semaphore}, &.{wait_value}), frame_sync_timeout_ns);
 }
 
 fn screen_semaphore(screen: gfx.Surface.Screen) mango.Semaphore {
@@ -931,7 +931,7 @@ fn bind_primary_color_state(state: *ScreenState, cmd: mango.CommandBuffer) void 
 fn apply_alpha_test_state(cmd: mango.CommandBuffer) void {
     cmd.setAlphaTestEnable(draw_state.alpha_blend_enabled != 0);
     cmd.setAlphaTestCompareOp(.gt);
-    cmd.setAlphaTestReference(ALPHA_TEST_REFERENCE);
+    cmd.setAlphaTestReference(alpha_test_reference);
 }
 
 fn normal_blend_equation() mango.ColorBlendEquation {
@@ -995,9 +995,9 @@ fn upload_modelview_uniforms(cmd: mango.CommandBuffer, model: *const Mat4, view:
 
 fn upload_static_uniforms(cmd: mango.CommandBuffer) void {
     var uniforms = [_][4]f32{
-        POS_SCALE,
+        pos_scale,
         uv_uniform_row(),
-        COLOR_SCALE,
+        color_scale,
     };
     cmd.bindFloatUniforms(.vertex, 8, &uniforms);
 }
@@ -1008,7 +1008,7 @@ fn upload_uv_uniform(cmd: mango.CommandBuffer) void {
 }
 
 fn uv_uniform_row() [4]f32 {
-    return .{ UV_SCALE[0], UV_SCALE[1], draw_state.uv_offset[0], draw_state.uv_offset[1] };
+    return .{ uv_scale[0], uv_scale[1], draw_state.uv_offset[0], draw_state.uv_offset[1] };
 }
 
 fn mat4_to_uniform_rows(mat: Mat4) [4][4]f32 {
@@ -1033,8 +1033,8 @@ fn get_projection_transform() Mat4 {
 
 fn screen_dimensions(screen: gfx.Surface.Screen) mango.Extent2D {
     return switch (screen) {
-        .top => .{ .width = FRAMEBUFFER_TOP_WIDTH, .height = FRAMEBUFFER_TOP_HEIGHT },
-        .bottom => .{ .width = FRAMEBUFFER_BOTTOM_WIDTH, .height = FRAMEBUFFER_BOTTOM_HEIGHT },
+        .top => .{ .width = framebuffer_top_width, .height = framebuffer_top_height },
+        .bottom => .{ .width = framebuffer_bottom_width, .height = framebuffer_bottom_height },
     };
 }
 
@@ -1411,7 +1411,7 @@ fn upload_texture_pixels(texture: *TextureData, data: []const u8) !void {
         .src_buffer = gpu_staging.slice(0, byte_count),
         .dst_buffer = texture.gpu_memory.slice(0, byte_count),
     });
-    try device.waitSemaphores(.init(&.{texture_upload_semaphore}, &.{texture_upload_next_sync_value}), FRAME_SYNC_TIMEOUT_NS);
+    try device.waitSemaphores(.init(&.{texture_upload_semaphore}, &.{texture_upload_next_sync_value}), frame_sync_timeout_ns);
 }
 
 fn destroy_texture_data(texture: *TextureData) void {
@@ -1436,7 +1436,7 @@ fn valid_texture_dimensions(width: u32, height: u32) bool {
 }
 
 fn texture_byte_count(width: u32, height: u32) u32 {
-    return @intCast(@as(usize, width) * @as(usize, height) * TEX_BPP);
+    return @intCast(@as(usize, width) * @as(usize, height) * tex_bpp);
 }
 
 fn convert_texture_data_tiled_abgr(dst: []u8, src: []const u8, width: u32, height: u32) void {

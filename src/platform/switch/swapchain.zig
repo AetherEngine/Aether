@@ -4,11 +4,11 @@ const dk = @import("deko.zig");
 const Context = @import("context.zig");
 const GarbageCollector = @import("garbage_collector.zig");
 
-pub const FB_COUNT = 2;
-pub const MAX_FRAMES = 3;
-const CMD_MEM_SIZE = 16 * 1024 * 1024;
-const STATIC_CMD_MEM_SIZE = 64 * 1024;
-const USE_PRESENT_IMAGE_COMPRESSION = false;
+pub const fb_count = 2;
+pub const max_frames = 3;
+const cmd_mem_size = 16 * 1024 * 1024;
+const static_cmd_mem_size = 64 * 1024;
+const use_present_image_compression = false;
 
 pub const PresentState = enum {
     optimal,
@@ -22,18 +22,18 @@ const Frame = struct {
 
 context: *Context,
 chain: dk.DkSwapchain = null,
-framebuffer_mems: [FB_COUNT]dk.DkMemBlock = @splat(null),
-framebuffers: [FB_COUNT]dk.DkImage = undefined,
-framebuffer_views: [FB_COUNT]dk.DkImageView = undefined,
+framebuffer_mems: [fb_count]dk.DkMemBlock = @splat(null),
+framebuffers: [fb_count]dk.DkImage = undefined,
+framebuffer_views: [fb_count]dk.DkImageView = undefined,
 depth_mem: dk.DkMemBlock = null,
 depth_image: dk.DkImage = undefined,
 depth_view: dk.DkImageView = undefined,
 static_command_mem: dk.DkMemBlock = null,
 static_command_buffer: dk.DkCmdBuf = null,
-framebuffer_cmdlists: [FB_COUNT]dk.DkCmdList = @splat(0),
+framebuffer_cmdlists: [fb_count]dk.DkCmdList = @splat(0),
 command_mem: dk.DkMemBlock = null,
 command_buffer: dk.DkCmdBuf = null,
-frames: [MAX_FRAMES]Frame = @splat(.{}),
+frames: [max_frames]Frame = @splat(.{}),
 frame_index: usize = 0,
 image_index: usize = 0,
 width: u32 = 0,
@@ -84,7 +84,7 @@ pub fn begin_frame(self: *SwapChain, gc: *GarbageCollector) bool {
 
     const slot = dk.dkQueueAcquireImage(self.context.queue, self.chain);
     self.context.assert_queue_ok("acquire image");
-    if (slot < 0 or slot >= FB_COUNT) return false;
+    if (slot < 0 or slot >= fb_count) return false;
     self.image_index = @intCast(slot);
     if (self.framebuffer_cmdlists[self.image_index] == 0) return false;
 
@@ -92,8 +92,8 @@ pub fn begin_frame(self: *SwapChain, gc: *GarbageCollector) bool {
     dk.dkCmdBufAddMemory(
         self.command_buffer,
         self.command_mem,
-        @intCast(self.frame_index * CMD_MEM_SIZE),
-        CMD_MEM_SIZE,
+        @intCast(self.frame_index * cmd_mem_size),
+        cmd_mem_size,
     );
     dk.dkCmdBufCallList(self.command_buffer, self.framebuffer_cmdlists[self.image_index]);
     self.recording = true;
@@ -140,7 +140,7 @@ pub fn end_frame(self: *SwapChain) PresentState {
     dk.dkQueuePresentImage(self.context.queue, self.chain, @intCast(self.image_index));
     self.context.assert_queue_ok("present image");
     self.frames[self.frame_index].submitted = true;
-    self.frame_index = (self.frame_index + 1) % MAX_FRAMES;
+    self.frame_index = (self.frame_index + 1) % max_frames;
     self.recording = false;
     return .optimal;
 }
@@ -175,8 +175,8 @@ fn submitted_frame_count(self: *const SwapChain) u32 {
 
 fn wait_oldest_submitted_frame(self: *SwapChain, gc: *GarbageCollector) bool {
     var offset: usize = 0;
-    while (offset < MAX_FRAMES) : (offset += 1) {
-        const index = (self.frame_index + offset) % MAX_FRAMES;
+    while (offset < max_frames) : (offset += 1) {
+        const index = (self.frame_index + offset) % max_frames;
         const frame = &self.frames[index];
         if (!frame.submitted) continue;
         self.context.wait_fence(&frame.fence, "switch vsync-off throttle fence");
@@ -218,7 +218,7 @@ fn create_framebuffers(self: *SwapChain) !void {
         .device = self.context.device,
         .type = dk.ImageType2d,
         .flags = dk.ImageUsageRender | dk.ImageUsagePresent |
-            if (USE_PRESENT_IMAGE_COMPRESSION) dk.ImageHwCompression else 0,
+            if (use_present_image_compression) dk.ImageHwCompression else 0,
         .format = dk.ImageRgba8Unorm,
         .msMode = 0,
         .dimensions = .{ width, height, 0 },
@@ -231,7 +231,7 @@ fn create_framebuffers(self: *SwapChain) !void {
 
     const fb_size: u32 = @intCast(dk.dkImageLayoutGetSize(&framebuffer_layout));
 
-    var swapchain_images: [FB_COUNT]*const dk.DkImage = undefined;
+    var swapchain_images: [fb_count]*const dk.DkImage = undefined;
     for (&self.framebuffers, 0..) |*fb, i| {
         self.framebuffer_mems[i] = try self.context.create_mem_block(fb_size, dk.MemGpuCached | dk.MemImage);
         errdefer {
@@ -247,7 +247,7 @@ fn create_framebuffers(self: *SwapChain) !void {
         .device = self.context.device,
         .nativeWindow = native_window,
         .pImages = swapchain_images[0..].ptr,
-        .numImages = FB_COUNT,
+        .numImages = fb_count,
     };
     self.chain = dk.dkSwapchainCreate(&swapchain_maker);
     if (self.chain == null) return error.GfxInitFailed;
@@ -315,7 +315,7 @@ fn destroy_depth_image(self: *SwapChain) void {
 }
 
 fn create_framebuffer_command_lists(self: *SwapChain) !void {
-    self.static_command_mem = try self.context.create_mem_block(STATIC_CMD_MEM_SIZE, dk.MemCpuUncached | dk.MemGpuCached);
+    self.static_command_mem = try self.context.create_mem_block(static_cmd_mem_size, dk.MemCpuUncached | dk.MemGpuCached);
     errdefer {
         dk.dkMemBlockDestroy(self.static_command_mem);
         self.static_command_mem = null;
@@ -333,7 +333,7 @@ fn create_framebuffer_command_lists(self: *SwapChain) !void {
         self.static_command_buffer = null;
     }
 
-    dk.dkCmdBufAddMemory(self.static_command_buffer, self.static_command_mem, 0, STATIC_CMD_MEM_SIZE);
+    dk.dkCmdBufAddMemory(self.static_command_buffer, self.static_command_mem, 0, static_cmd_mem_size);
     for (&self.framebuffer_views, 0..) |*color_view, i| {
         const color_targets = [_]*const dk.DkImageView{color_view};
         dk.dkCmdBufBindRenderTargets(self.static_command_buffer, color_targets[0..].ptr, 1, &self.depth_view);
@@ -355,7 +355,7 @@ fn destroy_framebuffer_command_lists(self: *SwapChain) void {
 }
 
 fn create_command_buffer(self: *SwapChain) !void {
-    self.command_mem = try self.context.create_mem_block(CMD_MEM_SIZE * MAX_FRAMES, dk.MemCpuUncached | dk.MemGpuCached);
+    self.command_mem = try self.context.create_mem_block(cmd_mem_size * max_frames, dk.MemCpuUncached | dk.MemGpuCached);
     errdefer {
         dk.dkMemBlockDestroy(self.command_mem);
         self.command_mem = null;

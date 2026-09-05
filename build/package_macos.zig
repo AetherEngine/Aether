@@ -13,14 +13,14 @@ const ExportOptions = package_options.ExportOptions;
 /// After install, a post-install Run step invokes `codesign --force
 /// --sign -` on each leaf dylib, then the exe, then the bundle dir.
 /// --deep is intentionally avoided (deprecated, unreliable).
-pub fn appBundle(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOptions) void {
-    const molten_vk_dir = tools.macosMoltenVkPath(b);
+pub fn app_bundle(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOptions) void {
+    const molten_vk_dir = tools.macos_molten_vk_path(b);
 
     const app_name = b.fmt("{s}.app", .{exe.name});
 
     // Each Run step takes the brew dylib as an input and writes a patched
     // copy to its own cache-managed output path, keeping zig's caching honest.
-    const patched_moltenvk = patchDylibId(
+    const patched_moltenvk = patch_dylib_id(
         b,
         .{ .cwd_relative = b.pathJoin(&.{ molten_vk_dir, "libMoltenVK.dylib" }) },
         "libMoltenVK.dylib",
@@ -127,7 +127,7 @@ pub fn appBundle(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOption
 
 /// Copies a dylib into the build cache and rewrites its LC_ID_DYLIB to
 /// `@rpath/<basename>` so it can be loaded from `Contents/Frameworks/`.
-fn patchDylibId(b: *std.Build, src: std.Build.LazyPath, basename: []const u8) std.Build.LazyPath {
+fn patch_dylib_id(b: *std.Build, src: std.Build.LazyPath, basename: []const u8) std.Build.LazyPath {
     // Homebrew dylibs are ad-hoc signed. Xcode 16+ install_name_tool exits
     // non-zero when it invalidates that signature, so strip it first.
     const patch = b.addSystemCommand(&.{

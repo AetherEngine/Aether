@@ -44,12 +44,12 @@ pub fn cross(a: Vec3, b: Vec3) Vec3 {
     };
 }
 
-pub fn lengthSq(v: Vec3) f32 {
+pub fn length_sq(v: Vec3) f32 {
     return v.x * v.x + v.y * v.y + v.z * v.z;
 }
 
 pub fn length(v: Vec3) f32 {
-    return @sqrt(v.lengthSq());
+    return @sqrt(v.length_sq());
 }
 
 pub fn normalize(v: Vec3) Vec3 {

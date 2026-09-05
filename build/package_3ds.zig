@@ -86,7 +86,7 @@ pub fn pipeline(owner: *std.Build, b: *std.Build, exe: *std.Build.Step.Compile, 
 
 /// Sends a 3DSX using Zitrus' built-in 3dslink-protocol client. Unlike the
 /// devkitPro `3dslink` executable, this does not require a separate host tool.
-pub fn addLink3dsx(b: *std.Build, threedsx: std.Build.LazyPath, opts: Link3dsxOptions) *std.Build.Step.Run {
+pub fn add_link3dsx(b: *std.Build, threedsx: std.Build.LazyPath, opts: Link3dsxOptions) *std.Build.Step.Run {
     const zitrus_dep = b.dependency("zitrus", .{});
     const link = zitrus.Link3dsx.init(zitrus_dep, .{ .@"3dsx" = threedsx });
 

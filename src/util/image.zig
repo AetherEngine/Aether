@@ -109,7 +109,7 @@ pub fn load_png_ex(scratch: std.mem.Allocator, render: std.mem.Allocator, reader
             }
             ihdr_found = true;
             // Skip remaining bytes + CRC
-            try skipBytes(reader, length - 13 + 4);
+            try skip_bytes(reader, length - 13 + 4);
         } else if (std.mem.eql(u8, chunk_type, "PLTE")) {
             const chunk_data = try scratch.alloc(u8, length);
             defer scratch.free(chunk_data);
@@ -120,7 +120,7 @@ pub fn load_png_ex(scratch: std.mem.Allocator, render: std.mem.Allocator, reader
                 palette[i] = .{ chunk_data[i * 3], chunk_data[i * 3 + 1], chunk_data[i * 3 + 2] };
             }
             // Skip CRC
-            try skipBytes(reader, 4);
+            try skip_bytes(reader, 4);
         } else if (std.mem.eql(u8, chunk_type, "tRNS")) {
             const chunk_data = try scratch.alloc(u8, length);
             defer scratch.free(chunk_data);
@@ -143,18 +143,18 @@ pub fn load_png_ex(scratch: std.mem.Allocator, render: std.mem.Allocator, reader
                 else => {},
             }
             // Skip CRC
-            try skipBytes(reader, 4);
+            try skip_bytes(reader, 4);
         } else if (std.mem.eql(u8, chunk_type, "IDAT")) {
             const prev_len = idat_buf.items.len;
             try idat_buf.resize(allocator, prev_len + length);
             try reader.readSliceAll(idat_buf.items[prev_len..]);
             // Skip CRC
-            try skipBytes(reader, 4);
+            try skip_bytes(reader, 4);
         } else if (std.mem.eql(u8, chunk_type, "IEND")) {
             break;
         } else {
             // Skip unknown chunk data + CRC
-            try skipBytes(reader, length + 4);
+            try skip_bytes(reader, length + 4);
         }
     }
 
@@ -234,7 +234,7 @@ pub fn load_png_ex(scratch: std.mem.Allocator, render: std.mem.Allocator, reader
                     const a: u8 = if (i >= bpp) dst[i - bpp] else 0;
                     const b: u8 = if (prev) |p| p[i] else 0;
                     const c: u8 = if (prev != null and i >= bpp) prev.?[i - bpp] else 0;
-                    dst[i] +%= paethPredictor(a, b, c);
+                    dst[i] +%= paeth_predictor(a, b, c);
                 }
             },
             else => return error.InvalidFilter,
@@ -381,7 +381,7 @@ pub fn load_png_ex(scratch: std.mem.Allocator, render: std.mem.Allocator, reader
     return .{ .width = width, .height = height, .data = out16, .mode = mode };
 }
 
-fn skipBytes(reader: *std.Io.Reader, n: usize) !void {
+fn skip_bytes(reader: *std.Io.Reader, n: usize) !void {
     var remaining = n;
     var buf: [256]u8 = undefined;
     while (remaining > 0) {
@@ -391,7 +391,7 @@ fn skipBytes(reader: *std.Io.Reader, n: usize) !void {
     }
 }
 
-fn paethPredictor(a: u8, b: u8, c: u8) u8 {
+fn paeth_predictor(a: u8, b: u8, c: u8) u8 {
     const ia: i32 = a;
     const ib: i32 = b;
     const ic: i32 = c;

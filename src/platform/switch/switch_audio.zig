@@ -10,15 +10,15 @@ const SlotSource = @import("../../audio/stream.zig").SlotSource;
 const PcmFormat = @import("../../audio/stream.zig").PcmFormat;
 const c = @import("c.zig").switch_c;
 
-const DEVICE_SAMPLE_RATE: u32 = 48_000;
-const DEVICE_CHANNELS: usize = 2;
-const NUM_SLOTS: usize = 24;
-const BUFFER_COUNT: usize = 3;
-const SAMPLES_PER_BUF: usize = 2048;
-const OUTPUT_BYTES: usize = SAMPLES_PER_BUF * DEVICE_CHANNELS * @sizeOf(i16);
-const OUTPUT_BUFFER_BYTES: usize = std.mem.alignForward(usize, OUTPUT_BYTES, 0x1000);
-const TOTAL_OUTPUT_BYTES: usize = BUFFER_COUNT * OUTPUT_BUFFER_BYTES;
-const FP_ONE: u64 = 1 << 32;
+const device_sample_rate: u32 = 48_000;
+const device_channels: usize = 2;
+const num_slots: usize = 24;
+const buffer_count: usize = 3;
+const samples_per_buf: usize = 2048;
+const output_bytes: usize = samples_per_buf * device_channels * @sizeOf(i16);
+const output_buffer_bytes: usize = std.mem.alignForward(usize, output_bytes, 0x1000);
+const total_output_bytes: usize = buffer_count * output_buffer_bytes;
+const fp_one: u64 = 1 << 32;
 
 const SlotState = enum(u8) {
     inactive = 0,
@@ -33,21 +33,21 @@ const Slot = struct {
     pan: f32 = 0,
     source: SlotSource = undefined,
     format: PcmFormat = .{ .sample_rate = 44_100, .channels = 1, .bit_depth = 16 },
-    step_fp: u64 = FP_ONE,
+    step_fp: u64 = fp_one,
     phase_fp: u64 = 0,
     current_left: i16 = 0,
     current_right: i16 = 0,
 };
 
-var slots: [NUM_SLOTS]Slot = init_slots();
+var slots: [num_slots]Slot = init_slots();
 var audio_alloc: std.mem.Allocator = undefined;
 var audio_io: std.Io = undefined;
 var output_data: ?[*]u8 = null;
-var buffers: [BUFFER_COUNT]c.AudioOutBuffer = undefined;
+var buffers: [buffer_count]c.AudioOutBuffer = undefined;
 var initialized: bool = false;
 
-fn init_slots() [NUM_SLOTS]Slot {
-    var s: [NUM_SLOTS]Slot = undefined;
+fn init_slots() [num_slots]Slot {
+    var s: [num_slots]Slot = undefined;
     for (&s) |*slot| {
         slot.* = .{};
     }
@@ -63,8 +63,8 @@ pub fn init() audio_api.InitError!void {
     _ = audio_alloc;
     _ = audio_io;
 
-    output_data = @ptrCast(c.memalign(0x1000, TOTAL_OUTPUT_BYTES) orelse return error.AudioInitFailed);
-    @memset(output_data.?[0..TOTAL_OUTPUT_BYTES], 0);
+    output_data = @ptrCast(c.memalign(0x1000, total_output_bytes) orelse return error.AudioInitFailed);
+    @memset(output_data.?[0..total_output_bytes], 0);
 
     if (c.audoutInitialize() != 0) {
         free_output();
@@ -82,9 +82,9 @@ pub fn init() audio_api.InitError!void {
     for (&buffers, 0..) |*buf, i| {
         buf.* = .{
             .next = null,
-            .buffer = @ptrCast(output_data.? + i * OUTPUT_BUFFER_BYTES),
-            .buffer_size = OUTPUT_BUFFER_BYTES,
-            .data_size = OUTPUT_BYTES,
+            .buffer = @ptrCast(output_data.? + i * output_buffer_bytes),
+            .buffer_size = output_buffer_bytes,
+            .data_size = output_bytes,
             .data_offset = 0,
         };
         if (c.audoutAppendAudioOutBuffer(buf) != 0) {
@@ -127,18 +127,18 @@ pub fn update() void {
 }
 
 pub fn max_voices() u32 {
-    return NUM_SLOTS;
+    return num_slots;
 }
 
 pub fn play_slot(slot: u8, source: SlotSource) audio_api.PlaySlotError!void {
-    if (slot >= NUM_SLOTS) return error.InvalidArgs;
+    if (slot >= num_slots) return error.InvalidArgs;
     const format = source_format(source);
     if (!format_supported(format)) return error.UnsupportedFormat;
 
     const i: usize = slot;
     slots[i].source = source;
     slots[i].format = format;
-    slots[i].step_fp = (@as(u64, format.sample_rate) << 32) / DEVICE_SAMPLE_RATE;
+    slots[i].step_fp = (@as(u64, format.sample_rate) << 32) / device_sample_rate;
     slots[i].phase_fp = 0;
     slots[i].current_left = 0;
     slots[i].current_right = 0;
@@ -146,25 +146,25 @@ pub fn play_slot(slot: u8, source: SlotSource) audio_api.PlaySlotError!void {
 }
 
 pub fn stop_slot(slot: u8) void {
-    if (slot >= NUM_SLOTS) return;
+    if (slot >= num_slots) return;
     slots[slot].state = .inactive;
 }
 
 pub fn set_slot_gain_pan(slot: u8, gain: f32, pan: f32) void {
-    if (slot >= NUM_SLOTS) return;
+    if (slot >= num_slots) return;
     slots[slot].gain = gain;
     slots[slot].pan = pan;
 }
 
 pub fn is_slot_active(slot: u8) bool {
-    if (slot >= NUM_SLOTS) return false;
+    if (slot >= num_slots) return false;
     return slots[slot].state != .inactive and slots[slot].state != .finished;
 }
 
 fn fill_output_buffer(buf: *c.AudioOutBuffer) void {
     const out: [*]i16 = @ptrCast(@alignCast(buf.buffer.?));
 
-    for (0..SAMPLES_PER_BUF) |frame| {
+    for (0..samples_per_buf) |frame| {
         var left_acc: i32 = 0;
         var right_acc: i32 = 0;
 
@@ -194,14 +194,14 @@ fn fill_output_buffer(buf: *c.AudioOutBuffer) void {
         out[frame * 2 + 1] = clamp_i16(right_acc);
     }
 
-    buf.data_size = OUTPUT_BYTES;
+    buf.data_size = output_bytes;
     buf.data_offset = 0;
 }
 
 fn advance_sample(slot: *Slot) void {
     slot.phase_fp +%= slot.step_fp;
-    while (slot.phase_fp >= FP_ONE) {
-        slot.phase_fp -= FP_ONE;
+    while (slot.phase_fp >= fp_one) {
+        slot.phase_fp -= fp_one;
         if (!read_next_sample(slot)) {
             slot.state = .finished;
             return;

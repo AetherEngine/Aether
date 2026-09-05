@@ -13,6 +13,7 @@ const is_macos = builtin.target.os.tag == .macos;
 const Mat4 = @import("../../../math/math.zig").Mat4;
 
 const vk = @import("vulkan");
+const vk_constants = @import("constants.zig");
 const gfx = @import("../../gfx.zig");
 const Rendering = @import("../../../rendering/rendering.zig");
 const vertex = Rendering.vertex;
@@ -41,7 +42,7 @@ const PipelineData = struct {
     pipeline: vk.Pipeline = .null_handle,
 };
 
-const MAX_FRAMES = 3;
+const max_frames = 3;
 
 const MeshData = struct {
     vertex: MeshBufferSet = .{},
@@ -52,9 +53,9 @@ const MeshData = struct {
 };
 
 const MeshBufferSet = struct {
-    buffers: [MAX_FRAMES]vk.Buffer = @splat(.null_handle),
-    memories: [MAX_FRAMES]vk.DeviceMemory = @splat(.null_handle),
-    mapped: [MAX_FRAMES]?[*]u8 = @splat(null),
+    buffers: [max_frames]vk.Buffer = @splat(.null_handle),
+    memories: [max_frames]vk.DeviceMemory = @splat(.null_handle),
+    mapped: [max_frames]?[*]u8 = @splat(null),
     capacity: usize = 0,
     size: usize = 0,
 };
@@ -75,7 +76,7 @@ pub const CameraRing = struct {
     slot_stride: u32,
 };
 
-const CAMERA_SLOTS: u32 = 16;
+const camera_slots: u32 = 16;
 
 pub const DrawState = struct {
     mat: Mat4,
@@ -115,7 +116,7 @@ var descriptor_set_layout: vk.DescriptorSetLayout = .null_handle;
 var descriptor_pool: vk.DescriptorPool = .null_handle;
 var descriptor_sets: []vk.DescriptorSet = undefined;
 
-const TEXTURE_CAP: u32 = 1024;
+const texture_cap: u32 = 1024;
 
 var tex_set_layout: vk.DescriptorSetLayout = .null_handle;
 var tex_pool: vk.DescriptorPool = .null_handle;
@@ -123,7 +124,7 @@ var tex_set: vk.DescriptorSet = .null_handle;
 var tex_sampler: vk.Sampler = .null_handle;
 
 const TextureRec = struct { image: vk.Image, memory: vk.DeviceMemory, view: vk.ImageView, width: u32, height: u32 };
-var textures = Util.ResourceTableType(TextureRec, TEXTURE_CAP, Texture.Handle).init();
+var textures = Util.ResourceTableType(TextureRec, texture_cap, Texture.Handle).init();
 
 var meshes = Util.ResourceTableType(MeshData, 32768, Mesh.Handle).init();
 var render_pipeline: PipelineData = .{};
@@ -171,7 +172,7 @@ fn create_uniform_buffers() !void {
         ring.slot_stride = slot_stride;
 
         ring.buffer = context.logical_device.createBuffer(&.{
-            .size = slot_stride * CAMERA_SLOTS,
+            .size = slot_stride * camera_slots,
             .usage = .{ .uniform_buffer_bit = true },
             .sharing_mode = .exclusive,
         }, null) catch unreachable;
@@ -180,7 +181,7 @@ fn create_uniform_buffers() !void {
         ring.memory = context.allocate_gpu_buffer(mem_reqs, .{ .host_visible_bit = true, .host_coherent_bit = true }) catch unreachable;
         context.logical_device.bindBufferMemory(ring.buffer, ring.memory, 0) catch unreachable;
 
-        const mapped_data = context.logical_device.mapMemory(ring.memory, 0, vk.WHOLE_SIZE, .{}) catch unreachable;
+        const mapped_data = context.logical_device.mapMemory(ring.memory, 0, vk_constants.whole_size, .{}) catch unreachable;
         ring.mapped_base = @ptrCast(mapped_data);
 
         // Seed slot 0 with identity so the very first draw of the very first
@@ -209,7 +210,7 @@ fn create_texture_set_layout() !void {
         .{ // binding 1: texture array (variable)
             .binding = 1,
             .descriptor_type = .sampled_image,
-            .descriptor_count = TEXTURE_CAP, // max
+            .descriptor_count = texture_cap, // max
             .stage_flags = .{ .fragment_bit = true },
         },
     };
@@ -560,7 +561,7 @@ pub fn start_frame() bool {
     command_buffer = vk.CommandBufferProxy.init(command_buffers[swapchain.image_index], context.logical_device.wrapper);
 
     // Garbage collect resources
-    const current = swapchain.currentSwapImage();
+    const current = swapchain.current_swap_image();
     _ = context.logical_device.waitForFences(@ptrCast(&current.frame_fence), .true, std.math.maxInt(u64)) catch unreachable;
     context.logical_device.resetFences(@ptrCast(&current.frame_fence)) catch unreachable;
     context.logical_device.resetCommandBuffer(command_buffer.handle, .{}) catch unreachable;
@@ -617,9 +618,9 @@ pub fn start_frame() bool {
         .dst_access_mask = .{ .color_attachment_write_bit = true },
         .old_layout = .undefined, // or .present_src_khr if you track it
         .new_layout = .color_attachment_optimal,
-        .src_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
-        .dst_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
-        .image = swapchain.currentSwapImage().image,
+        .src_queue_family_index = vk_constants.queue_family_ignored,
+        .dst_queue_family_index = vk_constants.queue_family_ignored,
+        .image = swapchain.current_swap_image().image,
         .subresource_range = .{
             .aspect_mask = .{ .color_bit = true },
             .base_mip_level = 0,
@@ -636,8 +637,8 @@ pub fn start_frame() bool {
         .dst_access_mask = .{ .depth_stencil_attachment_write_bit = true },
         .old_layout = .undefined,
         .new_layout = .depth_attachment_optimal,
-        .src_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
-        .dst_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
+        .src_queue_family_index = vk_constants.queue_family_ignored,
+        .dst_queue_family_index = vk_constants.queue_family_ignored,
         .image = depth_image,
         .subresource_range = .{
             .aspect_mask = .{ .depth_bit = true },
@@ -676,7 +677,7 @@ pub fn start_frame() bool {
         .color_attachment_count = 1,
         .p_color_attachments = @ptrCast(&vk.RenderingAttachmentInfo{
             .image_layout = .color_attachment_optimal,
-            .image_view = swapchain.currentSwapImage().view,
+            .image_view = swapchain.current_swap_image().view,
             .resolve_mode = .{},
             .resolve_image_layout = .undefined,
             .load_op = .clear,
@@ -728,9 +729,9 @@ pub fn end_frame() void {
         .dst_access_mask = .{},
         .old_layout = .color_attachment_optimal,
         .new_layout = .present_src_khr,
-        .src_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
-        .dst_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
-        .image = swapchain.currentSwapImage().image,
+        .src_queue_family_index = vk_constants.queue_family_ignored,
+        .dst_queue_family_index = vk_constants.queue_family_ignored,
+        .image = swapchain.current_swap_image().image,
         .subresource_range = .{
             .aspect_mask = .{ .color_bit = true },
             .base_mip_level = 0,
@@ -789,9 +790,9 @@ pub fn set_render_state(state: *const Rendering.RenderState) void {
 fn flush_camera_if_dirty() void {
     if (!camera_dirty) return;
 
-    if (next_camera_slot >= CAMERA_SLOTS) {
-        Util.engine_logger.warn("Vulkan camera ring exhausted ({d} slots/frame); reusing last slot", .{CAMERA_SLOTS});
-        next_camera_slot = CAMERA_SLOTS - 1;
+    if (next_camera_slot >= camera_slots) {
+        Util.engine_logger.warn("Vulkan camera ring exhausted ({d} slots/frame); reusing last slot", .{camera_slots});
+        next_camera_slot = camera_slots - 1;
     }
 
     const ring = &camera_rings[swapchain.image_index];
@@ -1116,7 +1117,7 @@ fn ensure_mesh_buffer_set(set: *MeshBufferSet, needed: usize, usage: vk.BufferUs
     var new_cap: usize = 256;
     while (new_cap < needed) new_cap *= 2;
 
-    for (0..MAX_FRAMES) |i| {
+    for (0..max_frames) |i| {
         set.buffers[i] = context.logical_device.createBuffer(&.{
             .size = new_cap,
             .usage = usage,
@@ -1134,7 +1135,7 @@ fn ensure_mesh_buffer_set(set: *MeshBufferSet, needed: usize, usage: vk.BufferUs
         }) catch unreachable;
 
         context.logical_device.bindBufferMemory(set.buffers[i], set.memories[i], 0) catch unreachable;
-        const mapped_data = context.logical_device.mapMemory(set.memories[i], 0, vk.WHOLE_SIZE, .{}) catch unreachable;
+        const mapped_data = context.logical_device.mapMemory(set.memories[i], 0, vk_constants.whole_size, .{}) catch unreachable;
         set.mapped[i] = @ptrCast(@alignCast(mapped_data));
     }
 
@@ -1142,14 +1143,14 @@ fn ensure_mesh_buffer_set(set: *MeshBufferSet, needed: usize, usage: vk.BufferUs
 }
 
 fn copy_mesh_buffer_set(set: *MeshBufferSet, data: []const u8) void {
-    for (0..MAX_FRAMES) |i| {
+    for (0..max_frames) |i| {
         @memcpy(set.mapped[i].?[0..data.len], data);
     }
     set.size = data.len;
 }
 
 fn destroy_mesh_buffer_set(set: *MeshBufferSet) void {
-    for (0..MAX_FRAMES) |i| {
+    for (0..max_frames) |i| {
         if (set.buffers[i] != .null_handle) {
             gc.defer_destroy_buffer(set.buffers[i], set.memories[i]) catch unreachable;
         }
@@ -1210,7 +1211,7 @@ pub fn create_texture(desc: *const Texture.UploadDesc) gfx_api.CreateTextureErro
     context.logical_device.bindBufferMemory(staging, staging_mem, 0) catch return error.GfxInitFailed;
 
     {
-        const mapped = context.logical_device.mapMemory(staging_mem, 0, vk.WHOLE_SIZE, .{}) catch return error.GfxInitFailed;
+        const mapped = context.logical_device.mapMemory(staging_mem, 0, vk_constants.whole_size, .{}) catch return error.GfxInitFailed;
         defer context.logical_device.unmapMemory(staging_mem);
 
         const dst: [*]u8 = @ptrCast(@alignCast(mapped));
@@ -1244,8 +1245,8 @@ pub fn create_texture(desc: *const Texture.UploadDesc) gfx_api.CreateTextureErro
         .dst_access_mask = .{ .transfer_write_bit = true },
         .old_layout = .undefined,
         .new_layout = .transfer_dst_optimal,
-        .src_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
-        .dst_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
+        .src_queue_family_index = vk_constants.queue_family_ignored,
+        .dst_queue_family_index = vk_constants.queue_family_ignored,
         .image = image,
         .subresource_range = subrange,
     };
@@ -1279,8 +1280,8 @@ pub fn create_texture(desc: *const Texture.UploadDesc) gfx_api.CreateTextureErro
         .dst_access_mask = .{ .shader_read_bit = true },
         .old_layout = .transfer_dst_optimal,
         .new_layout = .shader_read_only_optimal,
-        .src_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
-        .dst_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
+        .src_queue_family_index = vk_constants.queue_family_ignored,
+        .dst_queue_family_index = vk_constants.queue_family_ignored,
         .image = image,
         .subresource_range = subrange,
     };
@@ -1387,7 +1388,7 @@ pub fn update_texture(handle: Texture.Handle, data: []align(16) u8) void {
     context.logical_device.bindBufferMemory(staging, staging_mem, 0) catch return;
 
     {
-        const mapped = context.logical_device.mapMemory(staging_mem, 0, vk.WHOLE_SIZE, .{}) catch return;
+        const mapped = context.logical_device.mapMemory(staging_mem, 0, vk_constants.whole_size, .{}) catch return;
         defer context.logical_device.unmapMemory(staging_mem);
 
         const dst: [*]u8 = @ptrCast(@alignCast(mapped));
@@ -1420,8 +1421,8 @@ pub fn update_texture(handle: Texture.Handle, data: []align(16) u8) void {
         .dst_access_mask = .{ .transfer_write_bit = true },
         .old_layout = .shader_read_only_optimal,
         .new_layout = .transfer_dst_optimal,
-        .src_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
-        .dst_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
+        .src_queue_family_index = vk_constants.queue_family_ignored,
+        .dst_queue_family_index = vk_constants.queue_family_ignored,
         .image = rec.image,
         .subresource_range = subrange,
     };
@@ -1456,8 +1457,8 @@ pub fn update_texture(handle: Texture.Handle, data: []align(16) u8) void {
         .dst_access_mask = .{ .shader_read_bit = true },
         .old_layout = .transfer_dst_optimal,
         .new_layout = .shader_read_only_optimal,
-        .src_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
-        .dst_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
+        .src_queue_family_index = vk_constants.queue_family_ignored,
+        .dst_queue_family_index = vk_constants.queue_family_ignored,
         .image = rec.image,
         .subresource_range = subrange,
     };

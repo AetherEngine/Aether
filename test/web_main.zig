@@ -37,14 +37,14 @@ export fn aether_wasm_init(width: u32, height: u32) bool {
         env_map_initialized = false;
         return false;
     };
-    engine.beginRun();
+    engine.begin_run();
     initialized = true;
     return true;
 }
 
 export fn aether_wasm_frame() bool {
     if (!initialized) return false;
-    return engine.stepFrame() catch false;
+    return engine.step_frame() catch false;
 }
 
 export fn aether_wasm_deinit() void {

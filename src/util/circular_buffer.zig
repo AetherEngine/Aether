@@ -3,18 +3,18 @@ const testing = std.testing;
 
 /// Circular, opportunistic insertion into a fixed-size sparse table.
 /// Index 0 is permanently reserved as a null handle.
-pub fn CircularBufferType(comptime T: type, comptime SIZE: usize) type {
+pub fn CircularBufferType(comptime T: type, comptime slot_count: usize) type {
     comptime {
-        if (SIZE < 2)
-            @compileError("SIZE must be >= 2 (index 0 is reserved as the null handle).");
+        if (slot_count < 2)
+            @compileError("slot_count must be >= 2 (index 0 is reserved as the null handle).");
     }
 
     return struct {
         const CircularBuffer = @This();
 
-        // Storage: slot 0 is always null; slots [1..SIZE-1] may hold values.
-        buffer: [SIZE]?T = undefined,
-        head: usize = 1, // next probe start; always in [1..SIZE-1]
+        // Storage: slot 0 is always null; slots [1..slot_count-1] may hold values.
+        buffer: [slot_count]?T = undefined,
+        head: usize = 1, // next probe start; always in [1..slot_count-1]
         count: usize = 0, // number of occupied non-zero slots
 
         pub fn init() CircularBuffer {
@@ -38,7 +38,7 @@ pub fn CircularBufferType(comptime T: type, comptime SIZE: usize) type {
 
         pub fn capacity(self: *const CircularBuffer) usize {
             _ = self;
-            return SIZE - 1; // slot 0 is reserved
+            return slot_count - 1; // slot 0 is reserved
         }
 
         pub fn is_full(self: *const CircularBuffer) bool {
@@ -46,13 +46,13 @@ pub fn CircularBufferType(comptime T: type, comptime SIZE: usize) type {
         }
 
         inline fn next_index(i: usize) usize {
-            var n = (i + 1) % SIZE;
+            var n = (i + 1) % slot_count;
             if (n == 0) n = 1; // skip reserved 0
             return n;
         }
 
         /// Inserts value into the first empty slot encountered by circular probing.
-        /// Returns the assigned handle (index in [1..SIZE-1]) or null if full.
+        /// Returns the assigned handle (index in [1..slot_count-1]) or null if full.
         pub fn add_element(self: *CircularBuffer, value: T) ?usize {
             if (self.is_full()) return null;
 
@@ -73,7 +73,7 @@ pub fn CircularBufferType(comptime T: type, comptime SIZE: usize) type {
         }
 
         pub fn update_element(self: *CircularBuffer, index: usize, value: T) void {
-            if (index == 0 or index >= SIZE) return;
+            if (index == 0 or index >= slot_count) return;
 
             if (self.buffer[index]) |*v| {
                 v.* = value;
@@ -82,7 +82,7 @@ pub fn CircularBufferType(comptime T: type, comptime SIZE: usize) type {
 
         /// Removes the element at `index` (handle). Returns true if something was removed.
         pub fn remove_element(self: *CircularBuffer, index: usize) bool {
-            if (index == 0 or index >= SIZE) return false;
+            if (index == 0 or index >= slot_count) return false;
             if (self.buffer[index] != null) {
                 self.buffer[index] = null;
                 if (self.count > 0) self.count -= 1;
@@ -94,12 +94,12 @@ pub fn CircularBufferType(comptime T: type, comptime SIZE: usize) type {
         }
 
         pub fn get_element(self: *const CircularBuffer, index: usize) ?T {
-            if (index == 0 or index >= SIZE) return null;
+            if (index == 0 or index >= slot_count) return null;
             return self.buffer[index];
         }
 
         pub fn get_element_ptr(self: *CircularBuffer, index: usize) ?*T {
-            if (index == 0 or index >= SIZE) return null;
+            if (index == 0 or index >= slot_count) return null;
             if (self.buffer[index]) |*value| return value;
             return null;
         }

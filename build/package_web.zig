@@ -3,7 +3,7 @@ const package_options = @import("package_options.zig");
 
 const ExportOptions = package_options.ExportOptions;
 
-pub fn addWebBundle(owner: *std.Build, b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOptions) *std.Build.Step.InstallDir {
+pub fn add_web_bundle(owner: *std.Build, b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOptions) *std.Build.Step.InstallDir {
     const web = b.addWriteFiles();
     _ = web.addCopyFile(exe.getEmittedBin(), opts.web_wasm_name);
     _ = web.addCopyFile(owner.path("web/index.html"), "index.html");
@@ -25,7 +25,7 @@ pub fn addWebBundle(owner: *std.Build, b: *std.Build, exe: *std.Build.Step.Compi
     });
 }
 
-pub fn addServeWebStep(
+pub fn add_serve_web_step(
     owner: *std.Build,
     b: *std.Build,
     name: []const u8,

@@ -13,7 +13,7 @@ pub const MemoryConfig = struct {
 };
 
 pub const Pool = enum { render, audio, game, frame, user };
-pub const POOL_COUNT = @typeInfo(Pool).@"enum".fields.len;
+pub const pool_count = @typeInfo(Pool).@"enum".fields.len;
 
 /// A named set of movable accounting budgets over the engine's one shared
 /// backing memory pool.
@@ -34,7 +34,7 @@ pub const PoolDiagnostics = struct {
 
 pub const MemoryDiagnostics = struct {
     profile_name: ?[]const u8,
-    pools: [POOL_COUNT]PoolDiagnostics,
+    pools: [pool_count]PoolDiagnostics,
     physical_used: usize,
     physical_capacity: usize,
     physical_largest_free_run: usize,

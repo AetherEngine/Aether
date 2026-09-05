@@ -34,7 +34,7 @@ pub fn end_text_input_session(_: *core.InputSystem) void {}
 export fn aether_input_key(key_code: u32, pressed: bool, repeat: bool, mods_bits: u32) void {
     const input = active_input orelse return;
     const key: core.Key = std.enums.fromInt(core.Key, key_code) orelse return;
-    const mods = decodeMods(mods_bits);
+    const mods = decode_mods(mods_bits);
     if (pressed) {
         input.deliver_key_down(key, mods, repeat);
     } else {
@@ -81,7 +81,7 @@ export fn aether_input_gamepad_axis(axis_code: u32, value: f32) void {
     input.deliver_gamepad_axis(axis, value);
 }
 
-fn decodeMods(bits: u32) core.ModifierSet {
+fn decode_mods(bits: u32) core.ModifierSet {
     var mods: core.ModifierSet = .{};
     if (bits & 0x1 != 0) mods.insert(.shift);
     if (bits & 0x2 != 0) mods.insert(.ctrl);

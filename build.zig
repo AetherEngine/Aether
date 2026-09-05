@@ -6,7 +6,7 @@ pub const packaging = @import("build/packaging.zig");
 
 // --- Aether's own build (test app + engine tests) ---
 
-fn directoryExists(b: *std.Build, path: []const u8) bool {
+fn directory_exists(b: *std.Build, path: []const u8) bool {
     const io = b.graph.io;
     const full_path = b.pathFromRoot(path);
     var dir = std.Io.Dir.cwd().openDir(io, full_path, .{}) catch |err| switch (err) {
@@ -20,7 +20,7 @@ fn directoryExists(b: *std.Build, path: []const u8) bool {
     return true;
 }
 
-fn makeResourceManifest(b: *std.Build, resource_dir_path: []const u8) []const u8 {
+fn make_resource_manifest(b: *std.Build, resource_dir_path: []const u8) []const u8 {
     const io = b.graph.io;
     const full_resource_dir_path = b.pathFromRoot(resource_dir_path);
     var dir = std.Io.Dir.cwd().openDir(io, full_resource_dir_path, .{ .iterate = true }) catch |err| {
@@ -55,7 +55,13 @@ pub fn build(b: *std.Build) void {
         .optimize = .ReleaseSafe,
     });
     const run_lint = b.addRunArtifact(lint_dep.artifact("lint"));
+    run_lint.setCwd(b.path("."));
+    if (b.args) |args| run_lint.addArgs(args);
     run_lint.addArg(".");
+    // This module is imported by its build-system name, aether_entry_common.
+    run_lint.addFileArg(b.path("src/platform/entry_common.zig"));
+    // Its only importer is the excluded C I/O wrapper; still check its implementation.
+    run_lint.addFileArg(b.path("src/platform/switch/time.zig"));
 
     const lint_step = b.step("lint", "Lint the codebase with tiger_lint");
     lint_step.dependOn(&run_lint.step);
@@ -73,7 +79,7 @@ pub fn build(b: *std.Build) void {
 
     const resolved_config = config.Config.resolve(target, overrides);
 
-    if (!directoryExists(b, "test")) {
+    if (!directory_exists(b, "test")) {
         const missing_demo = b.addFail("Aether demo steps require the repository test/ directory.");
         b.step("run", "Run the app").dependOn(&missing_demo.step);
         b.step("web", "Build the browser-playable WASM site in zig-out/web").dependOn(&missing_demo.step);
@@ -82,7 +88,7 @@ pub fn build(b: *std.Build) void {
         return;
     }
 
-    const exe = modules.addGame(b, b, .{
+    const exe = modules.add_game(b, b, .{
         .name = "Aether",
         .root_source_file = b.path("test/main.zig"),
         .target = target,
@@ -95,7 +101,7 @@ pub fn build(b: *std.Build) void {
     _ = nintendo_romfs.addCopyFile(b.path("test/calm1.wav"), "calm1.wav");
     _ = nintendo_romfs.addCopyFile(b.path("test/grass1.wav"), "grass1.wav");
 
-    const package = packaging.exportArtifactWithOutputs(b, b, exe, resolved_config, .{
+    const package = packaging.export_artifact_with_outputs(b, b, exe, resolved_config, .{
         .title = "Aether",
         .output_dir = switch (resolved_config.platform) {
             .psp => "Aether-PSP",
@@ -112,27 +118,27 @@ pub fn build(b: *std.Build) void {
         .switch_romfs = if (resolved_config.platform == .nintendo_switch) nintendo_romfs.getDirectory() else null,
     });
 
-    const web_target = config.webTarget(b);
+    const web_target = config.web_target(b);
     const web_overrides: config.Config.Overrides = .{
         .gfx = .webgl,
         .use_cwd = true,
     };
-    const web_exe = modules.addGame(b, b, .{
+    const web_exe = modules.add_game(b, b, .{
         .name = "Aether",
         .root_source_file = b.path("test/web_main.zig"),
         .target = web_target,
         .optimize = optimize,
         .overrides = web_overrides,
     });
-    const web_install = packaging.addWebBundle(b, b, web_exe, .{
+    const web_install = packaging.add_web_bundle(b, b, web_exe, .{
         .web_resources = b.path(web_resources_path),
-        .web_resource_manifest = makeResourceManifest(b, web_resources_path),
+        .web_resource_manifest = make_resource_manifest(b, web_resources_path),
     });
 
     const web_step = b.step("web", "Build the browser-playable WASM site in zig-out/web");
     web_step.dependOn(&web_install.step);
 
-    const serve_web_cmd = packaging.addServeWebStep(b, b, "aether-serve-web", web_install, web_host, web_port);
+    const serve_web_cmd = packaging.add_serve_web_step(b, b, "aether-serve-web", web_install, web_host, web_port);
 
     const serve_web_step = b.step("serve-web", "Serve zig-out/web with WASM MIME and COOP/COEP headers");
     serve_web_step.dependOn(&serve_web_cmd.step);
@@ -141,7 +147,7 @@ pub fn build(b: *std.Build) void {
     if (resolved_config.platform == .nintendo_switch) {
         // Switch can't run natively on the host. nxlink pushes the .nro to
         // nx-hbloader on a networked Switch.
-        const dkp = @import("build/tool_options.zig").devkitProPath(b);
+        const dkp = @import("build/tool_options.zig").devkit_pro_path(b);
         const link_cmd = b.addSystemCommand(&.{b.pathJoin(&.{ dkp, "tools/bin/nxlink" })});
         if (b.option([]const u8, "nxlink-address", "Switch: target IP for nxlink push (default: mDNS auto-discover)")) |ip| {
             link_cmd.addArgs(&.{ "-a", ip });
@@ -167,7 +173,7 @@ pub fn build(b: *std.Build) void {
         // Zitrus owns the 3dslink-protocol client, so running a 3DS target
         // does not need devkitPro's external 3dslink executable.
         const threedsx = package.nintendo_3dsx orelse unreachable;
-        const link_cmd = packaging.addLink3dsx(b, threedsx, .{
+        const link_cmd = packaging.add_link3dsx(b, threedsx, .{
             .address = b.option([]const u8, "3dslink-address", "3DS: target IP/hostname for Zitrus link (default: broadcast discovery)"),
             .retries = b.option(u32, "3dslink-retries", "3DS: Zitrus link broadcast retry count"),
         });
@@ -189,6 +195,8 @@ pub fn build(b: *std.Build) void {
     if (resolved_config.platform != .psp and resolved_config.platform != .nintendo_3ds and resolved_config.platform != .nintendo_switch) {
         const mod_tests = b.addTest(.{
             .root_module = exe.root_module.import_table.get("aether").?,
+            .use_llvm = exe.use_llvm,
+            .use_lld = exe.use_lld,
         });
         const run_mod_tests = b.addRunArtifact(mod_tests);
 

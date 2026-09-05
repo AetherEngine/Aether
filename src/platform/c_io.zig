@@ -138,26 +138,26 @@ fn setAsyncDebugStage(stage: u32) void {
 }
 
 pub fn mountData() void {
-    data_mounted = platform_paths.mountData();
+    data_mounted = platform_paths.mount_data();
 }
 
 pub fn mountResources() bool {
-    resources_mounted = platform_paths.mountResources();
+    resources_mounted = platform_paths.mount_resources();
     return resources_mounted;
 }
 
 pub fn dataRoot(buffer: []u8, app_name: []const u8) error{NameTooLong}![]const u8 {
-    return platform_paths.dataRoot(buffer, app_name);
+    return platform_paths.data_root(buffer, app_name);
 }
 
 pub fn deinitAppDirs() void {
     for (&dir_slots) |*slot| slot.used = false;
     if (resources_mounted) {
-        platform_paths.unmountResources();
+        platform_paths.unmount_resources();
         resources_mounted = false;
     }
     if (data_mounted) {
-        platform_paths.unmountData();
+        platform_paths.unmount_data();
         data_mounted = false;
     }
 }
@@ -1100,7 +1100,7 @@ fn now(_: ?*anyopaque, clock: Io.Clock) Io.Timestamp {
 }
 
 fn clockResolution(_: ?*anyopaque, clock: Io.Clock) Io.Clock.ResolutionError!Io.Duration {
-    return platform_time.clockResolution(clock);
+    return platform_time.clock_resolution(clock);
 }
 
 fn sleep(_: ?*anyopaque, timeout: Io.Timeout) Io.Cancelable!void {

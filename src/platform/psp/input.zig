@@ -64,7 +64,7 @@ pub fn begin_text_input_session(input: *core.InputSystem, target: *const core.Te
     }
     const in_slice: []const u16 = if (in_len > 0) in_buf[0 .. in_len + 1] else &.{};
 
-    const result = dialogs.showOSK(desc_buf[0..desc_len], in_slice, out_slice, @intCast(max_chars));
+    const result = dialogs.show_osk(desc_buf[0..desc_len], in_slice, out_slice, @intCast(max_chars));
 
     var utf8_buf: [1024]u8 = undefined;
     var u_len: usize = 0;

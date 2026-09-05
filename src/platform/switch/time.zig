@@ -8,7 +8,7 @@ pub fn now(clock: std.Io.Clock) std.Io.Timestamp {
     };
 }
 
-pub fn clockResolution(clock: std.Io.Clock) std.Io.Clock.ResolutionError!std.Io.Duration {
+pub fn clock_resolution(clock: std.Io.Clock) std.Io.Clock.ResolutionError!std.Io.Duration {
     return switch (clock) {
         .real, .awake, .boot => .fromNanoseconds(53),
         else => error.ClockUnavailable,

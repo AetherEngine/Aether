@@ -23,7 +23,7 @@ const allocator_vtable: std.mem.Allocator.VTable = .{
     .free = dealloc,
 };
 
-pub fn makeInit(args: std.process.Args) std.process.Init {
+pub fn make_init(args: std.process.Args) std.process.Init {
     const gpa = allocator();
     arena_state = std.heap.ArenaAllocator.init(gpa);
     environ_map_state = std.process.Environ.Map.init(gpa);

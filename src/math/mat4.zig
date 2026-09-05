@@ -47,7 +47,7 @@ pub fn scaling(x: f32, y: f32, z: f32) Mat4 {
     } };
 }
 
-pub fn rotationX(angle: f32) Mat4 {
+pub fn rotation_x(angle: f32) Mat4 {
     const s = @sin(angle);
     const c = @cos(angle);
     return .{ .data = .{
@@ -58,7 +58,7 @@ pub fn rotationX(angle: f32) Mat4 {
     } };
 }
 
-pub fn rotationY(angle: f32) Mat4 {
+pub fn rotation_y(angle: f32) Mat4 {
     const s = @sin(angle);
     const c = @cos(angle);
     return .{ .data = .{
@@ -69,7 +69,7 @@ pub fn rotationY(angle: f32) Mat4 {
     } };
 }
 
-pub fn rotationZ(angle: f32) Mat4 {
+pub fn rotation_z(angle: f32) Mat4 {
     const s = @sin(angle);
     const c = @cos(angle);
     return .{ .data = .{
@@ -82,7 +82,7 @@ pub fn rotationZ(angle: f32) Mat4 {
 
 /// Right-handed perspective, z in [0, 1].
 /// fov is the full vertical field-of-view in radians.
-pub fn perspectiveFovRh(fov: f32, aspect: f32, near: f32, far: f32) Mat4 {
+pub fn perspective_fov_rh(fov: f32, aspect: f32, near: f32, far: f32) Mat4 {
     const f = 1.0 / @tan(fov * 0.5);
     return .{ .data = .{
         .{ f / aspect, 0, 0, 0 },
@@ -94,7 +94,7 @@ pub fn perspectiveFovRh(fov: f32, aspect: f32, near: f32, far: f32) Mat4 {
 
 /// Right-handed orthographic, z in [0, 1].
 /// width and height are the full extents of the view volume.
-pub fn orthographicRh(width: f32, height: f32, near: f32, far: f32) Mat4 {
+pub fn orthographic_rh(width: f32, height: f32, near: f32, far: f32) Mat4 {
     return .{ .data = .{
         .{ 2.0 / width, 0, 0, 0 },
         .{ 0, 2.0 / height, 0, 0 },
@@ -104,7 +104,7 @@ pub fn orthographicRh(width: f32, height: f32, near: f32, far: f32) Mat4 {
 }
 
 /// Build a rotation matrix from a unit quaternion.
-pub fn fromQuat(q: Quat) Mat4 {
+pub fn from_quat(q: Quat) Mat4 {
     const x = q.x;
     const y = q.y;
     const z = q.z;

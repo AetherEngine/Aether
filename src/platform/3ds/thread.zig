@@ -32,7 +32,7 @@ fn priority_from_3ds(v: u6) api.Priority {
 
 pub fn spawn(cfg: api.Config, comptime func: anytype, args: anytype) !Handle {
     _ = cfg.allocator;
-    const thread_alloc = if (app.currentApplication()) |init|
+    const thread_alloc = if (app.current_application()) |init|
         init.base.gpa
     else
         return error.NoCurrentApplication;

@@ -20,9 +20,9 @@ pub fn new() Transform {
 /// Computes and returns the transformation matrix combining scaling, rotation, and translation.
 pub fn get_matrix(self: *const Transform) Mat4 {
     const s = Mat4.scaling(self.scale.x, self.scale.y, self.scale.z);
-    const rx = Mat4.rotationX(std.math.degreesToRadians(self.rot.x));
-    const ry = Mat4.rotationY(std.math.degreesToRadians(self.rot.y));
-    const rz = Mat4.rotationZ(std.math.degreesToRadians(self.rot.z));
+    const rx = Mat4.rotation_x(std.math.degreesToRadians(self.rot.x));
+    const ry = Mat4.rotation_y(std.math.degreesToRadians(self.rot.y));
+    const rz = Mat4.rotation_z(std.math.degreesToRadians(self.rot.z));
     const t = Mat4.translation(self.pos.x, self.pos.y, self.pos.z);
     const rotation = Mat4.mul(Mat4.mul(rz, rx), ry);
     return Mat4.mul(s, Mat4.mul(rotation, t));

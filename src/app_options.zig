@@ -39,6 +39,6 @@ pub const Options = struct {
     nintendo_3ds: Nintendo3dsOptions = .{},
 };
 
-pub fn resolveAppName(options: Options) []const u8 {
+pub fn resolve_app_name(options: Options) []const u8 {
     return options.app_name orelse options.title;
 }

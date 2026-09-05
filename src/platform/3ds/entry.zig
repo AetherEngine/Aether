@@ -11,12 +11,12 @@ const zitrus = @import("zitrus");
 
 const Application = zitrus.horizon.Init.Application;
 const horizon = zitrus.horizon;
-const MIN_STACK_SIZE: u32 = 768 * 1024;
-const SOC_BUFFER_LEN: usize = 1024 * 1024;
+const min_stack_size: u32 = 768 * 1024;
+const soc_buffer_len: usize = 1024 * 1024;
 const log = std.log.scoped(.aether_3ds_entry);
 
 pub const zitrus_options: zitrus.Options = .{
-    .stack_size = @max(MIN_STACK_SIZE, entry.options.nintendo_3ds.stack_size),
+    .stack_size = @max(min_stack_size, entry.options.nintendo_3ds.stack_size),
 };
 
 pub const std_options = entry.options.std_options;
@@ -29,8 +29,8 @@ pub const std_options_cwd = zitrus.horizon.Io.Dir.cwd;
 pub fn main(init: Application) !void {
     const is_new_3ds = detect_and_configure_new_3ds(init.srv);
 
-    aether.N3ds.setApplication(init, is_new_3ds, entry.options.nintendo_3ds.audio_stream_cache_bytes);
-    defer aether.N3ds.clearApplication();
+    aether.N3ds.set_application(init, is_new_3ds, entry.options.nintendo_3ds.audio_stream_cache_bytes);
+    defer aether.N3ds.clear_application();
 
     try zitrus.horizon.Io.global.initStorage(init.srv, .fs, 0);
     defer zitrus.horizon.Io.global.deinitFilesystem();
@@ -112,7 +112,7 @@ const NetworkContext = struct {
         const soc = try horizon.services.SocketUser.open(srv);
         errdefer soc.close();
 
-        const buffer = try alloc.alignedAlloc(u8, .fromByteUnits(horizon.heap.page_size), SOC_BUFFER_LEN);
+        const buffer = try alloc.alignedAlloc(u8, .fromByteUnits(horizon.heap.page_size), soc_buffer_len);
         errdefer alloc.free(buffer);
 
         const memory: horizon.MemoryBlock = try .create(buffer.ptr, buffer.len, .none, .rw);

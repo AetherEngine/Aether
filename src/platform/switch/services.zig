@@ -124,7 +124,7 @@ fn entry(_: c_int, _: [*c][*c]u8) callconv(.c) c_int {
         );
     }
 
-    const init = process_init.makeInit(.{ .vector = {} });
+    const init = process_init.make_init(.{ .vector = {} });
     defer Cio.deinitNetworking();
     entry_common.call_main(init) catch |err| {
         fatal_main_error(err, @errorReturnTrace(), @returnAddress());

@@ -74,13 +74,13 @@ const VoiceSource = union(enum) {
 /// `Backend` must satisfy the slot-based audio_api.Interface.
 pub fn MixerType(comptime Backend: type) type {
     return struct {
-        pub const MAX_VOICES: usize = 64;
-        pub const MAX_BUFFERS: usize = 256;
-        pub const MAX_STREAMS: usize = 64;
-        const MAX_SLOTS: usize = 32;
+        pub const max_voices: usize = 64;
+        pub const max_buffers: usize = 256;
+        pub const max_streams: usize = 64;
+        const slot_capacity: usize = 32;
 
-        const BufferTable = Util.ResourceTableType(SoundBufferResource, MAX_BUFFERS + 1, SoundBufferHandle);
-        const StreamTable = Util.ResourceTableType(StreamingSoundResource, MAX_STREAMS + 1, StreamingSoundHandle);
+        const BufferTable = Util.ResourceTableType(SoundBufferResource, max_buffers + 1, SoundBufferHandle);
+        const StreamTable = Util.ResourceTableType(StreamingSoundResource, max_streams + 1, StreamingSoundHandle);
 
         const VirtualVoice = struct {
             source: VoiceSource,
@@ -96,8 +96,8 @@ pub fn MixerType(comptime Backend: type) type {
 
         var buffers = BufferTable.init();
         var streams = StreamTable.init();
-        var voices: [MAX_VOICES]?VirtualVoice = @splat(null);
-        var voice_generations: [MAX_VOICES]u8 = @splat(1);
+        var voices: [max_voices]?VirtualVoice = @splat(null);
+        var voice_generations: [max_voices]u8 = @splat(1);
         var listener_pos: Vec3 = Vec3.zero();
         var listener_fwd: Vec3 = Vec3.new(0, 0, -1);
         var listener_up: Vec3 = Vec3.new(0, 1, 0);
@@ -109,13 +109,13 @@ pub fn MixerType(comptime Backend: type) type {
         }
 
         pub fn deinit() void {
-            for (0..MAX_VOICES) |i| {
+            for (0..max_voices) |i| {
                 if (voices[i] != null) {
                     if (voices[i].?.slot) |s| Backend.stop_slot(s);
                     release_voice(i);
                 }
             }
-            for (1..MAX_BUFFERS + 1) |i| {
+            for (1..max_buffers + 1) |i| {
                 if (buffers.slots[i]) |resource| {
                     if (resource.owned) |owned| owned.allocator.free(owned.bytes);
                 }
@@ -227,10 +227,10 @@ pub fn MixerType(comptime Backend: type) type {
         pub fn update() void {
             Backend.update();
 
-            const max_slots: usize = @min(Backend.max_voices(), MAX_SLOTS);
+            const max_slots: usize = @min(Backend.max_voices(), slot_capacity);
 
             // 1. Reap voices whose backend slot finished (stream exhausted).
-            for (0..MAX_VOICES) |i| {
+            for (0..max_voices) |i| {
                 if (voices[i] != null) {
                     if (voices[i].?.slot) |s| {
                         if (!Backend.is_slot_active(s)) {
@@ -241,11 +241,11 @@ pub fn MixerType(comptime Backend: type) type {
             }
 
             // 2. Score every active voice.
-            var scores: [MAX_VOICES]f32 = @splat(-1.0);
-            var order: [MAX_VOICES]u8 = undefined;
+            var scores: [max_voices]f32 = @splat(-1.0);
+            var order: [max_voices]u8 = undefined;
             var count: usize = 0;
 
-            for (0..MAX_VOICES) |i| {
+            for (0..max_voices) |i| {
                 if (voices[i]) |v| {
                     scores[i] = effective_score(v);
                     order[count] = @intCast(i);
@@ -277,7 +277,7 @@ pub fn MixerType(comptime Backend: type) type {
             }
 
             // 5. Build a used-slot mask from voices that kept their slots.
-            var used: [MAX_SLOTS]bool = @splat(false);
+            var used: [slot_capacity]bool = @splat(false);
             for (0..@min(count, max_slots)) |rank| {
                 const vi = order[rank];
                 if (voices[vi].?.slot) |s| {
@@ -303,7 +303,7 @@ pub fn MixerType(comptime Backend: type) type {
             }
 
             // 7. Push gain / pan to every occupied slot.
-            for (0..MAX_VOICES) |i| {
+            for (0..max_voices) |i| {
                 if (voices[i]) |v| {
                     if (v.slot) |s| {
                         const gp = compute_gain_pan(v);
@@ -331,7 +331,7 @@ pub fn MixerType(comptime Backend: type) type {
                 },
             }
 
-            const vi = for (0..MAX_VOICES) |i| {
+            const vi = for (0..max_voices) |i| {
                 if (voices[i] == null) break i;
             } else return error.TooManyVoices;
 
@@ -379,7 +379,7 @@ pub fn MixerType(comptime Backend: type) type {
         }
 
         fn stop_voices_for_buffer(handle: SoundBufferHandle) void {
-            for (0..MAX_VOICES) |i| {
+            for (0..max_voices) |i| {
                 if (voices[i]) |voice| {
                     if (voice.source == .buffer and voice.source.buffer == handle) {
                         if (voice.slot) |s| Backend.stop_slot(s);
@@ -391,7 +391,7 @@ pub fn MixerType(comptime Backend: type) type {
 
         fn find_index(handle: SoundHandle) ?usize {
             const raw = handle.raw_index();
-            if (raw == 0 or raw > MAX_VOICES) return null;
+            if (raw == 0 or raw > max_voices) return null;
             const i = raw - 1;
             if (voice_generations[i] != handle.generation) return null;
             if (voices[i] != null and voices[i].?.handle == handle) return i;
@@ -415,7 +415,7 @@ pub fn MixerType(comptime Backend: type) type {
             if (voice_generations[index] == 0) voice_generations[index] = 1;
         }
 
-        fn find_free_slot(used: *const [MAX_SLOTS]bool, limit: usize) ?u8 {
+        fn find_free_slot(used: *const [slot_capacity]bool, limit: usize) ?u8 {
             for (0..limit) |i| {
                 if (!used[i]) return @intCast(i);
             }

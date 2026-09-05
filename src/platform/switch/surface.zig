@@ -7,14 +7,14 @@ const surface_api = @import("../surface.zig");
 const Surface = @This();
 const c = @import("c.zig").switch_c;
 
-const HANDHELD_WIDTH = 1280;
-const HANDHELD_HEIGHT = 720;
-const DOCKED_WIDTH = 1920;
-const DOCKED_HEIGHT = 1080;
+const handheld_width = 1280;
+const handheld_height = 720;
+const docked_width = 1920;
+const docked_height = 1080;
 
 alloc: std.mem.Allocator,
-width: u32 = HANDHELD_WIDTH,
-height: u32 = HANDHELD_HEIGHT,
+width: u32 = handheld_width,
+height: u32 = handheld_height,
 operation_mode: c.AppletOperationMode = c.AppletOperationMode_Handheld,
 docked_mode_entered: bool = false,
 
@@ -56,10 +56,10 @@ pub fn take_docked_mode_entered(self: *Surface) bool {
 
 fn set_operation_mode_resolution(self: *Surface, mode: c.AppletOperationMode) void {
     if (mode == c.AppletOperationMode_Console) {
-        self.width = DOCKED_WIDTH;
-        self.height = DOCKED_HEIGHT;
+        self.width = docked_width;
+        self.height = docked_height;
     } else {
-        self.width = HANDHELD_WIDTH;
-        self.height = HANDHELD_HEIGHT;
+        self.width = handheld_width;
+        self.height = handheld_height;
     }
 }

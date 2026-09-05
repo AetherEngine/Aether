@@ -19,34 +19,34 @@ const ChannelSound = horizon.services.ChannelSound;
 const CsndCommand = ChannelSound.Command;
 const Thread = thread_mod.Thread;
 
-const DEVICE_SAMPLE_RATE: u32 = 44_100;
-const DEVICE_CHANNELS: usize = 1;
-const NUM_SLOTS: usize = 16;
-const SAMPLES_PER_PAGE: usize = 512;
-const RING_PAGE_COUNT: usize = 8;
-const LEAD_PAGE_COUNT: usize = 3;
-const READ_BUF_SIZE: usize = SAMPLES_PER_PAGE * 2 * @sizeOf(i16);
-const OUTPUT_PAGE_BYTES: usize = SAMPLES_PER_PAGE * DEVICE_CHANNELS * @sizeOf(i16);
-const TOTAL_OUTPUT_BYTES: usize = OUTPUT_PAGE_BYTES * RING_PAGE_COUNT;
-const RING_SAMPLES: usize = SAMPLES_PER_PAGE * RING_PAGE_COUNT;
-const PAGE_NS: u64 = (@as(u64, SAMPLES_PER_PAGE) * std.time.ns_per_s) / DEVICE_SAMPLE_RATE;
-const FP_ONE: u64 = 1 << 32;
+const device_sample_rate: u32 = 44_100;
+const device_channels: usize = 1;
+const num_slots: usize = 16;
+const samples_per_page: usize = 512;
+const ring_page_count: usize = 8;
+const lead_page_count: usize = 3;
+const read_buf_size: usize = samples_per_page * 2 * @sizeOf(i16);
+const output_page_bytes: usize = samples_per_page * device_channels * @sizeOf(i16);
+const total_output_bytes: usize = output_page_bytes * ring_page_count;
+const ring_samples: usize = samples_per_page * ring_page_count;
+const page_ns: u64 = (@as(u64, samples_per_page) * std.time.ns_per_s) / device_sample_rate;
+const fp_one: u64 = 1 << 32;
 
 /// Filesystem operations on 3DS are latency-sensitive IPC operations. The
 /// render thread consumes from these bounded FIFOs while a separate worker
 /// refills them in larger chunks.
-const STREAM_FIFO_MIN_BYTES: usize = 4 * 1024;
-const STREAM_START_BYTES: usize = 4 * 1024;
-const STREAM_PREFETCH_CHUNK_BYTES: usize = 8 * 1024;
+const stream_fifo_min_bytes: usize = 4 * 1024;
+const stream_start_bytes: usize = 4 * 1024;
+const stream_prefetch_chunk_bytes: usize = 8 * 1024;
 
-const COMMAND_BLOCK_SIZE: u32 = 0x2000;
-const STATUS_DSP_OFFSET: u32 = COMMAND_BLOCK_SIZE;
-const STATUS_CHANNEL_OFFSET: u32 = STATUS_DSP_OFFSET + 8;
-const STATUS_CAPTURE_OFFSET: u32 = STATUS_CHANNEL_OFFSET + 12 * 32;
-const STATUS_EXTRA_OFFSET: u32 = STATUS_CAPTURE_OFFSET + 8 * 2;
-const SHM_SIZE: usize = std.mem.alignForward(usize, STATUS_EXTRA_OFFSET + 0x3c, horizon.heap.page_size);
-const COMMAND_OFFSET: u32 = 0;
-const COMMAND_COMPLETION_POLL_COUNT: usize = 2048;
+const command_block_size: u32 = 0x2000;
+const status_dsp_offset: u32 = command_block_size;
+const status_channel_offset: u32 = status_dsp_offset + 8;
+const status_capture_offset: u32 = status_channel_offset + 12 * 32;
+const status_extra_offset: u32 = status_capture_offset + 8 * 2;
+const shm_size: usize = std.mem.alignForward(usize, status_extra_offset + 0x3c, horizon.heap.page_size);
+const command_offset: u32 = 0;
+const command_completion_poll_count: usize = 2048;
 
 const Channel = ChannelSound.Channel;
 
@@ -69,13 +69,13 @@ const Slot = struct {
     gain: std.atomic.Value(u32) = std.atomic.Value(u32).init(@bitCast(@as(f32, 0))),
     pan: std.atomic.Value(u32) = std.atomic.Value(u32).init(@bitCast(@as(f32, 0))),
     source: SlotSource = undefined,
-    format: PcmFormat = .{ .sample_rate = DEVICE_SAMPLE_RATE, .channels = 1, .bit_depth = 16 },
-    step_fp: u64 = FP_ONE,
+    format: PcmFormat = .{ .sample_rate = device_sample_rate, .channels = 1, .bit_depth = 16 },
+    step_fp: u64 = fp_one,
     phase_fp: u64 = 0,
     current_left: i16 = 0,
     current_right: i16 = 0,
     has_current_sample: bool = false,
-    read_buf: [READ_BUF_SIZE]u8 = undefined,
+    read_buf: [read_buf_size]u8 = undefined,
     generation: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
     // The worker publishes this only after it has moved on from the previous
     // stream generation. The render thread can then discard stale FIFO bytes
@@ -88,7 +88,7 @@ const Slot = struct {
     consumer_generation: u32 = 0,
 };
 
-var slots: [NUM_SLOTS]Slot = init_slots();
+var slots: [num_slots]Slot = init_slots();
 var audio_alloc: std.mem.Allocator = undefined;
 var audio_io: std.Io = undefined;
 var snd: ?ChannelSound = null;
@@ -108,13 +108,13 @@ var stream_wakeup: std.Io.Event = .unset;
 var stream_wakeup_sequence: std.atomic.Value(u32) = std.atomic.Value(u32).init(0);
 var stream_cache: ?[]u8 = null;
 var stream_fifo_bytes: usize = 0;
-var stream_fifos: [NUM_SLOTS]audio_fifo.ByteFifo = undefined;
+var stream_fifos: [num_slots]audio_fifo.ByteFifo = undefined;
 var stream_underflows: std.atomic.Value(usize) = std.atomic.Value(usize).init(0);
 var output_underruns: std.atomic.Value(usize) = std.atomic.Value(usize).init(0);
 var initialized = false;
 
-fn init_slots() [NUM_SLOTS]Slot {
-    var s: [NUM_SLOTS]Slot = undefined;
+fn init_slots() [num_slots]Slot {
+    var s: [num_slots]Slot = undefined;
     for (&s) |*slot| {
         slot.* = .{};
     }
@@ -127,7 +127,7 @@ pub fn setup(alloc: std.mem.Allocator, io: std.Io) void {
 }
 
 pub fn init() audio_api.InitError!void {
-    const app = app_3ds.currentApplication() orelse std.debug.panic("3DS audio init failed: no current application", .{});
+    const app = app_3ds.current_application() orelse std.debug.panic("3DS audio init failed: no current application", .{});
 
     snd = ChannelSound.open(app.srv) catch |err| return init_failed("open csnd:SND", err);
     errdefer {
@@ -135,10 +135,10 @@ pub fn init() audio_api.InitError!void {
         snd = null;
     }
 
-    const shm_ptr = horizon.heap.allocShared(SHM_SIZE);
-    const shm_slice = shm_ptr[0..SHM_SIZE];
+    const shm_ptr = horizon.heap.allocShared(shm_size);
+    const shm_slice = shm_ptr[0..shm_size];
 
-    const init_handles = snd.?.sendInitialize(SHM_SIZE, STATUS_DSP_OFFSET, STATUS_CHANNEL_OFFSET, STATUS_CAPTURE_OFFSET, STATUS_EXTRA_OFFSET) catch |err| return init_failed("initialize CSND", err);
+    const init_handles = snd.?.sendInitialize(shm_size, status_dsp_offset, status_channel_offset, status_capture_offset, status_extra_offset) catch |err| return init_failed("initialize CSND", err);
     snd_mutex = init_handles.mutex;
     snd_shm_block = init_handles.shared_memory;
     errdefer {
@@ -162,7 +162,7 @@ pub fn init() audio_api.InitError!void {
     output_data = horizon.heap.linear_page_allocator.alignedAlloc(
         u8,
         .fromByteUnits(horizon.heap.page_size),
-        TOTAL_OUTPUT_BYTES,
+        total_output_bytes,
     ) catch |err| return init_failed("allocate CSND output buffer", err);
     errdefer {
         horizon.heap.linear_page_allocator.free(output_data.?);
@@ -196,7 +196,7 @@ pub fn init() audio_api.InitError!void {
 
     std.log.info("3DS audio stream cache: {} KiB total ({} slots x {} KiB) from the engine audio pool", .{
         stream_cache.?.len / 1024,
-        NUM_SLOTS,
+        num_slots,
         stream_fifo_bytes / 1024,
     });
 }
@@ -210,14 +210,14 @@ fn init_failed(comptime stage: []const u8, err: anyerror) audio_api.InitError {
 }
 
 fn init_stream_cache(total_bytes: usize) !void {
-    if (total_bytes < NUM_SLOTS * STREAM_FIFO_MIN_BYTES or total_bytes % NUM_SLOTS != 0) {
+    if (total_bytes < num_slots * stream_fifo_min_bytes or total_bytes % num_slots != 0) {
         return error.InvalidStreamCacheSize;
     }
 
     const bytes = try audio_alloc.alloc(u8, total_bytes);
     errdefer audio_alloc.free(bytes);
 
-    const fifo_bytes = total_bytes / NUM_SLOTS;
+    const fifo_bytes = total_bytes / num_slots;
     for (&stream_fifos, 0..) |*fifo, i| {
         const start = i * fifo_bytes;
         fifo.* = audio_fifo.ByteFifo.init(bytes[start..][0..fifo_bytes]);
@@ -332,18 +332,18 @@ pub fn resume_from_applet() void {
 pub fn update() void {}
 
 pub fn max_voices() u32 {
-    return NUM_SLOTS;
+    return num_slots;
 }
 
 pub fn play_slot(slot: u8, source: SlotSource) audio_api.PlaySlotError!void {
-    if (slot >= NUM_SLOTS) return error.InvalidArgs;
+    if (slot >= num_slots) return error.InvalidArgs;
     const format = source_format(source);
     if (!format_supported(format)) return error.UnsupportedFormat;
 
     const i: usize = slot;
     slots[i].source = source;
     slots[i].format = format;
-    slots[i].step_fp = (@as(u64, format.sample_rate) << 32) / DEVICE_SAMPLE_RATE;
+    slots[i].step_fp = (@as(u64, format.sample_rate) << 32) / device_sample_rate;
     _ = slots[i].generation.fetchAdd(1, .acq_rel);
     switch (source) {
         .buffer => {
@@ -360,7 +360,7 @@ pub fn play_slot(slot: u8, source: SlotSource) audio_api.PlaySlotError!void {
 }
 
 pub fn stop_slot(slot: u8) void {
-    if (slot >= NUM_SLOTS) return;
+    if (slot >= num_slots) return;
     _ = slots[slot].generation.fetchAdd(1, .acq_rel);
     slots[slot].stream_state.store(@intFromEnum(StreamState.none), .release);
     slots[slot].stream_state_generation.store(0, .release);
@@ -369,13 +369,13 @@ pub fn stop_slot(slot: u8) void {
 }
 
 pub fn set_slot_gain_pan(slot: u8, gain: f32, pan: f32) void {
-    if (slot >= NUM_SLOTS) return;
+    if (slot >= num_slots) return;
     slots[slot].gain.store(@bitCast(gain), .release);
     slots[slot].pan.store(@bitCast(pan), .release);
 }
 
 pub fn is_slot_active(slot: u8) bool {
-    if (slot >= NUM_SLOTS) return false;
+    if (slot >= num_slots) return false;
     const state: SlotState = @enumFromInt(slots[slot].state.load(.acquire));
     return state != .inactive and state != .finished;
 }
@@ -384,8 +384,8 @@ fn audio_thread_fn() void {
     var next_page: usize = 0;
     var written_samples: u64 = 0;
     var start_ns: u96 = 0;
-    const lead_target_samples: u64 = SAMPLES_PER_PAGE * LEAD_PAGE_COUNT;
-    const sleep_ns: i64 = @intCast(@max(PAGE_NS / 4, @as(u64, std.time.ns_per_ms)));
+    const lead_target_samples: u64 = samples_per_page * lead_page_count;
+    const sleep_ns: i64 = @intCast(@max(page_ns / 4, @as(u64, std.time.ns_per_ms)));
 
     while (running.load(.acquire) != 0) {
         if (applet_suspended.load(.acquire) != 0) {
@@ -398,7 +398,7 @@ fn audio_thread_fn() void {
         if (stream_started.load(.acquire) == 0) {
             const data = output_data orelse std.debug.panic("3DS audio thread lost output buffer before start", .{});
             @memset(data, 0);
-            for (0..RING_PAGE_COUNT) |page| {
+            for (0..ring_page_count) |page| {
                 fill_output_page(page);
             }
             start_looping_output() catch |err| {
@@ -406,7 +406,7 @@ fn audio_thread_fn() void {
             };
             stream_started.store(1, .release);
             start_ns = horizon.time.getSystemNanoseconds();
-            written_samples = RING_SAMPLES;
+            written_samples = ring_samples;
             next_page = 0;
         }
 
@@ -425,7 +425,7 @@ fn audio_thread_fn() void {
                 std.debug.panic("3DS audio underrun recovery failed: {s}", .{@errorName(err)});
             };
             start_ns = horizon.time.getSystemNanoseconds();
-            written_samples = RING_SAMPLES;
+            written_samples = ring_samples;
             next_page = 0;
             horizon.sleepThread(sleep_ns);
             continue;
@@ -433,8 +433,8 @@ fn audio_thread_fn() void {
 
         while (written_samples - played_samples <= lead_target_samples) {
             fill_output_page(next_page);
-            written_samples += SAMPLES_PER_PAGE;
-            next_page = (next_page + 1) % RING_PAGE_COUNT;
+            written_samples += samples_per_page;
+            next_page = (next_page + 1) % ring_page_count;
         }
 
         if (written_samples - played_samples > lead_target_samples) {
@@ -445,10 +445,10 @@ fn audio_thread_fn() void {
 
 fn fill_output_page(index: usize) void {
     const data = output_data orelse return;
-    const start = index * OUTPUT_PAGE_BYTES;
-    const buf = data[start..][0..OUTPUT_PAGE_BYTES];
+    const start = index * output_page_bytes;
+    const buf = data[start..][0..output_page_bytes];
     const out: [*]i16 = @ptrCast(@alignCast(buf.ptr));
-    var accum: [SAMPLES_PER_PAGE]i32 = @splat(0);
+    var accum: [samples_per_page]i32 = @splat(0);
 
     for (&slots, 0..) |*slot, slot_index| {
         var state: SlotState = @enumFromInt(slot.state.load(.acquire));
@@ -474,7 +474,7 @@ fn fill_output_page(index: usize) void {
         }
     }
 
-    for (0..SAMPLES_PER_PAGE) |frame| {
+    for (0..samples_per_page) |frame| {
         out[frame] = clamp_i16(accum[frame]);
     }
 
@@ -482,7 +482,7 @@ fn fill_output_page(index: usize) void {
 }
 
 fn can_bulk_mix(slot: *const Slot) bool {
-    return slot.format.sample_rate == DEVICE_SAMPLE_RATE and slot.step_fp == FP_ONE;
+    return slot.format.sample_rate == device_sample_rate and slot.step_fp == fp_one;
 }
 
 const SourceReadStatus = enum {
@@ -533,7 +533,7 @@ fn pending_slot_ready(slot: *Slot, slot_index: usize) bool {
             }
 
             const frame_size: usize = slot.format.frame_size();
-            const start_bytes = @min(STREAM_START_BYTES, fifo.capacity());
+            const start_bytes = @min(stream_start_bytes, fifo.capacity());
             const available = fifo.readable();
             if (stream_state == .eof and available < frame_size) {
                 slot.state.store(@intFromEnum(SlotState.finished), .release);
@@ -544,11 +544,11 @@ fn pending_slot_ready(slot: *Slot, slot_index: usize) bool {
     };
 }
 
-fn mix_slot_page(slot: *Slot, slot_index: usize, accum: *[SAMPLES_PER_PAGE]i32, left_vol: i32, right_vol: i32) void {
+fn mix_slot_page(slot: *Slot, slot_index: usize, accum: *[samples_per_page]i32, left_vol: i32, right_vol: i32) void {
     const fmt = slot.format;
     const frame_size = fmt.frame_size();
-    const bytes_needed: usize = SAMPLES_PER_PAGE * frame_size;
-    if (bytes_needed > READ_BUF_SIZE) {
+    const bytes_needed: usize = samples_per_page * frame_size;
+    if (bytes_needed > read_buf_size) {
         slot.state.store(@intFromEnum(SlotState.finished), .release);
         return;
     }
@@ -578,7 +578,7 @@ fn mix_slot_page(slot: *Slot, slot_index: usize, accum: *[SAMPLES_PER_PAGE]i32, 
     }
 }
 
-fn mix_slot_page_resampled(slot: *Slot, slot_index: usize, accum: *[SAMPLES_PER_PAGE]i32, left_vol: i32, right_vol: i32) void {
+fn mix_slot_page_resampled(slot: *Slot, slot_index: usize, accum: *[samples_per_page]i32, left_vol: i32, right_vol: i32) void {
     if (!slot.has_current_sample) {
         switch (read_next_sample(slot, slot_index)) {
             .ok => slot.has_current_sample = true,
@@ -590,7 +590,7 @@ fn mix_slot_page_resampled(slot: *Slot, slot_index: usize, accum: *[SAMPLES_PER_
         }
     }
 
-    for (0..SAMPLES_PER_PAGE) |frame| {
+    for (0..samples_per_page) |frame| {
         const left = (@as(i32, slot.current_left) * left_vol) >> 15;
         const right = (@as(i32, slot.current_right) * right_vol) >> 15;
         accum[frame] += @divTrunc(left + right, 2);
@@ -611,8 +611,8 @@ fn mix_slot_page_resampled(slot: *Slot, slot_index: usize, accum: *[SAMPLES_PER_
 
 fn advance_sample(slot: *Slot, slot_index: usize) SourceReadStatus {
     slot.phase_fp +%= slot.step_fp;
-    while (slot.phase_fp >= FP_ONE) {
-        slot.phase_fp -= FP_ONE;
+    while (slot.phase_fp >= fp_one) {
+        slot.phase_fp -= fp_one;
         switch (read_next_sample(slot, slot_index)) {
             .ok => {},
             .underflow => return .underflow,
@@ -664,20 +664,20 @@ fn start_looping_output() !void {
             .repeat = .loop,
             .format = .pcm16,
             .disable_pause = true,
-            .sample_rate = .rate(DEVICE_SAMPLE_RATE),
+            .sample_rate = .rate(device_sample_rate),
         },
         .channel_volume = volumes,
         .capture_volume = volumes,
         .address = physical,
         .second_address = physical,
-        .size = TOTAL_OUTPUT_BYTES,
+        .size = total_output_bytes,
     })});
 }
 
 fn reset_looping_output() !void {
     stop_channel();
     if (output_data) |data| @memset(data, 0);
-    for (0..RING_PAGE_COUNT) |page| {
+    for (0..ring_page_count) |page| {
         fill_output_page(page);
     }
     try start_looping_output();
@@ -693,7 +693,7 @@ fn stop_channel() void {
 fn samples_since(start_ns: u96) u64 {
     const now = horizon.time.getSystemNanoseconds();
     const elapsed_ns = if (now >= start_ns) now - start_ns else 0;
-    return @intCast((elapsed_ns * DEVICE_SAMPLE_RATE) / std.time.ns_per_s);
+    return @intCast((elapsed_ns * device_sample_rate) / std.time.ns_per_s);
 }
 
 fn any_active_slots() bool {
@@ -707,29 +707,29 @@ fn any_active_slots() bool {
 fn execute_commands(cmds: []const CsndCommand) !void {
     const sound = snd orelse std.debug.panic("3DS audio command failed: CSND session missing", .{});
     const shm = snd_shm orelse std.debug.panic("3DS audio command failed: CSND shared memory missing", .{});
-    if (COMMAND_OFFSET + cmds.len * @sizeOf(CsndCommand) > shm.len) {
+    if (command_offset + cmds.len * @sizeOf(CsndCommand) > shm.len) {
         std.debug.panic("3DS audio command failed: CSND command list exceeds shared memory, count={} shm_len={}", .{ cmds.len, shm.len });
     }
 
-    const bytes = shm[COMMAND_OFFSET..][0 .. cmds.len * @sizeOf(CsndCommand)];
+    const bytes = shm[command_offset..][0 .. cmds.len * @sizeOf(CsndCommand)];
     lock_command_buffer();
     defer unlock_command_buffer();
 
     lock_csnd_mutex();
     for (cmds, 0..) |cmd_value, i| {
-        const off = COMMAND_OFFSET + i * @sizeOf(CsndCommand);
+        const off = command_offset + i * @sizeOf(CsndCommand);
         const dst: *CsndCommand = @ptrCast(@alignCast(shm[off..].ptr));
         dst.* = cmd_value;
         dst.next = if (i + 1 == cmds.len)
             .none
         else
-            .offset(@intCast(COMMAND_OFFSET + (i + 1) * @sizeOf(CsndCommand)));
+            .offset(@intCast(command_offset + (i + 1) * @sizeOf(CsndCommand)));
         dst.first_finished = false;
     }
     flush_cache_or_panic("CSND command list", bytes);
     unlock_csnd_mutex();
 
-    try sound.sendExecuteCommands(COMMAND_OFFSET);
+    try sound.sendExecuteCommands(command_offset);
     wait_command_completion_or_panic(shm, bytes, cmds.len);
 }
 
@@ -754,17 +754,17 @@ fn unlock_csnd_mutex() void {
 }
 
 fn wait_command_completion_or_panic(shm: []align(horizon.heap.page_size) u8, bytes: []u8, cmd_count: usize) void {
-    for (0..COMMAND_COMPLETION_POLL_COUNT) |_| {
+    for (0..command_completion_poll_count) |_| {
         invalidate_cache_or_panic("CSND command completion", bytes);
-        const first: *const CsndCommand = @ptrCast(@alignCast(shm[COMMAND_OFFSET..].ptr));
+        const first: *const CsndCommand = @ptrCast(@alignCast(shm[command_offset..].ptr));
         if (first.first_finished) return;
         horizon.sleepThread(0);
     }
 
-    const first: *const CsndCommand = @ptrCast(@alignCast(shm[COMMAND_OFFSET..].ptr));
-    const second_id = if (cmd_count > 1) @tagName((@as(*const CsndCommand, @ptrCast(@alignCast(shm[COMMAND_OFFSET + @sizeOf(CsndCommand) ..].ptr)))).id) else "none";
+    const first: *const CsndCommand = @ptrCast(@alignCast(shm[command_offset..].ptr));
+    const second_id = if (cmd_count > 1) @tagName((@as(*const CsndCommand, @ptrCast(@alignCast(shm[command_offset + @sizeOf(CsndCommand) ..].ptr)))).id) else "none";
     std.debug.panic("CSND command chain did not mark completion after {} polls; first id={s} second id={s} count={} next=0x{x}", .{
-        COMMAND_COMPLETION_POLL_COUNT,
+        command_completion_poll_count,
         @tagName(first.id),
         second_id,
         cmd_count,
@@ -912,7 +912,7 @@ fn format_supported(fmt: PcmFormat) bool {
 
 fn stream_refill_needed(slot_index: usize) bool {
     const fifo = &stream_fifos[slot_index];
-    const minimum_write = @min(STREAM_PREFETCH_CHUNK_BYTES / 2, fifo.capacity() / 2);
+    const minimum_write = @min(stream_prefetch_chunk_bytes / 2, fifo.capacity() / 2);
     return fifo.writable() >= minimum_write and fifo.readable() < (fifo.capacity() * 3) / 4;
 }
 
@@ -1011,18 +1011,18 @@ fn worker_refill_slot(slot_index: usize, scratch: []u8, progress: *StreamWorkerP
 }
 
 fn stream_io_thread_fn() void {
-    var scratch: [STREAM_PREFETCH_CHUNK_BYTES]u8 = undefined;
-    var progress: [NUM_SLOTS]StreamWorkerProgress = @splat(.{});
+    var scratch: [stream_prefetch_chunk_bytes]u8 = undefined;
+    var progress: [num_slots]StreamWorkerProgress = @splat(.{});
     var next_slot: usize = 0;
     var observed_wakeup = stream_wakeup_sequence.load(.acquire);
 
     while (stream_io_running.load(.acquire) != 0) {
         if (applet_suspended.load(.acquire) == 0) {
             var did_work = false;
-            for (0..NUM_SLOTS) |offset| {
-                const slot_index = (next_slot + offset) % NUM_SLOTS;
+            for (0..num_slots) |offset| {
+                const slot_index = (next_slot + offset) % num_slots;
                 if (worker_refill_slot(slot_index, &scratch, &progress[slot_index])) {
-                    next_slot = (slot_index + 1) % NUM_SLOTS;
+                    next_slot = (slot_index + 1) % num_slots;
                     did_work = true;
                     break;
                 }

@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const sdl3 = @import("sdl3");
 const vk = @import("vulkan");
+const vk_constants = @import("constants.zig");
 const Util = @import("../../../util/util.zig");
 
 // SDL hands us the vkGetInstanceProcAddr from its own Vulkan library load
@@ -87,7 +88,7 @@ fn create_instance(self: *Context, name: [:0]const u8) !void {
             .application_version = @bitCast(vk.makeApiVersion(0, 0, 0, 0)),
             .p_engine_name = name,
             .engine_version = @bitCast(vk.makeApiVersion(0, 0, 0, 0)),
-            .api_version = @bitCast(vk.API_VERSION_1_4),
+            .api_version = @bitCast(vk_constants.api_version_1_4),
         },
         .enabled_extension_count = @intCast(extension_names.items.len),
         .pp_enabled_extension_names = extension_names.items.ptr,

@@ -4,10 +4,10 @@ const Util = @import("util.zig");
 pub const Confidence = enum { p50, p75, p95, max };
 
 pub const Estimator = struct {
-    const CAPACITY: usize = 64;
+    const sample_capacity: usize = 64;
 
-    samples: [CAPACITY]i64,
-    sorted: [CAPACITY]i64,
+    samples: [sample_capacity]i64,
+    sorted: [sample_capacity]i64,
     head: usize,
     count: usize,
     start_ns: i96,
@@ -44,8 +44,8 @@ pub const Estimator = struct {
 
     pub fn record(self: *Estimator, elapsed_ns: i64) void {
         self.samples[self.head] = elapsed_ns;
-        self.head = (self.head + 1) % CAPACITY;
-        if (self.count < CAPACITY) self.count += 1;
+        self.head = (self.head + 1) % sample_capacity;
+        if (self.count < sample_capacity) self.count += 1;
 
         // Rebuild sorted array from valid samples
         const n = self.count;
@@ -79,7 +79,7 @@ pub const Estimator = struct {
     }
 
     pub fn is_warming_up(self: *const Estimator) bool {
-        return self.count < CAPACITY;
+        return self.count < sample_capacity;
     }
 
     pub fn avg_ns(self: *const Estimator) i64 {
@@ -103,9 +103,9 @@ pub const Estimator = struct {
             logger.info("  no samples", .{});
         } else {
             if (self.is_warming_up()) {
-                logger.info("  samples: {}/{} (warming up)", .{ self.count, CAPACITY });
+                logger.info("  samples: {}/{} (warming up)", .{ self.count, sample_capacity });
             } else {
-                logger.info("  samples: {}/{}", .{ self.count, CAPACITY });
+                logger.info("  samples: {}/{}", .{ self.count, sample_capacity });
             }
 
             const to_us = struct {

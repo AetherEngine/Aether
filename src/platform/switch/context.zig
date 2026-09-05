@@ -4,12 +4,12 @@ const logger = @import("../../util/logger.zig");
 const dk = @import("deko.zig");
 
 const Context = @This();
-const ENABLE_GPU_MARKERS = false;
-const DEBUG_GPU_MARKER_SLOT_STRIDE = 64;
-const DEBUG_GPU_MARKER_SLOTS = 10;
-const DEBUG_GPU_MARKER_BYTES = DEBUG_GPU_MARKER_SLOT_STRIDE * DEBUG_GPU_MARKER_SLOTS;
-const FENCE_POLL_NS: i64 = 250 * std.time.ns_per_ms;
-const FENCE_HANG_NS: i64 = 5 * std.time.ns_per_s;
+const enable_gpu_markers = false;
+const debug_gpu_marker_slot_stride = 64;
+const debug_gpu_marker_slots = 10;
+const debug_gpu_marker_bytes = debug_gpu_marker_slot_stride * debug_gpu_marker_slots;
+const fence_poll_ns: i64 = 250 * std.time.ns_per_ms;
+const fence_hang_ns: i64 = 5 * std.time.ns_per_s;
 
 pub const Marker = enum(u32) {
     none = 0,
@@ -54,7 +54,7 @@ gpu_marker_cpu: ?[*]volatile u32 = null,
 gpu_marker_sequence: u32 = 0,
 
 fn dump_gpu_markers(self: *Context) void {
-    if (!ENABLE_GPU_MARKERS) return;
+    if (!enable_gpu_markers) return;
     Util.engine_logger.err(
         "Switch GPU markers: phase=0x{x} sequence={d} frame={d} image={d} draw={d} mesh={d} vertices={d} texture={d} buffer={d} uniform={d}",
         .{
@@ -73,7 +73,7 @@ fn dump_gpu_markers(self: *Context) void {
 }
 
 fn gpu_marker_offset(slot: GpuMarkerSlot) u32 {
-    return @intCast(@intFromEnum(slot) * DEBUG_GPU_MARKER_SLOT_STRIDE);
+    return @intCast(@intFromEnum(slot) * debug_gpu_marker_slot_stride);
 }
 
 fn gpu_marker_cpu_index(slot: GpuMarkerSlot) usize {
@@ -136,7 +136,7 @@ pub fn init(allocator: std.mem.Allocator) !Context {
         dk.dkQueueDestroy(self.queue);
         self.queue = null;
     }
-    if (ENABLE_GPU_MARKERS) {
+    if (enable_gpu_markers) {
         try self.create_gpu_markers();
         errdefer self.destroy_gpu_markers();
     }
@@ -150,7 +150,7 @@ pub fn deinit(self: *Context) void {
 
     if (active_context == self) active_context = null;
     self.wait_idle("context deinit");
-    if (ENABLE_GPU_MARKERS) self.destroy_gpu_markers();
+    if (enable_gpu_markers) self.destroy_gpu_markers();
     if (self.queue) |_| {
         dk.dkQueueDestroy(self.queue);
         self.queue = null;
@@ -189,14 +189,14 @@ pub fn flush_queue(self: *Context, comptime where: []const u8) void {
 pub fn wait_fence(self: *Context, fence: *dk.DkFence, comptime where: []const u8) void {
     var waited_ns: i64 = 0;
     while (true) {
-        const result = dk.dkFenceWait(fence, FENCE_POLL_NS);
+        const result = dk.dkFenceWait(fence, fence_poll_ns);
         if (result == dk.ResultSuccess) break;
         if (result != dk.ResultTimeout) {
             gpu_fatal(self, "deko3d fence wait failed at {s}: {d}", .{ where, result });
         }
 
-        waited_ns += FENCE_POLL_NS;
-        if (waited_ns >= FENCE_HANG_NS) {
+        waited_ns += fence_poll_ns;
+        if (waited_ns >= fence_hang_ns) {
             gpu_fatal(self, "deko3d fence wait timed out at {s}: {d} ms", .{ where, @divTrunc(waited_ns, std.time.ns_per_ms) });
         }
     }
@@ -212,7 +212,7 @@ pub fn activate(self: *Context) void {
 }
 
 pub fn mark_gpu(self: *Context, command_buffer: dk.DkCmdBuf, marker: Marker) void {
-    if (!ENABLE_GPU_MARKERS) return;
+    if (!enable_gpu_markers) return;
     if (self.gpu_marker_gpu_addr == 0) return;
     self.gpu_marker_sequence +%= 1;
     self.report_gpu_marker_value(command_buffer, .sequence, self.gpu_marker_sequence);
@@ -232,7 +232,7 @@ pub fn mark_gpu_draw(
     buffer_size: u32,
     uniform_slot: u32,
 ) void {
-    if (!ENABLE_GPU_MARKERS) return;
+    if (!enable_gpu_markers) return;
     if (self.gpu_marker_gpu_addr == 0) return;
     self.gpu_marker_sequence +%= 1;
     self.report_gpu_marker_value(command_buffer, .sequence, self.gpu_marker_sequence);
@@ -260,7 +260,7 @@ pub fn create_mem_block(self: *Context, size: u32, flags: u32) !dk.DkMemBlock {
 }
 
 fn create_gpu_markers(self: *Context) !void {
-    self.gpu_marker_mem = try self.create_mem_block(DEBUG_GPU_MARKER_BYTES, dk.MemCpuUncached | dk.MemGpuUncached | dk.MemZeroFillInit);
+    self.gpu_marker_mem = try self.create_mem_block(debug_gpu_marker_bytes, dk.MemCpuUncached | dk.MemGpuUncached | dk.MemZeroFillInit);
     errdefer {
         dk.dkMemBlockDestroy(self.gpu_marker_mem);
         self.gpu_marker_mem = null;
@@ -271,7 +271,7 @@ fn create_gpu_markers(self: *Context) !void {
     inline for (std.enums.values(GpuMarkerSlot)) |slot| {
         self.gpu_marker_cpu.?[gpu_marker_cpu_index(slot)] = 0;
     }
-    _ = dk.dkMemBlockFlushCpuCache(self.gpu_marker_mem, 0, DEBUG_GPU_MARKER_BYTES);
+    _ = dk.dkMemBlockFlushCpuCache(self.gpu_marker_mem, 0, debug_gpu_marker_bytes);
 }
 
 fn destroy_gpu_markers(self: *Context) void {

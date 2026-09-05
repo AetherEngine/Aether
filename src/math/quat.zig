@@ -11,7 +11,7 @@ pub fn identity() Quat {
     return .{ .x = 0, .y = 0, .z = 0, .w = 1 };
 }
 
-pub fn fromAxisAngle(axis: Vec3, angle: f32) Quat {
+pub fn from_axis_angle(axis: Vec3, angle: f32) Quat {
     const half = angle * 0.5;
     const s = @sin(half);
     const n = axis.normalize();
@@ -19,7 +19,7 @@ pub fn fromAxisAngle(axis: Vec3, angle: f32) Quat {
 }
 
 /// Euler angles in radians: pitch (X), yaw (Y), roll (Z), applied in ZXY order.
-pub fn fromEuler(pitch: f32, yaw: f32, roll: f32) Quat {
+pub fn from_euler(pitch: f32, yaw: f32, roll: f32) Quat {
     const hp = pitch * 0.5;
     const hy = yaw * 0.5;
     const hr = roll * 0.5;
@@ -55,7 +55,7 @@ pub fn conjugate(q: Quat) Quat {
     return .{ .x = -q.x, .y = -q.y, .z = -q.z, .w = q.w };
 }
 
-pub fn rotateVec3(q: Quat, v: Vec3) Vec3 {
+pub fn rotate_vec3(q: Quat, v: Vec3) Vec3 {
     const qv = Vec3.new(q.x, q.y, q.z);
     const t = Vec3.cross(qv, v).scale(2.0);
     return Vec3.add(Vec3.add(v, t.scale(q.w)), Vec3.cross(qv, t));

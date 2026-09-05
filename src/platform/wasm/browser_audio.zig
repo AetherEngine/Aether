@@ -2,7 +2,7 @@ const std = @import("std");
 const audio_api = @import("../audio_api.zig");
 const SlotSource = @import("../../audio/stream.zig").SlotSource;
 
-const MAX_SLOTS = 32;
+const max_slots = 32;
 
 extern "aether_host" fn aether_audio_init(sample_rate: u32, max_slots: u32) void;
 extern "aether_host" fn aether_audio_deinit() void;
@@ -22,7 +22,7 @@ pub fn setup(alloc: std.mem.Allocator, io: std.Io) void {
 }
 
 pub fn init() audio_api.InitError!void {
-    aether_audio_init(48_000, MAX_SLOTS);
+    aether_audio_init(48_000, max_slots);
 }
 
 pub fn deinit() void {
@@ -34,11 +34,11 @@ pub fn update() void {
 }
 
 pub fn max_voices() u32 {
-    return MAX_SLOTS;
+    return max_slots;
 }
 
 pub fn play_slot(slot: u8, source: SlotSource) audio_api.PlaySlotError!void {
-    if (slot >= MAX_SLOTS) return;
+    if (slot >= max_slots) return;
 
     switch (source) {
         .buffer => |buffer| {
@@ -62,16 +62,16 @@ pub fn play_slot(slot: u8, source: SlotSource) audio_api.PlaySlotError!void {
 }
 
 pub fn stop_slot(slot: u8) void {
-    if (slot >= MAX_SLOTS) return;
+    if (slot >= max_slots) return;
     aether_audio_stop_slot(slot);
 }
 
 pub fn set_slot_gain_pan(slot: u8, gain: f32, pan: f32) void {
-    if (slot >= MAX_SLOTS) return;
+    if (slot >= max_slots) return;
     aether_audio_set_slot_gain_pan(slot, gain, pan);
 }
 
 pub fn is_slot_active(slot: u8) bool {
-    if (slot >= MAX_SLOTS) return false;
+    if (slot >= max_slots) return false;
     return aether_audio_is_slot_active(slot);
 }

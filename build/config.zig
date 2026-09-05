@@ -129,7 +129,7 @@ pub const Config = struct {
     };
 };
 
-pub fn webTarget(b: *std.Build) std.Build.ResolvedTarget {
+pub fn web_target(b: *std.Build) std.Build.ResolvedTarget {
     return b.resolveTargetQuery(.{
         .cpu_arch = .wasm32,
         .os_tag = .wasi,
@@ -138,7 +138,7 @@ pub fn webTarget(b: *std.Build) std.Build.ResolvedTarget {
     });
 }
 
-pub fn nintendo3dsTarget(b: *std.Build) std.Build.ResolvedTarget {
+pub fn nintendo3ds_target(b: *std.Build) std.Build.ResolvedTarget {
     return b.resolveTargetQuery(.{
         .cpu_arch = .arm,
         .os_tag = .@"3ds",

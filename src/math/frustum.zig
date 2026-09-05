@@ -3,7 +3,7 @@
 
 const Vec3 = @import("vec3.zig");
 const Mat4 = @import("mat4.zig");
-const AABB = @import("aabb.zig");
+const Aabb = @import("aabb.zig");
 
 pub const Plane = struct {
     normal: Vec3,
@@ -14,7 +14,7 @@ pub const Plane = struct {
         return .{ .normal = p.normal.scale(1.0 / len), .d = p.d / len };
     }
 
-    pub fn distanceTo(p: Plane, v: Vec3) f32 {
+    pub fn distance_to(p: Plane, v: Vec3) f32 {
         return Vec3.dot(p.normal, v) + p.d;
     }
 };
@@ -27,7 +27,7 @@ const Frustum = @This();
 /// Extract the six frustum planes from a combined view-projection matrix.
 /// Uses the Gribb/Hartmann method adapted for row-major, row-vector matrices.
 /// Assumes z in [0, 1] NDC.
-pub fn fromViewProjection(vp: Mat4) Frustum {
+pub fn from_view_projection(vp: Mat4) Frustum {
     const m = vp.data;
     var self: Frustum = undefined;
 
@@ -66,21 +66,21 @@ pub fn fromViewProjection(vp: Mat4) Frustum {
     return self;
 }
 
-pub fn containsPoint(self: Frustum, p: Vec3) bool {
+pub fn contains_point(self: Frustum, p: Vec3) bool {
     for (&self.planes) |*plane| {
-        if (plane.distanceTo(p) < 0) return false;
+        if (plane.distance_to(p) < 0) return false;
     }
     return true;
 }
 
 /// Conservative AABB test -- returns false only if the AABB is fully outside any plane.
-pub fn containsAABB(self: Frustum, aabb: AABB) bool {
+pub fn contains_aabb(self: Frustum, aabb: Aabb) bool {
     for (&self.planes) |*plane| {
         // Positive vertex: the corner furthest in the plane's normal direction.
         const px = if (plane.normal.x >= 0) aabb.max.x else aabb.min.x;
         const py = if (plane.normal.y >= 0) aabb.max.y else aabb.min.y;
         const pz = if (plane.normal.z >= 0) aabb.max.z else aabb.min.z;
-        if (plane.distanceTo(Vec3.new(px, py, pz)) < 0) return false;
+        if (plane.distance_to(Vec3.new(px, py, pz)) < 0) return false;
     }
     return true;
 }

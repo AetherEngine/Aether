@@ -11,13 +11,13 @@ const Hid = horizon.services.Hid;
 const IrRst = horizon.services.IrRst;
 const SoftwareKeyboard = horizon.services.Applet.Application.SoftwareKeyboard;
 
-const IR_UPDATE_MS = 10;
-const IR_USE_RAW_C_STICK = false;
-const STICK_MAX: f32 = 0x9C;
-const STICK_DEADZONE: f32 = 0.15;
-const MAX_OSK_TEXT_UNITS = 1024;
-const MAX_OSK_UTF8_BYTES = MAX_OSK_TEXT_UNITS * 4;
-const DEFAULT_OSK_BYTES = 256;
+const ir_update_ms = 10;
+const ir_use_raw_c_stick = false;
+const stick_max: f32 = 0x9C;
+const stick_deadzone: f32 = 0.15;
+const max_osk_text_units = 1024;
+const max_osk_utf8_bytes = max_osk_text_units * 4;
+const default_osk_bytes = 256;
 const axis_count = @typeInfo(core.Axis).@"enum".fields.len;
 
 var input_alloc: std.mem.Allocator = undefined;
@@ -45,7 +45,7 @@ pub fn init() input_api.InitError!void {
 pub fn deinit() void {
     if (active_input) |input| release_touch_if_down(input);
 
-    const must_close = if (app_3ds.currentApplication()) |app| app.app.flags.must_close else true;
+    const must_close = if (app_3ds.current_application()) |app| app.app.flags.must_close else true;
     if (ir_service) |service| {
         if (ir_started and !must_close) service.sendShutdown() catch {};
         if (ir_input) |*input| input.deinit();
@@ -59,7 +59,7 @@ pub fn deinit() void {
 }
 
 pub fn pump(input: *core.InputSystem) void {
-    if (app_3ds.currentApplication()) |app| {
+    if (app_3ds.current_application()) |app| {
         const pad = app.input.pollPad();
         pump_buttons(input, pad);
         pump_left_stick(input, pad);
@@ -75,8 +75,8 @@ pub fn apply_cursor_mode(mode: core.CursorMode) void {
 }
 
 pub fn begin_text_input_session(input: *core.InputSystem, target: *const core.TextInputTarget, options: *const core.TextInputOptions) input_api.TextSessionError!void {
-    const app = app_3ds.currentApplication() orelse return error.NoCurrentApplication;
-    var initial_buf: [MAX_OSK_UTF8_BYTES]u8 = undefined;
+    const app = app_3ds.current_application() orelse return error.NoCurrentApplication;
+    var initial_buf: [max_osk_utf8_bytes]u8 = undefined;
     const initial = copy_current_text_for_osk(input, &initial_buf, options.*);
 
     var buttons = [_]SoftwareKeyboard.Config.Button{
@@ -126,7 +126,7 @@ pub fn begin_text_input_session(input: *core.InputSystem, target: *const core.Te
 
     switch (result) {
         .right => {
-            var out_buf: [MAX_OSK_UTF8_BYTES]u8 = undefined;
+            var out_buf: [max_osk_utf8_bytes]u8 = undefined;
             const len = std.unicode.utf16LeToUtf8(&out_buf, swkbd.writtenText()) catch 0;
             const text = clamp_utf8_to_max_bytes(out_buf[0..len], options.max_bytes);
             input.write_text_session_buffer(text, .submitted);
@@ -138,11 +138,11 @@ pub fn begin_text_input_session(input: *core.InputSystem, target: *const core.Te
 pub fn end_text_input_session(_: *core.InputSystem) void {}
 
 fn init_ir() void {
-    const app = app_3ds.currentApplication() orelse return;
+    const app = app_3ds.current_application() orelse return;
 
     const service = IrRst.open(app.srv) catch return;
 
-    service.sendInitialize(IR_UPDATE_MS, IR_USE_RAW_C_STICK) catch {
+    service.sendInitialize(ir_update_ms, ir_use_raw_c_stick) catch {
         service.close();
         return;
     };
@@ -282,9 +282,9 @@ fn deliver_axis(input: *core.InputSystem, axis: core.Axis, value: f32) void {
 }
 
 fn normalize_stick(raw: i16) f32 {
-    const value = @as(f32, @floatFromInt(raw)) / STICK_MAX;
+    const value = @as(f32, @floatFromInt(raw)) / stick_max;
     const clamped = std.math.clamp(value, -1.0, 1.0);
-    return if (@abs(clamped) < STICK_DEADZONE) 0.0 else clamped;
+    return if (@abs(clamped) < stick_deadzone) 0.0 else clamped;
 }
 
 fn copy_current_text_for_osk(input: *core.InputSystem, dst: []u8, options: core.TextInputOptions) []const u8 {
@@ -300,7 +300,7 @@ fn osk_max_length(limit: ?usize) u16 {
 }
 
 fn osk_text_limit(limit: ?usize) usize {
-    return @min(limit orelse DEFAULT_OSK_BYTES, MAX_OSK_TEXT_UNITS - 1);
+    return @min(limit orelse default_osk_bytes, max_osk_text_units - 1);
 }
 
 fn clamp_utf8_to_max_bytes(text: []const u8, limit: ?usize) []const u8 {

@@ -45,10 +45,10 @@ const TextureBatch = struct {
     mesh: BatchMesh,
 };
 
-const MAX_SPRITES: u16 = if (options.config.platform == .psp) 256 else 1024;
-const QUADS_PER_SPRITE: u16 = 1;
+const max_sprites: u16 = if (options.config.platform == .psp) 256 else 1024;
+const quads_per_sprite: u16 = 1;
 
-sprites: [2][MAX_SPRITES]Sprite,
+sprites: [2][max_sprites]Sprite,
 count: u16,
 prev_count: u16,
 current: u1,
@@ -81,7 +81,7 @@ pub fn deinit(self: *SpriteBatcher) void {
 }
 
 pub fn add_sprite(self: *SpriteBatcher, sprite: *const Sprite) void {
-    assert(self.count < MAX_SPRITES);
+    assert(self.count < max_sprites);
     self.sprites[self.current][self.count] = sprite.*;
     self.count += 1;
 }
@@ -204,7 +204,7 @@ fn rebuild_batches(self: *SpriteBatcher, screen_w: u32, screen_h: u32) !void {
         batch.mesh_data.clear_retaining_capacity();
         try batch.mesh_data.ensure_quad_capacity(
             self.allocator,
-            @as(usize, group_count) * QUADS_PER_SPRITE,
+            @as(usize, group_count) * quads_per_sprite,
         );
 
         for (sprites[group_start..i]) |sprite| {

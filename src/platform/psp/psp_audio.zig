@@ -11,13 +11,13 @@ const audio_api = @import("../audio_api.zig");
 const SlotSource = @import("../../audio/stream.zig").SlotSource;
 const PcmFormat = @import("../../audio/stream.zig").PcmFormat;
 
-const NUM_SLOTS: usize = 8;
-const SAMPLES_PER_BUF: usize = 1024;
-/// Per-slot scratch: room for SAMPLES_PER_BUF of stereo i16.
-const READ_BUF_SIZE: usize = SAMPLES_PER_BUF * 2 * 2 * 8;
-/// Output buffer: SAMPLES_PER_BUF stereo i16 frames.
-const OUTPUT_BUF_BYTES: usize = SAMPLES_PER_BUF * 2 * 2;
-const PSP_VOLUME_MAX: i32 = 0x8000;
+const num_slots: usize = 8;
+const samples_per_buf: usize = 1024;
+/// Per-slot scratch: room for samples_per_buf of stereo i16.
+const read_buf_size: usize = samples_per_buf * 2 * 2 * 8;
+/// Output buffer: samples_per_buf stereo i16 frames.
+const output_buf_bytes: usize = samples_per_buf * 2 * 2;
+const psp_volume_max: i32 = 0x8000;
 
 // -- slot state (shared between game thread and audio thread) -----------------
 
@@ -33,13 +33,13 @@ const Slot = struct {
     gain: std.atomic.Value(u32) = std.atomic.Value(u32).init(@bitCast(@as(f32, 0))),
     pan: std.atomic.Value(u32) = std.atomic.Value(u32).init(@bitCast(@as(f32, 0))),
     source: SlotSource = undefined,
-    read_buf: [READ_BUF_SIZE]u8 = undefined,
+    read_buf: [read_buf_size]u8 = undefined,
 };
 
-var slots: [NUM_SLOTS]Slot = init_slots();
+var slots: [num_slots]Slot = init_slots();
 
-fn init_slots() [NUM_SLOTS]Slot {
-    var s: [NUM_SLOTS]Slot = undefined;
+fn init_slots() [num_slots]Slot {
+    var s: [num_slots]Slot = undefined;
     for (&s) |*slot| {
         slot.* = .{};
     }
@@ -55,7 +55,7 @@ var thread_id: sdk.SceUID = -1;
 var running: std.atomic.Value(u8) = std.atomic.Value(u8).init(0);
 
 /// Double output buffers, 64-byte aligned for PSP DMA.
-var output_bufs: [2][OUTPUT_BUF_BYTES]u8 align(64) = @splat(@splat(0));
+var output_bufs: [2][output_buf_bytes]u8 align(64) = @splat(@splat(0));
 
 // -- public interface ---------------------------------------------------------
 
@@ -65,7 +65,7 @@ pub fn setup(alloc: std.mem.Allocator, io: std.Io) void {
 }
 
 pub fn init() audio_api.InitError!void {
-    hw_channel = sdk.audio.ch_reserve(sdk.audio.next_channel, @intCast(SAMPLES_PER_BUF), .stereo) catch
+    hw_channel = sdk.audio.ch_reserve(sdk.audio.next_channel, @intCast(samples_per_buf), .stereo) catch
         return error.AudioInitFailed;
 
     running.store(1, .release);
@@ -109,28 +109,28 @@ pub fn deinit() void {
 pub fn update() void {}
 
 pub fn max_voices() u32 {
-    return NUM_SLOTS;
+    return num_slots;
 }
 
 pub fn play_slot(slot: u8, source: SlotSource) audio_api.PlaySlotError!void {
-    if (slot >= NUM_SLOTS) return error.InvalidArgs;
+    if (slot >= num_slots) return error.InvalidArgs;
     slots[slot].source = source;
     slots[slot].state.store(@intFromEnum(SlotState.pending), .release);
 }
 
 pub fn stop_slot(slot: u8) void {
-    if (slot >= NUM_SLOTS) return;
+    if (slot >= num_slots) return;
     slots[slot].state.store(@intFromEnum(SlotState.inactive), .release);
 }
 
 pub fn set_slot_gain_pan(slot: u8, gain: f32, pan: f32) void {
-    if (slot >= NUM_SLOTS) return;
+    if (slot >= num_slots) return;
     slots[slot].gain.store(@bitCast(gain), .release);
     slots[slot].pan.store(@bitCast(pan), .release);
 }
 
 pub fn is_slot_active(slot: u8) bool {
-    if (slot >= NUM_SLOTS) return false;
+    if (slot >= num_slots) return false;
     const state: SlotState = @enumFromInt(slots[slot].state.load(.acquire));
     return state != .inactive and state != .finished;
 }
@@ -145,8 +145,8 @@ fn audio_thread_fn(_: usize, _: ?*anyopaque) callconv(.c) c_int {
 
         sdk.audio.output_panned_blocking(
             hw_channel,
-            PSP_VOLUME_MAX,
-            PSP_VOLUME_MAX,
+            psp_volume_max,
+            psp_volume_max,
             @ptrCast(&output_bufs[cur]),
         ) catch {};
 
@@ -156,7 +156,7 @@ fn audio_thread_fn(_: usize, _: ?*anyopaque) callconv(.c) c_int {
     return 0;
 }
 
-fn fill_buffer(buf: *[OUTPUT_BUF_BYTES]u8) void {
+fn fill_buffer(buf: *[output_buf_bytes]u8) void {
     @memset(buf, 0);
 
     const out: [*]i16 = @ptrCast(@alignCast(buf));
@@ -180,9 +180,9 @@ fn fill_buffer(buf: *[OUTPUT_BUF_BYTES]u8) void {
         const right_vol: i32 = @intFromFloat(std.math.clamp(right_gain, 0.0, 1.0) * 32768.0);
 
         const fmt = source_format(slot.source);
-        const bytes_needed: usize = SAMPLES_PER_BUF * fmt.frame_size();
+        const bytes_needed: usize = samples_per_buf * fmt.frame_size();
 
-        if (bytes_needed > READ_BUF_SIZE) {
+        if (bytes_needed > read_buf_size) {
             slot.state.store(@intFromEnum(SlotState.finished), .release);
             continue;
         }
@@ -236,13 +236,13 @@ fn mix_into_i16(
     if (fmt.bit_depth != 16) return;
 
     if (fmt.channels == 1) {
-        for (0..SAMPLES_PER_BUF) |f| {
+        for (0..samples_per_buf) |f| {
             const s: i32 = std.mem.readInt(i16, buf[f * 2 ..][0..2], .little);
             out[f * 2] +|= @intCast((s * left_vol) >> 15);
             out[f * 2 + 1] +|= @intCast((s * right_vol) >> 15);
         }
     } else {
-        for (0..SAMPLES_PER_BUF) |f| {
+        for (0..samples_per_buf) |f| {
             const l: i32 = std.mem.readInt(i16, buf[f * 4 ..][0..2], .little);
             const r: i32 = std.mem.readInt(i16, buf[f * 4 + 2 ..][0..2], .little);
             out[f * 2] +|= @intCast((l * left_vol) >> 15);
