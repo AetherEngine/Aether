@@ -68,7 +68,7 @@ pub fn add_internal_shader_module(owner: *std.Build, b: *std.Build, mod: *std.Bu
 fn internal_shader_stages(owner: *std.Build, b: *std.Build, config: Config) ?ShaderStagePaths {
     if (config.platform == .nintendo_3ds and config.gfx == .default) {
         return .{
-            .vert = add_zpsh_step(owner, b, "basic.vert.zpsh", owner.path("src/platform/3ds/shaders/basic.zpsm")),
+            .vert = add_zpsh_step(owner, b, "basic.vert.zpsh", owner.path("platform/3ds/shaders/basic.zpsm")),
             .frag = b.addWriteFiles().add("basic.frag.3ds.stub", "3ds fixed-function fragment stage\n"),
         };
     }
@@ -76,7 +76,7 @@ fn internal_shader_stages(owner: *std.Build, b: *std.Build, config: Config) ?Sha
     if (config.platform == .nintendo_switch and config.gfx == .default) {
         const uam = b.pathJoin(&.{ tools.devkit_pro_path(b), "tools/bin/uam" });
         const slangc = slangc_path(owner) orelse return null;
-        const source = owner.path("src/rendering/shaders/basic.slang");
+        const source = owner.path("platform/shaders/basic.slang");
         const vert_glsl = add_slang_step(b, slangc, &.{
             "-target",       "glsl",       "-matrix-layout-column-major",
             "-DAETHER_DEKO", "-profile",   "glsl_450",
@@ -110,7 +110,7 @@ fn internal_shader_stages(owner: *std.Build, b: *std.Build, config: Config) ?Sha
     switch (config.gfx) {
         .vulkan => {
             const slangc = slangc_path(owner) orelse return null;
-            const source = owner.path("src/rendering/shaders/basic.slang");
+            const source = owner.path("platform/shaders/basic.slang");
             return .{
                 .vert = add_slang_step(b, slangc, &.{
                     "-target",  "spirv",  "-emit-spirv-directly", "-matrix-layout-column-major",
@@ -126,7 +126,7 @@ fn internal_shader_stages(owner: *std.Build, b: *std.Build, config: Config) ?Sha
         },
         .opengl => {
             const slangc = slangc_path(owner) orelse return null;
-            const source = owner.path("src/rendering/shaders/basic.slang");
+            const source = owner.path("platform/shaders/basic.slang");
             return .{
                 .vert = add_slang_step(b, slangc, &.{
                     "-target",    "glsl",     "-matrix-layout-column-major",
@@ -143,7 +143,7 @@ fn internal_shader_stages(owner: *std.Build, b: *std.Build, config: Config) ?Sha
         .webgl => {
             const slangc = slangc_path(owner) orelse return null;
             const spirv_cross = tools.spirv_cross_path(b);
-            const source = owner.path("src/rendering/shaders/basic.slang");
+            const source = owner.path("platform/shaders/basic.slang");
             const vert_spv = add_slang_step(b, slangc, &.{
                 "-entry",   "vertexMain", "-stage",               "vertex",
                 "-profile", "glsl_330",   "-emit-spirv-via-glsl", "-matrix-layout-column-major",

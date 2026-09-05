@@ -7,11 +7,19 @@ Aether is a game engine written in [Zig](https://ziglang.org/). It is platform-a
 
 User code is structured as hooks into the engine via a `State` interface. You implement the game logic; the engine handles the platform details.
 
-The public API starts in `src/root.zig`. Core owns state transitions and input
-actions; Audio, Rendering, and Ui build higher-level behavior on Platform.
-Engine owns subsystem startup, shutdown, and frame scheduling. Platform selects
-backends at compile time and owns device access, native resource layouts, and
-application directories. Its `*_api.zig` modules define backend contracts.
+The public API starts in `core/root.zig`. All high-level engine code lives in
+`core`: the engine loop, states, input actions, audio mixing, rendering
+resources, UI, asset loading, and memory budgets. `platform` owns backend
+contracts, device access, native resource layouts, logging, threads, directories,
+and shared low-level math and storage primitives.
+
+The build creates separate Core and Platform Zig modules. Core accesses shared
+services through `@import("platform")`. Backend SDK imports and generated shaders
+belong to the Platform module. Platform backends have no dependency on Core.
+See [the architecture guide](ARCHITECTURE.md) for ownership and extension rules.
+
+The existing `aether.Engine`, `Audio`, `Rendering`, `Ui`, `Util`, and `Math`
+exports remain available; these are also grouped under `aether.Core`.
 
 ## Features
 
@@ -199,6 +207,9 @@ zig build run
 
 # Run tests
 zig build test
+
+# Check source ownership and dependency direction (also runs with tests)
+zig build check-architecture
 
 # Override graphics backend
 zig build run -Dgfx=opengl

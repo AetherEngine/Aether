@@ -27,13 +27,20 @@ pub fn user_root_module(exe: *std.Build.Step.Compile) *std.Build.Module {
     return exe.root_module.import_table.get(user_root_import_name) orelse exe.root_module;
 }
 
+/// The independently configured Platform module backing this executable.
+/// Use this module as the root of Platform tests to retain its SDK imports.
+pub fn platform_module(exe: *std.Build.Step.Compile) *std.Build.Module {
+    const core_mod = user_root_module(exe).import_table.get("aether").?;
+    return core_mod.import_table.get("platform").?;
+}
+
 fn entry_root_source(config: Config) []const u8 {
     return switch (config.platform) {
-        .psp => "src/platform/psp/entry.zig",
-        .nintendo_3ds => "src/platform/3ds/entry.zig",
-        .nintendo_switch => "src/platform/switch/services.zig",
+        .psp => "platform/psp/entry.zig",
+        .nintendo_3ds => "platform/3ds/entry.zig",
+        .nintendo_switch => "platform/switch/services.zig",
         .wasm => unreachable,
-        else => "src/platform/entry.zig",
+        else => "platform/entry.zig",
     };
 }
 
@@ -71,16 +78,28 @@ pub fn add_game(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.
     options.addOption(Config, "config", config);
     const options_module = options.createModule();
 
-    const mod = b.addModule("Aether", .{
-        .root_source_file = owner.path("src/root.zig"),
+    // Each executable keeps its own Platform/options pair: native and web
+    // builds can coexist in the same build graph without sharing backends.
+    const platform_mod = b.createModule(.{
+        .root_source_file = owner.path("platform/platform.zig"),
         .target = target,
+        .optimize = opts.optimize,
         .link_libc = if (uses_nintendo_c_io) true else null,
         .imports = &.{
             .{ .name = "options", .module = options_module },
         },
     });
+    const mod = b.addModule("Aether", .{
+        .root_source_file = owner.path("core/root.zig"),
+        .target = target,
+        .optimize = opts.optimize,
+        .imports = &.{
+            .{ .name = "options", .module = options_module },
+            .{ .name = "platform", .module = platform_mod },
+        },
+    });
 
-    // --- platform-specific engine dependencies ---
+    // --- Platform implementation dependencies ---
     const psp_dep = if (config.platform == .psp) owner.dependency("pspsdk", .{
         .target = target,
         .optimize = opts.optimize,
@@ -88,9 +107,9 @@ pub fn add_game(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.
     const zitrus_dep = if (uses_zitrus) owner.dependency("zitrus", .{}) else null;
 
     if (psp_dep) |pd| {
-        mod.addImport("pspsdk", pd.module("pspsdk"));
+        platform_mod.addImport("pspsdk", pd.module("pspsdk"));
     } else if (zitrus_dep) |zd| {
-        mod.addImport("zitrus", zd.module("zitrus"));
+        platform_mod.addImport("zitrus", zd.module("zitrus"));
     } else if (config.platform == .nintendo_switch) {
         // Console SDK symbols are declared as backend-local externs and
         // resolved by the export pipeline's devkitPro link step.
@@ -120,11 +139,11 @@ pub fn add_game(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.
             .ext_ttf = false,
             .c_sdl_preferred_linkage = .static,
         })) |sdl3_dep| {
-            mod.addImport("sdl3", sdl3_dep.module("sdl3"));
+            platform_mod.addImport("sdl3", sdl3_dep.module("sdl3"));
         }
 
-        mod.addImport("gl", gl_bindings);
-        mod.addImport("vulkan", vulkan);
+        platform_mod.addImport("gl", gl_bindings);
+        platform_mod.addImport("vulkan", vulkan);
 
         if (target.result.os.tag == .macos) {
             // The statically-linked SDL3 archive's Apple framework
@@ -133,49 +152,49 @@ pub fn add_game(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.
             // but links the concrete frameworks (AppKit, CoreFoundation,
             // CoreGraphics, CoreServices) directly: the umbrella tbds in the
             // zig system_sdk don't re-export their subframeworks.
-            mod.linkFramework("CoreMedia", .{});
-            mod.linkFramework("CoreVideo", .{});
-            mod.linkFramework("Cocoa", .{});
-            mod.linkFramework("AppKit", .{});
-            mod.linkFramework("CoreFoundation", .{});
-            mod.linkFramework("CoreGraphics", .{});
-            mod.linkFramework("CoreServices", .{});
-            mod.linkFramework("CoreVideo", .{});
-            mod.linkFramework("Cocoa", .{});
-            mod.linkFramework("UniformTypeIdentifiers", .{ .weak = true });
-            mod.linkFramework("IOKit", .{});
-            mod.linkFramework("ForceFeedback", .{});
-            mod.linkFramework("Carbon", .{});
-            mod.linkFramework("CoreAudio", .{});
-            mod.linkFramework("AudioToolbox", .{});
-            mod.linkFramework("AVFoundation", .{});
-            mod.linkFramework("Foundation", .{});
-            mod.linkFramework("GameController", .{});
-            mod.linkFramework("Metal", .{});
-            mod.linkFramework("QuartzCore", .{});
-            mod.linkFramework("CoreHaptics", .{ .weak = true });
+            platform_mod.linkFramework("CoreMedia", .{});
+            platform_mod.linkFramework("CoreVideo", .{});
+            platform_mod.linkFramework("Cocoa", .{});
+            platform_mod.linkFramework("AppKit", .{});
+            platform_mod.linkFramework("CoreFoundation", .{});
+            platform_mod.linkFramework("CoreGraphics", .{});
+            platform_mod.linkFramework("CoreServices", .{});
+            platform_mod.linkFramework("CoreVideo", .{});
+            platform_mod.linkFramework("Cocoa", .{});
+            platform_mod.linkFramework("UniformTypeIdentifiers", .{ .weak = true });
+            platform_mod.linkFramework("IOKit", .{});
+            platform_mod.linkFramework("ForceFeedback", .{});
+            platform_mod.linkFramework("Carbon", .{});
+            platform_mod.linkFramework("CoreAudio", .{});
+            platform_mod.linkFramework("AudioToolbox", .{});
+            platform_mod.linkFramework("AVFoundation", .{});
+            platform_mod.linkFramework("Foundation", .{});
+            platform_mod.linkFramework("GameController", .{});
+            platform_mod.linkFramework("Metal", .{});
+            platform_mod.linkFramework("QuartzCore", .{});
+            platform_mod.linkFramework("CoreHaptics", .{ .weak = true });
             // Objective-C runtime for SDL's Cocoa .m objects.
-            mod.linkSystemLibrary("objc", .{});
+            platform_mod.linkSystemLibrary("objc", .{});
 
             // Link MoltenVK directly as the Vulkan ICD -- no loader.
-            mod.addLibraryPath(.{ .cwd_relative = tools.macos_molten_vk_path(b) });
-            mod.linkSystemLibrary("MoltenVK", .{});
+            platform_mod.addLibraryPath(.{ .cwd_relative = tools.macos_molten_vk_path(b) });
+            platform_mod.linkSystemLibrary("MoltenVK", .{});
 
             // rpath for the .app bundle layout.
-            mod.addRPathSpecial("@executable_path/../Frameworks");
+            platform_mod.addRPathSpecial("@executable_path/../Frameworks");
 
             if (owner.lazyDependency("system_sdk", .{})) |system_sdk| {
-                mod.addFrameworkPath(system_sdk.path("macos12/System/Library/Frameworks"));
-                mod.addSystemIncludePath(system_sdk.path("macos12/usr/include"));
-                mod.addLibraryPath(system_sdk.path("macos12/usr/lib"));
+                platform_mod.addFrameworkPath(system_sdk.path("macos12/System/Library/Frameworks"));
+                platform_mod.addSystemIncludePath(system_sdk.path("macos12/usr/include"));
+                platform_mod.addLibraryPath(system_sdk.path("macos12/usr/lib"));
             }
         }
     }
 
     if (uses_nintendo_c_io) {
-        add_nintendo_c_import_paths(owner, mod, config, tools.devkit_pro_path(b));
+        add_nintendo_c_import_paths(owner, platform_mod, config, tools.devkit_pro_path(b));
     }
-    shaders.add_internal_shader_module(owner, b, mod, config);
+    shaders.add_internal_shader_module(owner, b, platform_mod, config);
 
     // --- user executable ---
     const user_mod = b.createModule(.{
@@ -188,12 +207,12 @@ pub fn add_game(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.
             .{ .name = "aether", .module = mod },
         },
     });
-    if (zitrus_dep) |zd| {
-        user_mod.addImport("zitrus", zd.module("zitrus"));
+    if (zitrus_dep) |_| {
+        user_mod.addImport("zitrus", platform_mod.import_table.get("zitrus").?);
     }
 
     const entry_common_mod = if (config.platform != .wasm) b.createModule(.{
-        .root_source_file = owner.path("src/platform/entry_common.zig"),
+        .root_source_file = owner.path("platform/entry_common.zig"),
         .target = target,
         .optimize = opts.optimize,
         .link_libc = if (uses_nintendo_c_io) true else null,
@@ -216,12 +235,13 @@ pub fn add_game(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.
         },
     }) else user_mod;
     if (psp_dep) |_| {
-        root_mod.addImport("pspsdk", mod.import_table.get("pspsdk").?);
+        root_mod.addImport("pspsdk", platform_mod.import_table.get("pspsdk").?);
     }
-    if (zitrus_dep) |zd| {
-        root_mod.addImport("zitrus", zd.module("zitrus"));
+    if (zitrus_dep) |_| {
+        root_mod.addImport("zitrus", platform_mod.import_table.get("zitrus").?);
     }
     if (uses_nintendo_c_io) {
+        // The Switch executable shim also imports native console headers.
         add_nintendo_c_import_paths(owner, root_mod, config, tools.devkit_pro_path(b));
     }
 
@@ -240,7 +260,7 @@ pub fn add_game(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.
         // dependencyFromBuildZig on exe.step.owner which fails when
         // the exe is owned by a downstream builder.
         if (user_root_module(exe).import_table.get("pspsdk") == null) {
-            user_root_module(exe).addImport("pspsdk", mod.import_table.get("pspsdk").?);
+            user_root_module(exe).addImport("pspsdk", platform_mod.import_table.get("pspsdk").?);
         }
         exe.link_eh_frame_hdr = true;
         exe.link_emit_relocs = true;
@@ -250,7 +270,7 @@ pub fn add_game(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.
 
     if (zitrus_dep) |zd| {
         if (user_root_module(exe).import_table.get("zitrus") == null) {
-            user_root_module(exe).addImport("zitrus", zd.module("zitrus"));
+            user_root_module(exe).addImport("zitrus", platform_mod.import_table.get("zitrus").?);
         }
         exe.pie = true;
         exe.setLinkerScript(zd.namedLazyPath("horizon/ld"));
@@ -302,12 +322,22 @@ pub fn add_headless(owner: *std.Build, b: *std.Build, opts: HeadlessOptions) *st
     options.addOption(Config, "config", config);
     const options_module = options.createModule();
 
-    const mod = b.addModule("Aether", .{
-        .root_source_file = owner.path("src/root.zig"),
+    const platform_mod = b.createModule(.{
+        .root_source_file = owner.path("platform/platform.zig"),
         .target = target,
+        .optimize = opts.optimize,
         .link_libc = if (uses_nintendo_c_io) true else null,
         .imports = &.{
             .{ .name = "options", .module = options_module },
+        },
+    });
+    const mod = b.addModule("Aether", .{
+        .root_source_file = owner.path("core/root.zig"),
+        .target = target,
+        .optimize = opts.optimize,
+        .imports = &.{
+            .{ .name = "options", .module = options_module },
+            .{ .name = "platform", .module = platform_mod },
         },
     });
 
@@ -318,13 +348,13 @@ pub fn add_headless(owner: *std.Build, b: *std.Build, opts: HeadlessOptions) *st
     const zitrus_dep = if (uses_zitrus) owner.dependency("zitrus", .{}) else null;
 
     if (psp_dep) |pd| {
-        mod.addImport("pspsdk", pd.module("pspsdk"));
+        platform_mod.addImport("pspsdk", pd.module("pspsdk"));
     } else if (zitrus_dep) |zd| {
-        mod.addImport("zitrus", zd.module("zitrus"));
+        platform_mod.addImport("zitrus", zd.module("zitrus"));
     }
 
     if (uses_nintendo_c_io) {
-        add_nintendo_c_import_paths(owner, mod, config, tools.devkit_pro_path(b));
+        add_nintendo_c_import_paths(owner, platform_mod, config, tools.devkit_pro_path(b));
     }
 
     const user_mod = b.createModule(.{
@@ -337,12 +367,12 @@ pub fn add_headless(owner: *std.Build, b: *std.Build, opts: HeadlessOptions) *st
             .{ .name = "aether", .module = mod },
         },
     });
-    if (zitrus_dep) |zd| {
-        user_mod.addImport("zitrus", zd.module("zitrus"));
+    if (zitrus_dep) |_| {
+        user_mod.addImport("zitrus", platform_mod.import_table.get("zitrus").?);
     }
 
     const entry_common_mod = if (config.platform != .wasm) b.createModule(.{
-        .root_source_file = owner.path("src/platform/entry_common.zig"),
+        .root_source_file = owner.path("platform/entry_common.zig"),
         .target = target,
         .optimize = opts.optimize,
         .link_libc = if (uses_nintendo_c_io) true else null,
@@ -365,12 +395,13 @@ pub fn add_headless(owner: *std.Build, b: *std.Build, opts: HeadlessOptions) *st
         },
     }) else user_mod;
     if (psp_dep) |_| {
-        root_mod.addImport("pspsdk", mod.import_table.get("pspsdk").?);
+        root_mod.addImport("pspsdk", platform_mod.import_table.get("pspsdk").?);
     }
-    if (zitrus_dep) |zd| {
-        root_mod.addImport("zitrus", zd.module("zitrus"));
+    if (zitrus_dep) |_| {
+        root_mod.addImport("zitrus", platform_mod.import_table.get("zitrus").?);
     }
     if (uses_nintendo_c_io) {
+        // The Switch executable shim also imports native console headers.
         add_nintendo_c_import_paths(owner, root_mod, config, tools.devkit_pro_path(b));
     }
 
@@ -386,7 +417,7 @@ pub fn add_headless(owner: *std.Build, b: *std.Build, opts: HeadlessOptions) *st
 
     if (psp_dep) |pd| {
         if (user_root_module(exe).import_table.get("pspsdk") == null) {
-            user_root_module(exe).addImport("pspsdk", mod.import_table.get("pspsdk").?);
+            user_root_module(exe).addImport("pspsdk", platform_mod.import_table.get("pspsdk").?);
         }
         exe.link_eh_frame_hdr = true;
         exe.link_emit_relocs = true;
@@ -396,7 +427,7 @@ pub fn add_headless(owner: *std.Build, b: *std.Build, opts: HeadlessOptions) *st
 
     if (zitrus_dep) |zd| {
         if (user_root_module(exe).import_table.get("zitrus") == null) {
-            user_root_module(exe).addImport("zitrus", zd.module("zitrus"));
+            user_root_module(exe).addImport("zitrus", platform_mod.import_table.get("zitrus").?);
         }
         exe.pie = true;
         exe.setLinkerScript(zd.namedLazyPath("horizon/ld"));

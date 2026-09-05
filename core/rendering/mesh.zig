@@ -1,0 +1,183 @@
+const std = @import("std");
+const assert = std.debug.assert;
+const Mat4 = @import("platform").math.Mat4;
+const Platform = @import("platform");
+const gfx = Platform.gfx;
+const rendering = @import("rendering.zig");
+
+const mesh_contract = @import("platform").graphics.mesh;
+pub const MeshHandleTag = mesh_contract.MeshHandleTag;
+pub const Handle = mesh_contract.Handle;
+pub const Index = mesh_contract.Index;
+pub const indexing_enabled = mesh_contract.indexing_enabled;
+pub const SourceMode = mesh_contract.SourceMode;
+pub const Desc = mesh_contract.Desc;
+pub const UpdateDesc = mesh_contract.UpdateDesc;
+
+pub const DataError = error{
+    OutOfMemory,
+    IndexOverflow,
+};
+
+/// CPU-side editable mesh data. On borrowed-source backends such as PSP and
+/// 3DS, this data must remain alive while the uploaded Mesh uses it.
+pub fn MeshDataType(comptime V: type) type {
+    return struct {
+        const MeshData = @This();
+
+        pub const Vertex = V;
+
+        vertices: std.ArrayList(Vertex),
+        indices: std.ArrayList(Index),
+
+        pub fn init(alloc: std.mem.Allocator) DataError!MeshData {
+            var vertices = try std.ArrayList(V).initCapacity(alloc, 32);
+            errdefer vertices.deinit(alloc);
+            const indices = try std.ArrayList(Index).initCapacity(alloc, 32);
+            return .{
+                .vertices = vertices,
+                .indices = indices,
+            };
+        }
+
+        pub fn deinit(self: *MeshData, alloc: std.mem.Allocator) void {
+            defer self.* = undefined;
+
+            self.indices.deinit(alloc);
+            self.vertices.deinit(alloc);
+        }
+
+        pub fn append(self: *MeshData, alloc: std.mem.Allocator, verts: []const V) DataError!void {
+            try self.vertices.appendSlice(alloc, verts);
+        }
+
+        pub fn clear_retaining_capacity(self: *MeshData) void {
+            self.vertices.clearRetainingCapacity();
+            self.indices.clearRetainingCapacity();
+        }
+
+        pub fn clear_and_free(self: *MeshData, alloc: std.mem.Allocator) void {
+            self.vertices.clearAndFree(alloc);
+            self.indices.clearAndFree(alloc);
+        }
+
+        pub fn ensure_tri_capacity(self: *MeshData, alloc: std.mem.Allocator, count: usize) DataError!void {
+            const add_verts = count * 3;
+            if (indexing_enabled) {
+                if (self.vertices.items.len + add_verts > @as(usize, std.math.maxInt(Index)) + 1) return error.IndexOverflow;
+                try self.indices.ensureTotalCapacity(alloc, self.indices.items.len + count * 3);
+            }
+            try self.vertices.ensureTotalCapacity(alloc, self.vertices.items.len + add_verts);
+        }
+
+        pub fn ensure_quad_capacity(self: *MeshData, alloc: std.mem.Allocator, count: usize) DataError!void {
+            if (indexing_enabled) {
+                const add_verts = count * 4;
+                if (self.vertices.items.len + add_verts > @as(usize, std.math.maxInt(Index)) + 1) return error.IndexOverflow;
+                try self.vertices.ensureTotalCapacity(alloc, self.vertices.items.len + add_verts);
+                try self.indices.ensureTotalCapacity(alloc, self.indices.items.len + count * 6);
+            } else {
+                try self.vertices.ensureTotalCapacity(alloc, self.vertices.items.len + count * 6);
+            }
+        }
+
+        pub inline fn add_tri(self: *MeshData, alloc: std.mem.Allocator, a: V, b: V, c: V) DataError!void {
+            try self.ensure_tri_capacity(alloc, 1);
+            self.add_tri_assume_capacity(a, b, c);
+        }
+
+        pub inline fn add_quad(self: *MeshData, alloc: std.mem.Allocator, a: V, b: V, c: V, d: V) DataError!void {
+            try self.ensure_quad_capacity(alloc, 1);
+            self.add_quad_assume_capacity(a, b, c, d);
+        }
+
+        pub inline fn add_tri_assume_capacity(self: *MeshData, a: V, b: V, c: V) void {
+            if (indexing_enabled) {
+                assert(self.vertices.items.len <= std.math.maxInt(Index) - 2);
+                const base: Index = @intCast(self.vertices.items.len);
+                self.vertices.appendSliceAssumeCapacity(&.{ a, b, c });
+                self.indices.appendSliceAssumeCapacity(&.{ base, base + 1, base + 2 });
+            } else {
+                self.vertices.appendSliceAssumeCapacity(&.{ a, b, c });
+            }
+        }
+
+        pub inline fn add_quad_assume_capacity(self: *MeshData, a: V, b: V, c: V, d: V) void {
+            if (indexing_enabled) {
+                assert(self.vertices.items.len <= std.math.maxInt(Index) - 3);
+                const base: Index = @intCast(self.vertices.items.len);
+                self.vertices.appendSliceAssumeCapacity(&.{ a, b, c, d });
+                self.indices.appendSliceAssumeCapacity(&.{ base, base + 1, base + 2, base, base + 2, base + 3 });
+            } else {
+                self.vertices.appendSliceAssumeCapacity(&.{ a, b, c, a, c, d });
+            }
+        }
+
+        pub fn update_desc(self: *const MeshData) UpdateDesc {
+            return .{
+                .vertices = std.mem.sliceAsBytes(self.vertices.items),
+                .indices = if (indexing_enabled) self.indices.items else &.{},
+                .vertex_stride = @sizeOf(Vertex),
+            };
+        }
+    };
+}
+
+pub fn MeshType(comptime V: type) type {
+    return struct {
+        const Mesh = @This();
+
+        pub const Vertex = V;
+        pub const Data = MeshDataType(V);
+
+        handle: Handle,
+
+        pub fn init(desc: *const Desc) @import("platform").gfx_api.CreateMeshError!Mesh {
+            return .{
+                .handle = try gfx.api.create_mesh(desc),
+            };
+        }
+
+        pub fn deinit(self: *Mesh) void {
+            defer self.* = undefined;
+
+            gfx.api.destroy_mesh(self.handle);
+        }
+
+        /// Push the current CPU data to the backend. On borrowed-source
+        /// backends, the data must remain alive and stable after this call.
+        pub fn update(self: *Mesh, data: *const Data) void {
+            if (rendering.validate_mesh_updates_outside_frame and gfx.frame_active) {
+                @panic("Rendering.Mesh.update called during an active frame; rebuild/upload meshes during update, not draw");
+            }
+            const desc = data.update_desc();
+            gfx.api.update_mesh(self.handle, &desc);
+        }
+
+        pub fn draw(self: *Mesh, mat: *const Mat4) void {
+            gfx.api.draw_mesh(self.handle, mat);
+        }
+    };
+}
+
+test "mesh triangle and quad helpers build expected geometry" {
+    const TestVertex = extern struct { id: u32 };
+    const TestData = MeshDataType(TestVertex);
+    const alloc = std.testing.allocator;
+
+    var mesh = try TestData.init(alloc);
+    defer mesh.deinit(alloc);
+
+    try mesh.add_tri(alloc, .{ .id = 0 }, .{ .id = 1 }, .{ .id = 2 });
+    try mesh.add_quad(alloc, .{ .id = 3 }, .{ .id = 4 }, .{ .id = 5 }, .{ .id = 6 });
+
+    if (indexing_enabled) {
+        try std.testing.expectEqual(@as(usize, 7), mesh.vertices.items.len);
+        try std.testing.expectEqualSlices(Index, &.{ 0, 1, 2, 3, 4, 5, 3, 5, 6 }, mesh.indices.items);
+    } else {
+        try std.testing.expectEqual(@as(usize, 9), mesh.vertices.items.len);
+        try std.testing.expectEqual(@as(usize, 0), mesh.indices.items.len);
+        try std.testing.expectEqual(@as(u32, 3), mesh.vertices.items[3].id);
+        try std.testing.expectEqual(@as(u32, 5), mesh.vertices.items[7].id);
+    }
+}

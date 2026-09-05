@@ -58,13 +58,33 @@ pub fn build(b: *std.Build) void {
     run_lint.setCwd(b.path("."));
     if (b.args) |args| run_lint.addArgs(args);
     run_lint.addArg(".");
+    // Follow both module roots; named imports do not expose source paths.
+    run_lint.addFileArg(b.path("core/root.zig"));
+    run_lint.addFileArg(b.path("platform/platform.zig"));
     // This module is imported by its build-system name, aether_entry_common.
-    run_lint.addFileArg(b.path("src/platform/entry_common.zig"));
+    run_lint.addFileArg(b.path("platform/entry_common.zig"));
     // Its only importer is the excluded C I/O wrapper; still check its implementation.
-    run_lint.addFileArg(b.path("src/platform/switch/time.zig"));
+    run_lint.addFileArg(b.path("platform/switch/time.zig"));
 
     const lint_step = b.step("lint", "Lint the codebase with tiger_lint");
     lint_step.dependOn(&run_lint.step);
+
+    const architecture_check = b.addExecutable(.{
+        .name = "check-architecture",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/check_architecture.zig"),
+            .target = b.graph.host,
+            .optimize = .ReleaseSafe,
+        }),
+    });
+    const run_architecture_check = b.addRunArtifact(architecture_check);
+    run_architecture_check.addDirectoryArg(b.path("."));
+    const architecture_tests = b.addTest(.{ .root_module = architecture_check.root_module });
+    const run_architecture_tests = b.addRunArtifact(architecture_tests);
+    const architecture_step = b.step("check-architecture", "Check Core/Platform source ownership and imports");
+    architecture_step.dependOn(&run_architecture_check.step);
+    architecture_step.dependOn(&run_architecture_tests.step);
+    lint_step.dependOn(&run_architecture_check.step);
 
     const overrides: config.Config.Overrides = .{
         .gfx = b.option(config.Gfx, "gfx", "Graphics backend override (default: auto-detect from target)"),
@@ -199,8 +219,17 @@ pub fn build(b: *std.Build) void {
             .use_lld = exe.use_lld,
         });
         const run_mod_tests = b.addRunArtifact(mod_tests);
+        const platform_tests = b.addTest(.{
+            .root_module = modules.platform_module(exe),
+            .use_llvm = exe.use_llvm,
+            .use_lld = exe.use_lld,
+        });
+        const run_platform_tests = b.addRunArtifact(platform_tests);
 
         const test_step = b.step("test", "Run tests");
         test_step.dependOn(&run_mod_tests.step);
+        test_step.dependOn(&run_platform_tests.step);
+        test_step.dependOn(&run_architecture_check.step);
+        test_step.dependOn(&run_architecture_tests.step);
     }
 }

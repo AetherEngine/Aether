@@ -1,0 +1,358 @@
+const std = @import("std");
+const sdl3 = @import("sdl3");
+const gl = @import("gl");
+const gl_constants = @import("constants.zig");
+const gfx_api = @import("../../gfx_api.zig");
+const Mat4 = @import("../../math/math.zig").Mat4;
+const Util = @import("../../util/util.zig");
+
+const shader = @import("shader.zig");
+const gfx = @import("../../gfx.zig");
+
+const Graphics = @import("../../graphics/graphics.zig");
+const Mesh = Graphics.mesh;
+const vertex = Graphics.vertex;
+const Texture = Graphics.texture;
+const basic_vert align(@alignOf(u32)) = @embedFile("aether_basic_vert").*;
+const basic_frag align(@alignOf(u32)) = @embedFile("aether_basic_frag").*;
+
+pub const mesh_source_mode = Mesh.SourceMode.uploaded_copy;
+
+var render_alloc: std.mem.Allocator = undefined;
+var render_io: std.Io = undefined;
+
+pub fn setup(alloc: std.mem.Allocator, io: std.Io) void {
+    render_alloc = alloc;
+    render_io = io;
+}
+
+var procs: gl.ProcTable = undefined;
+var last_width: u32 = 0;
+var last_height: u32 = 0;
+var meshes = Util.ResourceTableType(MeshInternal, 32768, Mesh.Handle).init();
+var textures = Util.ResourceTableType(gl.uint, 1024, Texture.Handle).init();
+var alpha_blend_enabled: bool = true;
+var cull_face_enabled: bool = true;
+var depth_write_enabled: bool = true;
+var pipeline: PipelineData = undefined;
+var pipeline_initialized: bool = false;
+
+const PipelineData = struct {
+    layout: vertex.VertexLayout,
+    vao: gl.uint,
+    program: shader.Shader,
+};
+
+const MeshInternal = struct {
+    vbo: gl.uint,
+    ebo: gl.uint,
+    vertex_count: usize = 0,
+    index_count: usize = 0,
+};
+
+/// SDL_GL_GetProcAddress, adapted to zigglgen's nullable-loader convention.
+fn gl_proc_loader(name: [*:0]const u8) ?*const anyopaque {
+    const proc = sdl3.video.gl.getProcAddress(std.mem.span(name));
+    return if (@intFromPtr(proc) == 0) null else proc;
+}
+
+pub fn init() gfx_api.InitError!void {
+    if (!procs.init(gl_proc_loader)) @panic("Failed to initialize OpenGL");
+    gl.makeProcTableCurrent(&procs);
+
+    Util.engine_logger.debug("OpenGL {s}", .{gl.GetString(gl_constants.version).?});
+    Util.engine_logger.debug("GLSL {s}", .{gl.GetString(gl_constants.shading_language_version).?});
+    Util.engine_logger.debug("Vendor: {s}", .{gl.GetString(gl_constants.vendor).?});
+    Util.engine_logger.debug("Renderer: {s}", .{gl.GetString(gl_constants.renderer).?});
+
+    gl.Viewport(0, 0, @intCast(gfx.surface.get_width()), @intCast(gfx.surface.get_height()));
+    gl.ClipControl(gl_constants.lower_left, gl_constants.zero_to_one);
+    gl.Enable(gl_constants.depth_test);
+    gl.Enable(gl_constants.cull_face);
+    gl.FrontFace(gl_constants.ccw);
+    gl.CullFace(gl_constants.back);
+    gl.Enable(gl_constants.blend);
+    gl.BlendFunc(gl_constants.src_alpha, gl_constants.one_minus_src_alpha);
+    gl.LineWidth(5.0);
+
+    shader.init() catch return error.PipelineCreationFailed;
+    errdefer shader.deinit();
+
+    shader.state.proj = Mat4.identity();
+    shader.state.view = Mat4.identity();
+    shader.update_ubo();
+
+    pipeline = init_pipeline(vertex.Layout) catch return error.PipelineCreationFailed;
+    pipeline_initialized = true;
+}
+
+pub fn deinit() void {
+    if (pipeline_initialized) {
+        deinit_pipeline(&pipeline);
+        pipeline_initialized = false;
+    }
+    shader.deinit();
+
+    gl.makeProcTableCurrent(null);
+    procs = undefined;
+}
+
+pub fn set_clear_color(r: f32, g: f32, b: f32, a: f32) void {
+    gl.ClearColor(r, g, b, a);
+}
+
+pub fn set_alpha_blend(enabled: bool) void {
+    const flag: u32 = @intFromBool(enabled);
+    if (shader.state.alpha_blend_enabled != flag) {
+        shader.state.alpha_blend_enabled = flag;
+        shader.update_ubo();
+    }
+    if (enabled == alpha_blend_enabled) return;
+    alpha_blend_enabled = enabled;
+    if (enabled) gl.Enable(gl_constants.blend) else gl.Disable(gl_constants.blend);
+}
+
+pub fn set_depth_write(enabled: bool) void {
+    depth_write_enabled = enabled;
+    gl.DepthMask(@intFromBool(enabled));
+}
+
+pub fn set_clip_planes(_: bool) void {}
+
+pub fn set_culling(enabled: bool) void {
+    if (enabled == cull_face_enabled) return;
+    cull_face_enabled = enabled;
+    if (enabled) gl.Enable(gl_constants.cull_face) else gl.Disable(gl_constants.cull_face);
+}
+
+pub fn set_uv_offset(u: f32, v: f32) void {
+    if (shader.state.uv_offset[0] == u and shader.state.uv_offset[1] == v) return;
+    shader.state.uv_offset = .{ u, v };
+    shader.update_ubo();
+}
+
+pub fn set_fog(enabled: bool, _: f32, _: f32, start: f32, end: f32, r: f32, g: f32, b: f32) void {
+    const fog_en: u32 = @intFromBool(enabled);
+    if (shader.state.fog_enabled == fog_en and
+        shader.state.fog_start == start and
+        shader.state.fog_end == end and
+        std.mem.eql(f32, &shader.state.fog_color, &.{ r, g, b })) return;
+    shader.state.fog_enabled = fog_en;
+    shader.state.fog_start = start;
+    shader.state.fog_end = end;
+    shader.state.fog_color = .{ r, g, b };
+    shader.update_ubo();
+}
+
+pub fn start_frame() bool {
+    const new_width = gfx.surface.get_width();
+    const new_height = gfx.surface.get_height();
+    if (new_width != last_width or new_height != last_height) {
+        @branchHint(.unlikely);
+
+        last_width = new_width;
+        last_height = new_height;
+        gl.Viewport(0, 0, @intCast(new_width), @intCast(new_height));
+
+        if (new_width == 0 or new_height == 0) {
+            return false;
+        }
+    }
+
+    // gl.Clear honors the depth write mask, so a game running with
+    // depth_write=false would never clear depth. Force the mask on for the
+    // frame clear (Vulkan clears via load op regardless of pipeline state),
+    // then restore the requested state.
+    gl.DepthMask(gl_constants.true_value);
+    gl.Clear(gl_constants.color_buffer_bit | gl_constants.depth_buffer_bit);
+    if (!depth_write_enabled) gl.DepthMask(gl_constants.false_value);
+
+    return true;
+}
+
+pub fn end_frame() void {
+    gfx.surface.draw();
+}
+
+pub fn clear_depth() void {
+    // See start_frame: the depth clear must ignore the game's write mask.
+    gl.DepthMask(gl_constants.true_value);
+    gl.Clear(gl_constants.depth_buffer_bit);
+    if (!depth_write_enabled) gl.DepthMask(gl_constants.false_value);
+}
+
+pub fn has_second_screen() bool {
+    return false;
+}
+
+pub fn switch_second_screen() void {
+    std.debug.panic("opengl gfx: switch_second_screen called but this backend has no second screen", .{});
+}
+
+pub fn set_vsync(v: bool) void {
+    sdl3.video.gl.setSwapInterval(if (v) .synchronized else .immediate) catch {};
+}
+
+pub fn set_proj_matrix(mat: *const Mat4) void {
+    shader.state.proj = mat.*;
+    shader.update_ubo();
+}
+
+pub fn set_view_matrix(mat: *const Mat4) void {
+    shader.state.view = mat.*;
+    shader.update_ubo();
+}
+
+pub fn set_render_state(state: *const Graphics.RenderState) void {
+    set_alpha_blend(state.blend == .alpha);
+    set_depth_write(state.depth_write);
+    set_culling(state.cull);
+    set_clip_planes(state.clip_planes);
+    set_uv_offset(state.uv_offset[0], state.uv_offset[1]);
+    set_fog(state.fog.enabled, state.fog.near, state.fog.far, state.fog.start, state.fog.end, state.fog.color[0], state.fog.color[1], state.fog.color[2]);
+    set_proj_matrix(&state.proj);
+    set_view_matrix(&state.view);
+    bind_texture(state.texture);
+}
+
+fn init_pipeline(layout: vertex.VertexLayout) !PipelineData {
+    var vao: gl.uint = 0;
+    gl.CreateVertexArrays(1, @ptrCast(&vao));
+    for (layout.attributes) |a| {
+        gl.EnableVertexArrayAttrib(vao, a.location);
+
+        gl.VertexArrayAttribFormat(vao, a.location, @intCast(a.size), switch (a.format) {
+            .f32x2, .f32x3 => gl_constants.float,
+            .unorm8x2, .unorm8x4 => gl_constants.unsigned_byte,
+            .unorm16x2, .unorm16x3 => gl_constants.unsigned_short,
+            .snorm16x2, .snorm16x3 => gl_constants.short,
+        }, switch (a.format) {
+            .f32x2, .f32x3 => gl_constants.false_value,
+            .unorm8x2, .unorm8x4, .unorm16x2, .unorm16x3, .snorm16x2, .snorm16x3 => gl_constants.true_value,
+        }, @intCast(a.offset));
+        gl.VertexArrayAttribBinding(vao, a.location, a.binding);
+    }
+
+    const v_shader: [:0]align(4) const u8 = &basic_vert;
+    const f_shader: [:0]align(4) const u8 = &basic_frag;
+    const program = try shader.Shader.init(v_shader, f_shader);
+
+    return .{
+        .layout = layout,
+        .vao = vao,
+        .program = program,
+    };
+}
+
+fn deinit_pipeline(pl: *PipelineData) void {
+    gl.DeleteVertexArrays(1, @ptrCast(&pl.vao));
+    pl.vao = 0;
+    pl.program.deinit();
+}
+
+pub fn create_mesh(_: *const Mesh.Desc) gfx_api.CreateMeshError!Mesh.Handle {
+    var vbo: gl.uint = 0;
+    var ebo: gl.uint = 0;
+    var buffers = [_]gl.uint{ 0, 0 };
+    gl.CreateBuffers(2, @ptrCast(&buffers));
+    vbo = buffers[0];
+    ebo = buffers[1];
+    gl.NamedBufferData(vbo, 0, null, gl_constants.static_draw);
+    gl.NamedBufferData(ebo, 0, null, gl_constants.static_draw);
+
+    const mesh_handle = meshes.add(.{
+        .vbo = vbo,
+        .ebo = ebo,
+    }) orelse return error.OutOfMeshes;
+
+    return mesh_handle;
+}
+
+pub fn destroy_mesh(handle: Mesh.Handle) void {
+    if (handle.is_null()) return;
+    var mesh = meshes.get(handle) orelse Util.panic_invalid_handle("opengl gfx", "destroy_mesh", handle);
+    var buffers = [_]gl.uint{ mesh.vbo, mesh.ebo };
+    gl.DeleteBuffers(2, @ptrCast(&buffers));
+    mesh.vbo = 0;
+    mesh.ebo = 0;
+
+    _ = meshes.remove(handle);
+}
+
+pub fn update_mesh(handle: Mesh.Handle, desc: *const Mesh.UpdateDesc) void {
+    var mesh = meshes.get(handle) orelse Util.panic_invalid_handle("opengl gfx", "update_mesh", handle);
+    const data = desc.vertices;
+    const indices = desc.indices;
+
+    gl.NamedBufferData(mesh.vbo, @intCast(data.len), null, gl_constants.static_draw);
+    gl.NamedBufferSubData(mesh.vbo, 0, @intCast(data.len), data.ptr);
+    const index_bytes = std.mem.sliceAsBytes(indices);
+    gl.NamedBufferData(mesh.ebo, @intCast(index_bytes.len), null, gl_constants.static_draw);
+    if (index_bytes.len > 0) gl.NamedBufferSubData(mesh.ebo, 0, @intCast(index_bytes.len), index_bytes.ptr);
+
+    mesh.vertex_count = data.len / vertex.Layout.stride;
+    mesh.index_count = indices.len;
+    _ = meshes.update(handle, mesh);
+}
+
+pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
+    if (!pipeline_initialized) return;
+    const mesh = meshes.get(handle) orelse Util.panic_invalid_handle("opengl gfx", "draw_mesh", handle);
+    const pl = &pipeline;
+    if (mesh.vertex_count == 0) return;
+
+    shader.update_per_object(model);
+    gl.BindVertexArray(pl.vao);
+    gl.UseProgram(pl.program.shader_program);
+    gl.VertexArrayVertexBuffer(pl.vao, 0, mesh.vbo, 0, @intCast(pl.layout.stride));
+    if (mesh.index_count > 0) {
+        gl.VertexArrayElementBuffer(pl.vao, mesh.ebo);
+        gl.DrawElements(gl_constants.triangles, @intCast(mesh.index_count), gl_constants.unsigned_short, 0);
+    } else {
+        gl.DrawArrays(gl_constants.triangles, 0, @intCast(mesh.vertex_count));
+    }
+}
+
+pub fn create_texture(desc: *const Texture.UploadDesc) gfx_api.CreateTextureError!Texture.Handle {
+    const width = desc.width;
+    const height = desc.height;
+    const data = desc.pixels;
+    var tex: gl.uint = 0;
+    gl.CreateTextures(gl_constants.texture_2d, 1, @ptrCast(&tex));
+    gl.TextureStorage2D(tex, 1, gl_constants.rgba8, @intCast(width), @intCast(height));
+    gl.TextureSubImage2D(tex, 0, 0, 0, @intCast(width), @intCast(height), gl_constants.rgba, gl_constants.unsigned_byte, data.ptr);
+    gl.TextureParameteri(tex, gl_constants.texture_min_filter, gl_constants.nearest);
+    gl.TextureParameteri(tex, gl_constants.texture_mag_filter, gl_constants.nearest);
+    gl.TextureParameteri(tex, gl_constants.texture_wrap_s, gl_constants.repeat);
+    gl.TextureParameteri(tex, gl_constants.texture_wrap_t, gl_constants.repeat);
+    gl.GenerateTextureMipmap(tex);
+
+    return textures.add(tex) orelse {
+        gl.DeleteTextures(1, @ptrCast(&tex));
+        return error.OutOfTextures;
+    };
+}
+
+pub fn update_texture(handle: Texture.Handle, data: []align(16) u8) void {
+    const tex = textures.get(handle) orelse Util.panic_invalid_handle("opengl gfx", "update_texture", handle);
+    var w: gl.int = 0;
+    var h: gl.int = 0;
+    gl.GetTextureLevelParameteriv(tex, 0, gl_constants.texture_width, @ptrCast(&w));
+    gl.GetTextureLevelParameteriv(tex, 0, gl_constants.texture_height, @ptrCast(&h));
+    gl.TextureSubImage2D(tex, 0, 0, 0, w, h, gl_constants.rgba, gl_constants.unsigned_byte, data.ptr);
+}
+
+pub fn bind_texture(handle: Texture.Handle) void {
+    if (handle.is_null()) return;
+    const tex = textures.get(handle) orelse Util.panic_invalid_handle("opengl gfx", "bind_texture", handle);
+    gl.BindTextureUnit(2, tex);
+}
+
+pub fn destroy_texture(handle: Texture.Handle) void {
+    if (handle.is_null()) return;
+    var tex = textures.get(handle) orelse Util.panic_invalid_handle("opengl gfx", "destroy_texture", handle);
+    gl.DeleteTextures(1, @ptrCast(&tex));
+    _ = textures.remove(handle);
+}
+
+pub fn force_texture_resident(_: Texture.Handle) void {}
