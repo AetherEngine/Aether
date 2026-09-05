@@ -10,6 +10,9 @@ let memory = null;
 let gl = null;
 let program = null;
 let currentTexture = null;
+let boundTexture = null;
+let cameraDirty = false;
+let depthWriteEnabled = true;
 let cameraBuffer = null;
 let perObjectBuffer = null;
 let nextMeshHandle = 1;
@@ -437,7 +440,21 @@ function setMat4Bytes(target, byteOffset, ptr) {
   new Float32Array(target.buffer, byteOffset, 16).set(f32Copy(ptr, 16));
 }
 
+function bindTexture(texture) {
+  if (boundTexture === texture) return;
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  boundTexture = texture;
+}
+
+function clearBuffers(mask) {
+  if (!depthWriteEnabled) gl.depthMask(true);
+  gl.clear(mask);
+  if (!depthWriteEnabled) gl.depthMask(false);
+}
+
 function uploadCameraUbo() {
+  if (!cameraDirty) return;
+  cameraDirty = false;
   gl.bindBuffer(gl.UNIFORM_BUFFER, cameraBuffer);
   gl.bufferSubData(gl.UNIFORM_BUFFER, 0, cameraBytes);
 }
@@ -449,6 +466,7 @@ function uploadPerObjectUbo(modelPtr) {
 }
 
 function initUniformBlocks() {
+  cameraBytes.fill(0);
   cameraBuffer = gl.createBuffer();
   perObjectBuffer = gl.createBuffer();
 
@@ -474,6 +492,7 @@ function initUniformBlocks() {
     1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1,
   ]);
   cameraData.setUint32(156, 1, true);
+  cameraDirty = true;
   uploadCameraUbo();
 }
 
@@ -514,6 +533,12 @@ const host = {
     if (!gl.getProgramParameter(program, gl.LINK_STATUS))
       throw new Error(gl.getProgramInfoLog(program));
     gl.useProgram(program);
+    currentTexture = null;
+    boundTexture = null;
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    depthWriteEnabled = true;
+    gl.depthMask(true);
     initUniformBlocks();
     const sampler = gl.getUniformLocation(program, "u_combinedTexture_0");
     if (sampler) gl.uniform1i(sampler, 0);
@@ -537,10 +562,11 @@ const host = {
   aether_webgl_set_alpha_blend(enabled) {
     enabled ? gl.enable(gl.BLEND) : gl.disable(gl.BLEND);
     cameraData.setUint32(156, enabled ? 1 : 0, true);
-    uploadCameraUbo();
+    cameraDirty = true;
   },
   aether_webgl_set_depth_write(enabled) {
-    gl.depthMask(enabled);
+    depthWriteEnabled = !!enabled;
+    gl.depthMask(depthWriteEnabled);
   },
   aether_webgl_set_culling(enabled) {
     enabled ? gl.enable(gl.CULL_FACE) : gl.disable(gl.CULL_FACE);
@@ -548,7 +574,7 @@ const host = {
   aether_webgl_set_uv_offset(u, v) {
     cameraData.setFloat32(160, u, true);
     cameraData.setFloat32(164, v, true);
-    uploadCameraUbo();
+    cameraDirty = true;
   },
   aether_webgl_set_fog(enabled, start, end, r, g, b) {
     cameraData.setUint32(128, enabled ? 1 : 0, true);
@@ -557,24 +583,24 @@ const host = {
     cameraData.setFloat32(144, r, true);
     cameraData.setFloat32(148, g, true);
     cameraData.setFloat32(152, b, true);
-    uploadCameraUbo();
+    cameraDirty = true;
   },
   aether_webgl_set_proj_matrix(ptr) {
     setMat4Bytes(cameraBytes, 64, ptr);
-    uploadCameraUbo();
+    cameraDirty = true;
   },
   aether_webgl_set_view_matrix(ptr) {
     setMat4Bytes(cameraBytes, 0, ptr);
-    uploadCameraUbo();
+    cameraDirty = true;
   },
   aether_webgl_start_frame(width, height) {
     gl.viewport(0, 0, width, height);
-    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    clearBuffers(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     return true;
   },
   aether_webgl_end_frame() {},
   aether_webgl_clear_depth() {
-    gl.clear(gl.DEPTH_BUFFER_BIT);
+    clearBuffers(gl.DEPTH_BUFFER_BIT);
   },
   aether_webgl_create_mesh() {
     const handle = nextMeshHandle++;
@@ -619,9 +645,10 @@ const host = {
     if (!mesh) return;
     if (mesh.vertexCount === 0) return;
     gl.useProgram(program);
+    uploadCameraUbo();
     uploadPerObjectUbo(modelPtr);
     gl.bindVertexArray(mesh.vao);
-    if (currentTexture) gl.bindTexture(gl.TEXTURE_2D, currentTexture);
+    bindTexture(currentTexture);
     if (mesh.indexCount > 0) {
       gl.drawElements(gl.TRIANGLES, mesh.indexCount, gl.UNSIGNED_SHORT, 0);
     } else {
@@ -632,7 +659,7 @@ const host = {
     const handle = nextTextureHandle++;
     const tex = gl.createTexture();
     textures.set(handle, { tex, width, height });
-    gl.bindTexture(gl.TEXTURE_2D, tex);
+    bindTexture(tex);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
@@ -653,7 +680,7 @@ const host = {
   aether_webgl_update_texture(handle, ptr, len) {
     const texture = textures.get(handle);
     if (!texture) return;
-    gl.bindTexture(gl.TEXTURE_2D, texture.tex);
+    bindTexture(texture.tex);
     gl.texSubImage2D(
       gl.TEXTURE_2D,
       0,
@@ -669,12 +696,14 @@ const host = {
   aether_webgl_bind_texture(handle) {
     const texture = textures.get(handle);
     currentTexture = texture ? texture.tex : null;
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, currentTexture);
   },
   aether_webgl_destroy_texture(handle) {
     const texture = textures.get(handle);
-    if (texture) gl.deleteTexture(texture.tex);
+    if (texture) {
+      gl.deleteTexture(texture.tex);
+      if (boundTexture === texture.tex) boundTexture = null;
+      if (currentTexture === texture.tex) currentTexture = null;
+    }
     textures.delete(handle);
   },
   aether_audio_init(sampleRate, maxSlots) {

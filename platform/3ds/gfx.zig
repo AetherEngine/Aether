@@ -14,6 +14,7 @@ const Graphics = @import("../graphics/graphics.zig");
 const vertex = Graphics.vertex;
 const Mesh = Graphics.mesh;
 const Texture = Graphics.texture;
+const FogCache = @import("fog_state.zig").Cache;
 const gfx = @import("../gfx.zig");
 const basic_vert align(@alignOf(u32)) = @embedFile("aether_basic_vert").*;
 
@@ -108,11 +109,14 @@ const ScreenState = struct {
     bound_vertex_buffer: mango.DeviceSlice = .empty,
     bound_texture: Texture.Handle = .none,
     combiner_mode: CombinerMode = .invalid,
+    fog_lut: mango.FogLookupTable = .null,
+    fog_cache: FogCache = .{},
 
     fn reset_cache(state: *ScreenState) void {
         state.bound_vertex_buffer = .empty;
         state.bound_texture = .none;
         state.combiner_mode = .invalid;
+        state.fog_cache.reset_commands();
     }
 };
 
@@ -163,7 +167,6 @@ var bottom_target = RenderTarget{};
 var basic_shader: mango.Shader = .null;
 var vertex_input: mango.VertexInputLayout = .null;
 var texture_sampler: mango.Sampler = .null;
-var fog_lut: mango.FogLookupTable = .null;
 
 pub fn setup(alloc: std.mem.Allocator, io: std.Io) void {
     render_alloc = alloc;
@@ -190,7 +193,8 @@ pub fn init() gfx_api.InitError!void {
     top_state.command_buffer = command_buffers[0];
     bottom_state.command_buffer = command_buffers[1];
 
-    fog_lut = gfx.surface.device.createFogLookupTable(.{}) catch return error.GfxInitFailed;
+    top_state.fog_lut = gfx.surface.device.createFogLookupTable(.{}) catch return error.GfxInitFailed;
+    bottom_state.fog_lut = gfx.surface.device.createFogLookupTable(.{}) catch return error.GfxInitFailed;
     basic_shader = gfx.surface.device.createShader(.init(.psh, &basic_vert, "main")) catch return error.GfxInitFailed;
     vertex_input = create_vertex_input() catch return error.GfxInitFailed;
     texture_sampler = gfx.surface.device.createSampler(.{
@@ -277,7 +281,7 @@ pub fn set_alpha_blend(enabled: bool) void {
     const state = screen_state(current_screen);
     if (initialized and state.recording) {
         state.command_buffer.setBlendEquation(normal_blend_equation());
-        apply_alpha_test_state(state.command_buffer);
+        state.command_buffer.setAlphaTestEnable(enabled);
     }
 }
 
@@ -301,28 +305,40 @@ pub fn set_fog(enabled: bool, near: f32, far: f32, start: f32, end: f32, r: f32,
     draw_state.fog_color = .{ r, g, b };
 
     const state = screen_state(current_screen);
-    if (initialized and state.recording) {
-        // PICA W-buffering multiplies post-divide Z by clip W. Mapping the
-        // depth range to 1/far therefore produces
-        // (view_depth - near) / (far - near).
-        state.command_buffer.setDepthMode(if (linear_depth) .w_buffer else .z_buffer);
-        // [0, -1.0] -> [0, 1]
-        state.command_buffer.setDepthParameters(if (linear_depth) -1.0 / far else -1.0, 0);
-        state.command_buffer.setTextureCombinersEffect(if (enabled) .fog else .none);
+    if (initialized and state.recording) apply_fog_state(state);
+}
 
-        if (enabled) {
-            state.command_buffer.setFogColor(&.{ @trunc(r * 255), @trunc(g * 255), @trunc(b * 255) });
-
-            // A fog table cannot be recreated while it is bound in Mango's state.
-            state.command_buffer.bindFogTable(.null);
-            var ctx: FogTableContext = .{ .near = near, .far = far, .start = start, .end = end };
-            gfx.surface.device.recreateFogLookupTable(fog_lut, .{
-                .map = &FogTableContext.map,
-                .context = &ctx,
-            });
-            state.command_buffer.bindFogTable(fog_lut);
-        }
+fn apply_fog_state(state: *ScreenState) void {
+    const changes = state.fog_cache.update(.{
+        .enabled = draw_state.fog_enabled != 0,
+        .near = draw_state.fog_near,
+        .far = draw_state.fog_far,
+        .start = draw_state.fog_start,
+        .end = draw_state.fog_end,
+        .color = draw_state.fog_color,
+    });
+    const cmd = state.command_buffer;
+    if (changes.depth_mode) cmd.setDepthMode(if (state.fog_cache.linear_depth.?) .w_buffer else .z_buffer);
+    // PICA W-buffer depth is (view_depth - near) / (far - near).
+    if (changes.depth_parameters) cmd.setDepthParameters(state.fog_cache.depth_scale.?, 0);
+    if (changes.effect) cmd.setTextureCombinersEffect(if (draw_state.fog_enabled != 0) .fog else .none);
+    if (changes.color) cmd.setFogColor(&state.fog_cache.color.?);
+    if (changes.rebuild_table) {
+        // Mango retains table references until drawing. Do not modify a bound
+        // table, or share mutable tables between the two screen recordings.
+        if (changes.unbind_table) cmd.bindFogTable(.null);
+        var ctx: FogTableContext = .{
+            .near = draw_state.fog_near,
+            .far = draw_state.fog_far,
+            .start = draw_state.fog_start,
+            .end = draw_state.fog_end,
+        };
+        gfx.surface.device.recreateFogLookupTable(state.fog_lut, .{
+            .map = &FogTableContext.map,
+            .context = &ctx,
+        });
     }
+    if (changes.bind_table) cmd.bindFogTable(state.fog_lut);
 }
 
 const FogTableContext = struct {
@@ -360,6 +376,7 @@ pub fn set_uv_offset(u: f32, v: f32) void {
 }
 
 pub fn set_proj_matrix(m: *const Mat4) void {
+    if (std.meta.eql(pending_state.proj, m.*)) return;
     pending_state.proj = m.*;
     update_projection_uniform_rows();
     const state = screen_state(current_screen);
@@ -794,16 +811,7 @@ fn begin_screen_recording(screen: gfx.Surface.Screen) !mango.CommandBuffer {
 
     state.recording = true;
     state.render_open = true;
-    set_fog(
-        draw_state.fog_enabled != 0,
-        draw_state.fog_near,
-        draw_state.fog_far,
-        draw_state.fog_start,
-        draw_state.fog_end,
-        draw_state.fog_color[0],
-        draw_state.fog_color[1],
-        draw_state.fog_color[2],
-    );
+    apply_fog_state(state);
     return cmd;
 }
 
@@ -865,8 +873,6 @@ fn set_default_graphics_state(cmd: mango.CommandBuffer, screen: gfx.Surface.Scre
         .offset = .{ .x = 0, .y = 0 },
         .extent = .{ .width = dims.width, .height = dims.height },
     };
-    const linear_depth = draw_state.fog_far > draw_state.fog_near and draw_state.fog_far > 0.0;
-    cmd.setDepthMode(if (linear_depth) .w_buffer else .z_buffer);
     // Front face is CCW so we cull CW faces.
     cmd.setCullMode(if (culling_enabled) .cw else .none);
     cmd.setPrimitiveTopology(.triangle_list);
@@ -878,8 +884,6 @@ fn set_default_graphics_state(cmd: mango.CommandBuffer, screen: gfx.Surface.Scre
     cmd.setDepthTestEnable(true);
     cmd.setDepthCompareOp(.lt);
     cmd.setDepthWriteEnable(depth_write_enabled);
-    // [0, -1] -> [0, 1]
-    cmd.setDepthParameters(if (linear_depth) -1.0 / draw_state.fog_far else -1.0, 0.0);
     cmd.setLogicOpEnable(false);
     cmd.setLogicOp(.copy);
     apply_alpha_test_state(cmd);
@@ -890,7 +894,6 @@ fn set_default_graphics_state(cmd: mango.CommandBuffer, screen: gfx.Surface.Scre
     cmd.setStencilReference(0);
     cmd.setVertexInput(vertex_input);
     cmd.setTextureCoordinates(.@"2", .@"2");
-    cmd.setTextureCombinersEffect(.none);
     cmd.setTextureCombinersEffectDepthFlip(false);
     cmd.setLightingEnable(false);
 }
@@ -1186,9 +1189,10 @@ fn cleanup_renderer_resources() void {
     destroy_render_target(&bottom_target);
     destroy_render_target(&top_target);
 
-    if (fog_lut != .null) {
-        gfx.surface.device.destroyFogLookupTable(fog_lut);
-        fog_lut = .null;
+    for ([_]*ScreenState{ &top_state, &bottom_state }) |state| {
+        if (state.fog_lut != .null) gfx.surface.device.destroyFogLookupTable(state.fog_lut);
+        state.fog_lut = .null;
+        state.fog_cache = .{};
     }
     if (vertex_input != .null) {
         gfx.surface.device.destroyVertexInputLayout(vertex_input);

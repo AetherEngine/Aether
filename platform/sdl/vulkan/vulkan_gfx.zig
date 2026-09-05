@@ -762,11 +762,13 @@ pub fn set_vsync(v: bool) void {
 }
 
 pub fn set_proj_matrix(mat: *const Mat4) void {
+    if (std.meta.eql(pending_state.proj, mat.*)) return;
     pending_state.proj = mat.*;
     camera_dirty = true;
 }
 
 pub fn set_view_matrix(mat: *const Mat4) void {
+    if (std.meta.eql(pending_state.view, mat.*)) return;
     pending_state.view = mat.*;
     camera_dirty = true;
 }

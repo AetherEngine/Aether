@@ -32,10 +32,12 @@ var per_object: PerObject = .{ .model = Mat4.identity() };
 var ubo: gl.uint = 0;
 var per_object_ubo: gl.uint = 0;
 var initialized = false;
+var dirty = false;
 
 pub fn init() !void {
     assert(!initialized);
     initialized = true;
+    dirty = false;
 
     gl.CreateBuffers(1, @ptrCast(&ubo));
     gl.NamedBufferStorage(ubo, @sizeOf(ShaderState), &state, gl_constants.dynamic_storage_bit);
@@ -50,7 +52,13 @@ pub fn init() !void {
     assert(initialized);
 }
 
-pub fn update_ubo() void {
+pub fn mark_dirty() void {
+    dirty = true;
+}
+
+pub fn flush() void {
+    if (!dirty) return;
+    dirty = false;
     gl.NamedBufferSubData(ubo, 0, @sizeOf(ShaderState), &state);
 }
 

@@ -34,6 +34,7 @@ var textures = Util.ResourceTableType(gl.uint, 1024, Texture.Handle).init();
 var alpha_blend_enabled: bool = true;
 var cull_face_enabled: bool = true;
 var depth_write_enabled: bool = true;
+var bound_texture: Texture.Handle = .none;
 var pipeline: PipelineData = undefined;
 var pipeline_initialized: bool = false;
 
@@ -78,9 +79,15 @@ pub fn init() gfx_api.InitError!void {
     shader.init() catch return error.PipelineCreationFailed;
     errdefer shader.deinit();
 
+    alpha_blend_enabled = true;
+    cull_face_enabled = true;
+    depth_write_enabled = true;
+    bound_texture = .none;
+    gl.DepthMask(gl_constants.true_value);
+    shader.state.alpha_blend_enabled = 1;
     shader.state.proj = Mat4.identity();
     shader.state.view = Mat4.identity();
-    shader.update_ubo();
+    shader.mark_dirty();
 
     pipeline = init_pipeline(vertex.Layout) catch return error.PipelineCreationFailed;
     pipeline_initialized = true;
@@ -105,7 +112,7 @@ pub fn set_alpha_blend(enabled: bool) void {
     const flag: u32 = @intFromBool(enabled);
     if (shader.state.alpha_blend_enabled != flag) {
         shader.state.alpha_blend_enabled = flag;
-        shader.update_ubo();
+        shader.mark_dirty();
     }
     if (enabled == alpha_blend_enabled) return;
     alpha_blend_enabled = enabled;
@@ -113,6 +120,7 @@ pub fn set_alpha_blend(enabled: bool) void {
 }
 
 pub fn set_depth_write(enabled: bool) void {
+    if (depth_write_enabled == enabled) return;
     depth_write_enabled = enabled;
     gl.DepthMask(@intFromBool(enabled));
 }
@@ -128,7 +136,7 @@ pub fn set_culling(enabled: bool) void {
 pub fn set_uv_offset(u: f32, v: f32) void {
     if (shader.state.uv_offset[0] == u and shader.state.uv_offset[1] == v) return;
     shader.state.uv_offset = .{ u, v };
-    shader.update_ubo();
+    shader.mark_dirty();
 }
 
 pub fn set_fog(enabled: bool, _: f32, _: f32, start: f32, end: f32, r: f32, g: f32, b: f32) void {
@@ -137,11 +145,12 @@ pub fn set_fog(enabled: bool, _: f32, _: f32, start: f32, end: f32, r: f32, g: f
         shader.state.fog_start == start and
         shader.state.fog_end == end and
         std.mem.eql(f32, &shader.state.fog_color, &.{ r, g, b })) return;
+    const changed = shader.state.fog_enabled != fog_en or enabled;
     shader.state.fog_enabled = fog_en;
     shader.state.fog_start = start;
     shader.state.fog_end = end;
     shader.state.fog_color = .{ r, g, b };
-    shader.update_ubo();
+    if (changed) shader.mark_dirty();
 }
 
 pub fn start_frame() bool {
@@ -163,7 +172,7 @@ pub fn start_frame() bool {
     // depth_write=false would never clear depth. Force the mask on for the
     // frame clear (Vulkan clears via load op regardless of pipeline state),
     // then restore the requested state.
-    gl.DepthMask(gl_constants.true_value);
+    if (!depth_write_enabled) gl.DepthMask(gl_constants.true_value);
     gl.Clear(gl_constants.color_buffer_bit | gl_constants.depth_buffer_bit);
     if (!depth_write_enabled) gl.DepthMask(gl_constants.false_value);
 
@@ -176,7 +185,7 @@ pub fn end_frame() void {
 
 pub fn clear_depth() void {
     // See start_frame: the depth clear must ignore the game's write mask.
-    gl.DepthMask(gl_constants.true_value);
+    if (!depth_write_enabled) gl.DepthMask(gl_constants.true_value);
     gl.Clear(gl_constants.depth_buffer_bit);
     if (!depth_write_enabled) gl.DepthMask(gl_constants.false_value);
 }
@@ -194,13 +203,15 @@ pub fn set_vsync(v: bool) void {
 }
 
 pub fn set_proj_matrix(mat: *const Mat4) void {
+    if (std.meta.eql(shader.state.proj, mat.*)) return;
     shader.state.proj = mat.*;
-    shader.update_ubo();
+    shader.mark_dirty();
 }
 
 pub fn set_view_matrix(mat: *const Mat4) void {
+    if (std.meta.eql(shader.state.view, mat.*)) return;
     shader.state.view = mat.*;
-    shader.update_ubo();
+    shader.mark_dirty();
 }
 
 pub fn set_render_state(state: *const Graphics.RenderState) void {
@@ -301,6 +312,7 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
     const pl = &pipeline;
     if (mesh.vertex_count == 0) return;
 
+    shader.flush();
     shader.update_per_object(model);
     gl.BindVertexArray(pl.vao);
     gl.UseProgram(pl.program.shader_program);
@@ -343,8 +355,9 @@ pub fn update_texture(handle: Texture.Handle, data: []align(16) u8) void {
 }
 
 pub fn bind_texture(handle: Texture.Handle) void {
-    if (handle.is_null()) return;
+    if (handle.is_null() or bound_texture == handle) return;
     const tex = textures.get(handle) orelse Util.panic_invalid_handle("opengl gfx", "bind_texture", handle);
+    bound_texture = handle;
     gl.BindTextureUnit(2, tex);
 }
 
@@ -352,6 +365,7 @@ pub fn destroy_texture(handle: Texture.Handle) void {
     if (handle.is_null()) return;
     var tex = textures.get(handle) orelse Util.panic_invalid_handle("opengl gfx", "destroy_texture", handle);
     gl.DeleteTextures(1, @ptrCast(&tex));
+    if (bound_texture == handle) bound_texture = .none;
     _ = textures.remove(handle);
 }
 

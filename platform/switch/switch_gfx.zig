@@ -1057,6 +1057,7 @@ fn vtx_attrib(attr: vertex.Attribute) dk.DkVtxAttribState {
 fn bind_fixed_state() void {
     bind_rasterizer_state();
     bind_color_state();
+    bind_blend_equation();
     bind_depth_state();
     const color_write = dk.DkColorWriteState{ .masks = 0xFFFF_FFFF };
     dk.dkCmdBufBindColorWriteState(swapchain.command_buffer, &color_write);
@@ -1078,13 +1079,17 @@ fn bind_color_state() void {
     var color = dk.DkColorState{ .bits = blend_enable_mask |
         (@as(u32, @intCast(dk.LogicOpCopy)) << 8) |
         (@as(u32, @intCast(dk.CompareAlways)) << 16) };
+    dk.dkCmdBufBindColorState(swapchain.command_buffer, &color);
+}
+
+// Blend factors are constant; only the enable mask changes between passes.
+fn bind_blend_equation() void {
     var blend = dk.DkBlendState{ .bits = @as(u32, @intCast(dk.BlendOpAdd)) |
         (@as(u32, @intCast(dk.BlendFactorSrcAlpha)) << 3) |
         (@as(u32, @intCast(dk.BlendFactorInvSrcAlpha)) << 9) |
         (@as(u32, @intCast(dk.BlendOpAdd)) << 15) |
         (@as(u32, @intCast(dk.BlendFactorOne)) << 18) |
         (@as(u32, @intCast(dk.BlendFactorInvSrcAlpha)) << 24) };
-    dk.dkCmdBufBindColorState(swapchain.command_buffer, &color);
     dk.dkCmdBufBindBlendStates(swapchain.command_buffer, 0, @ptrCast(&blend), 1);
 }
 

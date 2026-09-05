@@ -67,4 +67,5 @@ test {
     // Core no longer brings these nested files into Platform's test root.
     @import("std").testing.refAllDecls(input_api.frame);
     @import("std").testing.refAllDecls(gfx.texture_pixels);
+    @import("std").testing.refAllDecls(@import("3ds/fog_state.zig"));
 }

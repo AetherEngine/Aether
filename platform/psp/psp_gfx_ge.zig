@@ -137,6 +137,11 @@ var alpha_blend_enabled: bool = true;
 var clip_planes_enabled: bool = false;
 var fog_enabled: bool = false;
 var cull_face_enabled: bool = true;
+var depth_write_enabled: bool = true;
+var proj_matrix = Mat4.identity();
+var view_matrix = Mat4.identity();
+var fog_range: ?[2]f32 = null;
+var fog_color: ?u24 = null;
 var uv_offset: [2]f32 = .{ 0.0, 0.0 };
 var clear_color: u24 = 0x000000;
 
@@ -380,8 +385,10 @@ fn nop_ge_callback(_: c_int, _: ?*anyopaque) callconv(.c) void {}
 /// hardware can drain commands written so far. Direct-mode equivalent of
 /// gu's internal `update_stall_addr()`.
 var current_qid: i32 = 0;
+var batching_render_state = false;
 
 fn advance_stall() void {
+    if (batching_render_state) return;
     ge_list.list_update_stall_addr(current_qid, cmd.current()) catch {};
 }
 
@@ -600,6 +607,15 @@ pub fn init() gfx_api.InitError!void {
     must(cmd.shade_model(.smooth));
     must(cmd.front_face_clockwise(false));
     must(cmd.enable(.cull_face, true));
+    cull_face_enabled = true;
+    depth_write_enabled = true;
+    fog_enabled = false;
+    fog_range = null;
+    fog_color = null;
+    bound_texture = .none;
+    texture_mode = null;
+    texture_mip_filter = false;
+    texture_cache_dirty = false;
     must(cmd.enable(.clip_planes, false));
     clip_planes_enabled = false;
     must(cmd.enable(.alpha_test, true));
@@ -608,8 +624,13 @@ pub fn init() gfx_api.InitError!void {
     must(cmd.blend_func(.add, .source_alpha, .one_minus_source_alpha, 0, 0));
     alpha_blend_enabled = true;
     must(cmd.enable(.texture_mapping, true));
-    must(cmd.texture_scale(1.0, 1.0));
-    must(cmd.texture_offset(0.0, 0.0));
+    const uv_scale: f32 = if (render_pipeline.uv_unorm8) 0.5 else 1.0;
+    const uv_bias: f32 = if (render_pipeline.uv_unorm8) 1.0 else 0.0;
+    must(cmd.texture_scale(uv_scale, uv_scale));
+    must(cmd.texture_offset(uv_bias, uv_bias));
+    uv_offset = .{ 0.0, 0.0 };
+    must(cmd.texture_function(.{ .effect = .modulate, .component = .rgba }));
+    must(cmd.texture_filter(.nearest, .nearest));
 
     // Initialize all matrix slots to identity so hardware registers are
     // never garbage. The new ge command_buffer takes raw [16]f32 -- the
@@ -625,6 +646,8 @@ pub fn init() gfx_api.InitError!void {
     must(cmd.view_matrix(&identity));
     must(cmd.world_matrix(&identity));
     must(cmd.texture_matrix(&identity));
+    proj_matrix = Mat4.identity();
+    view_matrix = Mat4.identity();
 
     finish_list();
     _ = ge_list.draw_sync(.wait);
@@ -772,6 +795,8 @@ pub fn set_alpha_blend(enabled: bool) void {
 }
 
 pub fn set_depth_write(enabled: bool) void {
+    if (enabled == depth_write_enabled) return;
+    depth_write_enabled = enabled;
     // zmsk register uses mask semantics: 1 = block writes, 0 = allow writes.
     must(cmd.depth_mask(!enabled));
     advance_stall();
@@ -792,18 +817,30 @@ pub fn set_culling(enabled: bool) void {
 }
 
 pub fn set_uv_offset(u: f32, v: f32) void {
+    if (uv_offset[0] == u and uv_offset[1] == v) return;
     uv_offset = .{ u, v };
-    must(cmd.texture_offset(u, v));
+    const bias: f32 = if (render_pipeline.uv_unorm8) 1.0 else 0.0;
+    must(cmd.texture_offset(bias + u, bias + v));
     advance_stall();
 }
 
 pub fn set_fog(enabled: bool, _: f32, _: f32, start: f32, end: f32, r: f32, g: f32, b: f32) void {
+    const before = cmd.current();
     if (enabled) {
         const ri: u32 = @intFromFloat(@max(0.0, @min(1.0, r)) * 255.0);
         const gi: u32 = @intFromFloat(@max(0.0, @min(1.0, g)) * 255.0);
         const bi: u32 = @intFromFloat(@max(0.0, @min(1.0, b)) * 255.0);
         const color: u24 = @intCast((bi << 16) | (gi << 8) | ri);
-        must(cmd.fog(start, end, color));
+        // Compare the values consumed by the GE, including packed color.
+        if (fog_color == null or fog_color.? != color) {
+            must(cmd.emit_bits(.fcol, color));
+            fog_color = color;
+        }
+        const distance = end - start;
+        const range: [2]f32 = .{ end, if (distance > 0) 1.0 / distance else distance };
+        if (fog_range == null or fog_range.?[0] != range[0]) must(cmd.emit_float(.ffar, range[0]));
+        if (fog_range == null or fog_range.?[1] != range[1]) must(cmd.emit_float(.fdist, range[1]));
+        fog_range = range;
         if (!fog_enabled) {
             must(cmd.enable(.fog, true));
             fog_enabled = true;
@@ -812,7 +849,7 @@ pub fn set_fog(enabled: bool, _: f32, _: f32, start: f32, end: f32, r: f32, g: f
         must(cmd.enable(.fog, false));
         fog_enabled = false;
     }
-    advance_stall();
+    if (cmd.current() != before) advance_stall();
 }
 
 pub fn set_clear_color(r: f32, g: f32, b: f32, _: f32) void {
@@ -827,16 +864,27 @@ fn mat4_as_floats(mat: *const Mat4) *const [16]f32 {
 }
 
 pub fn set_proj_matrix(mat: *const Mat4) void {
+    if (std.meta.eql(proj_matrix, mat.*)) return;
+    proj_matrix = mat.*;
     must(cmd.projection_matrix(mat4_as_floats(mat)));
     advance_stall();
 }
 
 pub fn set_view_matrix(mat: *const Mat4) void {
+    if (std.meta.eql(view_matrix, mat.*)) return;
+    view_matrix = mat.*;
     must(cmd.view_matrix(mat4_as_floats(mat)));
     advance_stall();
 }
 
 pub fn set_render_state(state: *const Graphics.RenderState) void {
+    const before = cmd.current();
+    batching_render_state = true;
+    defer {
+        batching_render_state = false;
+        if (cmd.current() != before) advance_stall();
+    }
+
     set_alpha_blend(state.blend == .alpha);
     set_depth_write(state.depth_write);
     set_culling(state.cull);
@@ -999,12 +1047,10 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
 
     must(cmd.world_matrix(mat4_as_floats(model)));
 
-    if (pl.uv_unorm8) {
-        must(cmd.texture_offset(1.0 + uv_offset[0], 1.0 + uv_offset[1]));
-        must(cmd.texture_scale(0.5, 0.5));
-    } else {
-        must(cmd.texture_offset(uv_offset[0], uv_offset[1]));
-        must(cmd.texture_scale(1.0, 1.0));
+    // Pixel updates invalidate the texture cache without changing its binding.
+    if (texture_cache_dirty) {
+        must(cmd.texture_flush());
+        texture_cache_dirty = false;
     }
 
     if (mesh.index_count > 0) {
@@ -1090,6 +1136,9 @@ pub const swizzled_offset = @import("texture_pixels.zig").swizzled_offset;
 
 var textures = Util.ResourceTableType(TextureData, 64, Texture.Handle).init();
 var bound_texture: Texture.Handle = .none;
+var texture_mode: ?struct { swizzled: bool, mip_count: u8 } = null;
+var texture_mip_filter = false;
+var texture_cache_dirty = false;
 
 pub fn create_texture(desc: *const Texture.UploadDesc) gfx_api.CreateTextureError!Texture.Handle {
     const width = desc.width;
@@ -1122,6 +1171,7 @@ pub fn create_texture(desc: *const Texture.UploadDesc) gfx_api.CreateTextureErro
 // routing writes through pixel_offset. We must NOT swizzle again here.
 pub fn update_texture(handle: Texture.Handle, data: []align(16) u8) void {
     const tex = textures.get(handle) orelse Util.panic_invalid_handle("psp gfx", "update_texture", handle);
+    if (bound_texture == handle) texture_cache_dirty = true;
 
     if (tex.in_vram) {
         // The GE is sampling from VRAM; mirror the RAM buffer over it.
@@ -1136,14 +1186,16 @@ pub fn update_texture(handle: Texture.Handle, data: []align(16) u8) void {
 }
 
 pub fn bind_texture(handle: Texture.Handle) void {
+    if (handle.is_null() or bound_texture == handle) return;
     bound_texture = handle;
-    if (handle.is_null()) return;
     const tex = textures.get(handle) orelse Util.panic_invalid_handle("psp gfx", "bind_texture", handle);
 
     const layout: ge_list.TextureDataLayout = if (tex.swizzled) .swizzled else .linear;
 
-    must(cmd.texture_mode(tex_pixel_format, @intCast(tex.mip_count), .single, layout));
-    must(cmd.texture_flush());
+    if (texture_mode == null or texture_mode.?.swizzled != tex.swizzled or texture_mode.?.mip_count != tex.mip_count) {
+        must(cmd.texture_mode(tex_pixel_format, @intCast(tex.mip_count), .single, layout));
+        texture_mode = .{ .swizzled = tex.swizzled, .mip_count = tex.mip_count };
+    }
     must(cmd.texture_image(.level0, @intCast(tex.width), @intCast(tex.height), @intCast(tex.width), tex.data));
     var i: u8 = 0;
     while (i < tex.mip_count) : (i += 1) {
@@ -1152,18 +1204,17 @@ pub fn bind_texture(handle: Texture.Handle) void {
         must(cmd.texture_image(level, @intCast(mip.width), @intCast(mip.height), @intCast(mip.width), mip.data));
     }
     must(cmd.texture_flush());
-    must(cmd.texture_function(.{ .effect = .modulate, .component = .rgba }));
-    if (tex.mip_count > 0) {
-        must(cmd.texture_filter(.nearest_mipmap_nearest, .nearest));
-    } else {
-        must(cmd.texture_filter(.nearest, .nearest));
+    texture_cache_dirty = false;
+    const mip_filter = tex.mip_count > 0;
+    if (texture_mip_filter != mip_filter) {
+        must(cmd.texture_filter(if (mip_filter) .nearest_mipmap_nearest else .nearest, .nearest));
+        texture_mip_filter = mip_filter;
     }
-    must(cmd.texture_scale(1.0, 1.0));
-    must(cmd.texture_offset(0.0, 0.0));
     advance_stall();
 }
 
 pub fn destroy_texture(handle: Texture.Handle) void {
+    if (bound_texture == handle) bound_texture = .none;
     if (handle.is_null()) return;
     if (textures.get(handle) == null) Util.panic_invalid_handle("psp gfx", "destroy_texture", handle);
     if (textures.get(handle)) |tex| {
@@ -1390,4 +1441,6 @@ pub fn force_texture_resident(handle: Texture.Handle) void {
     generate_resident_mips(&tex);
 
     _ = textures.update(handle, tex);
+    // The same handle now names different GPU storage and possibly mip levels.
+    if (bound_texture == handle) bound_texture = .none;
 }

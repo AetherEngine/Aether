@@ -52,6 +52,15 @@ Core resolves an omitted render-state texture to its default before submitting
 the state. Code calling the low-level `gfx.api.set_render_state` directly must
 supply an actual texture handle when drawing textured geometry.
 
+Backends compare RenderState fields before emitting GPU work. State caches belong
+to the backend, alongside texture update/destruction and command-buffer lifetime
+handling. Fresh Vulkan, Switch, and 3DS command buffers still establish their
+required state. OpenGL and WebGL defer shared uniform uploads until drawing, so
+several changed fields share one upload. PSP batches a state transition into one
+stall-address update and preserves bindings across its display lists. Each 3DS
+screen owns its fog table; recording resets invalidate bindings while retaining
+the generated table until its depth/fog range changes.
+
 Input backends translate device events into a Platform-owned event sink. Core
 adapts that sink to `InputSystem`, accumulates frames, and evaluates actions.
 Native keyboards receive a plain request and report a result through the sink;
@@ -113,6 +122,7 @@ listed SDKs and tools in addition to the Zig package dependencies.
 | `zig build test -Dgfx=headless -Daudio=none` | Headless unit tests and architecture checks |
 | `zig build -Dgfx=opengl` | OpenGL desktop build |
 | `zig build web` | WASM/WebGL bundle, using Slang and spirv-cross |
+| `node --test tools/test_web_render_state.mjs` | WebGL command-recording tests for uniforms, texture updates, and depth clears |
 | `zig build -Dtarget=mipsel-psp` | PSP build, using Zig and the Zig-PSP/pspsdk package tools |
 | `zig build -Dtarget=arm-3ds` | 3DS build, using Zig and the zitrus package/toolchain |
 | `zig build -Dtarget=aarch64-freestanding-none -Dnintendo-switch=true` | Switch build, using devkitA64, libnx, and uam |
