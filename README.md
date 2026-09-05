@@ -7,6 +7,12 @@ Aether is a game engine written in [Zig](https://ziglang.org/). It is platform-a
 
 User code is structured as hooks into the engine via a `State` interface. You implement the game logic; the engine handles the platform details.
 
+The public API starts in `src/root.zig`. Core owns state transitions and input
+actions; Audio, Rendering, and Ui build higher-level behavior on Platform.
+Engine owns subsystem startup, shutdown, and frame scheduling. Platform selects
+backends at compile time and owns device access, native resource layouts, and
+application directories. Its `*_api.zig` modules define backend contracts.
+
 ## Features
 
 - **Cross-platform**: Windows, Linux, macOS (PSP/Switch planned)

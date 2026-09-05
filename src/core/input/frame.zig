@@ -1,10 +1,4 @@
-//! Per-frame raw event stream + pointer state.
-//!
-//! Backends call `deliver_*` (from input.zig) which appends a `RawEvent`
-//! to the active accumulator. `signal_frame_boundary` swaps accumulator
-//! and published buffers, so `frame()` returns events with stable lifetime
-//! until the next boundary. Text payloads index into a parallel byte arena
-//! that is swapped in lockstep, keeping the slice references valid.
+//! Published events and text remain valid until the next frame boundary.
 
 const std = @import("std");
 const data = @import("data.zig");
@@ -46,73 +40,77 @@ pub const InputFrame = struct {
     pointer: Pointer = .{},
 };
 
-/// Double-buffered event + string storage. The accumulator captures
-/// `deliver_*` calls; on swap, the accumulator becomes the published
-/// frame and the previous publication is cleared for reuse.
 pub const FrameBuffer = struct {
     alloc: std.mem.Allocator,
-    events_a: std.ArrayList(RawEvent) = .empty,
-    events_b: std.ArrayList(RawEvent) = .empty,
-    strings_a: std.ArrayList(u8) = .empty,
-    strings_b: std.ArrayList(u8) = .empty,
-    accum_is_a: bool = true,
+    accum_events: std.ArrayList(RawEvent) = .empty,
+    published: std.ArrayList(RawEvent) = .empty,
+    accum_strings: std.heap.ArenaAllocator,
+    published_strings: std.heap.ArenaAllocator,
     sequence: u64 = 0,
     frame_sequence: u64 = 0,
 
     pub fn init(alloc: std.mem.Allocator) FrameBuffer {
-        return .{ .alloc = alloc };
+        return .{
+            .alloc = alloc,
+            .accum_strings = .init(alloc),
+            .published_strings = .init(alloc),
+        };
     }
 
     pub fn deinit(self: *FrameBuffer) void {
         defer self.* = undefined;
 
-        self.events_a.deinit(self.alloc);
-        self.events_b.deinit(self.alloc);
-        self.strings_a.deinit(self.alloc);
-        self.strings_b.deinit(self.alloc);
+        self.accum_events.deinit(self.alloc);
+        self.published.deinit(self.alloc);
+        self.accum_strings.deinit();
+        self.published_strings.deinit();
     }
 
-    fn accum_events(self: *FrameBuffer) *std.ArrayList(RawEvent) {
-        return if (self.accum_is_a) &self.events_a else &self.events_b;
-    }
-
-    fn accum_strings(self: *FrameBuffer) *std.ArrayList(u8) {
-        return if (self.accum_is_a) &self.strings_a else &self.strings_b;
-    }
-
-    fn pub_events(self: *FrameBuffer) *std.ArrayList(RawEvent) {
-        return if (self.accum_is_a) &self.events_b else &self.events_a;
-    }
-
-    /// Allocate a sequence number and append an event whose `kind` does
-    /// not need to reference the string arena.
     pub fn append_event(self: *FrameBuffer, kind: RawEvent.Kind) !u64 {
         self.sequence += 1;
-        try self.accum_events().append(self.alloc, .{ .sequence = self.sequence, .kind = kind });
+        try self.accum_events.append(self.alloc, .{ .sequence = self.sequence, .kind = kind });
         return self.sequence;
     }
 
-    /// Copy `text` into the accumulator's string arena and return a slice
-    /// that stays valid until the buffer is published and re-used (one
-    /// full frame later).
+    /// Text survives further appends and remains valid through publication.
     pub fn intern_text(self: *FrameBuffer, text: []const u8) ![]const u8 {
-        const strings = self.accum_strings();
-        const start = strings.items.len;
-        try strings.appendSlice(self.alloc, text);
-        return strings.items[start..];
+        return self.accum_strings.allocator().dupe(u8, text);
     }
 
-    /// Flip accumulator and published buffers. The newly-accumulating
-    /// buffer (previously published) is reset for reuse.
     pub fn signal_frame_boundary(self: *FrameBuffer) void {
-        self.accum_is_a = !self.accum_is_a;
+        std.mem.swap(std.ArrayList(RawEvent), &self.accum_events, &self.published);
+        std.mem.swap(std.heap.ArenaAllocator, &self.accum_strings, &self.published_strings);
         self.frame_sequence += 1;
-        // Reset the buffer that will accumulate the next frame.
-        self.accum_events().clearRetainingCapacity();
-        self.accum_strings().clearRetainingCapacity();
+        self.accum_events.clearRetainingCapacity();
+        _ = self.accum_strings.reset(.retain_capacity);
     }
 
     pub fn published_events(self: *FrameBuffer) []const RawEvent {
-        return self.pub_events().items;
+        return self.published.items;
     }
 };
+
+test "frame text survives arena growth and the next accumulator" {
+    var fb = FrameBuffer.init(std.testing.allocator);
+    defer fb.deinit();
+
+    const first = try fb.intern_text("first");
+    _ = try fb.append_event(.{ .text_utf8 = .{ .text = first } });
+    const large = try std.testing.allocator.alloc(u8, 64 * 1024);
+    defer std.testing.allocator.free(large);
+    @memset(large, 'x');
+    const second = try fb.intern_text(large);
+    _ = try fb.append_event(.{ .text_utf8 = .{ .text = second } });
+
+    fb.signal_frame_boundary();
+    const published = fb.published_events();
+    try std.testing.expectEqualStrings("first", published[0].kind.text_utf8.text);
+    try std.testing.expectEqualStrings(large, published[1].kind.text_utf8.text);
+    const next = try fb.intern_text("next");
+    _ = try fb.append_event(.{ .text_utf8 = .{ .text = next } });
+    try std.testing.expectEqualStrings("first", published[0].kind.text_utf8.text);
+
+    fb.signal_frame_boundary();
+    try std.testing.expectEqual(@as(usize, 1), fb.published_events().len);
+    try std.testing.expectEqualStrings("next", fb.published_events()[0].kind.text_utf8.text);
+}

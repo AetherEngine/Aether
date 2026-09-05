@@ -6,27 +6,18 @@ pub const Confidence = enum { p50, p75, p95, max };
 pub const Estimator = struct {
     const sample_capacity: usize = 64;
 
-    samples: [sample_capacity]i64,
-    sorted: [sample_capacity]i64,
-    head: usize,
-    count: usize,
-    start_ns: i96,
+    samples: [sample_capacity]i64 = @splat(0),
+    sorted: [sample_capacity]i64 = @splat(0),
+    head: usize = 0,
+    count: usize = 0,
+    start_ns: i96 = 0,
 
-    cached_avg: i64,
-    cached_min: i64,
-    cached_max: i64,
+    cached_avg: i64 = 0,
+    cached_min: i64 = 0,
+    cached_max: i64 = 0,
 
     pub fn init() Estimator {
-        return .{
-            .samples = @splat(0),
-            .sorted = @splat(0),
-            .head = 0,
-            .count = 0,
-            .start_ns = 0,
-            .cached_avg = 0,
-            .cached_min = 0,
-            .cached_max = 0,
-        };
+        return .{};
     }
 
     pub fn begin(self: *Estimator, io: std.Io) void {
@@ -37,7 +28,7 @@ pub const Estimator = struct {
     pub fn end(self: *Estimator, io: std.Io) void {
         var clock = std.Io.Clock.boot;
         const now_ns = clock.now(io).toNanoseconds();
-        const elapsed = clamp_i128_to_i64(@as(i128, now_ns) - @as(i128, self.start_ns));
+        const elapsed = std.math.lossyCast(i64, @as(i128, now_ns) - @as(i128, self.start_ns));
         self.start_ns = 0;
         self.record(elapsed);
     }
@@ -47,15 +38,13 @@ pub const Estimator = struct {
         self.head = (self.head + 1) % sample_capacity;
         if (self.count < sample_capacity) self.count += 1;
 
-        // Rebuild sorted array from valid samples
         const n = self.count;
         @memcpy(self.sorted[0..n], self.samples[0..n]);
         std.sort.insertion(i64, self.sorted[0..n], {}, std.sort.asc(i64));
 
-        // Recompute cached stats
         var sum: i128 = 0;
         for (self.sorted[0..n]) |s| sum += s;
-        self.cached_avg = clamp_i128_to_i64(@divTrunc(sum, @as(i128, @intCast(n))));
+        self.cached_avg = @intCast(@divTrunc(sum, @as(i128, @intCast(n))));
         self.cached_min = self.sorted[0];
         self.cached_max = self.sorted[n - 1];
     }
@@ -73,8 +62,7 @@ pub const Estimator = struct {
 
     pub fn fit_in(self: *const Estimator, available_ns: i64, confidence: Confidence) usize {
         const cost = self.estimate_cost(confidence);
-        if (cost <= 0) return 1;
-        if (available_ns <= 0) return 1;
+        if (cost <= 0 or available_ns <= 0) return 1;
         return @max(1, @as(usize, @intCast(@divFloor(available_ns, cost))));
     }
 
@@ -108,31 +96,18 @@ pub const Estimator = struct {
                 logger.info("  samples: {}/{}", .{ self.count, sample_capacity });
             }
 
-            const to_us = struct {
-                fn f(ns: i64) i32 {
-                    return @intCast(@divTrunc(ns, 1000));
-                }
-            }.f;
             logger.info("  avg: {} us | min: {} us | max: {} us", .{
-                to_us(self.cached_avg),
-                to_us(self.cached_min),
-                to_us(self.cached_max),
+                @divTrunc(self.cached_avg, 1000),
+                @divTrunc(self.cached_min, 1000),
+                @divTrunc(self.cached_max, 1000),
             });
             logger.info("  p50: {} us | p75: {} us | p95: {} us", .{
-                to_us(self.estimate_cost(.p50)),
-                to_us(self.estimate_cost(.p75)),
-                to_us(self.estimate_cost(.p95)),
+                @divTrunc(self.estimate_cost(.p50), 1000),
+                @divTrunc(self.estimate_cost(.p75), 1000),
+                @divTrunc(self.estimate_cost(.p95), 1000),
             });
         }
 
         logger.info("----------------------------", .{});
     }
 };
-
-fn clamp_i128_to_i64(value: i128) i64 {
-    const max: i128 = std.math.maxInt(i64);
-    const min: i128 = std.math.minInt(i64);
-    if (value > max) return std.math.maxInt(i64);
-    if (value < min) return std.math.minInt(i64);
-    return @intCast(value);
-}

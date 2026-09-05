@@ -1,6 +1,4 @@
-//! Context stack: layered InputContexts whose top owns cursor mode and the
-//! action set the game polls. Lower layers are masked completely; pushing
-//! a layer hides everything below it.
+//! The top context selects cursor mode and masks lower contexts' actions.
 
 const action = @import("action.zig");
 
@@ -21,8 +19,7 @@ pub const InputContext = struct {
 
 pub const max_layers: usize = 16;
 
-/// Fixed-cap stack -- push/pop are O(1) and require no heap. The base
-/// layer (index 0) is created at init and may not be popped.
+/// The base layer created by InputSystem cannot be popped.
 pub const ContextStack = struct {
     layers: [max_layers]InputContext = undefined,
     len: u8 = 0,
@@ -62,9 +59,6 @@ pub const ContextStack = struct {
     }
 };
 
-/// Effective cursor mode for the current top of stack. Returns `.visible`
-/// when the stack is empty so platform code never sees a degenerate state.
 pub fn effective_cursor_mode(stack: *const ContextStack) CursorMode {
-    if (stack.top()) |t| return t.cursor_mode;
-    return .visible;
+    return if (stack.top()) |top| top.cursor_mode else .visible;
 }

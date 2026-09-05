@@ -21,16 +21,13 @@ pub const PlatformApi = struct {
     pub const surface = @import("platform/surface.zig");
 };
 
-/// PSP-exclusive system utility dialogs (OSK, network configuration).
-/// Only available when `platform == .psp`; evaluates to `void` otherwise.
+/// PSP system dialogs (keyboard and network configuration).
 pub const Psp = if (platform == .psp) @import("platform/psp/psp_dialogs.zig") else void;
 pub const N3ds = if (platform == .nintendo_3ds) @import("platform/3ds/app.zig") else void;
 pub const Cio = if (platform == .nintendo_switch) @import("platform/c_io.zig") else void;
 pub const CProcessInit = if (platform == .nintendo_switch) @import("platform/c_process_init.zig") else void;
 
-/// Comptime-known platform and graphics backend, resolved from build options.
-/// User code can switch on these for per-platform configuration without
-/// importing the build options module directly.
+/// Build-selected platform and graphics backend.
 pub const Platform = @TypeOf(options.config.platform);
 pub const Gfx = @TypeOf(options.config.gfx);
 pub const platform: Platform = options.config.platform;

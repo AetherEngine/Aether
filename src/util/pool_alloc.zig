@@ -10,10 +10,6 @@
 //! Over-aligned requests (alignment > block_size) are handled by aligning the
 //! actual data pointer for each candidate run, since the pool's data base is
 //! only guaranteed to be block_size-aligned.
-//!
-//! alloc -- O(1) single-block via L1->L0 descent; O(n/32) multi-block scan
-//! free  -- O(1): set bits + update summary
-//! resize -- O(1): test/set adjacent bits
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -33,8 +29,6 @@ comptime {
     assert(std.math.isPowerOfTwo(block_align));
 }
 
-// -- helpers ------------------------------------------------------------------
-
 inline fn div_ceil(a: usize, b: usize) usize {
     return (a + b - 1) / b;
 }
@@ -46,8 +40,6 @@ inline fn block_index_for_aligned_address(data: [*]u8, block_idx: u32, alignment
     const aligned_addr = std.mem.alignForward(usize, candidate_addr, alignment);
     return block_idx + @as(u32, @intCast((aligned_addr - candidate_addr) / block_size));
 }
-
-// -- public allocator ---------------------------------------------------------
 
 pub const PoolAlloc = struct {
     buf: []u8,
@@ -74,15 +66,11 @@ pub const PoolAlloc = struct {
         const buf_start = @intFromPtr(buf.ptr);
         const buf_end = buf_start + buf.len;
 
-        // We need to figure out how many data blocks fit after carving out
-        // bitmap metadata from the front.  Iterate once: guess total_blocks
-        // from the full buffer, compute metadata size, recompute.
         const aligned_start = std.mem.alignForward(usize, buf_start, block_align);
         const usable = buf_end - aligned_start;
 
-        // Upper bound on blocks (ignoring metadata).
+        // Metadata size depends on block count; shrink until both fit.
         var total_blocks: u32 = @intCast(usable / block_size);
-        // Shrink until metadata + data fits.
         while (total_blocks > 0) {
             const l0w = div_ceil(total_blocks, word_bits);
             const l1w = div_ceil(l0w, word_bits);
@@ -120,38 +108,17 @@ pub const PoolAlloc = struct {
     }
 
     fn reset_bitmaps(self: *PoolAlloc) void {
-        // Set all L0 bits to 1 (free).
-        const full_words = self.total_blocks / word_bits;
+        @memset(self.l0[0..self.l0_words], std.math.maxInt(u32));
         const tail_bits: u5 = @intCast(self.total_blocks & word_mask);
-
-        var i: u32 = 0;
-        while (i < full_words) : (i += 1) {
-            self.l0[i] = 0xFFFF_FFFF;
-        }
-        // Last partial word: only set bits for existing blocks.
         if (tail_bits > 0) {
-            self.l0[full_words] = (@as(u32, 1) << tail_bits) - 1;
-            i = full_words + 1;
-        }
-        // Zero any remaining L0 words (shouldn't exist, but be safe).
-        while (i < self.l0_words) : (i += 1) {
-            self.l0[i] = 0;
+            self.l0[self.l0_words - 1] = (@as(u32, 1) << tail_bits) - 1;
         }
 
-        // Build L1 from L0.
-        var li: u32 = 0;
-        while (li < self.l1_words) : (li += 1) {
-            var summary: u32 = 0;
-            var bit: u5 = 0;
-            while (true) : (bit += 1) {
-                const l0_idx = li * word_bits + bit;
-                if (l0_idx >= self.l0_words) break;
-                if (self.l0[l0_idx] != 0) {
-                    summary |= @as(u32, 1) << bit;
-                }
-                if (bit == 31) break;
-            }
-            self.l1[li] = summary;
+        // Every L0 word has free blocks after reset.
+        @memset(self.l1[0..self.l1_words], std.math.maxInt(u32));
+        const summary_tail: u5 = @intCast(self.l0_words & word_mask);
+        if (summary_tail > 0) {
+            self.l1[self.l1_words - 1] = (@as(u32, 1) << summary_tail) - 1;
         }
     }
 
@@ -228,7 +195,6 @@ pub const PoolAlloc = struct {
                 ((@as(u32, 1) << @as(u5, @intCast(bits_in_word))) - 1) << bit;
 
             self.l0[wi] |= mask;
-            // Update L1: this word now has free blocks.
             const l1i = wi / word_bits;
             const l1b: u5 = @intCast(wi & word_mask);
             self.l1[l1i] |= @as(u32, 1) << l1b;
@@ -259,8 +225,6 @@ pub const PoolAlloc = struct {
         }
         return true;
     }
-
-    // -- internal: block finding -----------------------------------------------
 
     /// Find a single free block. Returns block index or null.
     fn find_single(self: *PoolAlloc) ?u32 {
@@ -430,8 +394,6 @@ pub const PoolAlloc = struct {
         return null; // OOM
     }
 
-    // -- vtable callbacks ------------------------------------------------------
-
     fn alloc_fn(ctx: *anyopaque, n: usize, alignment: std.mem.Alignment, _: usize) ?[*]u8 {
         const self: *PoolAlloc = @ptrCast(@alignCast(ctx));
         if (n == 0) return null;
@@ -506,8 +468,6 @@ pub const PoolAlloc = struct {
         return null;
     }
 };
-
-// -- tests --------------------------------------------------------------------
 
 const testing = std.testing;
 

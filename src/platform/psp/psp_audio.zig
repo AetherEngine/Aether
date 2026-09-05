@@ -1,25 +1,16 @@
-//! PSP audio backend -- single hardware channel with software mixing.
-//!
-//! Reserves one stereo sceAudio channel and runs a dedicated audio thread
-//! that mixes all active slots into a stereo i16 double buffer.
-//! `output_panned_blocking` provides natural timing -- the call blocks until
-//! the hardware consumes the previous buffer, then queues the new one.
+//! Mixes slots into one stereo PSP hardware channel on a dedicated thread.
 
 const std = @import("std");
 const sdk = @import("pspsdk");
 const audio_api = @import("../audio_api.zig");
-const SlotSource = @import("../../audio/stream.zig").SlotSource;
-const PcmFormat = @import("../../audio/stream.zig").PcmFormat;
+const SlotSource = audio_api.SlotSource;
+const PcmFormat = audio_api.PcmFormat;
 
 const num_slots: usize = 8;
 const samples_per_buf: usize = 1024;
-/// Per-slot scratch: room for samples_per_buf of stereo i16.
 const read_buf_size: usize = samples_per_buf * 2 * 2 * 8;
-/// Output buffer: samples_per_buf stereo i16 frames.
 const output_buf_bytes: usize = samples_per_buf * 2 * 2;
 const psp_volume_max: i32 = 0x8000;
-
-// -- slot state (shared between game thread and audio thread) -----------------
 
 const SlotState = enum(u8) {
     inactive = 0,
@@ -36,35 +27,16 @@ const Slot = struct {
     read_buf: [read_buf_size]u8 = undefined,
 };
 
-var slots: [num_slots]Slot = init_slots();
+var slots: [num_slots]Slot = @splat(.{});
 
-fn init_slots() [num_slots]Slot {
-    var s: [num_slots]Slot = undefined;
-    for (&s) |*slot| {
-        slot.* = .{};
-    }
-    return s;
-}
-
-// -- module state -------------------------------------------------------------
-
-var audio_alloc: std.mem.Allocator = undefined;
-var audio_io: std.Io = undefined;
 var hw_channel: i32 = -1;
 var thread_id: sdk.SceUID = -1;
 var running: std.atomic.Value(u8) = std.atomic.Value(u8).init(0);
 
-/// Double output buffers, 64-byte aligned for PSP DMA.
+// PSP DMA requires 64-byte alignment.
 var output_bufs: [2][output_buf_bytes]u8 align(64) = @splat(@splat(0));
 
-// -- public interface ---------------------------------------------------------
-
-pub fn setup(alloc: std.mem.Allocator, io: std.Io) void {
-    audio_alloc = alloc;
-    audio_io = io;
-}
-
-pub fn init() audio_api.InitError!void {
+pub fn init(_: std.mem.Allocator, _: std.Io) audio_api.InitError!void {
     hw_channel = sdk.audio.ch_reserve(sdk.audio.next_channel, @intCast(samples_per_buf), .stereo) catch
         return error.AudioInitFailed;
 
@@ -104,6 +76,7 @@ pub fn deinit() void {
 
     sdk.audio.ch_release(hw_channel) catch {};
     hw_channel = -1;
+    slots = @splat(.{});
 }
 
 pub fn update() void {}
@@ -134,8 +107,6 @@ pub fn is_slot_active(slot: u8) bool {
     const state: SlotState = @enumFromInt(slots[slot].state.load(.acquire));
     return state != .inactive and state != .finished;
 }
-
-// -- audio thread -------------------------------------------------------------
 
 fn audio_thread_fn(_: usize, _: ?*anyopaque) callconv(.c) c_int {
     var cur: u1 = 0;
@@ -179,7 +150,7 @@ fn fill_buffer(buf: *[output_buf_bytes]u8) void {
         const left_vol: i32 = @intFromFloat(std.math.clamp(left_gain, 0.0, 1.0) * 32768.0);
         const right_vol: i32 = @intFromFloat(std.math.clamp(right_gain, 0.0, 1.0) * 32768.0);
 
-        const fmt = source_format(slot.source);
+        const fmt = slot.source.format();
         const bytes_needed: usize = samples_per_buf * fmt.frame_size();
 
         if (bytes_needed > read_buf_size) {
@@ -196,13 +167,6 @@ fn fill_buffer(buf: *[output_buf_bytes]u8) void {
 
         mix_into_i16(out, read_buf, fmt, left_vol, right_vol);
     }
-}
-
-fn source_format(source: SlotSource) PcmFormat {
-    return switch (source) {
-        .buffer => |buffer| buffer.format,
-        .stream => |stream| stream.format,
-    };
 }
 
 fn read_source(source: *SlotSource, dst: []u8) bool {
@@ -223,8 +187,6 @@ fn read_source(source: *SlotSource, dst: []u8) bool {
         },
     }
 }
-
-// -- integer mixing -----------------------------------------------------------
 
 fn mix_into_i16(
     out: [*]i16,

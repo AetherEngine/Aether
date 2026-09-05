@@ -1,8 +1,4 @@
-//! Text-input session state machine. Single-slot -- at most one
-//! non-terminal session is allowed (spec invariant
-//! SingleNonTerminalTextSession). Buffer accumulates from TextUtf8 events
-//! while active; suspended sessions drop incoming text but preserve their
-//! buffer; focus loss/gain flips active <-> suspended without cancelling.
+//! Focus loss suspends text input without discarding the session's buffer.
 
 const std = @import("std");
 
@@ -14,8 +10,7 @@ pub const TextInputStatus = enum(u8) {
 };
 
 pub const TextInputTarget = struct {
-    /// Borrowed identifier -- caller-owned. Useful for routing the
-    /// completed buffer back to the UI element that requested it.
+    /// Borrowed from the caller for the session's lifetime.
     id: []const u8,
 };
 
@@ -32,14 +27,8 @@ pub const TextInputSession = struct {
     status: TextInputStatus = .active,
 
     pub fn append(self: *TextInputSession, alloc: std.mem.Allocator, text: []const u8) !void {
-        if (self.options.max_bytes) |limit| {
-            const remaining = if (self.buffer.items.len < limit) limit - self.buffer.items.len else 0;
-            const take = @min(remaining, text.len);
-            if (take == 0) return;
-            try self.buffer.appendSlice(alloc, text[0..take]);
-        } else {
-            try self.buffer.appendSlice(alloc, text);
-        }
+        const remaining = if (self.options.max_bytes) |limit| limit -| self.buffer.items.len else text.len;
+        try self.buffer.appendSlice(alloc, text[0..@min(remaining, text.len)]);
     }
 
     pub fn deinit(self: *TextInputSession, alloc: std.mem.Allocator) void {

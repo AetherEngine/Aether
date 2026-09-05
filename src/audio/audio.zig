@@ -3,8 +3,6 @@ const Vec3 = @import("../math/math.zig").Vec3;
 const platform_audio = @import("../platform/audio.zig");
 const options = @import("options");
 
-// -- types -------------------------------------------------------------------
-
 pub const stream_mod = @import("stream.zig");
 pub const PcmFormat = stream_mod.PcmFormat;
 pub const SoundBufferHandle = stream_mod.SoundBufferHandle;
@@ -29,27 +27,29 @@ pub const LoadWavError = CreateBufferError ||
     std.Io.Reader.Error ||
     std.Io.File.OpenError;
 
-// -- forwarding to the instantiated mixer ------------------------------------
+const mix = mixer_mod.MixerType(platform_audio.Api);
 
-const mix = platform_audio.mix;
+pub const init = mix.init;
+pub const deinit = mix.deinit;
+pub const update = mix.update;
 
-pub fn create_buffer(desc: *const SoundBufferDesc) CreateBufferError!SoundBufferHandle {
-    return mix.create_buffer(desc);
-}
-
-pub fn adopt_buffer(allocator: std.mem.Allocator, bytes: []u8, format: PcmFormat) CreateBufferError!SoundBufferHandle {
-    return mix.adopt_buffer(allocator, bytes, format);
-}
+pub const create_buffer = mix.create_buffer;
+pub const adopt_buffer = mix.adopt_buffer;
+pub const destroy_buffer = mix.destroy_buffer;
+pub const create_stream = mix.create_stream;
+pub const destroy_stream = mix.destroy_stream;
+pub const stop = mix.stop;
+pub const set_position = mix.set_position;
+pub const set_volume = mix.set_volume;
+pub const is_playing = mix.is_playing;
+pub const set_listener = mix.set_listener;
 
 pub fn load_wav(io: std.Io, dir: anytype, allocator: std.mem.Allocator, path: []const u8) LoadWavError!SoundBufferHandle {
     var file = try dir.openFile(io, path, .{});
     defer file.close(io);
 
     var temp: [4096]u8 = undefined;
-    var reader = if (options.config.platform == .nintendo_switch)
-        file.readerStreaming(io, &temp)
-    else
-        file.reader(io, &temp);
+    var reader = file.readerStreaming(io, &temp);
 
     var riff_hdr: [8]u8 = undefined;
     try reader.interface.readSliceAll(&riff_hdr);
@@ -64,60 +64,20 @@ pub fn load_wav(io: std.Io, dir: anytype, allocator: std.mem.Allocator, path: []
     return mix.adopt_parsed_wav(allocator, bytes, &desc);
 }
 
-pub fn destroy_buffer(handle: SoundBufferHandle) void {
-    mix.destroy_buffer(handle);
-}
-
-pub fn create_stream(desc: *const StreamingSoundDesc) CreateStreamError!StreamingSoundHandle {
-    return mix.create_stream(desc);
-}
-
-pub fn destroy_stream(handle: StreamingSoundHandle) void {
-    mix.destroy_stream(handle);
-}
-
 pub fn play_buffer(buffer: SoundBufferHandle, opts: *const PlayOptions) PlayError!SoundHandle {
     const handle = try mix.play_buffer(buffer, opts);
-    dispatch_new_voice_on_3ds();
+    if (platform_audio.dispatch_on_play) mix.update();
     return handle;
 }
 
 pub fn play_buffer_at(buffer: SoundBufferHandle, pos: Vec3, opts: *const PlayOptions) PlayError!SoundHandle {
     const handle = try mix.play_buffer_at(buffer, pos, opts);
-    dispatch_new_voice_on_3ds();
+    if (platform_audio.dispatch_on_play) mix.update();
     return handle;
 }
 
 pub fn play_stream(stream: StreamingSoundHandle, opts: *const PlayOptions) PlayError!SoundHandle {
     const handle = try mix.play_stream(stream, opts);
-    dispatch_new_voice_on_3ds();
+    if (platform_audio.dispatch_on_play) mix.update();
     return handle;
-}
-
-/// The normal scheduler runs once at the beginning of an engine frame. On
-/// 3DS, dispatch a just-created voice immediately so it can catch the next
-/// low-latency output page instead of waiting an additional frame. Other
-/// targets retain their existing scheduling behavior.
-fn dispatch_new_voice_on_3ds() void {
-    if (comptime options.config.platform == .nintendo_3ds) mix.update();
-}
-
-pub fn stop(handle: SoundHandle) void {
-    mix.stop(handle);
-}
-
-pub fn set_position(handle: SoundHandle, pos: Vec3) void {
-    mix.set_position(handle, pos);
-}
-
-pub fn set_volume(handle: SoundHandle, vol: f32) void {
-    mix.set_volume(handle, vol);
-}
-
-pub fn is_playing(handle: SoundHandle) bool {
-    return mix.is_playing(handle);
-}
-
-pub fn set_listener(pos: Vec3, forward: Vec3, up: Vec3) void {
-    mix.set_listener(pos, forward, up);
 }

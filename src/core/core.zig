@@ -3,4 +3,4 @@ pub const StateMachine = state_machine.StateMachine;
 pub const State = @import("State.zig");
 pub const input = @import("input/input.zig");
 pub const InputSystem = input.InputSystem;
-pub const paths = @import("paths.zig");
+pub const paths = @import("../platform/paths.zig");

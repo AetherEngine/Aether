@@ -1,12 +1,5 @@
-//! Cross-platform thread abstraction.
-//!
-//! `spawn` mirrors `std.Thread.spawn(config, function, args)`. The `Config`
-//! struct extends `std.Thread.SpawnConfig` with `name` and `priority` -- the
-//! two PSP-only knobs that motivated this layer.
-//!
-//! On PSP, `Config.allocator` is **required**: it owns the trampoline
-//! closure that lives until the thread function returns. On desktop the
-//! allocator is forwarded to `std.Thread.spawn`.
+//! Thread ownership wrapper over Platform's thread API.
+//! `Config.allocator` owns the console thread's closure until it returns.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -20,8 +13,7 @@ pub const Thread = struct {
     handle: platform_thread.Api.Handle,
 
     pub fn spawn(cfg: Config, comptime func: anytype, args: anytype) !Thread {
-        const handle = try platform_thread.Api.spawn(cfg, func, args);
-        return .{ .handle = handle };
+        return .{ .handle = try platform_thread.Api.spawn(cfg, func, args) };
     }
 
     pub fn join(self: Thread) void {
@@ -37,10 +29,6 @@ pub const Thread = struct {
         return platform_thread.Api.current_priority();
     }
 };
-
-// -----------------------------------------------------------------------------
-// Tests (desktop only -- PSP has no `zig build test` target).
-// -----------------------------------------------------------------------------
 
 test "spawn/join roundtrip" {
     if (builtin.os.tag == .psp) return error.SkipZigTest;

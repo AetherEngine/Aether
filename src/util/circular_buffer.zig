@@ -12,21 +12,17 @@ pub fn CircularBufferType(comptime T: type, comptime slot_count: usize) type {
     return struct {
         const CircularBuffer = @This();
 
-        // Storage: slot 0 is always null; slots [1..slot_count-1] may hold values.
         buffer: [slot_count]?T = undefined,
-        head: usize = 1, // next probe start; always in [1..slot_count-1]
-        count: usize = 0, // number of occupied non-zero slots
+        head: usize = 1,
+        count: usize = 0,
 
         pub fn init() CircularBuffer {
             return .{
-                .buffer = @splat(null), // ensure slot 0 is null
-                .head = 1,
-                .count = 0,
+                .buffer = @splat(null),
             };
         }
 
         pub fn clear(self: *CircularBuffer) void {
-            // Ensure slot 0 is always null.
             self.buffer = @splat(null);
             self.head = 1;
             self.count = 0;
@@ -36,19 +32,16 @@ pub fn CircularBufferType(comptime T: type, comptime slot_count: usize) type {
             return self.count;
         }
 
-        pub fn capacity(self: *const CircularBuffer) usize {
-            _ = self;
-            return slot_count - 1; // slot 0 is reserved
+        pub fn capacity(_: *const CircularBuffer) usize {
+            return slot_count - 1;
         }
 
         pub fn is_full(self: *const CircularBuffer) bool {
             return self.count == self.capacity();
         }
 
-        inline fn next_index(i: usize) usize {
-            var n = (i + 1) % slot_count;
-            if (n == 0) n = 1; // skip reserved 0
-            return n;
+        fn next_index(i: usize) usize {
+            return if (i + 1 == slot_count) 1 else i + 1;
         }
 
         /// Inserts value into the first empty slot encountered by circular probing.
@@ -57,19 +50,16 @@ pub fn CircularBufferType(comptime T: type, comptime slot_count: usize) type {
             if (self.is_full()) return null;
 
             var idx = self.head;
-            // Probe at most capacity() times.
             for (0..self.capacity()) |_| {
                 if (self.buffer[idx] == null) {
                     self.buffer[idx] = value;
                     self.count += 1;
                     self.head = next_index(idx);
-                    return idx; // handle
+                    return idx;
                 }
                 idx = next_index(idx);
-            } else {
-                // Shouldn't be reachable because we checked isFull(), but be safe.
-                return null;
             }
+            return null;
         }
 
         pub fn update_element(self: *CircularBuffer, index: usize, value: T) void {
@@ -85,7 +75,7 @@ pub fn CircularBufferType(comptime T: type, comptime slot_count: usize) type {
             if (index == 0 or index >= slot_count) return false;
             if (self.buffer[index] != null) {
                 self.buffer[index] = null;
-                if (self.count > 0) self.count -= 1;
+                self.count -= 1;
                 // Prefer to restart probing near the earliest gap.
                 if (index < self.head) self.head = index;
                 return true;
@@ -114,14 +104,11 @@ test "init/clear/capacity basics" {
     try testing.expect(!b.is_full());
     try testing.expectEqual(@as(usize, 4), b.capacity());
 
-    // slot 0 is always null; out-of-bounds yields null
     try testing.expect(b.get_element(0) == null);
     try testing.expect(b.get_element(5) == null);
 
-    // all usable slots start empty
     for (1..5) |i| try testing.expect(b.get_element(i) == null);
 
-    // clear() keeps invariants
     b.clear();
     try testing.expectEqual(@as(usize, 0), b.len());
     try testing.expect(b.get_element(0) == null);
@@ -144,25 +131,24 @@ test "sequential inserts skip 0 and return handles" {
 }
 
 test "fills to capacity then rejects, remove reuses hole by circular probe" {
-    const Buf = CircularBufferType(u32, 5); // capacity = 4 (slots 1..4)
+    const Buf = CircularBufferType(u32, 5);
     var b = Buf.init();
 
-    const h1 = b.add_element(1) orelse return error.TestExpectedNonNull; // 1
-    const h2 = b.add_element(2) orelse return error.TestExpectedNonNull; // 2
-    const h3 = b.add_element(3) orelse return error.TestExpectedNonNull; // 3
-    const h4 = b.add_element(4) orelse return error.TestExpectedNonNull; // 4
+    const h1 = b.add_element(1) orelse return error.TestExpectedNonNull;
+    const h2 = b.add_element(2) orelse return error.TestExpectedNonNull;
+    const h3 = b.add_element(3) orelse return error.TestExpectedNonNull;
+    const h4 = b.add_element(4) orelse return error.TestExpectedNonNull;
     try testing.expectEqualSlices(usize, &.{ 1, 2, 3, 4 }, &.{ h1, h2, h3, h4 });
 
     try testing.expect(b.is_full());
-    try testing.expect(b.add_element(99) == null); // full
+    try testing.expect(b.add_element(99) == null);
 
-    // Remove a middle slot; next add should find that hole (by probing from head).
     try testing.expect(b.remove_element(h2));
     try testing.expectEqual(@as(usize, 3), b.len());
     try testing.expect(b.get_element(h2) == null);
 
     const h5 = b.add_element(5) orelse return error.TestExpectedNonNull;
-    try testing.expectEqual(h2, h5); // reuses the earliest encountered hole
+    try testing.expectEqual(h2, h5);
     try testing.expectEqual(@as(?u32, 5), b.get_element(h5));
     try testing.expect(b.is_full());
 }
@@ -171,18 +157,18 @@ test "remove edge cases and bounds" {
     const Buf = CircularBufferType(u32, 4);
     var b = Buf.init();
 
-    try testing.expect(!b.remove_element(0)); // reserved
-    try testing.expect(!b.remove_element(99)); // OOB
-    try testing.expect(!b.remove_element(3)); // empty slot
+    try testing.expect(!b.remove_element(0));
+    try testing.expect(!b.remove_element(99));
+    try testing.expect(!b.remove_element(3));
 
     const h = b.add_element(7) orelse return error.TestExpectedNonNull;
-    try testing.expect(b.remove_element(h)); // remove present
-    try testing.expect(!b.remove_element(h)); // removing again yields false
+    try testing.expect(b.remove_element(h));
+    try testing.expect(!b.remove_element(h));
     try testing.expectEqual(@as(usize, 0), b.len());
 }
 
 test "minimum valid size (SIZE=2) works: one usable slot at index 1" {
-    const Buf = CircularBufferType(u32, 2); // capacity 1
+    const Buf = CircularBufferType(u32, 2);
     var b = Buf.init();
 
     const h1 = b.add_element(111) orelse return error.TestExpectedNonNull;
@@ -193,6 +179,6 @@ test "minimum valid size (SIZE=2) works: one usable slot at index 1" {
     try testing.expect(b.remove_element(1));
     try testing.expect(!b.is_full());
     const h2 = b.add_element(222) orelse return error.TestExpectedNonNull;
-    try testing.expectEqual(@as(usize, 1), h2); // only slot re-used
+    try testing.expectEqual(@as(usize, 1), h2);
     try testing.expectEqual(@as(?u32, 222), b.get_element(1));
 }

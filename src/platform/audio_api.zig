@@ -1,5 +1,39 @@
 const std = @import("std");
-const SlotSource = @import("../audio/stream.zig").SlotSource;
+
+pub const PcmFormat = struct {
+    sample_rate: u32,
+    channels: u16,
+    bit_depth: u16,
+
+    /// Bytes consumed per sample-frame (all channels, one time-step).
+    pub fn frame_size(self: PcmFormat) u32 {
+        return @as(u32, self.channels) * (self.bit_depth / 8);
+    }
+};
+
+pub const SlotSource = union(enum) {
+    buffer: BufferSource,
+    stream: StreamSource,
+
+    pub const BufferSource = struct {
+        format: PcmFormat,
+        pcm: []const u8,
+        cursor: *std.atomic.Value(usize),
+    };
+
+    pub const StreamSource = struct {
+        reader: *std.Io.Reader,
+        format: PcmFormat,
+        byte_length: ?u64 = null,
+    };
+
+    pub fn format(self: SlotSource) PcmFormat {
+        return switch (self) {
+            .buffer => |source| source.format,
+            .stream => |source| source.format,
+        };
+    }
+};
 
 pub const InitError = error{
     OutOfMemory,
@@ -13,15 +47,10 @@ pub const PlaySlotError = error{
     AudioHostRejectedStream,
 };
 
-/// The contract every audio backend must satisfy. Backends are thin
-/// slot-based PCM outputs -- all scheduling, priority, and spatial math
-/// lives in the platform-independent mixer (`audio/mixer.zig`).
-///
-/// The backend's audio thread pulls PCM from the assigned slot source,
-/// applies the gain/pan set by the mixer, and writes to the output device.
+/// PCM output slots; voice scheduling and spatial math belong to Audio.
+/// Backends borrow PCM and cursors; deinit must stop all workers before returning.
 pub const Interface = struct {
-    setup: fn (std.mem.Allocator, std.Io) void,
-    init: fn () InitError!void,
+    init: fn (std.mem.Allocator, std.Io) InitError!void,
     deinit: fn () void,
     /// Per-frame bookkeeping, called from the game thread.
     update: fn () void,
@@ -39,17 +68,6 @@ pub const Interface = struct {
     is_slot_active: fn (u8) bool,
 };
 
-/// Verify at comptime that `Backend` exposes every decl in `Interface`
-/// with the exact expected signature.
 pub fn assert_impl(comptime Backend: type) void {
-    inline for (std.meta.fields(Interface)) |f| {
-        if (!@hasDecl(Backend, f.name)) {
-            @compileError("audio backend " ++ @typeName(Backend) ++ " is missing decl: " ++ f.name);
-        }
-        const Actual = @TypeOf(@field(Backend, f.name));
-        if (Actual != f.type) {
-            @compileError("audio backend " ++ @typeName(Backend) ++ "." ++ f.name ++
-                " has type " ++ @typeName(Actual) ++ ", expected " ++ @typeName(f.type));
-        }
-    }
+    @import("contract.zig").assert_impl("audio", Backend, Interface);
 }

@@ -1,5 +1,4 @@
 const std = @import("std");
-const builtin = @import("builtin");
 const options = @import("options");
 
 var log_buffer: [4096]u8 = @splat(0);
@@ -10,10 +9,7 @@ var log_io: std.Io = undefined;
 var file_logging = false;
 var log_lock: std.atomic.Value(bool) = .init(false);
 
-// Aether's console entry shims can emit useful diagnostics before Engine.init
-// has resolved the data directory and opened aether.log. On platforms where
-// the debug-output channel is not visible, retain those messages until the
-// file logger is ready.
+// Retain early diagnostics until Engine opens the log file.
 var bootstrap_log_buffer: [4096]u8 = undefined;
 var bootstrap_log_len: usize = 0;
 var bootstrap_log_truncated = false;
@@ -37,20 +33,11 @@ fn flush_file(sync_to_storage: bool) void {
     if (sync_to_storage) file_log.sync(log_io) catch {};
 }
 
-/// PSP has no per-user data dir concept; the log sits at CWD (which is
-/// where the EBOOT lives) regardless of what `data_dir` points at. Every
-/// other platform routes through the engine-resolved data dir so
-/// Finder-launched `.app` bundles don't try to write into read-only
-/// bundle internals.
 pub fn init(io: std.Io, data_dir: std.Io.Dir) Error!void {
     lock();
     defer unlock();
 
-    if (builtin.os.tag == .psp) {
-        file_log = try std.Io.Dir.cwd().createFile(io, "ms0:/aether.log", .{ .truncate = true });
-    } else {
-        file_log = try data_dir.createFile(io, "aether.log", .{ .truncate = true });
-    }
+    file_log = try data_dir.createFile(io, "aether.log", .{ .truncate = true });
     file_writer = file_log.writer(io, &log_buffer);
     writer = &file_writer.interface;
     log_io = io;

@@ -1,13 +1,9 @@
-//! Switch audio backend -- audout with software mixing.
-//!
-//! audout exposes one 48 kHz stereo i16 output stream, so this backend mixes
-//! Aether's slots into a ring of audout buffers. A small nearest-neighbor
-//! resampler keeps the existing 44.1 kHz test WAVs playable.
+//! Mixes and resamples slots into 48 kHz stereo PCM16 audout buffers.
 
 const std = @import("std");
 const audio_api = @import("../audio_api.zig");
-const SlotSource = @import("../../audio/stream.zig").SlotSource;
-const PcmFormat = @import("../../audio/stream.zig").PcmFormat;
+const SlotSource = audio_api.SlotSource;
+const PcmFormat = audio_api.PcmFormat;
 const c = @import("c.zig").switch_c;
 
 const device_sample_rate: u32 = 48_000;
@@ -39,30 +35,12 @@ const Slot = struct {
     current_right: i16 = 0,
 };
 
-var slots: [num_slots]Slot = init_slots();
-var audio_alloc: std.mem.Allocator = undefined;
-var audio_io: std.Io = undefined;
+var slots: [num_slots]Slot = @splat(.{});
 var output_data: ?[*]u8 = null;
 var buffers: [buffer_count]c.AudioOutBuffer = undefined;
 var initialized: bool = false;
 
-fn init_slots() [num_slots]Slot {
-    var s: [num_slots]Slot = undefined;
-    for (&s) |*slot| {
-        slot.* = .{};
-    }
-    return s;
-}
-
-pub fn setup(alloc: std.mem.Allocator, io: std.Io) void {
-    audio_alloc = alloc;
-    audio_io = io;
-}
-
-pub fn init() audio_api.InitError!void {
-    _ = audio_alloc;
-    _ = audio_io;
-
+pub fn init(_: std.mem.Allocator, _: std.Io) audio_api.InitError!void {
     output_data = @ptrCast(c.memalign(0x1000, total_output_bytes) orelse return error.AudioInitFailed);
     @memset(output_data.?[0..total_output_bytes], 0);
 
@@ -132,7 +110,7 @@ pub fn max_voices() u32 {
 
 pub fn play_slot(slot: u8, source: SlotSource) audio_api.PlaySlotError!void {
     if (slot >= num_slots) return error.InvalidArgs;
-    const format = source_format(source);
+    const format = source.format();
     if (!format_supported(format)) return error.UnsupportedFormat;
 
     const i: usize = slot;
@@ -230,13 +208,6 @@ fn read_next_sample(slot: *Slot) bool {
 
 fn clamp_i16(v: i32) i16 {
     return @intCast(std.math.clamp(v, std.math.minInt(i16), std.math.maxInt(i16)));
-}
-
-fn source_format(source: SlotSource) PcmFormat {
-    return switch (source) {
-        .buffer => |buffer| buffer.format,
-        .stream => |stream| stream.format,
-    };
 }
 
 fn read_source_exact(source: *SlotSource, dst: []u8) std.Io.Reader.Error!void {

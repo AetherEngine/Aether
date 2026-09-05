@@ -38,11 +38,7 @@ pub const CreateTextureError = error{
     PendingTextureQueueFull,
 };
 
-/// The contract every graphics backend must satisfy. Each field names a
-/// public top-level fn on the backend module and gives its exact type.
-/// This struct is never instantiated -- it exists purely to drive
-/// `assertImpl` at comptime, replacing the runtime vtable that used to
-/// hold function pointers here.
+/// Required declarations on the selected graphics backend.
 pub const Interface = struct {
     mesh_source_mode: Mesh.SourceMode,
 
@@ -71,18 +67,6 @@ pub const Interface = struct {
     force_texture_resident: fn (Texture.Handle) void,
 };
 
-/// Verify at comptime that `Backend` exposes every decl in `Interface`
-/// with the exact expected signature. Fires a clean compile error at the
-/// call site if a backend's method set drifts.
 pub fn assert_impl(comptime Backend: type) void {
-    inline for (std.meta.fields(Interface)) |f| {
-        if (!@hasDecl(Backend, f.name)) {
-            @compileError("gfx backend " ++ @typeName(Backend) ++ " is missing decl: " ++ f.name);
-        }
-        const Actual = @TypeOf(@field(Backend, f.name));
-        if (Actual != f.type) {
-            @compileError("gfx backend " ++ @typeName(Backend) ++ "." ++ f.name ++
-                " has type " ++ @typeName(Actual) ++ ", expected " ++ @typeName(f.type));
-        }
-    }
+    @import("contract.zig").assert_impl("gfx", Backend, Interface);
 }

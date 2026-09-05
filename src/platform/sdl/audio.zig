@@ -1,31 +1,23 @@
-//! Desktop audio backend -- uses SDL3 audio with an on-demand stream
-//! callback. The audio thread pulls PCM from each slot source,
-//! converts to float32 stereo, applies gain/pan from the mixer, and queues
-//! mixed frames to SDL.
+//! SDL pulls stereo float PCM from a callback on its audio thread.
 
 const std = @import("std");
 const sdl3 = @import("sdl3");
 const audio_api = @import("../audio_api.zig");
-const SlotSource = @import("../../audio/stream.zig").SlotSource;
-const PcmFormat = @import("../../audio/stream.zig").PcmFormat;
+const SlotSource = audio_api.SlotSource;
+const PcmFormat = audio_api.PcmFormat;
 
 const sdl_audio_flags = sdl3.InitFlags{ .audio = true };
 const device_sample_rate: usize = 44_100;
 const device_channels: usize = 2;
 const num_slots: usize = 32;
 const output_frame_bytes: usize = device_channels * @sizeOf(f32);
-/// Maximum frames mixed per callback chunk.
 const max_period_frames: usize = 1024;
-/// Per-slot scratch buffer: room for max_period_frames of stereo 32-bit PCM.
 const read_buf_size: usize = max_period_frames * 2 * 4;
-
-// -- slot state (shared between game thread and audio thread) -----------------
 
 const SlotState = enum(u8) {
     inactive = 0,
     /// Game thread wrote a new source; audio thread should pick it up.
     pending = 1,
-    /// Audio thread is actively reading from the stream.
     active = 2,
     /// Stream exhausted or read error; mixer should reap.
     finished = 3,
@@ -39,25 +31,13 @@ const Slot = struct {
     read_buf: [read_buf_size]u8 = undefined,
 };
 
-var slots: [num_slots]Slot = init_slots();
-
-fn init_slots() [num_slots]Slot {
-    var s: [num_slots]Slot = undefined;
-    for (&s) |*slot| {
-        slot.* = .{};
-    }
-    return s;
-}
-
-// -- device ------------------------------------------------------------------
+var slots: [num_slots]Slot = @splat(.{});
 
 var device_stream: ?sdl3.audio.Stream = null;
 var sdl_audio_initialized = false;
 var output_buf: [max_period_frames * device_channels]f32 = undefined;
 
-pub fn setup(_: std.mem.Allocator, _: std.Io) void {}
-
-pub fn init() audio_api.InitError!void {
+pub fn init(_: std.mem.Allocator, _: std.Io) audio_api.InitError!void {
     sdl3.init(sdl_audio_flags) catch return error.AudioInitFailed;
     sdl_audio_initialized = true;
     errdefer {
@@ -91,6 +71,7 @@ pub fn deinit() void {
         sdl3.quit(sdl_audio_flags);
         sdl_audio_initialized = false;
     }
+    slots = @splat(.{});
 }
 
 pub fn update() void {}
@@ -122,8 +103,6 @@ pub fn is_slot_active(slot: u8) bool {
     const state: SlotState = @enumFromInt(slots[slot].state.load(.acquire));
     return state != .inactive and state != .finished;
 }
-
-// -- audio stream callback ---------------------------------------------------
 
 fn data_callback(
     _: ?*anyopaque,
@@ -164,11 +143,10 @@ fn fill_output(out: []f32, frame_count: usize) void {
         const gain: f32 = @bitCast(slot.gain.load(.acquire));
         const pan: f32 = @bitCast(slot.pan.load(.acquire));
 
-        // Equal-power-ish panning: clamp to [0,1] per channel.
         const left_gain = gain * std.math.clamp(1.0 - pan, 0.0, 1.0);
         const right_gain = gain * std.math.clamp(1.0 + pan, 0.0, 1.0);
 
-        const fmt = source_format(slot.source);
+        const fmt = slot.source.format();
         const bytes_needed: usize = frame_count * @as(usize, fmt.frame_size());
 
         if (bytes_needed > read_buf_size) {
@@ -185,13 +163,6 @@ fn fill_output(out: []f32, frame_count: usize) void {
 
         mix_into(out, buf, fmt, frame_count, left_gain, right_gain);
     }
-}
-
-fn source_format(source: SlotSource) PcmFormat {
-    return switch (source) {
-        .buffer => |buffer| buffer.format,
-        .stream => |stream| stream.format,
-    };
 }
 
 fn read_source(source: *SlotSource, dst: []u8) bool {

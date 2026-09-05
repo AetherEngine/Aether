@@ -11,12 +11,9 @@ comptime {
     assert(ref_height > 0);
 }
 
-/// Returns the current integral scale derived from the active surface dimensions.
 pub fn get() u32 {
-    return compute(
-        Rendering.gfx.surface.get_width(),
-        Rendering.gfx.surface.get_height(),
-    );
+    const size = Rendering.surface_size();
+    return compute(size.width, size.height);
 }
 
 pub fn compute(screen_w: u32, screen_h: u32) u32 {

@@ -1,7 +1,5 @@
-//! Actions, action sets, the action-set registry, and the per-frame
-//! evaluator. Game code interacts via handles so the registry is free to
-//! relocate ActionSet structs and action maps on grow without dangling
-//! references.
+//! Game actions evaluated from Platform's delivered device state.
+//! Handles remain valid when action sets and their maps grow.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -87,8 +85,6 @@ pub const ActionSet = struct {
     installed: bool = false,
 };
 
-/// Opaque handle into the registry. Stable across rehashes; passed back
-/// to every API call that operates on a set.
 pub const ActionSetHandle = enum(u32) { _ };
 
 /// Opaque handle to an action inside an action set. The action index is the
@@ -119,9 +115,7 @@ pub const ActionHandle = packed struct(u64) {
     }
 };
 
-/// Snapshot of currently-held device state. Updated in-place inside each
-/// `deliver_*` call. The action evaluator reads it once per frame to
-/// compute fresh values for the top context's installed action set.
+/// Updated by `deliver_*`; evaluated once per engine step.
 pub const DeviceState = struct {
     keys: std.AutoHashMapUnmanaged(data.Key, void) = .empty,
     mouse_buttons: std.EnumSet(data.MouseButton) = .{},
@@ -147,8 +141,7 @@ pub const DeviceState = struct {
     }
 };
 
-/// Compute one binding's contribution as a scalar in [-1, 1] (for axes) or
-/// {0, 1} (for buttons), post-deadzone, post-multiplier.
+/// Apply the binding's deadzone and multiplier to its device value.
 pub fn binding_contribution(b: binding_mod.Binding, dev: *const DeviceState) f32 {
     var raw: f32 = 0.0;
     switch (b.source) {
@@ -177,12 +170,9 @@ pub fn binding_contribution(b: binding_mod.Binding, dev: *const DeviceState) f32
     return raw * b.multiplier;
 }
 
-/// Recompute every action in `set` from `dev`. Caller-owned: callers
-/// snapshot previous_value before invoking.
+/// Advance action values, retaining the previous values for edge queries.
 pub fn evaluate_set(set: *ActionSet, dev: *const DeviceState) void {
-    var it = set.actions.iterator();
-    while (it.next()) |entry| {
-        const a = entry.value_ptr;
+    for (set.actions.values()) |*a| {
         a.previous_value = a.current_value;
         a.current_value = compute(a, dev);
     }
@@ -191,12 +181,9 @@ pub fn evaluate_set(set: *ActionSet, dev: *const DeviceState) void {
 /// Recompute a set without creating edges. Used when a context becomes active
 /// so already-held inputs do not look like fresh presses.
 pub fn sync_set(set: *ActionSet, dev: *const DeviceState) void {
-    var it = set.actions.iterator();
-    while (it.next()) |entry| {
-        const a = entry.value_ptr;
-        const value = compute(a, dev);
-        a.previous_value = value;
-        a.current_value = value;
+    for (set.actions.values()) |*a| {
+        a.current_value = compute(a, dev);
+        a.previous_value = a.current_value;
     }
 }
 

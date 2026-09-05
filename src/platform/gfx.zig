@@ -1,14 +1,13 @@
 const std = @import("std");
-const builtin = @import("builtin");
 const options = @import("options");
 
 const gfx_api = @import("gfx_api.zig");
 const surface_iface = @import("surface.zig");
+pub const texture_pixels = if (options.config.platform == .psp)
+    @import("psp/texture_pixels.zig")
+else
+    @import("texture_pixels.zig");
 
-/// Comptime-selected graphics backend module. Backends carry no instance
-/// state, so this is a pure namespace alias -- calls like
-/// `gfx.api.start_frame()` resolve to direct function calls with no
-/// indirection.
 pub const Api = switch (options.config.gfx) {
     .default => if (options.config.platform == .nintendo_switch)
         @import("switch/switch_gfx.zig")
@@ -24,20 +23,15 @@ pub const Api = switch (options.config.gfx) {
     .headless => @import("headless/headless_gfx.zig"),
 };
 
-/// Comptime-selected surface backend type. Surfaces hold real fields
-/// (window handle, dimensions), so the storage lives in `surface` below.
 pub const Surface = if (options.config.gfx == .headless)
     @import("headless/surface.zig")
-else if (builtin.os.tag == .psp)
-    @import("psp/surface.zig")
-else if (options.config.platform == .nintendo_3ds)
-    @import("3ds/surface.zig")
-else if (options.config.platform == .nintendo_switch)
-    @import("switch/surface.zig")
-else if (options.config.platform == .wasm)
-    @import("wasm/surface.zig")
-else
-    @import("sdl/surface.zig");
+else switch (options.config.platform) {
+    .psp => @import("psp/surface.zig"),
+    .nintendo_3ds => @import("3ds/surface.zig"),
+    .nintendo_switch => @import("switch/surface.zig"),
+    .wasm => @import("wasm/surface.zig"),
+    else => @import("sdl/surface.zig"),
+};
 
 comptime {
     gfx_api.assert_impl(Api);
@@ -50,8 +44,6 @@ pub var sync: bool = true;
 pub var frame_active: bool = false;
 pub var validate_mesh_updates_outside_frame: bool = false;
 
-/// Initializes the graphics subsystem with the specified parameters.
-/// Must be called before any other graphics functions.
 pub fn init(
     alloc: std.mem.Allocator,
     io: std.Io,
@@ -64,17 +56,13 @@ pub fn init(
 ) gfx_api.InitError!void {
     sync = vsync;
     surface = .{ .alloc = alloc };
-    surface.init(width, height, title, fullscreen, vsync, resizable) catch |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
-        error.VulkanNotSupported => return error.VulkanNotSupported,
-        error.SurfaceInitFailed => return error.SurfaceInitFailed,
-    };
+    try surface.init(width, height, title, fullscreen, vsync, resizable);
+    errdefer surface.deinit();
 
     Api.setup(alloc, io);
     try Api.init();
 }
 
-/// Deinitializes the graphics subsystem and frees all associated resources.
 pub fn deinit() void {
     Api.deinit();
     surface.deinit();
@@ -93,10 +81,5 @@ pub inline fn wait_for_borrowed_meshes() void {
     }
 }
 
-pub fn has_second_screen() bool {
-    return Api.has_second_screen();
-}
-
-pub fn switch_second_screen() void {
-    Api.switch_second_screen();
-}
+pub const has_second_screen = Api.has_second_screen;
+pub const switch_second_screen = Api.switch_second_screen;

@@ -1,5 +1,4 @@
-// Frustum extracted from a view-projection matrix (row-major, row-vector convention).
-// Plane equation: normal.dot(p) + d >= 0 means the point is inside.
+//! Plane equation: normal.dot(p) + d >= 0 means the point is inside.
 
 const Vec3 = @import("vec3.zig");
 const Mat4 = @import("mat4.zig");
@@ -24,40 +23,31 @@ planes: [6]Plane,
 
 const Frustum = @This();
 
-/// Extract the six frustum planes from a combined view-projection matrix.
-/// Uses the Gribb/Hartmann method adapted for row-major, row-vector matrices.
-/// Assumes z in [0, 1] NDC.
+/// Gribb/Hartmann extraction for row vectors with z in [0, 1] NDC.
 pub fn from_view_projection(vp: Mat4) Frustum {
     const m = vp.data;
     var self: Frustum = undefined;
 
-    // Each plane: A = m[0][col_combo], B = m[1][col_combo], C = m[2][col_combo], D = m[3][col_combo]
-    // Left:   col0 + col3
     self.planes[0] = Plane.normalize(.{
         .normal = Vec3.new(m[0][0] + m[0][3], m[1][0] + m[1][3], m[2][0] + m[2][3]),
         .d = m[3][0] + m[3][3],
     });
-    // Right:  -col0 + col3
     self.planes[1] = Plane.normalize(.{
         .normal = Vec3.new(-m[0][0] + m[0][3], -m[1][0] + m[1][3], -m[2][0] + m[2][3]),
         .d = -m[3][0] + m[3][3],
     });
-    // Bottom: col1 + col3
     self.planes[2] = Plane.normalize(.{
         .normal = Vec3.new(m[0][1] + m[0][3], m[1][1] + m[1][3], m[2][1] + m[2][3]),
         .d = m[3][1] + m[3][3],
     });
-    // Top:   -col1 + col3
     self.planes[3] = Plane.normalize(.{
         .normal = Vec3.new(-m[0][1] + m[0][3], -m[1][1] + m[1][3], -m[2][1] + m[2][3]),
         .d = -m[3][1] + m[3][3],
     });
-    // Near:   col2  (z in [0,1])
     self.planes[4] = Plane.normalize(.{
         .normal = Vec3.new(m[0][2], m[1][2], m[2][2]),
         .d = m[3][2],
     });
-    // Far:   -col2 + col3
     self.planes[5] = Plane.normalize(.{
         .normal = Vec3.new(-m[0][2] + m[0][3], -m[1][2] + m[1][3], -m[2][2] + m[2][3]),
         .d = -m[3][2] + m[3][3],

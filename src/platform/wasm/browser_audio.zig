@@ -1,6 +1,6 @@
 const std = @import("std");
 const audio_api = @import("../audio_api.zig");
-const SlotSource = @import("../../audio/stream.zig").SlotSource;
+const SlotSource = audio_api.SlotSource;
 
 const max_slots = 32;
 
@@ -12,16 +12,7 @@ extern "aether_host" fn aether_audio_stop_slot(slot: u32) void;
 extern "aether_host" fn aether_audio_set_slot_gain_pan(slot: u32, gain: f32, pan: f32) void;
 extern "aether_host" fn aether_audio_is_slot_active(slot: u32) bool;
 
-var audio_alloc: std.mem.Allocator = undefined;
-var audio_io: std.Io = undefined;
-
-pub fn setup(alloc: std.mem.Allocator, io: std.Io) void {
-    audio_alloc = alloc;
-    audio_io = io;
-    _ = audio_io;
-}
-
-pub fn init() audio_api.InitError!void {
+pub fn init(_: std.mem.Allocator, _: std.Io) audio_api.InitError!void {
     aether_audio_init(48_000, max_slots);
 }
 

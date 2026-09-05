@@ -31,30 +31,22 @@ pub const TextMesh = struct {
 
 const FontBatcher = @This();
 
-// --- Constants ---
-
 const glyph_cols: u32 = 16;
 const glyph_rows: u32 = 16;
 const glyph_count: u32 = 256;
 const glyph_size: u32 = 8;
 const space_width: u8 = 4;
 const default_spacing: i8 = 1;
-const quads_per_char: u32 = 1;
 const max_entries: u16 = 1024;
 const max_text_bytes: u16 = 8192;
 const color_prefix: u8 = '&';
 
-// --- Color codes ---
-
-/// True if `c` is a valid color-code hex digit ('0'-'9' or 'a'-'f').
 fn is_color_hex(c: u8) bool {
     return (c >= '0' and c <= '9') or (c >= 'a' and c <= 'f');
 }
 
 const ColorPair = struct { fg: Color, bg: Color };
 
-/// Maps a color-code hex digit (after '&') to its foreground/background pair.
-/// Caller must have validated `c` with `is_color_hex` first.
 fn color_for_code(c: u8) ColorPair {
     return switch (c) {
         '0' => .{ .fg = Color.rgba(0, 0, 0, 255), .bg = Color.rgba(0, 0, 0, 255) },
@@ -77,9 +69,8 @@ fn color_for_code(c: u8) ColorPair {
     };
 }
 
-// --- Input Primitive ---
-
 pub const TextEntry = struct {
+    /// `&0` through `&f` select colors and occupy no glyph width.
     str: []const u8,
     color: Color,
     shadow_color: Color,
@@ -91,8 +82,6 @@ pub const TextEntry = struct {
     reference: Anchor,
     origin: Anchor,
 };
-
-// --- Fields ---
 
 glyph_widths: [glyph_count]u8,
 atlas: TextureAtlas,
@@ -108,8 +97,6 @@ last_screen_h: u32,
 mesh_data: BatchMeshData,
 mesh: BatchMesh,
 allocator: std.mem.Allocator,
-
-// --- Public API ---
 
 pub fn init(allocator: std.mem.Allocator, texture: *const Rendering.Texture) !FontBatcher {
     assert(texture.width == 128);
@@ -141,13 +128,9 @@ pub fn deinit(self: *FontBatcher) void {
     self.mesh_data.deinit(self.allocator);
 }
 
-/// Recompute glyph widths from the current `texture` pixel data.
-/// Call after the underlying font texture has been swapped (e.g. resource
-/// pack switch) so that string layout matches the new glyph art.
+/// Recomputes glyph widths and geometry after the font texture changes.
 pub fn refresh(self: *FontBatcher) void {
     self.glyph_widths = compute_glyph_widths(self.texture);
-    // Force the next flush to rebuild geometry: clear our previous-frame
-    // diff so the entries_equal short-circuit can't keep a stale mesh.
     self.prev_count = 0;
     self.last_screen_w = 0;
     self.last_screen_h = 0;
@@ -189,8 +172,9 @@ pub fn add_text(self: *FontBatcher, entry: *const TextEntry) void {
 pub fn update(self: *FontBatcher) !void {
     if (self.count == 0) return;
 
-    const screen_w = Rendering.gfx.surface.get_width();
-    const screen_h = Rendering.gfx.surface.get_height();
+    const size = Rendering.surface_size();
+    const screen_w = size.width;
+    const screen_h = size.height;
 
     const curr = self.entries[self.current][0..self.count];
     const prev = self.entries[self.current ^ 1][0..self.prev_count];
@@ -218,8 +202,7 @@ pub fn flush(self: *FontBatcher) !void {
     self.draw();
 }
 
-/// Returns the width of a string in logical pixels, accounting for per-glyph
-/// variable widths, inter-character spacing, and text scale.
+/// Measures logical pixels, including spacing and scale but excluding color escapes.
 pub fn string_width(self: *const FontBatcher, str: []const u8, spacing: i8, text_scale: u8) i16 {
     if (str.len == 0) return 0;
     assert(text_scale > 0);
@@ -242,9 +225,7 @@ pub fn string_width(self: *const FontBatcher, str: []const u8, spacing: i8, text
     return @intCast(@min(total, std.math.maxInt(i16)));
 }
 
-/// Returns the byte length of the longest prefix of `str` whose rendered
-/// width fits within `max_w`. Walks per-glyph so a `&x` color escape is
-/// never split across the truncation point. No allocation.
+/// Returns the longest prefix fitting `max_w`, in bytes, without splitting color escapes.
 pub fn fit_width(self: *const FontBatcher, str: []const u8, max_w: i16, spacing: i8, text_scale: u8) usize {
     if (max_w <= 0 or str.len == 0) return 0;
     assert(text_scale > 0);
@@ -256,8 +237,6 @@ pub fn fit_width(self: *const FontBatcher, str: []const u8, max_w: i16, spacing:
     var last_fit: usize = 0;
     while (i < str.len) {
         if (str[i] == color_prefix and i + 1 < str.len and is_color_hex(str[i + 1])) {
-            // Color escapes do not advance the cursor; commit them
-            // together so a fit boundary never lands between & and code.
             i += 2;
             last_fit = i;
             continue;
@@ -274,7 +253,7 @@ pub fn fit_width(self: *const FontBatcher, str: []const u8, max_w: i16, spacing:
 }
 
 /// Creates a standalone mesh for a rendered string in normalized [-1,1] space.
-/// The caller owns the returned mesh and must call `mesh.deinit()` when done.
+/// The caller must release the result with `TextMesh.deinit(allocator)`.
 /// Draw with `mesh.draw(&model_matrix)` after binding the font texture.
 pub fn build_mesh(
     self: *const FontBatcher,
@@ -296,7 +275,7 @@ pub fn build_mesh(
     const mult: u32 = if (has_shadow) 2 else 1;
     try data.ensure_quad_capacity(
         self.allocator,
-        @as(usize, n_chars * quads_per_char * mult),
+        @as(usize, n_chars * mult),
     );
 
     const s: i32 = text_scale;
@@ -318,10 +297,7 @@ pub fn build_mesh(
     return .{ .data = data, .mesh = mesh };
 }
 
-/// Computes a model matrix that positions and scales an exported mesh using
-/// the same logical-pixel coordinate system and anchoring as batched text.
-/// Applies R * S * T order (rotate in unit space, then aspect-correct scale,
-/// then translate) so non-uniform aspect scaling does not shear the rotation.
+/// Positions exported text in logical pixels, rotating before conversion to NDC.
 pub fn mesh_matrix(
     self: *const FontBatcher,
     str: []const u8,
@@ -335,8 +311,9 @@ pub fn mesh_matrix(
     extra_scale: f32,
     layer: u8,
 ) Math.Mat4 {
-    const screen_w = Rendering.gfx.surface.get_width();
-    const screen_h = Rendering.gfx.surface.get_height();
+    const size = Rendering.surface_size();
+    const screen_w = size.width;
+    const screen_h = size.height;
     const ui_scale = Scaling.compute(screen_w, screen_h);
     const sw: f32 = @floatFromInt(screen_w);
     const sh: f32 = @floatFromInt(screen_h);
@@ -357,26 +334,19 @@ pub fn mesh_matrix(
     const cx: f32 = @as(f32, @floatFromInt(tl_x)) + tw / 2.0;
     const cy: f32 = @as(f32, @floatFromInt(tl_y)) + th / 2.0;
 
-    // S_pixel: scale mesh from [-1,1] to pixel proportions for correct rotation.
     const s_pixel = Math.Mat4.scaling(tw / 2.0, th / 2.0, 1);
-    // R: rotate in pixel space (uniform, no distortion).
     const r = Math.Mat4.rotation_z(std.math.degreesToRadians(rot_z));
-    // S_ndc: convert pixel space to NDC, apply extra scale.
     const s_ndc = Math.Mat4.scaling(2.0 * us * extra_scale / sw, 2.0 * us * extra_scale / sh, 1);
-    // T: translate to final NDC position with layer depth.
-    // The mesh vertices are at layer 0 (z = 32765..32766 SNORM). Shift to target layer.
+    // Exported vertices start at layer 0 (SNORM z = 32765..32766).
     const z: f32 = -@as(f32, @floatFromInt(layer)) * 2.0 / 32767.0;
     const t = Math.Mat4.translation(2.0 * cx * us / sw - 1.0, 1.0 - 2.0 * cy * us / sh, z);
     return s_pixel.mul(r).mul(s_ndc).mul(t);
 }
 
-// --- Private ---
-
 fn entries_equal(a: []const TextEntry, b: []const TextEntry) bool {
     if (a.len != b.len) return false;
     for (a, b) |*x, *y| {
-        // Compare `str` by bytes; same-length in-place edits (PSP OSK,
-        // per-frame label arenas) leave the slice header unchanged.
+        // Slice headers cannot detect in-place text edits.
         if (!std.mem.eql(u8, x.str, y.str)) return false;
         if (!std.meta.eql(x.color, y.color)) return false;
         if (!std.meta.eql(x.shadow_color, y.shadow_color)) return false;
@@ -398,7 +368,7 @@ fn rebuild(self: *FontBatcher, screen_w: u32, screen_h: u32) !void {
     var total_quads: u32 = 0;
     for (entries) |*e| {
         const mult: u32 = if (e.shadow_color.a > 0) 2 else 1;
-        total_quads += @as(u32, @intCast(e.str.len)) * quads_per_char * mult;
+        total_quads += @as(u32, @intCast(e.str.len)) * mult;
     }
 
     self.mesh_data.clear_retaining_capacity();
@@ -461,7 +431,6 @@ fn emit_string_screen(
     const max_ly: i16 = @intCast(screen_h / ui_scale);
     const ts: i32 = text_scale;
 
-    // Y bounds are constant across all characters - hoist out of loop.
     const y0: i16 = @intCast(@min(@max(start_y, 0), @as(i32, max_ly)));
     const y1: i16 = @intCast(@min(start_y + @as(i32, glyph_size) * ts, @as(i32, max_ly)));
     if (y0 >= y1) return;
@@ -473,8 +442,6 @@ fn emit_string_screen(
 
     var i: usize = 0;
     while (i < str.len) {
-        // '&' followed by [0-9a-f] swaps the active color and is not drawn
-        // or advanced past as a glyph.
         if (str[i] == color_prefix and i + 1 < str.len and is_color_hex(str[i + 1])) {
             const pair = color_for_code(str[i + 1]);
             color = @bitCast(if (is_shadow) pair.bg else pair.fg);
@@ -494,8 +461,6 @@ fn emit_string_screen(
         const x1: i16 = @intCast(@min(cursor + scaled_w, @as(i32, max_lx)));
         if (x0 < x1) {
             const base = glyph_uvs(self, byte, gw);
-            // Adjust UVs for horizontal clipping so partially-visible glyphs
-            // sample the correct texel region.
             const uv_span: i32 = @as(i32, base[2]) - @as(i32, base[0]);
             const vis_l: i32 = @as(i32, x0) - cursor;
             const vis_r: i32 = @as(i32, x1) - cursor;
@@ -588,8 +553,6 @@ fn emit_quad(
     );
 }
 
-/// Scans each glyph tile in the font texture to find the rightmost column
-/// containing a non-transparent pixel. This gives per-character variable widths.
 fn compute_glyph_widths(texture: *const Rendering.Texture) [glyph_count]u8 {
     assert(texture.width == 128);
     assert(texture.height == 128);
@@ -607,7 +570,6 @@ fn compute_glyph_widths(texture: *const Rendering.Texture) [glyph_count]u8 {
         const bx = gx * glyph_size;
         const by = gy * glyph_size;
 
-        // Scan columns right-to-left; first non-transparent pixel sets width.
         var max_col: u8 = 0;
         var col: u32 = glyph_size;
         while (col > 0) {

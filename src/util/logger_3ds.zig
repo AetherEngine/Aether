@@ -1,8 +1,6 @@
-//! Nintendo 3DS asynchronous file logger.
-//!
-//! Filesystem operations on 3DS can block on an ARM11 <-> ARM9 IPC round
-//! trip. This module keeps those operations on a low-priority `Util.Thread`
-//! worker and never holds the producer queue mutex while it performs I/O.
+//! PSP and 3DS logger: the worker owns all file I/O and releases the queue
+//! mutex before filesystem calls. 3DS calls may block on ARM9 IPC; PSP's
+//! I/O completion threads can be starved by a producer spinning on the lock.
 
 const std = @import("std");
 const assert = std.debug.assert;

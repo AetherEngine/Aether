@@ -1,6 +1,4 @@
-// Row-major 4x4 float matrix. data[row][col].
-// Memory layout matches zmath's Mat ([4]@Vector(4,f32)), so pointers can be
-// cast directly to *f32 for OpenGL/Vulkan UBO and push-constant uploads.
+//! Row-major matrix using row vectors: data[row][column].
 
 const Quat = @import("quat.zig");
 

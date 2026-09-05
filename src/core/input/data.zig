@@ -1,5 +1,4 @@
-//! Input data dictionary: pure enums for keys, buttons, axes and modifiers.
-//! Leaf module -- imports nothing; everything else in core/input/ depends on it.
+//! Device identifiers shared by Core input and Platform backends.
 
 const std = @import("std");
 
@@ -158,9 +157,7 @@ pub const ButtonState = enum(u8) {
     pressed = 1,
 };
 
-/// Coarse classification of which device family last drove input above the
-/// activity threshold. Used by UI code to swap glyph hints between KBM and
-/// gamepad without polling per-binding values.
+/// Last active device family, for choosing input glyphs.
 pub const InputMode = enum {
     keyboard_mouse,
     gamepad,

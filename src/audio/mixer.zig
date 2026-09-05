@@ -16,7 +16,7 @@ pub const Priority = enum(u8) {
     low,
     normal,
     high,
-    /// Always gets a slot, never culled.
+    /// Ranked ahead of other positional voices.
     critical,
 };
 
@@ -68,10 +68,8 @@ const VoiceSource = union(enum) {
     stream: StreamingSoundHandle,
 };
 
-/// Platform-independent voice scheduler. Manages a pool of virtual voices
-/// and assigns the highest-priority ones to real backend slots each tick.
-///
-/// `Backend` must satisfy the slot-based audio_api.Interface.
+/// Schedules virtual voices onto PCM output slots.
+/// `Backend` must satisfy platform/audio_api.Interface.
 pub fn MixerType(comptime Backend: type) type {
     return struct {
         pub const max_voices: usize = 64;
@@ -102,18 +100,13 @@ pub fn MixerType(comptime Backend: type) type {
         var listener_fwd: Vec3 = Vec3.new(0, 0, -1);
         var listener_up: Vec3 = Vec3.new(0, 1, 0);
 
-        // -- lifecycle -------------------------------------------------------
-
-        pub fn init() @import("../platform/audio_api.zig").InitError!void {
-            try Backend.init();
-        }
+        pub const init = Backend.init;
 
         pub fn deinit() void {
+            // Join output workers before releasing the PCM and cursors they borrow.
+            Backend.deinit();
             for (0..max_voices) |i| {
-                if (voices[i] != null) {
-                    if (voices[i].?.slot) |s| Backend.stop_slot(s);
-                    release_voice(i);
-                }
+                if (voices[i] != null) release_voice(i);
             }
             for (1..max_buffers + 1) |i| {
                 if (buffers.slots[i]) |resource| {
@@ -122,10 +115,7 @@ pub fn MixerType(comptime Backend: type) type {
             }
             buffers.clear();
             streams.clear();
-            Backend.deinit();
         }
-
-        // -- resources -------------------------------------------------------
 
         pub fn create_buffer(desc: *const SoundBufferDesc) CreateBufferError!SoundBufferHandle {
             try validate_buffer(desc.format, desc.pcm);
@@ -136,12 +126,7 @@ pub fn MixerType(comptime Backend: type) type {
         }
 
         pub fn adopt_buffer(allocator: std.mem.Allocator, bytes: []u8, format: stream_mod.PcmFormat) CreateBufferError!SoundBufferHandle {
-            try validate_buffer(format, bytes);
-            return buffers.add(.{
-                .format = format,
-                .pcm = bytes,
-                .owned = .{ .allocator = allocator, .bytes = bytes },
-            }) orelse error.TooManySoundBuffers;
+            return adopt_parsed_wav(allocator, bytes, &.{ .format = format, .pcm = bytes });
         }
 
         pub fn adopt_parsed_wav(allocator: std.mem.Allocator, bytes: []u8, desc: *const SoundBufferDesc) CreateBufferError!SoundBufferHandle {
@@ -154,7 +139,14 @@ pub fn MixerType(comptime Backend: type) type {
         }
 
         pub fn destroy_buffer(handle: SoundBufferHandle) void {
-            stop_voices_for_buffer(handle);
+            for (0..max_voices) |i| {
+                if (voices[i]) |voice| {
+                    if (voice.source == .buffer and voice.source.buffer == handle) {
+                        if (voice.slot) |s| Backend.stop_slot(s);
+                        release_voice(i);
+                    }
+                }
+            }
             const resource = buffers.get(handle) orelse return;
             _ = buffers.remove(handle);
             if (resource.owned) |owned| owned.allocator.free(owned.bytes);
@@ -175,15 +167,11 @@ pub fn MixerType(comptime Backend: type) type {
             _ = streams.remove(handle);
         }
 
-        // -- listener --------------------------------------------------------
-
         pub fn set_listener(pos: Vec3, forward: Vec3, up: Vec3) void {
             listener_pos = pos;
             listener_fwd = forward;
             listener_up = up;
         }
-
-        // -- voice control ---------------------------------------------------
 
         /// Play a non-positional sound (music, UI). Never distance-culled.
         pub fn play_buffer(buffer: SoundBufferHandle, opts: *const PlayOptions) PlayError!SoundHandle {
@@ -222,14 +210,11 @@ pub fn MixerType(comptime Backend: type) type {
             return find_index(handle) != null;
         }
 
-        // -- per-frame update ------------------------------------------------
-
         pub fn update() void {
             Backend.update();
 
             const max_slots: usize = @min(Backend.max_voices(), slot_capacity);
 
-            // 1. Reap voices whose backend slot finished (stream exhausted).
             for (0..max_voices) |i| {
                 if (voices[i] != null) {
                     if (voices[i].?.slot) |s| {
@@ -240,7 +225,6 @@ pub fn MixerType(comptime Backend: type) type {
                 }
             }
 
-            // 2. Score every active voice.
             var scores: [max_voices]f32 = @splat(-1.0);
             var order: [max_voices]u8 = undefined;
             var count: usize = 0;
@@ -253,7 +237,7 @@ pub fn MixerType(comptime Backend: type) type {
                 }
             }
 
-            // 3. Sort by score descending (insertion sort -- count <= 64).
+            // Insertion sort is bounded by max_voices (64).
             if (count > 1) {
                 for (1..count) |i| {
                     const key = order[i];
@@ -267,7 +251,6 @@ pub fn MixerType(comptime Backend: type) type {
                 }
             }
 
-            // 4. Evict voices outside the top N that hold a slot.
             for (@min(count, max_slots)..count) |rank| {
                 const vi = order[rank];
                 if (voices[vi].?.slot) |s| {
@@ -276,7 +259,6 @@ pub fn MixerType(comptime Backend: type) type {
                 }
             }
 
-            // 5. Build a used-slot mask from voices that kept their slots.
             var used: [slot_capacity]bool = @splat(false);
             for (0..@min(count, max_slots)) |rank| {
                 const vi = order[rank];
@@ -285,24 +267,23 @@ pub fn MixerType(comptime Backend: type) type {
                 }
             }
 
-            // 6. Assign free slots to promoted voices (top N without a slot).
             for (0..@min(count, max_slots)) |rank| {
                 const vi = order[rank];
                 if (voices[vi].?.slot == null) {
-                    if (scores[vi] <= 0) continue; // beyond max_distance
+                    if (scores[vi] <= 0) continue;
                     const source = slot_source(vi) orelse {
                         release_voice(vi);
                         continue;
                     };
-                    if (find_free_slot(&used, max_slots)) |s| {
-                        Backend.play_slot(s, source) catch continue;
-                        voices[vi].?.slot = s;
-                        used[s] = true;
-                    }
+                    const slot: u8 = for (used[0..max_slots], 0..) |occupied, slot| {
+                        if (!occupied) break @intCast(slot);
+                    } else continue;
+                    Backend.play_slot(slot, source) catch continue;
+                    voices[vi].?.slot = slot;
+                    used[slot] = true;
                 }
             }
 
-            // 7. Push gain / pan to every occupied slot.
             for (0..max_voices) |i| {
                 if (voices[i]) |v| {
                     if (v.slot) |s| {
@@ -312,8 +293,6 @@ pub fn MixerType(comptime Backend: type) type {
                 }
             }
         }
-
-        // -- internals -------------------------------------------------------
 
         fn validate_buffer(format: stream_mod.PcmFormat, pcm: []const u8) CreateBufferError!void {
             const frame_size = format.frame_size();
@@ -335,7 +314,7 @@ pub fn MixerType(comptime Backend: type) type {
                 if (voices[i] == null) break i;
             } else return error.TooManyVoices;
 
-            const handle = make_handle(vi);
+            const handle = SoundHandle.from_index(vi + 1, voice_generations[vi]);
 
             voices[vi] = .{
                 .source = source,
@@ -378,17 +357,6 @@ pub fn MixerType(comptime Backend: type) type {
             };
         }
 
-        fn stop_voices_for_buffer(handle: SoundBufferHandle) void {
-            for (0..max_voices) |i| {
-                if (voices[i]) |voice| {
-                    if (voice.source == .buffer and voice.source.buffer == handle) {
-                        if (voice.slot) |s| Backend.stop_slot(s);
-                        release_voice(i);
-                    }
-                }
-            }
-        }
-
         fn find_index(handle: SoundHandle) ?usize {
             const raw = handle.raw_index();
             if (raw == 0 or raw > max_voices) return null;
@@ -396,10 +364,6 @@ pub fn MixerType(comptime Backend: type) type {
             if (voice_generations[i] != handle.generation) return null;
             if (voices[i] != null and voices[i].?.handle == handle) return i;
             return null;
-        }
-
-        fn make_handle(index: usize) SoundHandle {
-            return SoundHandle.from_index(index + 1, voice_generations[index]);
         }
 
         fn release_voice(index: usize) void {
@@ -415,15 +379,7 @@ pub fn MixerType(comptime Backend: type) type {
             if (voice_generations[index] == 0) voice_generations[index] = 1;
         }
 
-        fn find_free_slot(used: *const [slot_capacity]bool, limit: usize) ?u8 {
-            for (0..limit) |i| {
-                if (!used[i]) return @intCast(i);
-            }
-            return null;
-        }
-
         fn effective_score(voice: VirtualVoice) f32 {
-            // Non-positional and critical always win.
             if (voice.position == null or voice.priority == .critical)
                 return std.math.inf(f32);
 
@@ -478,8 +434,7 @@ test "mixer buffer playback and destroy stop voices" {
         var active: [2]bool = @splat(false);
         var last_source: ?SlotSource = null;
 
-        pub fn setup(_: std.mem.Allocator, _: std.Io) void {}
-        pub fn init() @import("../platform/audio_api.zig").InitError!void {
+        pub fn init(_: std.mem.Allocator, _: std.Io) @import("../platform/audio_api.zig").InitError!void {
             active = @splat(false);
             last_source = null;
         }
@@ -502,7 +457,7 @@ test "mixer buffer playback and destroy stop voices" {
     };
 
     const Mix = MixerType(Backend);
-    try Mix.init();
+    try Mix.init(std.testing.allocator, std.testing.io);
     defer Mix.deinit();
 
     const pcm = [_]u8{ 0, 0, 1, 0 };
@@ -524,8 +479,7 @@ test "mixer buffer playback and destroy stop voices" {
 
 test "mixer rejects stale buffers and active stream replay" {
     const Backend = struct {
-        pub fn setup(_: std.mem.Allocator, _: std.Io) void {}
-        pub fn init() @import("../platform/audio_api.zig").InitError!void {}
+        pub fn init(_: std.mem.Allocator, _: std.Io) @import("../platform/audio_api.zig").InitError!void {}
         pub fn deinit() void {}
         pub fn update() void {}
         pub fn max_voices() u32 {
@@ -540,7 +494,7 @@ test "mixer rejects stale buffers and active stream replay" {
     };
 
     const Mix = MixerType(Backend);
-    try Mix.init();
+    try Mix.init(std.testing.allocator, std.testing.io);
     defer Mix.deinit();
 
     const pcm = [_]u8{ 0, 0 };
@@ -559,4 +513,30 @@ test "mixer rejects stale buffers and active stream replay" {
     });
     _ = try Mix.play_stream(stream, &.{});
     try std.testing.expectError(error.StreamAlreadyPlaying, Mix.play_stream(stream, &.{}));
+}
+
+test "mixer stops the backend before freeing owned PCM" {
+    const Backend = struct {
+        var allocator: *std.heap.FixedBufferAllocator = undefined;
+        var pcm_was_live: bool = false;
+
+        pub fn deinit() void {
+            pcm_was_live = allocator.end_index != 0;
+        }
+    };
+    const Mix = MixerType(Backend);
+    var storage: [4]u8 = undefined;
+    var allocator = std.heap.FixedBufferAllocator.init(&storage);
+    Backend.allocator = &allocator;
+
+    const pcm = try allocator.allocator().dupe(u8, &.{ 0, 0, 1, 0 });
+    _ = try Mix.adopt_buffer(allocator.allocator(), pcm, .{
+        .sample_rate = 44_100,
+        .channels = 1,
+        .bit_depth = 16,
+    });
+    Mix.deinit();
+
+    try std.testing.expect(Backend.pcm_was_live);
+    try std.testing.expectEqual(@as(usize, 0), allocator.end_index);
 }

@@ -7,13 +7,7 @@ const Texture = Rendering.Texture;
 
 pub const mesh_source_mode = Mesh.SourceMode.uploaded_copy;
 
-var render_alloc: std.mem.Allocator = undefined;
-var render_io: std.Io = undefined;
-
-pub fn setup(alloc: std.mem.Allocator, io: std.Io) void {
-    render_alloc = alloc;
-    render_io = io;
-}
+pub fn setup(_: std.mem.Allocator, _: std.Io) void {}
 
 pub fn init() gfx_api.InitError!void {}
 pub fn deinit() void {}

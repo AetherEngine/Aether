@@ -1,16 +1,8 @@
 const std = @import("std");
 const audio_api = @import("../audio_api.zig");
-const SlotSource = @import("../../audio/stream.zig").SlotSource;
+const SlotSource = audio_api.SlotSource;
 
-var audio_alloc: std.mem.Allocator = undefined;
-var audio_io: std.Io = undefined;
-
-pub fn setup(alloc: std.mem.Allocator, io: std.Io) void {
-    audio_alloc = alloc;
-    audio_io = io;
-}
-
-pub fn init() audio_api.InitError!void {}
+pub fn init(_: std.mem.Allocator, _: std.Io) audio_api.InitError!void {}
 pub fn deinit() void {}
 pub fn update() void {}
 pub fn suspend_for_applet() void {}

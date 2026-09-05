@@ -29,11 +29,8 @@ pub fn HandleType(comptime Tag: type) type {
     };
 }
 
-/// Fixed-size sparse resource table with generational typed handles.
-///
-/// Slot 0 is reserved for the null handle. A removed slot increments its
-/// generation before it can be reused, so old handles fail validation instead
-/// of silently naming the new occupant.
+/// Slot 0 is reserved. Removal advances the generation to reject stale handles
+/// until the 8-bit generation wraps.
 pub fn ResourceTableType(comptime T: type, comptime slot_count: usize, comptime H: type) type {
     comptime {
         if (slot_count < 2)
@@ -54,8 +51,6 @@ pub fn ResourceTableType(comptime T: type, comptime slot_count: usize, comptime 
             return .{
                 .slots = @splat(null),
                 .generations = @splat(1),
-                .head = 1,
-                .count = 0,
             };
         }
 
@@ -74,8 +69,7 @@ pub fn ResourceTableType(comptime T: type, comptime slot_count: usize, comptime 
             return self.count;
         }
 
-        pub fn capacity(self: *const ResourceTable) usize {
-            _ = self;
+        pub fn capacity(_: *const ResourceTable) usize {
             return slot_count - 1;
         }
 
@@ -102,7 +96,7 @@ pub fn ResourceTableType(comptime T: type, comptime slot_count: usize, comptime 
         pub fn remove(self: *ResourceTable, handle: H) bool {
             const idx = self.valid_index(handle) orelse return false;
             self.slots[idx] = null;
-            if (self.count > 0) self.count -= 1;
+            self.count -= 1;
             self.bump_generation(idx);
             if (idx < self.head) self.head = idx;
             return true;
@@ -115,8 +109,7 @@ pub fn ResourceTableType(comptime T: type, comptime slot_count: usize, comptime 
 
         pub fn get_ptr(self: *ResourceTable, handle: H) ?*T {
             const idx = self.valid_index(handle) orelse return null;
-            if (self.slots[idx]) |*value| return value;
-            return null;
+            return &self.slots[idx].?;
         }
 
         pub fn update(self: *ResourceTable, handle: H, value: T) bool {
@@ -142,10 +135,8 @@ pub fn ResourceTableType(comptime T: type, comptime slot_count: usize, comptime 
             if (self.generations[idx] == 0) self.generations[idx] = 1;
         }
 
-        inline fn next_index(i: usize) usize {
-            var n = (i + 1) % slot_count;
-            if (n == 0) n = 1;
-            return n;
+        fn next_index(i: usize) usize {
+            return if (i + 1 == slot_count) 1 else i + 1;
         }
     };
 }

@@ -53,7 +53,6 @@ pub fn MeshDataType(comptime V: type) type {
             self.vertices.deinit(alloc);
         }
 
-        /// Append a slice of vertices, growing the buffer as needed.
         pub fn append(self: *MeshData, alloc: std.mem.Allocator, verts: []const V) DataError!void {
             try self.vertices.appendSlice(alloc, verts);
         }
@@ -130,7 +129,6 @@ pub fn MeshDataType(comptime V: type) type {
     };
 }
 
-/// A generic mesh parameterised by vertex type `V`.
 pub fn MeshType(comptime V: type) type {
     return struct {
         const Mesh = @This();
@@ -141,9 +139,8 @@ pub fn MeshType(comptime V: type) type {
         handle: Handle,
 
         pub fn init(desc: *const Desc) @import("../platform/gfx_api.zig").CreateMeshError!Mesh {
-            const handle = try gfx.api.create_mesh(desc);
             return .{
-                .handle = handle,
+                .handle = try gfx.api.create_mesh(desc),
             };
         }
 
@@ -151,7 +148,6 @@ pub fn MeshType(comptime V: type) type {
             defer self.* = undefined;
 
             gfx.api.destroy_mesh(self.handle);
-            self.handle = .none;
         }
 
         /// Push the current CPU data to the backend. On borrowed-source

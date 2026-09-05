@@ -1,5 +1,4 @@
-//! Action bindings: how a single device source projects into an Action's
-//! current value. Multiple bindings combine inside an Action.
+//! Bindings map device values into action components.
 
 const data = @import("data.zig");
 
@@ -12,8 +11,6 @@ pub const BindingSourceKind = enum(u8) {
     gamepad_axis,
 };
 
-/// Subset of axis components excluding `none`. Required for intrinsically
-/// axis-bound sources (mouse wheel, mouse delta).
 pub const Vec2Axis = enum(u8) { x, y };
 
 pub const BindingSource = union(BindingSourceKind) {
@@ -25,9 +22,7 @@ pub const BindingSource = union(BindingSourceKind) {
     gamepad_axis: data.Axis,
 };
 
-/// Selects which component of a Vector2 action a binding contributes to.
-/// `none` is meaningful only for button/axis actions where the binding
-/// scalar value goes straight into the action value.
+/// Vector2 bindings require x or y; button and scalar bindings use none.
 pub const AxisComponent = enum(u8) { x, y, none };
 
 pub const default_axis_deadzone: f32 = 0.4;

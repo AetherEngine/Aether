@@ -28,7 +28,6 @@ pub const StateMachine = struct {
         self.last_transition_error = null;
         self.has_current = true;
         self.initialized = true;
-        assert(self.initialized);
     }
 
     pub fn deinit(self: *StateMachine, engine: *Engine) void {
@@ -36,14 +35,7 @@ pub const StateMachine = struct {
 
         if (!self.initialized) return;
 
-        if (self.has_current) {
-            self.curr_state.deinit(engine);
-            self.has_current = false;
-        }
-        self.pending_state = null;
-        self.last_transition_error = null;
-        self.initialized = false;
-        assert(!self.initialized);
+        if (self.has_current) self.curr_state.deinit(engine);
     }
 
     /// Queue a state replacement. The transition is committed by the engine

@@ -1,8 +1,4 @@
-//! 3DS audio backend -- CSND with software mixing.
-//!
-//! CSND is driven through Zitrus' `ChannelSound` service. Aether mixes the
-//! public slot API into a looping linear-memory PCM16 ring and keeps refilling
-//! small pages ahead of the play cursor.
+//! Mixes slots into a looping CSND PCM16 ring in linear memory.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -11,8 +7,8 @@ const app_3ds = @import("app.zig");
 const audio_api = @import("../audio_api.zig");
 const thread_mod = @import("../../util/thread.zig");
 const audio_fifo = @import("audio_fifo.zig");
-const SlotSource = @import("../../audio/stream.zig").SlotSource;
-const PcmFormat = @import("../../audio/stream.zig").PcmFormat;
+const SlotSource = audio_api.SlotSource;
+const PcmFormat = audio_api.PcmFormat;
 
 const horizon = zitrus.horizon;
 const ChannelSound = horizon.services.ChannelSound;
@@ -88,7 +84,7 @@ const Slot = struct {
     consumer_generation: u32 = 0,
 };
 
-var slots: [num_slots]Slot = init_slots();
+var slots: [num_slots]Slot = @splat(.{});
 var audio_alloc: std.mem.Allocator = undefined;
 var audio_io: std.Io = undefined;
 var snd: ?ChannelSound = null;
@@ -113,20 +109,9 @@ var stream_underflows: std.atomic.Value(usize) = std.atomic.Value(usize).init(0)
 var output_underruns: std.atomic.Value(usize) = std.atomic.Value(usize).init(0);
 var initialized = false;
 
-fn init_slots() [num_slots]Slot {
-    var s: [num_slots]Slot = undefined;
-    for (&s) |*slot| {
-        slot.* = .{};
-    }
-    return s;
-}
-
-pub fn setup(alloc: std.mem.Allocator, io: std.Io) void {
+pub fn init(alloc: std.mem.Allocator, io: std.Io) audio_api.InitError!void {
     audio_alloc = alloc;
     audio_io = io;
-}
-
-pub fn init() audio_api.InitError!void {
     const app = app_3ds.current_application() orelse std.debug.panic("3DS audio init failed: no current application", .{});
 
     snd = ChannelSound.open(app.srv) catch |err| return init_failed("open csnd:SND", err);
@@ -337,7 +322,7 @@ pub fn max_voices() u32 {
 
 pub fn play_slot(slot: u8, source: SlotSource) audio_api.PlaySlotError!void {
     if (slot >= num_slots) return error.InvalidArgs;
-    const format = source_format(source);
+    const format = source.format();
     if (!format_supported(format)) return error.UnsupportedFormat;
 
     const i: usize = slot;
@@ -826,13 +811,6 @@ fn clamp_i16(v: i32) i16 {
     return @intCast(std.math.clamp(v, std.math.minInt(i16), std.math.maxInt(i16)));
 }
 
-fn source_format(source: SlotSource) PcmFormat {
-    return switch (source) {
-        .buffer => |buffer| buffer.format,
-        .stream => |stream| stream.format,
-    };
-}
-
 fn read_source_short(slot: *Slot, slot_index: usize, dst: []u8) SourceRead {
     return switch (slot.source) {
         .buffer => |buffer| blk: {
@@ -921,10 +899,6 @@ fn notify_stream_worker() void {
     stream_wakeup.set(audio_io);
 }
 
-fn format_frame_size(fmt: PcmFormat) usize {
-    return @intCast(fmt.frame_size());
-}
-
 const StreamWorkerProgress = struct {
     generation: u32 = 0,
     bytes_read: u64 = 0,
@@ -976,7 +950,7 @@ fn worker_refill_slot(slot_index: usize, scratch: []u8, progress: *StreamWorkerP
     const stream_state: StreamState = @enumFromInt(slot.stream_state.load(.acquire));
     if (stream_state != .filling or !stream_refill_needed(slot_index)) return false;
 
-    const frame_size = format_frame_size(stream.format);
+    const frame_size: usize = stream.format.frame_size();
     const bytes_read = progress.bytes_read;
     const max_by_length: usize = if (stream.byte_length) |length|
         @intCast(@min(length -| bytes_read, @as(u64, std.math.maxInt(usize))))

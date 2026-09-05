@@ -17,7 +17,6 @@ pub fn new() Transform {
     };
 }
 
-/// Computes and returns the transformation matrix combining scaling, rotation, and translation.
 pub fn get_matrix(self: *const Transform) Mat4 {
     const s = Mat4.scaling(self.scale.x, self.scale.y, self.scale.z);
     const rx = Mat4.rotation_x(std.math.degreesToRadians(self.rot.x));

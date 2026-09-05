@@ -1,15 +1,10 @@
-const std = @import("std");
-
 pub const InitError = error{
     OutOfMemory,
     SurfaceInitFailed,
     VulkanNotSupported,
 };
 
-/// The contract every surface backend must satisfy. Surfaces have real
-/// instance state (window handle, dimensions, etc.) so methods take a
-/// `*Backend` self pointer. This struct is never instantiated -- it
-/// exists purely to drive `assertImpl` at comptime.
+/// Surfaces own window state; graphics backends use module-level state.
 pub fn InterfaceType(comptime Backend: type) type {
     return struct {
         init: fn (*Backend, u32, u32, [:0]const u8, bool, bool, bool) InitError!void,
@@ -21,18 +16,6 @@ pub fn InterfaceType(comptime Backend: type) type {
     };
 }
 
-/// Verify at comptime that `Backend` exposes every decl in `Interface`
-/// with the exact expected signature.
 pub fn assert_impl(comptime Backend: type) void {
-    const I = InterfaceType(Backend);
-    inline for (std.meta.fields(I)) |f| {
-        if (!@hasDecl(Backend, f.name)) {
-            @compileError("surface backend " ++ @typeName(Backend) ++ " is missing decl: " ++ f.name);
-        }
-        const Actual = @TypeOf(@field(Backend, f.name));
-        if (Actual != f.type) {
-            @compileError("surface backend " ++ @typeName(Backend) ++ "." ++ f.name ++
-                " has type " ++ @typeName(Actual) ++ ", expected " ++ @typeName(f.type));
-        }
-    }
+    @import("contract.zig").assert_impl("surface", Backend, InterfaceType(Backend));
 }

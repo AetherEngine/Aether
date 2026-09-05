@@ -39,9 +39,6 @@ pub fn load_png(allocator: std.mem.Allocator, reader: *std.Io.Reader) Error![]u8
 /// `scratch` is used for all temporary allocations during decoding.
 /// `render` is used for the final pixel buffer stored in `image.data`.
 pub fn load_png_ex(scratch: std.mem.Allocator, render: std.mem.Allocator, reader: *std.Io.Reader, mode: ColorMode) Error!Image {
-    const allocator = scratch;
-
-    // Verify PNG signature
     var sig_buf: [8]u8 = undefined;
     try reader.readSliceAll(&sig_buf);
     if (!std.mem.eql(u8, &sig_buf, png_signature)) return error.InvalidPNG;
@@ -61,9 +58,8 @@ pub fn load_png_ex(scratch: std.mem.Allocator, render: std.mem.Allocator, reader
     var has_trns = false;
 
     var idat_buf: std.ArrayList(u8) = .empty;
-    defer idat_buf.deinit(allocator);
+    defer idat_buf.deinit(scratch);
 
-    // Parse chunks
     while (true) {
         var chunk_header: [8]u8 = undefined;
         reader.readSliceAll(&chunk_header) catch break;
@@ -82,14 +78,9 @@ pub fn load_png_ex(scratch: std.mem.Allocator, render: std.mem.Allocator, reader
             const filter_method = ihdr[11];
             const interlace_method = ihdr[12];
             if (interlace_method != 0) return error.UnsupportedInterlacing;
-            if (compression_method != 0) return error.InvalidPNG;
-            if (filter_method != 0) return error.InvalidPNG;
+            if (compression_method != 0 or filter_method != 0) return error.InvalidPNG;
             switch (color_type) {
-                0 => switch (bit_depth) {
-                    8, 16 => {},
-                    else => return error.UnsupportedColorType,
-                },
-                2 => switch (bit_depth) {
+                0, 2, 4, 6 => switch (bit_depth) {
                     8, 16 => {},
                     else => return error.UnsupportedColorType,
                 },
@@ -97,19 +88,10 @@ pub fn load_png_ex(scratch: std.mem.Allocator, render: std.mem.Allocator, reader
                     1, 2, 4, 8 => {},
                     else => return error.UnsupportedColorType,
                 },
-                4 => switch (bit_depth) {
-                    8, 16 => {},
-                    else => return error.UnsupportedColorType,
-                },
-                6 => switch (bit_depth) {
-                    8, 16 => {},
-                    else => return error.UnsupportedColorType,
-                },
                 else => return error.UnsupportedColorType,
             }
             ihdr_found = true;
-            // Skip remaining bytes + CRC
-            try skip_bytes(reader, length - 13 + 4);
+            try reader.discardAll(length - 13 + 4);
         } else if (std.mem.eql(u8, chunk_type, "PLTE")) {
             const chunk_data = try scratch.alloc(u8, length);
             defer scratch.free(chunk_data);
@@ -119,8 +101,7 @@ pub fn load_png_ex(scratch: std.mem.Allocator, render: std.mem.Allocator, reader
             for (0..palette_len) |i| {
                 palette[i] = .{ chunk_data[i * 3], chunk_data[i * 3 + 1], chunk_data[i * 3 + 2] };
             }
-            // Skip CRC
-            try skip_bytes(reader, 4);
+            try reader.discardAll(4);
         } else if (std.mem.eql(u8, chunk_type, "tRNS")) {
             const chunk_data = try scratch.alloc(u8, length);
             defer scratch.free(chunk_data);
@@ -142,19 +123,16 @@ pub fn load_png_ex(scratch: std.mem.Allocator, render: std.mem.Allocator, reader
                 },
                 else => {},
             }
-            // Skip CRC
-            try skip_bytes(reader, 4);
+            try reader.discardAll(4);
         } else if (std.mem.eql(u8, chunk_type, "IDAT")) {
             const prev_len = idat_buf.items.len;
-            try idat_buf.resize(allocator, prev_len + length);
+            try idat_buf.resize(scratch, prev_len + length);
             try reader.readSliceAll(idat_buf.items[prev_len..]);
-            // Skip CRC
-            try skip_bytes(reader, 4);
+            try reader.discardAll(4);
         } else if (std.mem.eql(u8, chunk_type, "IEND")) {
             break;
         } else {
-            // Skip unknown chunk data + CRC
-            try skip_bytes(reader, length + 4);
+            try reader.discardAll(length + 4);
         }
     }
 
@@ -162,23 +140,20 @@ pub fn load_png_ex(scratch: std.mem.Allocator, render: std.mem.Allocator, reader
     if (width == 0 or height == 0) return error.InvalidPNG;
 
     const channels: u32 = switch (color_type) {
-        0 => 1,
+        0, 3 => 1,
         2 => 3,
-        3 => 1,
         4 => 2,
         6 => 4,
         else => return error.UnsupportedColorType,
     };
     const bytes_per_sample: u32 = if (bit_depth == 16) 2 else 1;
-    // Raw bytes per scanline (before filter byte)
     const raw_stride: u32 = if (color_type == 3 and bit_depth < 8)
         (width * bit_depth + 7) / 8
     else
         width * channels * bytes_per_sample;
 
-    // Decompress all IDAT data (zlib-wrapped DEFLATE)
     var in_reader: std.Io.Reader = .fixed(idat_buf.items);
-    var aw: std.Io.Writer.Allocating = .init(allocator);
+    var aw: std.Io.Writer.Allocating = .init(scratch);
     defer aw.deinit();
 
     var decomp: flate.Decompress = .init(&in_reader, .zlib, &.{});
@@ -188,12 +163,10 @@ pub fn load_png_ex(scratch: std.mem.Allocator, render: std.mem.Allocator, reader
     const expected_raw_size: usize = @as(usize, height) * (1 + raw_stride);
     if (raw.len < expected_raw_size) return error.InvalidPNG;
 
-    // bpp for filter purposes = max(1, bit_depth * channels / 8)
     const bpp: u32 = @max(1, @as(u32, bit_depth) * channels / 8);
 
-    // Unfilter scanlines into a flat buffer
-    const unfiltered = try allocator.alloc(u8, @as(usize, height) * raw_stride);
-    defer allocator.free(unfiltered);
+    const unfiltered = try scratch.alloc(u8, @as(usize, height) * raw_stride);
+    defer scratch.free(unfiltered);
 
     var raw_pos: usize = 0;
     for (0..height) |y| {
@@ -241,7 +214,6 @@ pub fn load_png_ex(scratch: std.mem.Allocator, render: std.mem.Allocator, reader
         }
     }
 
-    // Convert unfiltered scanlines to RGBA8
     const pixel_count: usize = @as(usize, width) * height;
     const rgba8 = try render.alignedAlloc(u8, .fromByteUnits(16), pixel_count * 4);
 
@@ -307,34 +279,18 @@ pub fn load_png_ex(scratch: std.mem.Allocator, render: std.mem.Allocator, reader
                     rgba8[d + 3] = if (idx < trns_len) trns_alpha[idx] else 255;
                 },
                 4 => { // Grayscale + Alpha
-                    if (bit_depth == 16) {
-                        const v: u8 = row[x * 4];
-                        const a: u8 = row[x * 4 + 2];
-                        rgba8[d] = v;
-                        rgba8[d + 1] = v;
-                        rgba8[d + 2] = v;
-                        rgba8[d + 3] = a;
-                    } else {
-                        const v = row[x * 2];
-                        const a = row[x * 2 + 1];
-                        rgba8[d] = v;
-                        rgba8[d + 1] = v;
-                        rgba8[d + 2] = v;
-                        rgba8[d + 3] = a;
-                    }
+                    const pixel = row[x * 2 * bytes_per_sample ..];
+                    rgba8[d] = pixel[0];
+                    rgba8[d + 1] = pixel[0];
+                    rgba8[d + 2] = pixel[0];
+                    rgba8[d + 3] = pixel[bytes_per_sample];
                 },
                 6 => { // RGBA
-                    if (bit_depth == 16) {
-                        rgba8[d] = row[x * 8];
-                        rgba8[d + 1] = row[x * 8 + 2];
-                        rgba8[d + 2] = row[x * 8 + 4];
-                        rgba8[d + 3] = row[x * 8 + 6];
-                    } else {
-                        rgba8[d] = row[x * 4];
-                        rgba8[d + 1] = row[x * 4 + 1];
-                        rgba8[d + 2] = row[x * 4 + 2];
-                        rgba8[d + 3] = row[x * 4 + 3];
-                    }
+                    const pixel = row[x * 4 * bytes_per_sample ..];
+                    rgba8[d] = pixel[0];
+                    rgba8[d + 1] = pixel[bytes_per_sample];
+                    rgba8[d + 2] = pixel[2 * bytes_per_sample];
+                    rgba8[d + 3] = pixel[3 * bytes_per_sample];
                 },
                 else => unreachable,
             }
@@ -345,11 +301,8 @@ pub fn load_png_ex(scratch: std.mem.Allocator, render: std.mem.Allocator, reader
         return .{ .width = width, .height = height, .data = rgba8, .mode = .rgba8 };
     }
 
-    // 16-bit conversion: allocate half the buffer
-    const out16 = render.alignedAlloc(u8, .fromByteUnits(16), pixel_count * 2) catch |err| {
-        render.free(rgba8);
-        return err;
-    };
+    defer render.free(rgba8);
+    const out16 = try render.alignedAlloc(u8, .fromByteUnits(16), pixel_count * 2);
 
     switch (mode) {
         .rgba5551 => {
@@ -376,19 +329,7 @@ pub fn load_png_ex(scratch: std.mem.Allocator, render: std.mem.Allocator, reader
         },
         .rgba8 => unreachable,
     }
-    render.free(rgba8);
-
     return .{ .width = width, .height = height, .data = out16, .mode = mode };
-}
-
-fn skip_bytes(reader: *std.Io.Reader, n: usize) !void {
-    var remaining = n;
-    var buf: [256]u8 = undefined;
-    while (remaining > 0) {
-        const to_read = @min(remaining, buf.len);
-        try reader.readSliceAll(buf[0..to_read]);
-        remaining -= to_read;
-    }
 }
 
 fn paeth_predictor(a: u8, b: u8, c: u8) u8 {
@@ -402,4 +343,54 @@ fn paeth_predictor(a: u8, b: u8, c: u8) u8 {
     if (pa <= pb and pa <= pc) return a;
     if (pb <= pc) return b;
     return c;
+}
+
+test "PNG 8-bit and 16-bit alpha channels survive decoding" {
+    const cases = [_]struct { png: []const u8, rgba: []const u8 }{
+        .{
+            .png = "\x89\x50\x4e\x47\x0d\x0a\x1a\x0a\x00\x00\x00\x0d\x49\x48\x44\x52" ++
+                "\x00\x00\x00\x02\x00\x00\x00\x01\x08\x06\x00\x00\x00\xf4\x22\x7f" ++
+                "\x8a\x00\x00\x00\x09\x74\x45\x58\x74\x74\x65\x73\x74\x00\x73\x6b" ++
+                "\x69\x70\x41\x63\xba\xf5\x00\x00\x00\x11\x49\x44\x41\x54\x78\x9c" ++
+                "\x63\xf8\xcf\xd0\xf0\x5f\x40\xc1\x80\x01\x00\x10\xfc\x02\xdf\xa3" ++
+                "\x50\xd1\x4e\x00\x00\x00\x00\x49\x45\x4e\x44\xae\x42\x60\x82",
+            .rgba = &.{ 0xff, 0x00, 0x80, 0xff, 0x10, 0x20, 0x30, 0x00 },
+        },
+        .{
+            .png = "\x89\x50\x4e\x47\x0d\x0a\x1a\x0a\x00\x00\x00\x0d\x49\x48\x44\x52" ++
+                "\x00\x00\x00\x02\x00\x00\x00\x01\x10\x06\x00\x00\x00\xa4\xb2\xa3" ++
+                "\xc9\x00\x00\x00\x09\x74\x45\x58\x74\x74\x65\x73\x74\x00\x73\x6b" ++
+                "\x69\x70\x41\x63\xba\xf5\x00\x00\x00\x19\x49\x44\x41\x54\x78\x9c" ++
+                "\x63\xf8\x1f\xc5\x10\xd5\x10\xf5\x3f\x4a\x20\x4a\x21\xca\x20\x8a" ++
+                "\x21\x0a\x00\x38\x77\x05\xaf\x05\x5d\xeb\xd7\x00\x00\x00\x00\x49" ++
+                "\x45\x4e\x44\xae\x42\x60\x82",
+            .rgba = &.{ 0xff, 0x00, 0x80, 0xff, 0x10, 0x20, 0x30, 0x00 },
+        },
+        .{
+            .png = "\x89\x50\x4e\x47\x0d\x0a\x1a\x0a\x00\x00\x00\x0d\x49\x48\x44\x52" ++
+                "\x00\x00\x00\x02\x00\x00\x00\x01\x08\x04\x00\x00\x00\x5e\x2b\xb7" ++
+                "\x01\x00\x00\x00\x09\x74\x45\x58\x74\x74\x65\x73\x74\x00\x73\x6b" ++
+                "\x69\x70\x41\x63\xba\xf5\x00\x00\x00\x0d\x49\x44\x41\x54\x78\x9c" ++
+                "\x63\x10\xaa\xf8\x27\x00\x00\x03\xc1\x01\x99\x60\x43\x16\xf8\x00" ++
+                "\x00\x00\x00\x49\x45\x4e\x44\xae\x42\x60\x82",
+            .rgba = &.{ 0x12, 0x12, 0x12, 0x78, 0xfe, 0xfe, 0xfe, 0x10 },
+        },
+        .{
+            .png = "\x89\x50\x4e\x47\x0d\x0a\x1a\x0a\x00\x00\x00\x0d\x49\x48\x44\x52" ++
+                "\x00\x00\x00\x02\x00\x00\x00\x01\x10\x04\x00\x00\x00\x0e\xbb\x6b" ++
+                "\x42\x00\x00\x00\x09\x74\x45\x58\x74\x74\x65\x73\x74\x00\x73\x6b" ++
+                "\x69\x70\x41\x63\xba\xf5\x00\x00\x00\x11\x49\x44\x41\x54\x78\x9c" ++
+                "\x63\x10\x8a\xaa\x88\xfa\x17\x25\x10\x05\x00\x0d\x21\x03\x01\xc0" ++
+                "\x4a\x42\x00\x00\x00\x00\x00\x49\x45\x4e\x44\xae\x42\x60\x82",
+            .rgba = &.{ 0x12, 0x12, 0x12, 0x78, 0xfe, 0xfe, 0xfe, 0x10 },
+        },
+    };
+    for (cases) |case| {
+        var reader: std.Io.Reader = .fixed(case.png);
+        var decoded = try load_png_ex(std.testing.allocator, std.testing.allocator, &reader, .rgba8);
+        defer decoded.deinit(std.testing.allocator);
+        try std.testing.expectEqual(@as(u32, 2), decoded.width);
+        try std.testing.expectEqual(@as(u32, 1), decoded.height);
+        try std.testing.expectEqualSlices(u8, case.rgba, decoded.data);
+    }
 }

@@ -112,10 +112,7 @@ const tex_pixel_format: ge_list.TexturePixelFormat = switch (options.config.psp_
     .rgb565 => .psm4444,
 };
 
-const tex_bpp: u32 = switch (options.config.psp_display_mode) {
-    .rgba8888 => 4,
-    .rgb565 => 2,
-};
+const tex_bpp = @import("texture_pixels.zig").bytes_per_pixel;
 
 const frame_bpp: u32 = switch (options.config.psp_display_mode) {
     .rgba8888 => 4,
@@ -1089,23 +1086,7 @@ fn swizzle_in_place(data: []align(16) u8, width: u32, height: u32) void {
     }
 }
 
-/// Map a linear (x, y) pixel coordinate to its byte offset in swizzled layout.
-pub fn swizzled_offset(x: u32, y: u32, width: u32) usize {
-    const bytes_per_pixel = tex_bpp;
-    const width_bytes = width * bytes_per_pixel;
-
-    const block_x = (x * bytes_per_pixel) / 16;
-    const block_y = y / 8;
-    const blocks_per_row = width_bytes / 16;
-
-    const block_index = block_y * blocks_per_row + block_x;
-    const block_start = block_index * 16 * 8; // each block is 16 bytes * 8 rows
-
-    const local_x = (x * bytes_per_pixel) % 16;
-    const local_y = y % 8;
-
-    return block_start + local_y * 16 + local_x;
-}
+pub const swizzled_offset = @import("texture_pixels.zig").swizzled_offset;
 
 var textures = Util.ResourceTableType(TextureData, 64, Texture.Handle).init();
 var bound_texture: Texture.Handle = .none;

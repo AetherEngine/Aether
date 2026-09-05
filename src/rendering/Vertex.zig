@@ -7,9 +7,7 @@ const StandardVertex = extern struct {
     uv: [2]i16,
 };
 
-/// The PSP GE consumes vertex attributes in its packed order: texture
-/// coordinates, color, then position. Other backends use the named layout
-/// offsets, so they keep the standard position-first representation.
+/// PSP GE requires UV, color, position order; other backends use layout offsets.
 pub const PspVertex = extern struct {
     uv: [2]i16,
     color: u32,
@@ -86,19 +84,15 @@ pub const VertexLayout = struct {
     attributes: []const Attribute,
 };
 
-pub const Attributes = attributes_from_vertex(Vertex);
+pub const Attributes = [3]Attribute{
+    make_attribute(Vertex, "pos", 0, .position, 3),
+    make_attribute(Vertex, "color", 1, .color, 4),
+    make_attribute(Vertex, "uv", 2, .uv, 2),
+};
 pub const Layout = VertexLayout{
     .stride = @sizeOf(Vertex),
     .attributes = &Attributes,
 };
-
-fn attributes_from_vertex(comptime V: type) [3]Attribute {
-    return .{
-        make_attribute(V, "pos", 0, .position, 3),
-        make_attribute(V, "color", 1, .color, 4),
-        make_attribute(V, "uv", 2, .uv, 2),
-    };
-}
 
 fn make_attribute(
     comptime V: type,
@@ -107,7 +101,7 @@ fn make_attribute(
     comptime usage: AttributeUsage,
     comptime expected_count: usize,
 ) Attribute {
-    if (!has_field(V, field_name)) {
+    if (!@hasField(V, field_name)) {
         @compileError("Rendering.Vertex is missing required field '" ++ field_name ++ "'");
     }
 
@@ -123,22 +117,4 @@ fn make_attribute(
         .format = format,
         .usage = usage,
     };
-}
-
-fn has_field(comptime T: type, comptime field_name: []const u8) bool {
-    const info = @typeInfo(T);
-    if (info != .@"struct") return false;
-
-    inline for (info.@"struct".fields) |field| {
-        if (comptime eql(field.name, field_name)) return true;
-    }
-    return false;
-}
-
-fn eql(comptime a: []const u8, comptime b: []const u8) bool {
-    if (a.len != b.len) return false;
-    inline for (a, 0..) |ch, i| {
-        if (ch != b[i]) return false;
-    }
-    return true;
 }

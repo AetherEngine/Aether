@@ -7,14 +7,13 @@ const logger = @import("util/logger.zig");
 const Core = @import("core/core.zig");
 const Platform = @import("platform/platform.zig");
 const Rendering = @import("rendering/rendering.zig");
+const Audio = @import("audio/audio.zig");
 const options = @import("options");
 
 pub const Pool = memory.Pool;
 pub const MemoryConfig = memory.MemoryConfig;
 pub const MemoryProfile = memory.MemoryProfile;
 pub const MemoryDiagnostics = memory.MemoryDiagnostics;
-
-// -- category tracker (wrapper allocator with per-category accounting) --------
 
 pub const CategoryTracker = struct {
     inner: std.mem.Allocator,
@@ -132,8 +131,6 @@ pub const CategoryTracker = struct {
 
 const tracker_count = @typeInfo(Pool).@"enum".fields.len;
 
-// -- engine -------------------------------------------------------------------
-
 pub const Engine = struct {
     io: std.Io,
     pool: memory.PoolAlloc,
@@ -177,22 +174,12 @@ pub const Engine = struct {
         fullscreen: bool = false,
         vsync: bool = true,
         resizable: bool = false,
-        /// Leaf directory name under the per-user data root (e.g.
-        /// `~/Library/Application Support/<app_name>/`). Defaults to
-        /// `title` so single-word titles just work; override when the
-        /// title contains characters you don't want in a filesystem path.
+        /// Data directory name; defaults to `title`.
         app_name: ?[]const u8 = null,
     };
 
-    /// Initializes the engine in place. `self` must live at a stable address
-    /// for the lifetime of the program -- the allocators produced by
-    /// `allocator(p)` each carry a pointer into `self.trackers`, so moving or
-    /// copying an initialized `Engine` will leave those pointers dangling.
-    ///
-    /// `environ_map` comes from `std.process.Init.environ_map` and is used
-    /// only during init to resolve platform-specific data directories
-    /// (HOME/APPDATA/XDG_DATA_HOME). The engine does not retain a
-    /// reference.
+    /// `self` must remain at a stable address: allocators point into its trackers.
+    /// `environ_map` is borrowed only while resolving application directories.
     pub fn init(
         self: *Engine,
         sys_io: std.Io,
@@ -230,10 +217,9 @@ pub const Engine = struct {
         self.frame_scratch = std.heap.ArenaAllocator.init(self.tracker_allocator(.frame));
         errdefer self.frame_scratch.deinit();
 
-        // Dirs must resolve BEFORE logger (which opens a log file in the
-        // data dir) and BEFORE Platform.init (which may read resources).
         const app_name = config.app_name orelse config.title;
         self.dirs = try Core.paths.resolve(sys_io, environ_map, app_name);
+        errdefer self.dirs.close(self.io);
 
         try logger.init(sys_io, self.dirs.data, self.allocator(.game));
         errdefer logger.deinit(self.io);
@@ -244,16 +230,30 @@ pub const Engine = struct {
         };
         errdefer self.input.deinit();
 
-        Platform.init(self, config.width, config.height, config.title, config.fullscreen, config.vsync, config.resizable) catch |err| switch (err) {
-            error.OutOfMemory => return error.PlatformInitOutOfMemory,
+        Platform.gfx.init(self.allocator(.render), self.io, config.width, config.height, config.title, config.fullscreen, config.vsync, config.resizable) catch |err| switch (err) {
+            error.OutOfMemory => return error.GfxInitOutOfMemory,
             else => return err,
         };
-        errdefer Platform.deinit(self);
+        errdefer Platform.gfx.deinit();
+
+        Audio.init(self.allocator(.audio), self.io) catch |err| switch (err) {
+            error.OutOfMemory => return error.AudioInitOutOfMemory,
+            else => return err,
+        };
+        errdefer Audio.deinit();
+
+        // Input attaches to the surface created by graphics.
+        Platform.input.init(&self.input, self.allocator(.game), self.io) catch |err| switch (err) {
+            error.OutOfMemory => return error.InputInitOutOfMemory,
+            else => return err,
+        };
+        errdefer Platform.input.deinit(&self.input);
 
         Rendering.Texture.init_defaults(self.allocator(.render)) catch |err| switch (err) {
             error.OutOfMemory => return error.DefaultTexturesOutOfMemory,
             else => return err,
         };
+        errdefer Rendering.Texture.Default.deinit(self.allocator(.render));
         self.states.init(self, state) catch |err| switch (err) {
             error.OutOfMemory => return error.StateInitOutOfMemory,
             else => return err,
@@ -267,7 +267,9 @@ pub const Engine = struct {
         self.states.deinit(self);
         self.frame_scratch.deinit();
         Rendering.Texture.Default.deinit(self.allocator(.render));
-        Platform.deinit(self);
+        Platform.input.deinit(&self.input);
+        Audio.deinit();
+        Platform.gfx.deinit();
         self.input.deinit();
         logger.deinit(self.io);
         self.dirs.close(self.io);
@@ -477,7 +479,6 @@ pub const Engine = struct {
         const us_per_s: u64 = std.time.us_per_s;
         const ns_per_us: i64 = 1000;
 
-        // Fixed-step rates -- handheld backends target 60 Hz displays.
         const updates_hz: u32 = if (options.config.platform == .psp) 60 else 144;
         const ticks_hz: u32 = 20;
         const update_us: u64 = us_per_s / updates_hz;
@@ -500,14 +501,14 @@ pub const Engine = struct {
         }
 
         var now_us = elapsed_us_since(self.run_loop.run_start_ns, clock.now(self.io).toNanoseconds());
-        var frame_dt_us = saturating_sub_i64(now_us, self.run_loop.last_us);
+        var frame_dt_us = now_us -| self.run_loop.last_us;
 
         if (frame_dt_us <= 0) {
             if (allow_sleep) {
                 try std.Io.sleep(self.io, .fromNanoseconds(std.time.ns_per_ms), clock);
             }
             now_us = elapsed_us_since(self.run_loop.run_start_ns, clock.now(self.io).toNanoseconds());
-            frame_dt_us = @max(0, saturating_sub_i64(now_us, self.run_loop.last_us));
+            frame_dt_us = @max(0, now_us -| self.run_loop.last_us);
             if (frame_dt_us <= 0) {
                 frame_dt_us = 1000;
             }
@@ -516,8 +517,8 @@ pub const Engine = struct {
         if (frame_dt_us > 500_000) frame_dt_us = 500_000;
         self.run_loop.last_us = now_us;
 
-        self.run_loop.update_accum = saturating_add_i64(self.run_loop.update_accum, frame_dt_us);
-        self.run_loop.tick_accum = saturating_add_i64(self.run_loop.tick_accum, frame_dt_us);
+        self.run_loop.update_accum +|= frame_dt_us;
+        self.run_loop.tick_accum +|= frame_dt_us;
         if (trace_loop) {
             Util.engine_logger.info("trace: engine loop {d} time now_us={d} frame_dt_us={d} last_us={d} update_accum={d} tick_accum={d}", .{
                 trace_loop_index,
@@ -531,7 +532,11 @@ pub const Engine = struct {
         }
 
         const platform_start_ns = clock.now(self.io).toNanoseconds();
-        Platform.update(self);
+        if (!Platform.update(&self.input)) self.running = false;
+        if (self.running) {
+            Audio.update();
+            Platform.yield_thread();
+        }
         const platform_done_ns = clock.now(self.io).toNanoseconds();
         var pre_update_elapsed_ns = elapsed_ns_between(platform_start_ns, platform_done_ns);
         if (trace_loop) {
@@ -539,14 +544,9 @@ pub const Engine = struct {
         }
         if (!self.running) return;
 
-        // PSP meshes borrow CPU-owned vertex/index arrays. The previous GE
-        // list may still be reading those arrays after end_frame(), while
-        // tick/update/ui callbacks are about to rebuild or free them.
-        // Drain once per engine loop before any state callback can mutate
-        // mesh storage; non-borrowing backends compile this to a no-op.
+        // State callbacks may mutate storage still borrowed by the previous frame.
         Platform.gfx.wait_for_borrowed_meshes();
 
-        // ---- fixed-rate TICK steps (e.g., 20 Hz logic) ----
         var is_tick_frame = false;
         var tick_cost_ns: i64 = 0;
         const tick_us: i64 = @intCast(tick_interval_us);
@@ -566,7 +566,7 @@ pub const Engine = struct {
             try self.states.commit_pending(self);
             if (!self.running) return;
             const tick_end_ns = clock.now(self.io).toNanoseconds();
-            tick_cost_ns = saturating_add_i64(tick_cost_ns, elapsed_ns_between(tick_start_ns, tick_end_ns));
+            tick_cost_ns +|= elapsed_ns_between(tick_start_ns, tick_end_ns);
             self.run_loop.tick_accum -= tick_us;
             tick_steps += 1;
             if (trace_loop) {
@@ -578,7 +578,6 @@ pub const Engine = struct {
             }
         }
 
-        // ---- fixed-rate UPDATE steps (simulation & interpolation) ----
         const update_dt_s: f32 = @as(f32, @floatFromInt(update_us)) / @as(f32, us_per_s);
         var update_steps: u32 = 0;
         while (self.run_loop.update_accum >= update_us) {
@@ -594,7 +593,7 @@ pub const Engine = struct {
             Platform.input.update(&self.input);
             self.input.update();
             const input_done_ns = clock.now(self.io).toNanoseconds();
-            const engine_elapsed_ns = saturating_add_i64(pre_update_elapsed_ns, elapsed_ns_between(input_start_ns, input_done_ns));
+            const engine_elapsed_ns = pre_update_elapsed_ns +| elapsed_ns_between(input_start_ns, input_done_ns);
             if (trace_loop) {
                 Util.engine_logger.info("trace: engine loop {d} input end running={}", .{ trace_loop_index, self.running });
             }
@@ -631,9 +630,7 @@ pub const Engine = struct {
             }
         }
 
-        // ---- render ASAP (uncapped when vsync == false) ----
         const frame_dt_s: f32 = @as(f32, @floatFromInt(frame_dt_us)) / @as(f32, us_per_s);
-        // Time until next update step is due.
         const slack_us: i64 = @as(i64, @intCast(update_us)) - @max(0, self.run_loop.update_accum);
         const draw_budget_ns: i64 = if (self.vsync)
             slack_us * ns_per_us
@@ -673,7 +670,6 @@ pub const Engine = struct {
         if (drew_frame) {
             defer Platform.gfx.frame_active = false;
 
-            const draw_start_ns = clock.now(self.io).toNanoseconds();
             if (trace_loop) {
                 Util.engine_logger.info("trace: engine loop {d} draw begin", .{trace_loop_index});
             }
@@ -681,15 +677,12 @@ pub const Engine = struct {
             if (trace_loop) {
                 Util.engine_logger.info("trace: engine loop {d} draw end", .{trace_loop_index});
             }
-            _ = draw_start_ns;
             if (trace_loop) {
                 Util.engine_logger.info("trace: engine loop {d} end_frame begin", .{trace_loop_index});
             }
             Platform.gfx.api.end_frame();
             Platform.gfx.frame_active = false;
-            // A draw callback can queue a state transition. Its deinit may
-            // free borrowed mesh storage referenced by the list just
-            // submitted above, so complete that list before committing.
+            // Transition cleanup may free meshes borrowed by the submitted frame.
             if (self.states.has_pending_transition()) {
                 Platform.gfx.wait_for_borrowed_meshes();
             }
@@ -725,14 +718,13 @@ pub const Engine = struct {
             self.debug_trace_loops -= 1;
         }
 
-        // ---- FPS counting ----
         if (report_fps) {
             if (drew_frame) self.run_loop.fps_count += 1;
             const end_us = elapsed_us_since(self.run_loop.run_start_ns, clock.now(self.io).toNanoseconds());
             if (end_us >= self.run_loop.fps_window_end) {
                 Util.engine_logger.info("FPS: {}", .{self.run_loop.fps_count});
                 self.run_loop.fps_count = 0;
-                self.run_loop.fps_window_end = saturating_add_i64(end_us, fps_window_us);
+                self.run_loop.fps_window_end = end_us +| fps_window_us;
             }
         }
     }
@@ -813,25 +805,55 @@ test "zero frame budget disables frame scratch allocations" {
 }
 
 fn elapsed_ns_between(start_ns: i96, end_ns: i96) i64 {
-    return clamp_i96_to_i64(end_ns - start_ns);
+    return @intCast(std.math.clamp(end_ns - start_ns, std.math.minInt(i64), std.math.maxInt(i64)));
 }
 
 fn elapsed_us_since(start_ns: i96, end_ns: i96) i64 {
     return @divTrunc(elapsed_ns_between(start_ns, end_ns), std.time.ns_per_us);
 }
 
-fn saturating_add_i64(a: i64, b: i64) i64 {
-    return clamp_i96_to_i64(@as(i96, a) + @as(i96, b));
-}
+test "failed state initialization releases engine resources" {
+    if (options.config.gfx != .headless or options.config.audio != .none or
+        options.config.platform != .linux or options.config.use_cwd) return error.SkipZigTest;
 
-fn saturating_sub_i64(a: i64, b: i64) i64 {
-    return clamp_i96_to_i64(@as(i96, a) - @as(i96, b));
-}
+    const FailingState = struct {
+        fn init(_: *anyopaque, _: *Engine) anyerror!void {
+            return error.TestStateInitFailed;
+        }
+        fn deinit(_: *anyopaque, _: *Engine) void {
+            @panic("failed state must not be deinitialized");
+        }
+        fn tick(_: *anyopaque, _: *Engine) anyerror!void {}
+        fn update(_: *anyopaque, _: *Engine, _: f32, _: *const Util.BudgetContext) anyerror!void {}
+    };
+    var temp = std.testing.tmpDir(.{});
+    defer temp.cleanup();
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try temp.dir.realPath(std.testing.io, &path_buf);
+    var environ = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ.deinit();
+    try environ.put("XDG_DATA_HOME", path_buf[0..path_len]);
 
-fn clamp_i96_to_i64(value: i96) i64 {
-    const max: i96 = std.math.maxInt(i64);
-    const min: i96 = std.math.minInt(i64);
-    if (value > max) return std.math.maxInt(i64);
-    if (value < min) return std.math.minInt(i64);
-    return @intCast(value);
+    const backing = try std.testing.allocator.alignedAlloc(u8, .fromByteUnits(64), 256 * 1024);
+    defer std.testing.allocator.free(backing);
+    var engine: Engine = undefined;
+    var context: u8 = 0;
+    const state = Core.State{ .ptr = &context, .tab = &.{
+        .init = FailingState.init,
+        .deinit = FailingState.deinit,
+        .tick = FailingState.tick,
+        .update = FailingState.update,
+        .draw = FailingState.update,
+    } };
+    const config = Engine.Config{
+        .app_name = "init-failure",
+        .memory = .{ .render = 4096, .audio = 4096, .game = 128 * 1024, .frame = 4096, .user = 0 },
+    };
+
+    // Retry against the same globals to catch incomplete subsystem teardown.
+    for (0..2) |_| {
+        try std.testing.expectError(error.TestStateInitFailed, engine.init(std.testing.io, &environ, backing, &config, &state));
+        try std.testing.expectEqual(@as(usize, 0), engine.total_used());
+        try std.testing.expectEqual(@as(usize, 0), engine.pool.used);
+    }
 }
