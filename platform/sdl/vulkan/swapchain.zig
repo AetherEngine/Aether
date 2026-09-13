@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const vk = @import("vulkan");
 const Context = @import("context.zig");
 
@@ -9,18 +10,24 @@ pub const frames_in_flight: usize = 3;
 pub const PresentState = enum {
     optimal,
     suboptimal,
+
+    pub fn merge(a: PresentState, b: PresentState) PresentState {
+        return if (a == .suboptimal or b == .suboptimal) .suboptimal else .optimal;
+    }
 };
 
 context: *Context,
 vsync: bool,
-surface_capabilities: vk.SurfaceCapabilitiesKHR,
-chain: vk.SwapchainKHR,
-surface_format: vk.SurfaceFormatKHR,
-swap_images: []SwapImage,
-next_image_acquired: vk.Semaphore,
-image_index: u32,
-frame_fences: [frames_in_flight]vk.Fence,
-frame_index: usize,
+surface_capabilities: vk.SurfaceCapabilitiesKHR = undefined,
+chain: vk.SwapchainKHR = .null_handle,
+surface_format: vk.SurfaceFormatKHR = undefined,
+extent: vk.Extent2D = .{ .width = 0, .height = 0 },
+swap_images: []SwapImage = &.{},
+next_image_acquired: vk.Semaphore = .null_handle,
+image_index: u32 = 0,
+has_acquired_image: bool = false,
+frame_fences: [frames_in_flight]vk.Fence = @splat(.null_handle),
+frame_index: usize = 0,
 
 fn choose_swap_surface_format(self: *SwapChain) !vk.SurfaceFormatKHR {
     const preferred = vk.SurfaceFormatKHR{
@@ -45,17 +52,16 @@ fn choose_swap_surface_format(self: *SwapChain) !vk.SurfaceFormatKHR {
 }
 
 const gfx = @import("../../gfx.zig");
-fn choose_swap_extent(self: *SwapChain) !vk.Extent2D {
-    const surface_capabilities = self.surface_capabilities;
-
-    // Choose the swap extent
-    const width = std.math.clamp(gfx.surface.get_width(), surface_capabilities.min_image_extent.width, surface_capabilities.max_image_extent.width);
-    const height = std.math.clamp(gfx.surface.get_height(), surface_capabilities.min_image_extent.height, surface_capabilities.max_image_extent.height);
-
-    return vk.Extent2D{
-        .width = width,
-        .height = height,
-    };
+fn choose_swap_extent(capabilities: vk.SurfaceCapabilitiesKHR, drawable: vk.Extent2D) !vk.Extent2D {
+    const extent = if (capabilities.current_extent.width != std.math.maxInt(u32))
+        capabilities.current_extent
+    else
+        vk.Extent2D{
+            .width = std.math.clamp(drawable.width, capabilities.min_image_extent.width, capabilities.max_image_extent.width),
+            .height = std.math.clamp(drawable.height, capabilities.min_image_extent.height, capabilities.max_image_extent.height),
+        };
+    if (drawable.width == 0 or drawable.height == 0 or extent.width == 0 or extent.height == 0) return error.ZeroExtent;
+    return extent;
 }
 
 fn choose_present_mode(self: *SwapChain) !vk.PresentModeKHR {
@@ -82,14 +88,17 @@ fn choose_present_mode(self: *SwapChain) !vk.PresentModeKHR {
     return .fifo_khr;
 }
 
-fn create_swapchain(self: *SwapChain, old_handle: vk.SwapchainKHR) !void {
+fn create_swapchain(self: *SwapChain) !void {
     self.surface_capabilities = try self.context.instance.getPhysicalDeviceSurfaceCapabilitiesKHR(
         self.context.physical_device,
         self.context.surface,
     );
 
     const surface_format = try self.choose_swap_surface_format();
-    const surface_extent = try self.choose_swap_extent();
+    const surface_extent = try choose_swap_extent(self.surface_capabilities, .{
+        .width = gfx.surface.get_width(),
+        .height = gfx.surface.get_height(),
+    });
     const present_mode = try self.choose_present_mode();
 
     // We want triple buffering so...
@@ -102,7 +111,19 @@ fn create_swapchain(self: *SwapChain, old_handle: vk.SwapchainKHR) !void {
     else
         .exclusive;
 
-    self.chain = self.context.logical_device.createSwapchainKHR(&.{
+    // Preflight above must succeed before retiring the old chain. In particular,
+    // minimizing can report zero extent even while SDL retains the window size.
+    try self.context.logical_device.deviceWaitIdle();
+    self.destroy_swapchain_images();
+    self.context.logical_device.destroySemaphore(self.next_image_acquired, null);
+    self.next_image_acquired = .null_handle;
+    self.has_acquired_image = false;
+    const old_handle = self.chain;
+    self.chain = .null_handle;
+    // vkCreateSwapchainKHR retires oldSwapchain even when creation fails.
+    defer self.context.logical_device.destroySwapchainKHR(old_handle, null);
+
+    const chain = try self.context.logical_device.createSwapchainKHR(&.{
         .surface = self.context.surface,
         .min_image_count = image_count,
         .image_format = surface_format.format,
@@ -118,46 +139,52 @@ fn create_swapchain(self: *SwapChain, old_handle: vk.SwapchainKHR) !void {
         .queue_family_index_count = qfi.len,
         .p_queue_family_indices = &qfi,
         .old_swapchain = old_handle,
-    }, null) catch return error.SwapchainCreationFailed;
-
-    self.surface_format = surface_format;
-
+    }, null);
+    errdefer self.context.logical_device.destroySwapchainKHR(chain, null);
+    const images = try self.create_swapchain_images(chain, surface_format.format);
     errdefer {
-        self.context.logical_device.destroySwapchainKHR(self.chain, null);
-        self.chain = .null_handle;
+        for (images) |si| si.deinit(self.context);
+        self.context.allocator.free(images);
     }
+    const acquired = try self.context.logical_device.createSemaphore(&.{}, null);
 
-    // Destroy the old swapchain if it exists
-    if (old_handle != .null_handle) {
-        self.context.logical_device.destroySwapchainKHR(old_handle, null);
-    }
-
-    self.swap_images = try self.create_swapchain_images(surface_format.format);
+    // Publish only a complete replacement. On failure the chain stays null and
+    // the next frame can retry without dangling views or a retired old handle.
+    self.chain = chain;
+    self.swap_images = images;
+    self.next_image_acquired = acquired;
+    self.surface_format = surface_format;
+    self.extent = surface_extent;
 }
 
-fn acquire_initial_image(self: *SwapChain) !void {
-    var next_image_acquired = try self.context.logical_device.createSemaphore(&.{}, null);
-    errdefer self.context.logical_device.destroySemaphore(next_image_acquired, null);
+fn acquired_state(result: vk.Result) ?PresentState {
+    return switch (result) {
+        .success => .optimal,
+        .suboptimal_khr => .suboptimal,
+        .not_ready, .timeout => null,
+        else => unreachable,
+    };
+}
 
-    const timeout_ns: u64 = 100_000_000; // 100ms
-    const result = try self.context.logical_device.acquireNextImageKHR(self.chain, timeout_ns, next_image_acquired, .null_handle);
-
-    if (result.result == .not_ready or result.result == .timeout) {
-        return error.ImageAcquireFailed;
-    }
-
-    std.mem.swap(vk.Semaphore, &self.swap_images[result.image_index].image_acquired, &next_image_acquired);
-    self.next_image_acquired = next_image_acquired;
+pub fn acquire(self: *SwapChain) !?PresentState {
+    assert(!self.has_acquired_image);
+    const timeout_ns: u64 = 100_000_000;
+    const result = try self.context.logical_device.acquireNextImageKHR(self.chain, timeout_ns, self.next_image_acquired, .null_handle);
+    const state = acquired_state(result.result) orelse return null;
+    std.mem.swap(vk.Semaphore, &self.swap_images[result.image_index].image_acquired, &self.next_image_acquired);
     self.image_index = result.image_index;
+    self.has_acquired_image = true;
+    return state;
 }
 
 fn destroy_swapchain_images(self: *SwapChain) void {
     for (self.swap_images) |si| si.deinit(self.context);
     self.context.allocator.free(self.swap_images);
+    self.swap_images = &.{};
 }
 
-fn create_swapchain_images(self: *SwapChain, format: vk.Format) ![]SwapImage {
-    const images = try self.context.logical_device.getSwapchainImagesAllocKHR(self.chain, self.context.allocator);
+fn create_swapchain_images(self: *SwapChain, chain: vk.SwapchainKHR, format: vk.Format) ![]SwapImage {
+    const images = try self.context.logical_device.getSwapchainImagesAllocKHR(chain, self.context.allocator);
     defer self.context.allocator.free(images);
 
     const swap_images = try self.context.allocator.alloc(SwapImage, images.len);
@@ -175,53 +202,24 @@ fn create_swapchain_images(self: *SwapChain, format: vk.Format) ![]SwapImage {
 }
 
 pub fn init(context: *Context, vsync: bool) !SwapChain {
-    var self: SwapChain = undefined;
-    self.context = context;
-    self.vsync = vsync;
-    self.frame_fences = @splat(.null_handle);
-    self.frame_index = 0;
-
-    try self.create_swapchain(.null_handle);
-    errdefer self.destroy_swapchain_images();
+    var self: SwapChain = .{ .context = context, .vsync = vsync };
     try self.create_frame_fences();
     errdefer self.destroy_frame_fences();
-    try self.acquire_initial_image();
-
+    try self.create_swapchain();
     return self;
 }
 
 pub fn recreate(self: *SwapChain) !void {
-    self.context.logical_device.deviceWaitIdle() catch {};
-
-    if (self.chain != .null_handle) {
-        self.destroy_swapchain_images();
-        self.context.logical_device.destroySemaphore(self.next_image_acquired, null);
-    }
-
-    const old_handle = self.chain;
-    self.chain = .null_handle;
-
-    // create_swapchain has an internal errdefer that cleans up self.chain on failure,
-    // so self.chain == .null_handle on error -- safe to retry next frame.
-    try self.create_swapchain(old_handle);
-
-    self.acquire_initial_image() catch |err| {
-        self.destroy_swapchain_images();
-        self.context.logical_device.destroySwapchainKHR(self.chain, null);
-        self.chain = .null_handle;
-        return err;
-    };
+    try self.create_swapchain();
 }
 
 pub fn deinit(self: *SwapChain) void {
     defer self.* = undefined;
 
     self.destroy_frame_fences();
-    if (self.chain != .null_handle) {
-        self.destroy_swapchain_images();
-        self.context.logical_device.destroySemaphore(self.next_image_acquired, null);
-        self.context.logical_device.destroySwapchainKHR(self.chain, null);
-    }
+    self.destroy_swapchain_images();
+    self.context.logical_device.destroySemaphore(self.next_image_acquired, null);
+    self.context.logical_device.destroySwapchainKHR(self.chain, null);
 }
 
 pub fn current_image(self: *SwapChain) vk.Image {
@@ -238,10 +236,10 @@ pub fn wait_for_current_frame(self: *SwapChain) !void {
 }
 
 pub fn present(self: *SwapChain, cmdbuf: vk.CommandBuffer) !PresentState {
-    // // Step 1: Make sure the current frame has finished rendering
+    assert(self.has_acquired_image);
     const current = self.current_swap_image();
 
-    // Step 2: Submit the command buffer
+    // Reset only when we have acquired an image and are about to submit.
     const wait_stage = [_]vk.PipelineStageFlags{.{ .color_attachment_output_bit = true }};
     const frame_fence = self.frame_fences[self.frame_index];
     try self.context.logical_device.resetFences(@ptrCast(&frame_fence));
@@ -254,10 +252,10 @@ pub fn present(self: *SwapChain, cmdbuf: vk.CommandBuffer) !PresentState {
         .signal_semaphore_count = 1,
         .p_signal_semaphores = @ptrCast(&current.render_finished),
     }}, frame_fence);
+    self.has_acquired_image = false;
     self.frame_index = (self.frame_index + 1) % frames_in_flight;
 
-    // Step 3: Present the current frame
-    _ = try self.context.logical_device.queuePresentKHR(self.context.present_queue.handle, &.{
+    const result = try self.context.logical_device.queuePresentKHR(self.context.present_queue.handle, &.{
         .wait_semaphore_count = 1,
         .p_wait_semaphores = @ptrCast(&current.render_finished),
         .swapchain_count = 1,
@@ -265,22 +263,7 @@ pub fn present(self: *SwapChain, cmdbuf: vk.CommandBuffer) !PresentState {
         .p_image_indices = @ptrCast(&self.image_index),
     });
 
-    // Step 4: Acquire next frame
-    const result = try self.context.logical_device.acquireNextImageKHR(
-        self.chain,
-        std.math.maxInt(u64),
-        self.next_image_acquired,
-        .null_handle,
-    );
-
-    std.mem.swap(vk.Semaphore, &self.swap_images[result.image_index].image_acquired, &self.next_image_acquired);
-    self.image_index = result.image_index;
-
-    return switch (result.result) {
-        .success => .optimal,
-        .suboptimal_khr => .suboptimal,
-        else => unreachable,
-    };
+    return acquired_state(result).?;
 }
 
 const SwapImage = struct {
@@ -343,4 +326,29 @@ fn destroy_frame_fences(self: *SwapChain) void {
         if (fence != .null_handle) self.context.logical_device.destroyFence(fence, null);
     }
     self.frame_fences = @splat(.null_handle);
+}
+
+test "swap extent honors fixed dimensions and defers zero-sized surfaces" {
+    var caps: vk.SurfaceCapabilitiesKHR = undefined;
+    caps.current_extent = .{ .width = 1920, .height = 1080 };
+    caps.min_image_extent = .{ .width = 64, .height = 64 };
+    caps.max_image_extent = .{ .width = 4096, .height = 4096 };
+    try std.testing.expectEqual(caps.current_extent, try choose_swap_extent(caps, .{ .width = 800, .height = 600 }));
+    caps.current_extent = .{ .width = std.math.maxInt(u32), .height = std.math.maxInt(u32) };
+    try std.testing.expectEqual(vk.Extent2D{ .width = 64, .height = 4096 }, try choose_swap_extent(caps, .{ .width = 32, .height = 8192 }));
+    try std.testing.expectError(error.ZeroExtent, choose_swap_extent(caps, .{ .width = 0, .height = 600 }));
+    caps.min_image_extent = .{ .width = 0, .height = 0 };
+    caps.max_image_extent = .{ .width = 0, .height = 0 };
+    try std.testing.expectError(error.ZeroExtent, choose_swap_extent(caps, .{ .width = 800, .height = 600 }));
+    caps.current_extent = .{ .width = 0, .height = 0 };
+    try std.testing.expectError(error.ZeroExtent, choose_swap_extent(caps, .{ .width = 800, .height = 600 }));
+}
+
+test "acquisition skips unavailable images and suboptimal survives successful presentation" {
+    try std.testing.expectEqual(null, acquired_state(.timeout));
+    try std.testing.expectEqual(null, acquired_state(.not_ready));
+    try std.testing.expectEqual(PresentState.optimal, acquired_state(.success).?);
+    try std.testing.expectEqual(PresentState.suboptimal, acquired_state(.suboptimal_khr).?.merge(.optimal));
+    try std.testing.expectEqual(PresentState.suboptimal, PresentState.optimal.merge(.suboptimal));
+    try std.testing.expectEqual(PresentState.optimal, PresentState.optimal.merge(.optimal));
 }
