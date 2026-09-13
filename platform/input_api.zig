@@ -2,6 +2,7 @@
 //! Consumers supply an opaque sink; backends never depend on engine policy.
 
 const std = @import("std");
+const contract = @import("contract.zig");
 pub const data = @import("input/data.zig");
 pub const frame = @import("input/frame.zig");
 pub const DeviceState = @import("input/device.zig").DeviceState;
@@ -131,5 +132,5 @@ pub const Interface = struct {
 };
 
 pub fn assert_impl(comptime Backend: type) void {
-    @import("contract.zig").assert_impl("input", Backend, Interface);
+    contract.assert_impl("input", Backend, Interface);
 }

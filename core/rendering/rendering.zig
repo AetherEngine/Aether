@@ -1,3 +1,6 @@
+const std = @import("std");
+const Mat4 = @import("platform").math.Mat4;
+
 pub const mesh = @import("mesh.zig");
 pub const MeshType = mesh.MeshType;
 pub const MeshDataType = mesh.MeshDataType;
@@ -25,7 +28,7 @@ pub fn set_state(state: *const RenderState) void {
     gfx.api.set_render_state(&resolved);
 }
 
-pub fn draw(comptime V: type, m: *MeshType(V), model: *const @import("platform").math.Mat4) void {
+pub fn draw(comptime V: type, m: *MeshType(V), model: *const Mat4) void {
     m.draw(model);
 }
 
@@ -42,7 +45,7 @@ pub fn aspect_ratio() f32 {
 }
 
 test {
-    @import("std").testing.refAllDecls(Camera);
-    @import("std").testing.refAllDecls(Flipbook);
-    @import("std").testing.refAllDecls(BillboardBatcher);
+    std.testing.refAllDecls(Camera);
+    std.testing.refAllDecls(Flipbook);
+    std.testing.refAllDecls(BillboardBatcher);
 }

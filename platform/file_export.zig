@@ -1,4 +1,5 @@
 const options = @import("options");
+const wasm_file_export = @import("wasm/file_export.zig");
 pub const Error = error{ UnsupportedPlatform, InvalidOptions, ExportFailed };
 pub const Options = struct {
     filename: []const u8,
@@ -10,5 +11,5 @@ pub const Options = struct {
 pub fn download(path: []const u8, opts: Options) Error!void {
     if (options.config.platform != .wasm) return error.UnsupportedPlatform;
     if (path.len == 0 or opts.filename.len == 0 or opts.content_type.len == 0) return error.InvalidOptions;
-    if (!@import("wasm/file_export.zig").download(path, opts.filename, opts.content_type)) return error.ExportFailed;
+    if (!wasm_file_export.download(path, opts.filename, opts.content_type)) return error.ExportFailed;
 }

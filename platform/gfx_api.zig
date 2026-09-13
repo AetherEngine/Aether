@@ -1,4 +1,5 @@
 const std = @import("std");
+const contract = @import("contract.zig");
 const Mat4 = @import("math/math.zig").Mat4;
 const Graphics = @import("graphics/graphics.zig");
 const Mesh = Graphics.mesh;
@@ -69,5 +70,5 @@ pub const Interface = struct {
 };
 
 pub fn assert_impl(comptime Backend: type) void {
-    @import("contract.zig").assert_impl("gfx", Backend, Interface);
+    contract.assert_impl("gfx", Backend, Interface);
 }

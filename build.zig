@@ -1,4 +1,5 @@
 const std = @import("std");
+const tools = @import("build/tool_options.zig");
 
 pub const config = @import("build/config.zig");
 pub const modules = @import("build/modules.zig");
@@ -181,7 +182,7 @@ pub fn build(b: *std.Build) void {
     if (resolved_config.platform == .nintendo_switch) {
         // Switch can't run natively on the host. nxlink pushes the .nro to
         // nx-hbloader on a networked Switch.
-        const dkp = @import("build/tool_options.zig").devkit_pro_path(b);
+        const dkp = tools.devkit_pro_path(b);
         const link_cmd = b.addSystemCommand(&.{b.pathJoin(&.{ dkp, "tools/bin/nxlink" })});
         if (b.option([]const u8, "nxlink-address", "Switch: target IP for nxlink push (default: mDNS auto-discover)")) |ip| {
             link_cmd.addArgs(&.{ "-a", ip });

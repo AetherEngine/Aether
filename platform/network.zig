@@ -1,12 +1,13 @@
 const options = @import("options");
 const std = @import("std");
+const contract = @import("contract.zig");
 pub const api = @import("network_api.zig");
 pub const Error = api.Error;
 pub const StreamOptions = api.StreamOptions;
 const Backend = if (options.config.platform == .psp) @import("psp/network.zig") else @import("std_network.zig");
 
 comptime {
-    @import("contract.zig").assert_impl("network", Backend, api.Interface);
+    contract.assert_impl("network", Backend, api.Interface);
 }
 
 /// Owns a platform network-session reference. Prepare/release on the app thread;

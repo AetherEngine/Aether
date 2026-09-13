@@ -1,4 +1,5 @@
 const std = @import("std");
+const contract = @import("contract.zig");
 
 pub const PcmFormat = struct {
     sample_rate: u32,
@@ -69,5 +70,5 @@ pub const Interface = struct {
 };
 
 pub fn assert_impl(comptime Backend: type) void {
-    @import("contract.zig").assert_impl("audio", Backend, Interface);
+    contract.assert_impl("audio", Backend, Interface);
 }

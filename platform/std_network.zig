@@ -1,12 +1,14 @@
 const std = @import("std");
 const options = @import("options");
 const api = @import("network_api.zig");
+const app_3ds = @import("3ds/app.zig");
+const c_io = @import("c_io.zig");
 
 pub fn prepare() api.Error!void {
     switch (options.config.platform) {
         .wasm => return error.UnsupportedPlatform,
-        .nintendo_3ds => if (!@import("3ds/app.zig").network_available()) return error.NetworkUnavailable,
-        .nintendo_switch => @import("c_io.zig").ensureNetworking() catch return error.NetworkUnavailable,
+        .nintendo_3ds => if (!app_3ds.network_available()) return error.NetworkUnavailable,
+        .nintendo_switch => c_io.ensureNetworking() catch return error.NetworkUnavailable,
         else => {},
     }
 }

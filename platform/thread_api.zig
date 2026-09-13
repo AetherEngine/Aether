@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const contract = @import("contract.zig");
 
 pub const Priority = enum(i8) { lowest, low, normal, high, highest };
 
@@ -68,7 +69,7 @@ pub fn assert_impl(comptime Backend: type) void {
         @compileError("thread backend " ++ @typeName(Backend) ++ " is missing decl: Handle");
     }
 
-    @import("contract.zig").assert_impl("thread", Backend, InterfaceType(Backend));
+    contract.assert_impl("thread", Backend, InterfaceType(Backend));
 
     if (!@hasDecl(Backend, "spawn")) {
         @compileError("thread backend " ++ @typeName(Backend) ++ " is missing decl: spawn");

@@ -5,6 +5,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const options = @import("options");
 const thread_api = @import("thread_api.zig");
+const system = @import("system.zig");
 
 pub const Api = switch (options.config.platform) {
     .psp => @import("psp/psp_thread.zig"),
@@ -81,7 +82,7 @@ test "spawn/join roundtrip" {
 }
 
 test "scoped priorities restore nested calling-thread priorities" {
-    if (!@import("system.zig").info().native_thread_priority) {
+    if (!system.info().native_thread_priority) {
         try std.testing.expectError(error.UnsupportedPlatform, PriorityScope.enter(.low));
         try std.testing.expectError(error.UnsupportedPlatform, PriorityScope.enter_relative(-10));
         try std.testing.expectError(error.UnsupportedPlatform, PriorityScope.enter_relative(0));
@@ -101,7 +102,7 @@ test "scoped priorities restore nested calling-thread priorities" {
 }
 
 test "relative priority scopes retain exact values between priority buckets" {
-    if (!@import("system.zig").info().native_thread_priority) return error.SkipZigTest;
+    if (!system.info().native_thread_priority) return error.SkipZigTest;
     var base = try PriorityScope.enter(.normal);
     defer base.restore() catch unreachable;
 

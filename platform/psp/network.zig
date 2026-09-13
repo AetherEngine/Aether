@@ -2,13 +2,14 @@ const std = @import("std");
 const assert = std.debug.assert;
 const sdk = @import("pspsdk");
 const api = @import("../network_api.zig");
+const dialogs = @import("psp_dialogs.zig");
 var references: u32 = 0;
 
 pub fn prepare() api.Error!void {
     if (references == std.math.maxInt(u32)) return error.TooManySessions;
     if (references == 0) {
         try initialize();
-        if (!@import("psp_dialogs.zig").show_net_dialog()) {
+        if (!dialogs.show_net_dialog()) {
             sdk.extra.net.disconnect();
             sdk.extra.net.deinit();
             return error.NetworkUnavailable;

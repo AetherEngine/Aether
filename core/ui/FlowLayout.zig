@@ -4,6 +4,8 @@ const std = @import("std");
 const assert = std.debug.assert;
 const Context = @import("Context.zig");
 const layout = @import("layout.zig");
+const DrawList = @import("DrawList.zig");
+const Color = @import("Color.zig").Color;
 const Flow = @This();
 pub const Axis = Context.Axis;
 pub const Size = Context.Size;
@@ -142,7 +144,7 @@ test "deferred centered stacks move draw and hit rectangles together" {
     var state = try Context.State.init(std.testing.allocator, .{});
     defer state.deinit();
 
-    var draw = try @import("DrawList.zig").init(std.testing.allocator, .{});
+    var draw = try DrawList.init(std.testing.allocator, .{});
     defer draw.deinit();
 
     const screen: layout.LogicalRect = .{ .x0 = 0, .y0 = 0, .x1 = 100, .y1 = 100 };
@@ -155,7 +157,7 @@ test "deferred centered stacks move draw and hit rectangles together" {
         const first = context.mark();
         const rect = flow.reserve(.{ .x = 20, .y = 10 });
         _ = try context.button_at(i + 1, "", rect, true);
-        try draw.add_rect(rect, @import("Color.zig").Color.rgba(255, 255, 255, 255), 0);
+        try draw.add_rect(rect, Color.rgba(255, 255, 255, 255), 0);
         try flow.record(&context, first, rect);
     }
     try flow.end(&context);
@@ -173,7 +175,7 @@ test "scroll viewports stay fixed while children align and move with outer stack
     var state = try Context.State.init(std.testing.allocator, .{});
     defer state.deinit();
 
-    var draw = try @import("DrawList.zig").init(std.testing.allocator, .{});
+    var draw = try DrawList.init(std.testing.allocator, .{});
     defer draw.deinit();
 
     const screen: layout.LogicalRect = .{ .x0 = 0, .y0 = 0, .x1 = 100, .y1 = 100 };
@@ -190,7 +192,7 @@ test "scroll viewports stay fixed while children align and move with outer stack
             const first = context.mark();
             const rect = flow.reserve(.{ .x = width, .y = 20 });
             _ = try context.button_at(i + 1, "", rect, true);
-            try draw.add_rect(rect, @import("Color.zig").Color.rgba(255, 255, 255, 255), 0);
+            try draw.add_rect(rect, Color.rgba(255, 255, 255, 255), 0);
             try flow.record(&context, first, rect);
         }
         try flow.end(&context);

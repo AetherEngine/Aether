@@ -1,3 +1,5 @@
+const std = @import("std");
+
 pub const Color = @import("Color.zig").Color;
 pub const layout = @import("layout.zig");
 pub const texture_region = @import("texture_region.zig");
@@ -26,9 +28,9 @@ pub const NineSlice = texture_region.NineSlice;
 pub const TextureSizing = texture_region.TextureSizing;
 
 comptime {
-    @import("std").testing.refAllDecls(@This());
+    std.testing.refAllDecls(@This());
 }
 
 test {
-    inline for (.{ FlowLayout, Context, DrawList, InputAdapter, PromptStrip, TextWrap, WidgetStyle }) |module| @import("std").testing.refAllDecls(module);
+    inline for (.{ FlowLayout, Context, DrawList, InputAdapter, PromptStrip, TextWrap, WidgetStyle }) |module| std.testing.refAllDecls(module);
 }

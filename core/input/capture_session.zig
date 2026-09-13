@@ -4,6 +4,7 @@
 const std = @import("std");
 const data = @import("platform").input_api.data;
 const binding_mod = @import("binding.zig");
+const display = @import("display.zig");
 
 pub const CaptureNextInputStatus = enum(u8) {
     waiting,
@@ -60,6 +61,6 @@ pub fn eligible_to_complete(session: *const CaptureNextInputSession, src: bindin
 }
 
 pub fn format_label(buf: *[64]u8, src: binding_mod.BindingSource, mods: data.ModifierSet) u8 {
-    const label = @import("display.zig").format_label(buf, src, mods, .readable) catch return 0;
+    const label = display.format_label(buf, src, mods, .readable) catch return 0;
     return @intCast(label.len);
 }

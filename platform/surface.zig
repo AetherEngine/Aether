@@ -1,3 +1,5 @@
+const contract = @import("contract.zig");
+
 pub const InitError = error{
     OutOfMemory,
     SurfaceInitFailed,
@@ -17,5 +19,5 @@ pub fn InterfaceType(comptime Backend: type) type {
 }
 
 pub fn assert_impl(comptime Backend: type) void {
-    @import("contract.zig").assert_impl("surface", Backend, InterfaceType(Backend));
+    contract.assert_impl("surface", Backend, InterfaceType(Backend));
 }

@@ -1,5 +1,7 @@
 //! Low-level contracts, shared primitives, and selected device services.
+const std = @import("std");
 const options = @import("options");
+const fog_state_3ds = @import("3ds/fog_state.zig");
 
 pub const gfx = @import("gfx.zig");
 pub const audio = @import("audio.zig");
@@ -67,12 +69,12 @@ pub fn yield_thread() void {
 }
 
 test {
-    @import("std").testing.refAllDecls(@This());
-    @import("std").testing.refAllDecls(system);
-    @import("std").testing.refAllDecls(network);
-    @import("std").testing.refAllDecls(file_export);
+    std.testing.refAllDecls(@This());
+    std.testing.refAllDecls(system);
+    std.testing.refAllDecls(network);
+    std.testing.refAllDecls(file_export);
     // Core no longer brings these nested files into Platform's test root.
-    @import("std").testing.refAllDecls(input_api.frame);
-    @import("std").testing.refAllDecls(gfx.texture_pixels);
-    @import("std").testing.refAllDecls(@import("3ds/fog_state.zig"));
+    std.testing.refAllDecls(input_api.frame);
+    std.testing.refAllDecls(gfx.texture_pixels);
+    std.testing.refAllDecls(fog_state_3ds);
 }

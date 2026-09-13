@@ -2,6 +2,7 @@ const std = @import("std");
 const config_mod = @import("config.zig");
 const shaders = @import("shaders.zig");
 const tools = @import("tool_options.zig");
+const zigglgen = @import("zigglgen");
 
 const Config = config_mod.Config;
 
@@ -118,7 +119,7 @@ pub fn add_game(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.
         // imports for files, clocks, stdio, random, and environment. They do
         // not link desktop windowing/audio dependencies.
     } else {
-        const gl_bindings = @import("zigglgen").generateBindingsModule(owner, .{
+        const gl_bindings = zigglgen.generateBindingsModule(owner, .{
             .api = .gl,
             .version = .@"4.5",
             .profile = .core,

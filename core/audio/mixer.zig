@@ -1,8 +1,10 @@
 const std = @import("std");
 const Vec3 = @import("platform").math.Vec3;
+const audio_api = @import("platform").audio_api;
 const Util = @import("../util/util.zig");
 const stream_mod = @import("stream.zig");
 const resources = @import("../resources/source.zig");
+const wav = @import("wav.zig");
 
 pub const SoundHandleTag = enum {};
 pub const SoundHandle = Util.HandleType(SoundHandleTag);
@@ -193,7 +195,7 @@ pub fn MixerType(comptime Backend: type) type {
         /// Opens and parses a resource without loading its complete PCM payload.
         /// The resulting one-shot handle has create_owned_stream lifetime rules.
         pub fn create_wav_stream(allocator: std.mem.Allocator, source: resources.Source, path: []const u8) !StreamingSoundHandle {
-            var owned = try @import("wav.zig").open_source(allocator, source, path);
+            var owned = try wav.open_source(allocator, source, path);
             defer owned.source.close();
 
             return create_owned_stream(&owned.source, owned.info.format, owned.info.byte_length);
@@ -494,7 +496,7 @@ test "mixer buffer playback and destroy stop voices" {
         var active: [2]bool = @splat(false);
         var last_source: ?SlotSource = null;
 
-        pub fn init(_: std.mem.Allocator, _: std.Io) @import("platform").audio_api.InitError!void {
+        pub fn init(_: std.mem.Allocator, _: std.Io) audio_api.InitError!void {
             active = @splat(false);
             last_source = null;
         }
@@ -503,7 +505,7 @@ test "mixer buffer playback and destroy stop voices" {
         pub fn max_voices() u32 {
             return active.len;
         }
-        pub fn play_slot(slot: u8, source: SlotSource) @import("platform").audio_api.PlaySlotError!void {
+        pub fn play_slot(slot: u8, source: SlotSource) audio_api.PlaySlotError!void {
             active[slot] = true;
             last_source = source;
         }
@@ -539,13 +541,13 @@ test "mixer buffer playback and destroy stop voices" {
 
 test "mixer rejects stale buffers and active stream replay" {
     const Backend = struct {
-        pub fn init(_: std.mem.Allocator, _: std.Io) @import("platform").audio_api.InitError!void {}
+        pub fn init(_: std.mem.Allocator, _: std.Io) audio_api.InitError!void {}
         pub fn deinit() void {}
         pub fn update() void {}
         pub fn max_voices() u32 {
             return 1;
         }
-        pub fn play_slot(_: u8, _: SlotSource) @import("platform").audio_api.PlaySlotError!void {}
+        pub fn play_slot(_: u8, _: SlotSource) audio_api.PlaySlotError!void {}
         pub fn stop_slot(_: u8) void {}
         pub fn set_slot_gain_pan(_: u8, _: f32, _: f32) void {}
         pub fn is_slot_active(_: u8) bool {
@@ -605,7 +607,7 @@ test "owned streams close once after stop completion destroy failure and shutdow
     const Backend = struct {
         var active: bool = false;
         var reject: bool = false;
-        pub fn init(_: std.mem.Allocator, _: std.Io) @import("platform").audio_api.InitError!void {
+        pub fn init(_: std.mem.Allocator, _: std.Io) audio_api.InitError!void {
             active = false;
             reject = false;
         }
@@ -616,7 +618,7 @@ test "owned streams close once after stop completion destroy failure and shutdow
         pub fn max_voices() u32 {
             return 1;
         }
-        pub fn play_slot(_: u8, _: SlotSource) @import("platform").audio_api.PlaySlotError!void {
+        pub fn play_slot(_: u8, _: SlotSource) audio_api.PlaySlotError!void {
             if (reject) return error.UnsupportedFormat;
             active = true;
         }

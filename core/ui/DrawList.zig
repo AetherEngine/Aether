@@ -2,12 +2,15 @@
 //! renderer registrations must outlive preparation/drawing. Mutations invalidate
 //! prepared geometry. All coordinates and clips are logical pixels.
 const std = @import("std");
+const options = @import("options");
 const layout = @import("layout.zig");
 const SpriteBatcher = @import("SpriteBatcher.zig");
 const FontBatcher = @import("FontBatcher.zig");
 const Custom = @import("custom_renderable.zig");
 const Rendering = @import("../rendering/rendering.zig");
 const Color = @import("Color.zig").Color;
+const texture_region = @import("texture_region.zig");
+const TextureAtlas = @import("TextureAtlas.zig").TextureAtlas;
 const Math = @import("platform").math;
 const List = @This();
 
@@ -70,7 +73,7 @@ pub fn add_sprite(self: *List, value: SpriteBatcher.Sprite) Error!void {
 }
 /// Draws a textured region using stretch, center elision, or a nine-slice.
 /// Capacity and dimensions are checked before any pieces are appended.
-pub fn add_region(self: *List, texture: *const Rendering.Texture, region: @import("texture_region.zig").TextureRegion, bounds: layout.LogicalRect, color: Color, layer: u8, sizing: @import("texture_region.zig").TextureSizing) Error!void {
+pub fn add_region(self: *List, texture: *const Rendering.Texture, region: texture_region.TextureRegion, bounds: layout.LogicalRect, color: Color, layer: u8, sizing: texture_region.TextureSizing) Error!void {
     try validate_rect(bounds);
     if (region.w <= 0 or region.h <= 0 or texture.width == 0 or texture.height == 0) return error.InvalidBounds;
     _ = try sum(region.x, region.w);
@@ -84,7 +87,7 @@ pub fn add_region(self: *List, texture: *const Rendering.Texture, region: @impor
         },
         .center_elide => |params| {
             if (params.min_w < 2 or bounds.width() < params.min_w or bounds.width() > params.max_w or region.w < bounds.width() or region.w > params.max_w) return error.InvalidBounds;
-            const spans = @import("texture_region.zig").elide_center(region, bounds.width(), params);
+            const spans = texture_region.elide_center(region, bounds.width(), params);
             const middle = try sum(bounds.x0, spans.left.w);
             pieces[0] = region_sprite(texture, spans.left, .{ .x0 = bounds.x0, .y0 = bounds.y0, .x1 = middle, .y1 = bounds.y1 }, color, layer);
             pieces[1] = region_sprite(texture, spans.right, .{ .x0 = middle, .y0 = bounds.y0, .x1 = bounds.x1, .y1 = bounds.y1 }, color, layer);
@@ -106,7 +109,7 @@ pub fn add_region(self: *List, texture: *const Rendering.Texture, region: @impor
     if (count > self.commands.len - self.count) return error.CommandCapacity;
     for (pieces[0..count]) |piece| try self.add_sprite(piece);
 }
-fn region_sprite(texture: *const Rendering.Texture, region: @import("texture_region.zig").TextureRegion, bounds: layout.LogicalRect, color: Color, layer: u8) SpriteBatcher.Sprite {
+fn region_sprite(texture: *const Rendering.Texture, region: texture_region.TextureRegion, bounds: layout.LogicalRect, color: Color, layer: u8) SpriteBatcher.Sprite {
     return .{ .texture = texture, .pos_offset = .{ .x = bounds.x0, .y = bounds.y0 }, .pos_extent = .{ .x = bounds.width(), .y = bounds.height() }, .tex_offset = .{ .x = region.x, .y = region.y }, .tex_extent = .{ .x = region.w, .y = region.h }, .color = color, .layer = layer };
 }
 pub fn add_rect(self: *List, bounds: layout.LogicalRect, color: Color, layer: u8) Error!void {
@@ -357,7 +360,7 @@ test "custom clips require an implementation and reject bounds never leak" {
 }
 
 test "headless preparation retains mixed render order and owns uploaded geometry" {
-    if (@import("options").config.gfx != .headless) return error.SkipZigTest;
+    if (options.config.gfx != .headless) return error.SkipZigTest;
     const Dummy = struct {
         prepared: usize = 0,
         drawn: usize = 0,
@@ -382,7 +385,7 @@ test "headless preparation retains mixed render order and owns uploaded geometry
     font.style_parser = null;
     font.glyph_widths = @splat(8);
     font.texture = &texture;
-    font.atlas = @import("TextureAtlas.zig").TextureAtlas.init_grid(16, 16);
+    font.atlas = TextureAtlas.init_grid(16, 16);
     var list = try List.init(std.testing.allocator, .{});
     defer list.deinit();
 
@@ -407,9 +410,9 @@ test "nine slice preserves corners and rejects capacity before appending" {
     var list = try List.init(std.testing.allocator, .{ .commands = 9 });
     defer list.deinit();
 
-    const region: @import("texture_region.zig").TextureRegion = .{ .x = 0, .y = 0, .w = 20, .h = 20 };
+    const region: texture_region.TextureRegion = .{ .x = 0, .y = 0, .w = 20, .h = 20 };
     const bounds: layout.LogicalRect = .{ .x0 = 0, .y0 = 0, .x1 = 40, .y1 = 30 };
-    const sizing: @import("texture_region.zig").TextureSizing = .{ .nine_slice = .{ .left = 3, .right = 3, .top = 4, .bottom = 4 } };
+    const sizing: texture_region.TextureSizing = .{ .nine_slice = .{ .left = 3, .right = 3, .top = 4, .bottom = 4 } };
     try list.add_region(&texture, region, bounds, Color.rgba(255, 255, 255, 255), 0, sizing);
     try std.testing.expectEqual(9, list.count);
     try std.testing.expectEqual(@as(i16, 3), list.commands[0].value.sprite.pos_extent.x);
@@ -420,7 +423,7 @@ test "nine slice preserves corners and rejects capacity before appending" {
 }
 
 test "headless rebuild reuses capacity and invalidates failed preparation" {
-    if (@import("options").config.gfx != .headless) return error.SkipZigTest;
+    if (options.config.gfx != .headless) return error.SkipZigTest;
     var registry: Custom.Registry = .{};
     var texture: Rendering.Texture = undefined;
     texture.width = 1;
