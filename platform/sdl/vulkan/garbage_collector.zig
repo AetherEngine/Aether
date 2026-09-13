@@ -1,13 +1,14 @@
 const std = @import("std");
 const vk = @import("vulkan");
 const Renderer = @import("vulkan_gfx.zig");
+const Swapchain = @import("swapchain.zig");
 
 const GcItem = union(enum) {
     buffer: struct { buf: vk.Buffer, mem: vk.DeviceMemory },
     // add image/sampler/etc as needed
 };
 
-const MaxFrames = 3;
+const MaxFrames = Swapchain.frames_in_flight;
 
 allocator: std.mem.Allocator,
 buckets: [MaxFrames]std.ArrayList(GcItem) = .{ .empty, .empty, .empty },

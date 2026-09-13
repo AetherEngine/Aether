@@ -4,6 +4,8 @@ const Context = @import("context.zig");
 
 const SwapChain = @This();
 
+pub const frames_in_flight: usize = 3;
+
 pub const PresentState = enum {
     optimal,
     suboptimal,
@@ -17,6 +19,8 @@ surface_format: vk.SurfaceFormatKHR,
 swap_images: []SwapImage,
 next_image_acquired: vk.Semaphore,
 image_index: u32,
+frame_fences: [frames_in_flight]vk.Fence,
+frame_index: usize,
 
 fn choose_swap_surface_format(self: *SwapChain) !vk.SurfaceFormatKHR {
     const preferred = vk.SurfaceFormatKHR{
@@ -174,9 +178,13 @@ pub fn init(context: *Context, vsync: bool) !SwapChain {
     var self: SwapChain = undefined;
     self.context = context;
     self.vsync = vsync;
+    self.frame_fences = @splat(.null_handle);
+    self.frame_index = 0;
 
     try self.create_swapchain(.null_handle);
     errdefer self.destroy_swapchain_images();
+    try self.create_frame_fences();
+    errdefer self.destroy_frame_fences();
     try self.acquire_initial_image();
 
     return self;
@@ -208,10 +216,12 @@ pub fn recreate(self: *SwapChain) !void {
 pub fn deinit(self: *SwapChain) void {
     defer self.* = undefined;
 
-    if (self.chain == .null_handle) return;
-    self.destroy_swapchain_images();
-    self.context.logical_device.destroySemaphore(self.next_image_acquired, null);
-    self.context.logical_device.destroySwapchainKHR(self.chain, null);
+    self.destroy_frame_fences();
+    if (self.chain != .null_handle) {
+        self.destroy_swapchain_images();
+        self.context.logical_device.destroySemaphore(self.next_image_acquired, null);
+        self.context.logical_device.destroySwapchainKHR(self.chain, null);
+    }
 }
 
 pub fn current_image(self: *SwapChain) vk.Image {
@@ -222,12 +232,19 @@ pub fn current_swap_image(self: *SwapChain) *const SwapImage {
     return &self.swap_images[self.image_index];
 }
 
+pub fn wait_for_current_frame(self: *SwapChain) !void {
+    const fence = self.frame_fences[self.frame_index];
+    _ = try self.context.logical_device.waitForFences(@ptrCast(&fence), .true, std.math.maxInt(u64));
+}
+
 pub fn present(self: *SwapChain, cmdbuf: vk.CommandBuffer) !PresentState {
     // // Step 1: Make sure the current frame has finished rendering
     const current = self.current_swap_image();
 
     // Step 2: Submit the command buffer
     const wait_stage = [_]vk.PipelineStageFlags{.{ .color_attachment_output_bit = true }};
+    const frame_fence = self.frame_fences[self.frame_index];
+    try self.context.logical_device.resetFences(@ptrCast(&frame_fence));
     try self.context.logical_device.queueSubmit(self.context.graphics_queue.handle, &[_]vk.SubmitInfo{.{
         .wait_semaphore_count = 1,
         .p_wait_semaphores = @ptrCast(&current.image_acquired),
@@ -236,7 +253,8 @@ pub fn present(self: *SwapChain, cmdbuf: vk.CommandBuffer) !PresentState {
         .p_command_buffers = @ptrCast(&cmdbuf),
         .signal_semaphore_count = 1,
         .p_signal_semaphores = @ptrCast(&current.render_finished),
-    }}, current.frame_fence);
+    }}, frame_fence);
+    self.frame_index = (self.frame_index + 1) % frames_in_flight;
 
     // Step 3: Present the current frame
     _ = try self.context.logical_device.queuePresentKHR(self.context.present_queue.handle, &.{
@@ -270,7 +288,6 @@ const SwapImage = struct {
     view: vk.ImageView,
     image_acquired: vk.Semaphore,
     render_finished: vk.Semaphore,
-    frame_fence: vk.Fence,
 
     fn init(context: *const Context, image: vk.Image, format: vk.Format) !SwapImage {
         const view = try context.logical_device.createImageView(&.{
@@ -294,27 +311,36 @@ const SwapImage = struct {
         const render_finished = try context.logical_device.createSemaphore(&.{}, null);
         errdefer context.logical_device.destroySemaphore(render_finished, null);
 
-        const frame_fence = try context.logical_device.createFence(&.{ .flags = .{ .signaled_bit = true } }, null);
-        errdefer context.logical_device.destroyFence(frame_fence, null);
-
         return SwapImage{
             .image = image,
             .view = view,
             .image_acquired = image_acquired,
             .render_finished = render_finished,
-            .frame_fence = frame_fence,
         };
     }
 
     fn deinit(self: SwapImage, context: *const Context) void {
-        self.wait_for_fence(context) catch return;
         context.logical_device.destroyImageView(self.view, null);
         context.logical_device.destroySemaphore(self.image_acquired, null);
         context.logical_device.destroySemaphore(self.render_finished, null);
-        context.logical_device.destroyFence(self.frame_fence, null);
-    }
-
-    fn wait_for_fence(self: SwapImage, context: *const Context) !void {
-        _ = try context.logical_device.waitForFences(@ptrCast(&self.frame_fence), .true, std.math.maxInt(u64));
     }
 };
+
+fn create_frame_fences(self: *SwapChain) !void {
+    var initialized: usize = 0;
+    errdefer for (self.frame_fences[0..initialized]) |fence| {
+        self.context.logical_device.destroyFence(fence, null);
+    };
+
+    for (&self.frame_fences) |*fence| {
+        fence.* = try self.context.logical_device.createFence(&.{ .flags = .{ .signaled_bit = true } }, null);
+        initialized += 1;
+    }
+}
+
+fn destroy_frame_fences(self: *SwapChain) void {
+    for (self.frame_fences) |fence| {
+        if (fence != .null_handle) self.context.logical_device.destroyFence(fence, null);
+    }
+    self.frame_fences = @splat(.null_handle);
+}

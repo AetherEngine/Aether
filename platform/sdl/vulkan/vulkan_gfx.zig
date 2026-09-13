@@ -42,7 +42,7 @@ const PipelineData = struct {
     pipeline: vk.Pipeline = .null_handle,
 };
 
-const max_frames = 3;
+const max_frames = Swapchain.frames_in_flight;
 
 const MeshData = struct {
     vertex: MeshBufferSet = .{},
@@ -147,11 +147,11 @@ fn create_command_pool() !void {
         },
     }, null);
 
-    command_buffers = try context.allocator.alloc(vk.CommandBuffer, swapchain.swap_images.len);
+    command_buffers = try context.allocator.alloc(vk.CommandBuffer, max_frames);
     try context.logical_device.allocateCommandBuffers(&.{
         .command_pool = command_pool,
         .level = .primary,
-        .command_buffer_count = @intCast(swapchain.swap_images.len),
+        .command_buffer_count = @intCast(max_frames),
     }, command_buffers.ptr);
 }
 
@@ -166,7 +166,7 @@ fn create_uniform_buffers() !void {
     const min_align: u32 = @intCast(props.limits.min_uniform_buffer_offset_alignment);
     const slot_stride: u32 = std.mem.alignForward(u32, @sizeOf(ShaderState), min_align);
 
-    camera_rings = try render_alloc.alloc(CameraRing, swapchain.swap_images.len);
+    camera_rings = try render_alloc.alloc(CameraRing, max_frames);
 
     for (camera_rings) |*ring| {
         ring.slot_stride = slot_stride;
@@ -318,11 +318,11 @@ fn destroy_descriptor_set_layout() void {
 fn create_descriptor_pool() !void {
     const pool_size = vk.DescriptorPoolSize{
         .type = .uniform_buffer_dynamic,
-        .descriptor_count = @intCast(swapchain.swap_images.len),
+        .descriptor_count = @intCast(max_frames),
     };
 
     descriptor_pool = try context.logical_device.createDescriptorPool(&vk.DescriptorPoolCreateInfo{
-        .max_sets = @intCast(swapchain.swap_images.len),
+        .max_sets = @intCast(max_frames),
         .pool_size_count = 1,
         .p_pool_sizes = @ptrCast(&pool_size),
         .flags = .{ .free_descriptor_set_bit = true },
@@ -334,18 +334,18 @@ fn destroy_descriptor_pool() void {
 }
 
 fn create_descriptor_sets() !void {
-    const layouts = try render_alloc.alloc(vk.DescriptorSetLayout, swapchain.swap_images.len);
+    const layouts = try render_alloc.alloc(vk.DescriptorSetLayout, max_frames);
     defer render_alloc.free(layouts);
 
     for (layouts) |*layout| {
         layout.* = descriptor_set_layout;
     }
 
-    descriptor_sets = try render_alloc.alloc(vk.DescriptorSet, swapchain.swap_images.len);
+    descriptor_sets = try render_alloc.alloc(vk.DescriptorSet, max_frames);
 
     try context.logical_device.allocateDescriptorSets(&vk.DescriptorSetAllocateInfo{
         .descriptor_pool = descriptor_pool,
-        .descriptor_set_count = @intCast(swapchain.swap_images.len),
+        .descriptor_set_count = @intCast(max_frames),
         .p_set_layouts = @ptrCast(layouts.ptr),
     }, descriptor_sets.ptr);
 
@@ -557,15 +557,14 @@ pub fn start_frame() bool {
         swap_state = .optimal;
     }
 
-    // Acquire next command buffer
-    command_buffer = vk.CommandBufferProxy.init(command_buffers[swapchain.image_index], context.logical_device.wrapper);
+    // Frame resources are independent of the number of images returned by the
+    // swapchain. Drivers may change that count when the present mode changes.
+    swapchain.wait_for_current_frame() catch unreachable;
+    command_buffer = vk.CommandBufferProxy.init(command_buffers[swapchain.frame_index], context.logical_device.wrapper);
 
     // Garbage collect resources
-    const current = swapchain.current_swap_image();
-    _ = context.logical_device.waitForFences(@ptrCast(&current.frame_fence), .true, std.math.maxInt(u64)) catch unreachable;
-    context.logical_device.resetFences(@ptrCast(&current.frame_fence)) catch unreachable;
     context.logical_device.resetCommandBuffer(command_buffer.handle, .{}) catch unreachable;
-    gc.frame_index = swapchain.image_index;
+    gc.frame_index = swapchain.frame_index;
     gc.collect();
 
     command_buffer.beginCommandBuffer(&.{}) catch unreachable;
@@ -797,7 +796,7 @@ fn flush_camera_if_dirty() void {
         next_camera_slot = camera_slots - 1;
     }
 
-    const ring = &camera_rings[swapchain.image_index];
+    const ring = &camera_rings[swapchain.frame_index];
     const dst = ring.mapped_base + next_camera_slot * ring.slot_stride;
     @memcpy(dst[0..@sizeOf(ShaderState)], std.mem.asBytes(&pending_state));
 
@@ -1088,21 +1087,21 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
     command_buffer.bindPipeline(.graphics, p_data.pipeline);
 
     const sets = [_]vk.DescriptorSet{
-        descriptor_sets[swapchain.image_index],
+        descriptor_sets[swapchain.frame_index],
         tex_set,
     };
-    const dyn_offsets = [_]u32{current_camera_slot * camera_rings[swapchain.image_index].slot_stride};
+    const dyn_offsets = [_]u32{current_camera_slot * camera_rings[swapchain.frame_index].slot_stride};
     command_buffer.bindDescriptorSets(.graphics, p_data.layout, 0, &sets, &dyn_offsets);
 
     command_buffer.setPrimitiveTopology(.triangle_list);
 
     const offset = [_]vk.DeviceSize{0};
-    const frame_buf = m_data.vertex.buffers[swapchain.image_index];
+    const frame_buf = m_data.vertex.buffers[swapchain.frame_index];
     if (frame_buf == .null_handle) return;
     command_buffer.bindVertexBuffers(0, @ptrCast(&frame_buf), &offset);
     command_buffer.pushConstants(p_data.layout, .{ .vertex_bit = true, .fragment_bit = true }, 0, @sizeOf(DrawState), &draw_state);
     if (m_data.index_count > 0) {
-        const index_buf = m_data.index.buffers[swapchain.image_index];
+        const index_buf = m_data.index.buffers[swapchain.frame_index];
         if (index_buf == .null_handle) return;
         command_buffer.bindIndexBuffer(index_buf, 0, .uint16);
         command_buffer.drawIndexed(@intCast(m_data.index_count), 1, 0, 0, 0);
