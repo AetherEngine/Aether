@@ -146,13 +146,17 @@ fn pick_device(self: *Context) !DeviceCandidate {
     const physical_devices = try self.instance.enumeratePhysicalDevicesAlloc(self.allocator);
     defer self.allocator.free(physical_devices);
 
+    // Enumeration order can put an integrated GPU first. Prefer a suitable
+    // discrete GPU, keeping the first suitable device as a fallback.
+    var fallback: ?DeviceCandidate = null;
     for (physical_devices) |p_device| {
         if (try self.is_device_suitable(p_device)) |candidate| {
-            return candidate;
+            if (candidate.props.device_type == .discrete_gpu) return candidate;
+            if (fallback == null) fallback = candidate;
         }
     }
 
-    return error.NoSuitableDeviceFound;
+    return fallback orelse error.NoSuitableDeviceFound;
 }
 
 fn is_device_suitable(self: *Context, p_device: vk.PhysicalDevice) !?DeviceCandidate {
