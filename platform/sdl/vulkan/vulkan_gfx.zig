@@ -25,6 +25,7 @@ const basic_frag align(@alignOf(u32)) = @embedFile("aether_basic_frag").*;
 const Context = @import("context.zig");
 const Swapchain = @import("swapchain.zig");
 const GarbageCollector = @import("garbage_collector.zig");
+const MeshPool = @import("mesh_pool.zig");
 const SDLSurface = @import("../surface.zig");
 
 pub const mesh_source_mode = Mesh.SourceMode.uploaded_copy;
@@ -40,24 +41,15 @@ pub fn setup(alloc: std.mem.Allocator, io: std.Io) void {
 const PipelineData = struct {
     layout: vk.PipelineLayout = .null_handle,
     pipeline: vk.Pipeline = .null_handle,
+    color_format: vk.Format = .undefined,
 };
 
 const max_frames = Swapchain.frames_in_flight;
 
 const MeshData = struct {
-    vertex: MeshBufferSet = .{},
-    index: MeshBufferSet = .{},
+    storage: MeshPool.MeshStorage = .{},
     vertex_count: usize = 0,
     index_count: usize = 0,
-    built: bool = false,
-};
-
-const MeshBufferSet = struct {
-    buffers: [max_frames]vk.Buffer = @splat(.null_handle),
-    memories: [max_frames]vk.DeviceMemory = @splat(.null_handle),
-    mapped: [max_frames]?[*]u8 = @splat(null),
-    capacity: usize = 0,
-    size: usize = 0,
 };
 
 pub const ShaderState = struct {
@@ -107,6 +99,7 @@ var next_camera_slot: u32 = 0;
 pub var context: Context = undefined;
 pub var swapchain: Swapchain = undefined;
 pub var gc: GarbageCollector = undefined;
+var mesh_pool: MeshPool = undefined;
 
 pub var command_pool: vk.CommandPool = .null_handle;
 var command_buffers: []vk.CommandBuffer = undefined;
@@ -130,6 +123,7 @@ var meshes = Util.ResourceTableType(MeshData, 32768, Mesh.Handle).init();
 var render_pipeline: PipelineData = .{};
 
 var swap_state: Swapchain.PresentState = .optimal;
+var last_recreate_error: ?anyerror = null;
 var alpha_blend_enabled: bool = true;
 var depth_write_enabled: bool = true;
 var cull_enabled: bool = true;
@@ -379,8 +373,8 @@ fn destroy_descriptor_sets() void {
 }
 
 fn create_depth_image() !void {
-    const width: u32 = @intCast(gfx.surface.get_width());
-    const height: u32 = @intCast(gfx.surface.get_height());
+    const width = swapchain.extent.width;
+    const height = swapchain.extent.height;
 
     depth_image = try context.logical_device.createImage(&.{
         .image_type = .@"2d",
@@ -442,11 +436,12 @@ pub fn init() gfx_api.InitError!void {
     };
     swapchain = Swapchain.init(&context, gfx.sync) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
-        error.SwapchainCreationFailed => return error.SwapchainCreationFailed,
-        error.ImageAcquireFailed => return error.ImageAcquireFailed,
-        else => return error.GfxInitFailed,
+        else => return error.SwapchainCreationFailed,
     };
     gc = GarbageCollector.init(render_alloc);
+    mesh_pool = MeshPool.init(&context, render_alloc);
+    swap_state = .optimal;
+    last_recreate_error = null;
 
     create_command_pool() catch return error.GfxInitFailed;
     create_depth_image() catch |err| switch (err) {
@@ -462,7 +457,7 @@ pub fn init() gfx_api.InitError!void {
     };
 
     create_texture_set_layout() catch return error.GfxInitFailed;
-    create_texture_descriptor_pool_and_set(4096) catch return error.GfxInitFailed;
+    create_texture_descriptor_pool_and_set(texture_cap) catch return error.GfxInitFailed;
     create_texture_sampler() catch return error.GfxInitFailed;
     render_pipeline = init_pipeline(vertex.Layout) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
@@ -493,6 +488,8 @@ pub fn deinit() void {
     destroy_command_pool();
     swapchain.deinit();
     gc.deinit();
+    mesh_pool.deinit();
+    meshes = @TypeOf(meshes).init();
     context.deinit();
 }
 
@@ -543,29 +540,57 @@ pub fn set_fog(enabled: bool, _: f32, _: f32, start: f32, end: f32, r: f32, g: f
     draw_state.fog_color = .{ r, g, b };
 }
 
+fn recreate_frame_resources() !void {
+    try swapchain.recreate();
+    destroy_depth_image();
+    try create_depth_image();
+    if (render_pipeline.color_format != swapchain.surface_format.format) {
+        const replacement = try init_pipeline(vertex.Layout);
+        deinit_pipeline(&render_pipeline);
+        render_pipeline = replacement;
+    }
+}
+
 pub fn start_frame() bool {
-    if (gfx.surface.get_width() == 0 or gfx.surface.get_height() == 0) {
+    if (gfx.surface.window.getFlags().minimized or gfx.surface.get_width() == 0 or gfx.surface.get_height() == 0) {
         @branchHint(.unlikely);
+        swap_state = .suboptimal;
         return false;
     }
 
     if (swap_state == .suboptimal) {
         @branchHint(.unlikely);
-        swapchain.recreate() catch return false;
-        destroy_depth_image();
-        create_depth_image() catch return false;
+        recreate_frame_resources() catch |err| switch (err) {
+            error.ZeroExtent => return false,
+            else => {
+                if (last_recreate_error == null or last_recreate_error.? != err) {
+                    Util.engine_logger.err("Vulkan swapchain recreation failed: {s}", .{@errorName(err)});
+                    last_recreate_error = err;
+                }
+                return false;
+            },
+        };
         swap_state = .optimal;
+        last_recreate_error = null;
     }
 
     // Frame resources are independent of the number of images returned by the
     // swapchain. Drivers may change that count when the present mode changes.
     swapchain.wait_for_current_frame() catch unreachable;
+    const acquired = (swapchain.acquire() catch |err| switch (err) {
+        error.OutOfDateKHR => {
+            swap_state = .suboptimal;
+            return false;
+        },
+        else => std.debug.panic("Vulkan image acquisition failed: {s}", .{@errorName(err)}),
+    }) orelse return false;
+    swap_state = swap_state.merge(acquired);
     command_buffer = vk.CommandBufferProxy.init(command_buffers[swapchain.frame_index], context.logical_device.wrapper);
 
     // Garbage collect resources
     context.logical_device.resetCommandBuffer(command_buffer.handle, .{}) catch unreachable;
     gc.frame_index = swapchain.frame_index;
-    gc.collect();
+    gc.collect(&mesh_pool);
 
     command_buffer.beginCommandBuffer(&.{}) catch unreachable;
 
@@ -575,16 +600,13 @@ pub fn start_frame() bool {
     current_camera_slot = 0;
     camera_dirty = true;
 
-    const extent = vk.Extent2D{
-        .width = @intCast(gfx.surface.get_width()),
-        .height = @intCast(gfx.surface.get_height()),
-    };
+    const extent = swapchain.extent;
 
     const viewport = vk.Viewport{
         .x = 0,
-        .y = @floatFromInt(gfx.surface.get_height()),
-        .width = @floatFromInt(gfx.surface.get_width()),
-        .height = -@as(f32, @floatFromInt(gfx.surface.get_height())),
+        .y = @floatFromInt(extent.height),
+        .width = @floatFromInt(extent.width),
+        .height = -@as(f32, @floatFromInt(extent.height)),
         .min_depth = 0,
         .max_depth = 1,
     };
@@ -631,9 +653,9 @@ pub fn start_frame() bool {
 
     const depth_pre = vk.ImageMemoryBarrier2{
         .src_stage_mask = .{ .early_fragment_tests_bit = true, .late_fragment_tests_bit = true },
-        .src_access_mask = .{},
+        .src_access_mask = .{ .depth_stencil_attachment_write_bit = true },
         .dst_stage_mask = .{ .early_fragment_tests_bit = true, .late_fragment_tests_bit = true },
-        .dst_access_mask = .{ .depth_stencil_attachment_write_bit = true },
+        .dst_access_mask = .{ .depth_stencil_attachment_read_bit = true, .depth_stencil_attachment_write_bit = true },
         .old_layout = .undefined,
         .new_layout = .depth_attachment_optimal,
         .src_queue_family_index = vk_constants.queue_family_ignored,
@@ -699,10 +721,7 @@ pub fn clear_depth() void {
     const rect = vk.ClearRect{
         .rect = .{
             .offset = .{ .x = 0, .y = 0 },
-            .extent = .{
-                .width = @intCast(gfx.surface.get_width()),
-                .height = @intCast(gfx.surface.get_height()),
-            },
+            .extent = swapchain.extent,
         },
         .base_array_layer = 0,
         .layer_count = 1,
@@ -748,10 +767,11 @@ pub fn end_frame() void {
 
     command_buffer.endCommandBuffer() catch unreachable;
 
-    swap_state = swapchain.present(command_buffer.handle) catch |err| switch (err) {
+    const presented = swapchain.present(command_buffer.handle) catch |err| switch (err) {
         error.OutOfDateKHR => .suboptimal,
         else => unreachable,
     };
+    swap_state = swap_state.merge(presented);
 }
 
 pub fn set_vsync(v: bool) void {
@@ -1016,6 +1036,7 @@ fn init_pipeline(layout: vertex.VertexLayout) !PipelineData {
     return .{
         .layout = pl,
         .pipeline = pipeline,
+        .color_format = swapchain.surface_format.format,
     };
 }
 
@@ -1035,51 +1056,25 @@ pub fn create_mesh(_: *const Mesh.Desc) gfx_api.CreateMeshError!Mesh.Handle {
 
 pub fn destroy_mesh(handle: Mesh.Handle) void {
     if (handle.is_null()) return;
-    var m_data = meshes.get(handle) orelse Util.panic_invalid_handle("vulkan gfx", "destroy_mesh", handle);
-
-    destroy_mesh_buffer_set(&m_data.vertex);
-    destroy_mesh_buffer_set(&m_data.index);
-
+    const m_data = meshes.get_ptr(handle) orelse Util.panic_invalid_handle("vulkan gfx", "destroy_mesh", handle);
+    if (m_data.storage.release(&mesh_pool)) |region| gc.retire(region) catch unreachable;
     _ = meshes.remove(handle);
 }
 
 pub fn update_mesh(handle: Mesh.Handle, desc: *const Mesh.UpdateDesc) void {
-    var m_data = meshes.get(handle) orelse Util.panic_invalid_handle("vulkan gfx", "update_mesh", handle);
-    const data = desc.vertices;
-    const indices = desc.indices;
-
-    if (data.len == 0) {
-        m_data.built = false;
-        m_data.vertex.size = 0;
-        m_data.index.size = 0;
-        m_data.vertex_count = 0;
-        m_data.index_count = 0;
-        _ = meshes.update(handle, m_data);
-        return;
+    const m_data = meshes.get_ptr(handle) orelse Util.panic_invalid_handle("vulkan gfx", "update_mesh", handle);
+    if (m_data.storage.update(&mesh_pool, desc.vertices, std.mem.sliceAsBytes(desc.indices)) catch unreachable) |region| {
+        gc.retire(region) catch unreachable;
     }
-
-    ensure_mesh_buffer_set(&m_data.vertex, data.len, .{ .vertex_buffer_bit = true });
-    copy_mesh_buffer_set(&m_data.vertex, data);
-
-    const index_bytes = std.mem.sliceAsBytes(indices);
-    if (index_bytes.len > 0) {
-        ensure_mesh_buffer_set(&m_data.index, index_bytes.len, .{ .index_buffer_bit = true });
-        copy_mesh_buffer_set(&m_data.index, index_bytes);
-    } else {
-        m_data.index.size = 0;
-    }
-
-    m_data.built = true;
-    m_data.vertex_count = data.len / vertex.Layout.stride;
-    m_data.index_count = indices.len;
-    _ = meshes.update(handle, m_data);
+    m_data.vertex_count = desc.vertices.len / vertex.Layout.stride;
+    m_data.index_count = if (desc.vertices.len == 0) 0 else desc.indices.len;
 }
 
 pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
     draw_state.mat = model.*;
 
-    const m_data = meshes.get(handle) orelse Util.panic_invalid_handle("vulkan gfx", "draw_mesh", handle);
-    if (!m_data.built or m_data.vertex_count == 0) return;
+    const m_data = meshes.get_ptr(handle) orelse Util.panic_invalid_handle("vulkan gfx", "draw_mesh", handle);
+    if (m_data.vertex_count == 0) return;
     if (render_pipeline.pipeline == .null_handle) return;
     const p_data = &render_pipeline;
 
@@ -1095,68 +1090,20 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
 
     command_buffer.setPrimitiveTopology(.triangle_list);
 
-    const offset = [_]vk.DeviceSize{0};
-    const frame_buf = m_data.vertex.buffers[swapchain.frame_index];
-    if (frame_buf == .null_handle) return;
-    command_buffer.bindVertexBuffers(0, @ptrCast(&frame_buf), &offset);
+    const region = m_data.storage.region orelse return;
+    const buffer = mesh_pool.get_buffer(region);
+    const offset = [_]vk.DeviceSize{region.offset};
+    // Even an unsubmitted draw owns this version: subsequent updates in this
+    // command buffer must not change the bytes that this draw will read.
+    m_data.storage.referenced = true;
+    command_buffer.bindVertexBuffers(0, @ptrCast(&buffer), &offset);
     command_buffer.pushConstants(p_data.layout, .{ .vertex_bit = true, .fragment_bit = true }, 0, @sizeOf(DrawState), &draw_state);
     if (m_data.index_count > 0) {
-        const index_buf = m_data.index.buffers[swapchain.frame_index];
-        if (index_buf == .null_handle) return;
-        command_buffer.bindIndexBuffer(index_buf, 0, .uint16);
+        command_buffer.bindIndexBuffer(buffer, region.offset + m_data.storage.index_offset, .uint16);
         command_buffer.drawIndexed(@intCast(m_data.index_count), 1, 0, 0, 0);
     } else {
         command_buffer.draw(@intCast(m_data.vertex_count), 1, 0, 0);
     }
-}
-
-fn ensure_mesh_buffer_set(set: *MeshBufferSet, needed: usize, usage: vk.BufferUsageFlags) void {
-    if (needed <= set.capacity) return;
-
-    destroy_mesh_buffer_set(set);
-
-    var new_cap: usize = 256;
-    while (new_cap < needed) new_cap *= 2;
-
-    for (0..max_frames) |i| {
-        set.buffers[i] = context.logical_device.createBuffer(&.{
-            .size = new_cap,
-            .usage = usage,
-            .sharing_mode = .exclusive,
-        }, null) catch unreachable;
-
-        const mem_reqs = context.logical_device.getBufferMemoryRequirements(set.buffers[i]);
-        set.memories[i] = context.allocate_gpu_buffer(mem_reqs, .{
-            .host_visible_bit = true,
-            .host_coherent_bit = true,
-            .device_local_bit = true,
-        }) catch context.allocate_gpu_buffer(mem_reqs, .{
-            .host_visible_bit = true,
-            .host_coherent_bit = true,
-        }) catch unreachable;
-
-        context.logical_device.bindBufferMemory(set.buffers[i], set.memories[i], 0) catch unreachable;
-        const mapped_data = context.logical_device.mapMemory(set.memories[i], 0, vk_constants.whole_size, .{}) catch unreachable;
-        set.mapped[i] = @ptrCast(@alignCast(mapped_data));
-    }
-
-    set.capacity = new_cap;
-}
-
-fn copy_mesh_buffer_set(set: *MeshBufferSet, data: []const u8) void {
-    for (0..max_frames) |i| {
-        @memcpy(set.mapped[i].?[0..data.len], data);
-    }
-    set.size = data.len;
-}
-
-fn destroy_mesh_buffer_set(set: *MeshBufferSet) void {
-    for (0..max_frames) |i| {
-        if (set.buffers[i] != .null_handle) {
-            gc.defer_destroy_buffer(set.buffers[i], set.memories[i]) catch unreachable;
-        }
-    }
-    set.* = .{};
 }
 
 pub fn create_texture(desc: *const Texture.UploadDesc) gfx_api.CreateTextureError!Texture.Handle {
@@ -1490,28 +1437,10 @@ pub fn bind_texture(handle: Texture.Handle) void {
 pub fn destroy_texture(handle: Texture.Handle) void {
     if (handle.is_null()) return;
     const rec = textures.get(handle) orelse Util.panic_invalid_handle("vulkan gfx", "destroy_texture", handle);
-    const idx: u32 = @intCast(textures.raw_index(handle) orelse Util.panic_invalid_handle("vulkan gfx", "destroy_texture", handle));
-
-    // Null out the image slot in the bindless array (binding 1).
-    // Binding 0 is a single shared sampler (element 0 only) -- don't touch it here.
-    const null_img = vk.DescriptorImageInfo{
-        .sampler = .null_handle,
-        .image_view = .null_handle,
-        .image_layout = .undefined,
-    };
-    const clear_image = vk.WriteDescriptorSet{
-        .dst_set = tex_set,
-        .dst_binding = 1,
-        .dst_array_element = idx,
-        .descriptor_count = 1,
-        .descriptor_type = .sampled_image,
-        .p_image_info = @ptrCast(&null_img),
-        .p_buffer_info = undefined,
-        .p_texel_buffer_view = undefined,
-    };
-    context.logical_device.updateDescriptorSets(@ptrCast(&clear_image), null);
-
-    _ = context.logical_device.deviceWaitIdle() catch {};
+    // Wait before invalidating a descriptor used by submitted draws. This array
+    // is partially bound, so unused slots may remain invalid; writing a null
+    // image descriptor would require the optional nullDescriptor feature.
+    context.logical_device.deviceWaitIdle() catch unreachable;
 
     context.logical_device.destroyImageView(rec.view, null);
     context.logical_device.destroyImage(rec.image, null);
@@ -1521,3 +1450,8 @@ pub fn destroy_texture(handle: Texture.Handle) void {
 }
 
 pub fn force_texture_resident(_: Texture.Handle) void {}
+
+test {
+    std.testing.refAllDecls(MeshPool);
+    std.testing.refAllDecls(Swapchain);
+}
