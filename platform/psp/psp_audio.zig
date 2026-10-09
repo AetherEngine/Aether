@@ -20,7 +20,7 @@ const SlotState = enum(u8) {
 };
 
 const Slot = struct {
-    state: std.atomic.Value(u8) = std.atomic.Value(u8).init(@intFromEnum(SlotState.inactive)),
+    state: std.atomic.Value(u8) = std.atomic.Value(u8).init(@backingInt(SlotState.inactive)),
     gain: std.atomic.Value(u32) = std.atomic.Value(u32).init(@bitCast(@as(f32, 0))),
     pan: std.atomic.Value(u32) = std.atomic.Value(u32).init(@bitCast(@as(f32, 0))),
     source: SlotSource = undefined,
@@ -88,12 +88,12 @@ pub fn max_voices() u32 {
 pub fn play_slot(slot: u8, source: SlotSource) audio_api.PlaySlotError!void {
     if (slot >= num_slots) return error.InvalidArgs;
     slots[slot].source = source;
-    slots[slot].state.store(@intFromEnum(SlotState.pending), .release);
+    slots[slot].state.store(@backingInt(SlotState.pending), .release);
 }
 
 pub fn stop_slot(slot: u8) void {
     if (slot >= num_slots) return;
-    slots[slot].state.store(@intFromEnum(SlotState.inactive), .release);
+    slots[slot].state.store(@backingInt(SlotState.inactive), .release);
 }
 
 pub fn set_slot_gain_pan(slot: u8, gain: f32, pan: f32) void {
@@ -104,7 +104,7 @@ pub fn set_slot_gain_pan(slot: u8, gain: f32, pan: f32) void {
 
 pub fn is_slot_active(slot: u8) bool {
     if (slot >= num_slots) return false;
-    const state: SlotState = @enumFromInt(slots[slot].state.load(.acquire));
+    const state: SlotState = @fromBackingInt(@intCast(slots[slot].state.load(.acquire)));
     return state != .inactive and state != .finished;
 }
 
@@ -134,11 +134,11 @@ fn fill_buffer(buf: *[output_buf_bytes]u8) void {
 
     for (&slots) |*slot| {
         const raw_state = slot.state.load(.acquire);
-        var state: SlotState = @enumFromInt(raw_state);
+        var state: SlotState = @fromBackingInt(@intCast(raw_state));
 
         if (state == .pending) {
             state = .active;
-            slot.state.store(@intFromEnum(SlotState.active), .release);
+            slot.state.store(@backingInt(SlotState.active), .release);
         }
         if (state != .active) continue;
 
@@ -154,14 +154,14 @@ fn fill_buffer(buf: *[output_buf_bytes]u8) void {
         const bytes_needed: usize = samples_per_buf * fmt.frame_size();
 
         if (bytes_needed > read_buf_size) {
-            slot.state.store(@intFromEnum(SlotState.finished), .release);
+            slot.state.store(@backingInt(SlotState.finished), .release);
             continue;
         }
 
         const read_buf = slot.read_buf[0..bytes_needed];
 
         if (!read_source(&slot.source, read_buf)) {
-            slot.state.store(@intFromEnum(SlotState.finished), .release);
+            slot.state.store(@backingInt(SlotState.finished), .release);
             continue;
         }
 

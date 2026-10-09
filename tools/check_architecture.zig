@@ -53,7 +53,7 @@ fn check_repository(alloc: std.mem.Allocator, io: std.Io, repository_dir: std.Io
             const bytes = try source_dir.readFileAlloc(io, entry.path, alloc, .limited(4 * 1024 * 1024));
             defer alloc.free(bytes);
 
-            const source = try alloc.dupeZ(u8, bytes);
+            const source = try alloc.dupeSentinel(u8, bytes, 0);
             defer alloc.free(source);
 
             if (!try check_source(alloc, path, source, report)) valid = false;

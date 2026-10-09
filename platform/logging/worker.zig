@@ -390,8 +390,8 @@ fn flush_file(file: std.Io.File, io: std.Io, writer: *std.Io.Writer, sync_to_sto
 
 test "message queue is bounded and FIFO" {
     var test_queue: MessageQueue = .{};
-    const first = LogMessage{ .len = 1, .bytes = [_]u8{'a'} ** message_capacity };
-    const second = LogMessage{ .len = 1, .bytes = [_]u8{'b'} ** message_capacity };
+    const first = LogMessage{ .len = 1, .bytes = @splat('a') };
+    const second = LogMessage{ .len = 1, .bytes = @splat('b') };
 
     try std.testing.expect(test_queue.push(first));
     try std.testing.expect(test_queue.push(second));

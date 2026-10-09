@@ -1200,7 +1200,7 @@ pub fn bind_texture(handle: Texture.Handle) void {
     var i: u8 = 0;
     while (i < tex.mip_count) : (i += 1) {
         const mip = tex.mips[i];
-        const level: ge_list.TextureLevel = @enumFromInt(@as(u3, @intCast(i + 1)));
+        const level: ge_list.TextureLevel = @fromBackingInt(@intCast(@as(u3, @intCast(i + 1))));
         must(cmd.texture_image(level, @intCast(mip.width), @intCast(mip.height), @intCast(mip.width), mip.data));
     }
     must(cmd.texture_flush());

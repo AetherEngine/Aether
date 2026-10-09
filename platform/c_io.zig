@@ -54,7 +54,7 @@ const DirSlot = struct {
     path: [max_path_bytes:0]u8 = @splat(0),
     len: usize = 0,
 };
-var dir_slots: [max_dynamic_dirs]DirSlot = [_]DirSlot{.{}} ** max_dynamic_dirs;
+var dir_slots: [max_dynamic_dirs]DirSlot = @splat(.{});
 
 const vtable: Io.VTable = blk: {
     var v = Io.failing.vtable.*;
@@ -110,9 +110,6 @@ const vtable: Io.VTable = blk: {
     v.netListenUnix = netListenUnix;
     v.netConnectUnix = netConnectUnix;
     v.netSocketCreatePair = netSocketCreatePair;
-    v.netSend = netSend;
-    v.netRead = netRead;
-    v.netWrite = netWrite;
     v.netClose = netClose;
     v.netShutdown = netShutdown;
     v.netInterfaceNameResolve = netInterfaceNameResolve;
@@ -375,6 +372,9 @@ fn operate(_: ?*anyopaque, operation: Io.Operation) Io.Cancelable!Io.Operation.R
         .file_write_streaming => |op| .{ .file_write_streaming = fileWriteStreaming(op.file, op.header, op.data, op.splat) },
         .device_io_control => unsupported("device_io_control"),
         .net_receive => |op| .{ .net_receive = netReceive(op.socket_handle, op.message_buffer, op.data_buffer, op.flags) },
+        .net_send => |op| .{ .net_send = netSend(op.socket_handle, op.messages, op.flags) },
+        .net_read => |op| .{ .net_read = netRead(op) },
+        .net_write => |op| .{ .net_write = netWrite(op) },
     };
 }
 
@@ -476,7 +476,7 @@ fn netSocketCreatePair(_: ?*anyopaque, _: net.Socket.CreatePairOptions) net.Sock
     return error.OperationUnsupported;
 }
 
-fn netSend(_: ?*anyopaque, handle: net.Socket.Handle, messages: []net.OutgoingMessage, flags: net.SendFlags) struct { ?net.Socket.SendError, usize } {
+fn netSend(handle: net.Socket.Handle, messages: []net.OutgoingMessage, flags: net.SendFlags) Io.Operation.NetSend.Result {
     ensureNetworking() catch |err| return .{ err, 0 };
     const send_flags = sendFlags(flags);
     for (messages, 0..) |*message, i| {
@@ -515,29 +515,29 @@ fn netReceive(
     return .{ null, 1 };
 }
 
-fn netRead(_: ?*anyopaque, fd: net.Socket.Handle, data: [][]u8) net.Stream.Reader.Error!usize {
+fn netRead(op: Io.Operation.NetRead) Io.Operation.NetRead.Result {
+    if (op.control.len != 0) unsupported("net_read control data");
     try ensureNetworking();
-    for (data) |buf| {
+    for (op.data) |buf| {
         if (buf.len == 0) continue;
         while (true) {
-            const n = c.recv(fd, buf.ptr, buf.len, c.MSG_NOSIGNAL);
-            if (n >= 0) return @intCast(n);
+            const n = c.recv(op.socket_handle, buf.ptr, buf.len, c.MSG_NOSIGNAL);
+            if (n >= 0) return .{ .data_len = @intCast(n) };
             switch (errno()) {
                 c.EINTR => continue,
                 else => return streamReadError(errno()),
             }
         }
     }
-    return 0;
+    return .{ .data_len = 0 };
 }
 
-fn netWrite(
-    _: ?*anyopaque,
-    fd: net.Socket.Handle,
-    header: []const u8,
-    data: []const []const u8,
-    splat: usize,
-) net.Stream.Writer.Error!usize {
+fn netWrite(op: Io.Operation.NetWrite) Io.Operation.NetWrite.Result {
+    if (op.control.len != 0) unsupported("net_write control data");
+    const fd = op.socket_handle;
+    const header = op.header;
+    const data = op.data;
+    const splat = op.splat;
     try ensureNetworking();
     var total: usize = 0;
     sendStreamSegment(fd, header, &total) catch |err| return if (total != 0) total else err;
@@ -552,8 +552,8 @@ fn netWrite(
     return total;
 }
 
-fn netClose(_: ?*anyopaque, handles: []const net.Socket.Handle) void {
-    for (handles) |handle| _ = c.close(handle);
+fn netClose(_: ?*anyopaque, sockets: []const net.Socket) void {
+    for (sockets) |socket| _ = c.close(socket.handle);
 }
 
 fn netShutdown(_: ?*anyopaque, handle: net.Socket.Handle, how: net.ShutdownHow) net.ShutdownError!void {
@@ -596,7 +596,7 @@ fn netLookup(_: ?*anyopaque, host_name: net.HostName, resolved: *Io.Queue(net.Ho
     const name_c = name_buf[0..host_name.bytes.len :0];
 
     var port_buf: [8]u8 = undefined;
-    const port_c = std.fmt.bufPrintZ(&port_buf, "{d}", .{opts.port}) catch unreachable;
+    const port_c = std.fmt.bufPrintSentinel(&port_buf, "{d}", .{opts.port}, 0) catch unreachable;
 
     var hints: c.struct_addrinfo = std.mem.zeroes(c.struct_addrinfo);
     hints.ai_flags = c.AI_NUMERICSERV | if (opts.canonical_name_buffer != null) c.AI_CANONNAME else 0;
@@ -1211,7 +1211,7 @@ fn fdFromDirHandle(dir: Dir) c_int {
 
 fn permissionsMode(permissions: File.Permissions, default: c.mode_t) c.mode_t {
     if (@bitSizeOf(File.Permissions) == 0) return default;
-    return @intCast(@intFromEnum(permissions));
+    return @intCast(@backingInt(permissions));
 }
 
 fn isStderrFile(file: File) bool {
@@ -1514,7 +1514,7 @@ fn receiveFlags(flags: net.ReceiveFlags) c_int {
         @as(c_int, if (@hasDecl(c, "MSG_NOSIGNAL")) c.MSG_NOSIGNAL else 0);
 }
 
-fn sendStreamSegment(fd: c_int, bytes: []const u8, total: *usize) net.Stream.Writer.Error!void {
+fn sendStreamSegment(fd: c_int, bytes: []const u8, total: *usize) Io.Operation.NetWrite.Error!void {
     if (bytes.len == 0) return;
     while (true) {
         const n = c.send(fd, bytes.ptr, bytes.len, if (@hasDecl(c, "MSG_NOSIGNAL")) c.MSG_NOSIGNAL else 0);
@@ -1571,19 +1571,19 @@ fn receiveError(code: c_int) net.Socket.ReceiveError {
     };
 }
 
-fn streamReadError(code: c_int) net.Stream.Reader.Error {
+fn streamReadError(code: c_int) Io.Operation.NetRead.Error {
     return switch (code) {
         c.ENOBUFS, c.ENOMEM => error.SystemResources,
         c.ENOTCONN, c.EPIPE => error.SocketUnconnected,
         c.ECONNRESET => error.ConnectionResetByPeer,
-        c.ETIMEDOUT => error.Timeout,
+        c.ETIMEDOUT => error.ConnectionTimedOut,
         c.EACCES => error.AccessDenied,
         c.ENETDOWN => error.NetworkDown,
         else => error.Unexpected,
     };
 }
 
-fn streamWriteError(code: c_int) net.Stream.Writer.Error {
+fn streamWriteError(code: c_int) Io.Operation.NetWrite.Error {
     return switch (code) {
         c.EALREADY => error.FastOpenAlreadyInProgress,
         c.ECONNREFUSED => error.ConnectionRefused,

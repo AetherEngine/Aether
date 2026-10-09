@@ -17,7 +17,7 @@ const stick_deadzone: f32 = 0.15;
 const max_osk_text_units = 1024;
 const max_osk_utf8_bytes = max_osk_text_units * 4;
 const default_osk_bytes = 256;
-const axis_count = @typeInfo(input_api.Axis).@"enum".fields.len;
+const axis_count = @typeInfo(input_api.Axis).@"enum".field_names.len;
 
 var input_alloc: std.mem.Allocator = undefined;
 var ir_service: ?IrRst = null;
@@ -274,7 +274,7 @@ fn diff_button(input: input_api.EventSink, current: bool, previous: bool, button
 }
 
 fn deliver_axis(input: input_api.EventSink, axis: input_api.Axis, value: f32) void {
-    const idx = @intFromEnum(axis);
+    const idx = @backingInt(axis);
     const prev = prev_axes[idx];
     if (value != 0.0 or prev != 0.0) input.deliver_gamepad_axis(axis, value);
     prev_axes[idx] = value;

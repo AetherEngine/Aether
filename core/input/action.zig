@@ -101,7 +101,7 @@ pub const ActionHandle = packed struct(u64) {
     pub fn from_parts(action_set: ActionSetHandle, action_index: usize) ActionHandle {
         assert(action_index <= std.math.maxInt(u32));
         return .{
-            .set_index = @intFromEnum(action_set),
+            .set_index = @backingInt(action_set),
             .action_index = @intCast(action_index),
         };
     }
@@ -111,7 +111,7 @@ pub const ActionHandle = packed struct(u64) {
     }
 
     pub fn set(self: ActionHandle) ActionSetHandle {
-        return @enumFromInt(self.set_index);
+        return @fromBackingInt(@intCast(self.set_index));
     }
 };
 

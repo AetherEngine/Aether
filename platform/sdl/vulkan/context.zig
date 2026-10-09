@@ -5,10 +5,6 @@ const vk = @import("vulkan");
 const vk_constants = @import("constants.zig");
 const Util = @import("../../util/util.zig");
 
-// SDL hands us the vkGetInstanceProcAddr from its own Vulkan library load
-// (see surface.zig); feed it straight into the base wrapper's loader.
-const GetInstanceProcAddrFn = *const fn (vk.Instance, [*:0]const u8) callconv(.c) vk.PfnVoidFunction;
-
 const BaseWrapper = vk.BaseWrapper;
 const InstanceWrapper = vk.InstanceWrapper;
 const DeviceWrapper = vk.DeviceWrapper;
@@ -45,7 +41,9 @@ memory_properties: vk.PhysicalDeviceMemoryProperties,
 
 fn create_instance(self: *Context, name: [:0]const u8) !void {
     // Initialize Vulkan instance
-    const get_proc_addr: GetInstanceProcAddrFn = @ptrCast(@alignCast(try sdl3.vulkan.getVkGetInstanceProcAddr()));
+    // SDL hands us the vkGetInstanceProcAddr from its own Vulkan library load
+    // (see surface.zig); feed it straight into the base wrapper's loader.
+    const get_proc_addr: vk.PfnGetInstanceProcAddr = @ptrCast(@alignCast(try sdl3.vulkan.getVkGetInstanceProcAddr()));
     self.vkb = vk.BaseWrapper.load(get_proc_addr);
 
     // Setup extensions
@@ -53,7 +51,7 @@ fn create_instance(self: *Context, name: [:0]const u8) !void {
     defer extension_names.deinit(self.allocator);
 
     // Setup validation layers
-    const enable_validation = false; // builtin.mode == .Debug;
+    const enable_validation = false; // builtin.mode == .debug;
     const validation_layers = [_][*:0]const u8{"VK_LAYER_KHRONOS_validation"};
 
     if (enable_validation) {
@@ -92,7 +90,7 @@ fn create_instance(self: *Context, name: [:0]const u8) !void {
         },
         .enabled_extension_count = @intCast(extension_names.items.len),
         .pp_enabled_extension_names = extension_names.items.ptr,
-        .flags = if (is_macos) .{} else .{ .enumerate_portability_bit_khr = true },
+        .flags = if (is_macos) .{} else .{ .enumerate_portability_khr = true },
     };
 
     // With validation layers?
@@ -112,11 +110,11 @@ fn create_surface(self: *Context) !void {
     // Create a window surface. SDL's Vk handle types come from its own
     // translate-c headers, so bridge to the vulkan-zig enums via usize.
     var raw_surface: sdl3.c.VkSurfaceKHR = undefined;
-    const instance: sdl3.c.VkInstance = @ptrFromInt(@intFromEnum(self.instance.handle));
+    const instance: sdl3.c.VkInstance = @ptrCast(self.instance.handle);
     if (!sdl3.c.SDL_Vulkan_CreateSurface(gfx.surface.window.value, instance, null, &raw_surface)) {
         return error.SurfaceInitFailed;
     }
-    self.surface = @enumFromInt(@as(u64, @intFromPtr(raw_surface orelse return error.SurfaceInitFailed)));
+    self.surface = @fromBackingInt(@intCast(@as(u64, @intFromPtr(raw_surface orelse return error.SurfaceInitFailed))));
 }
 
 pub const Queue = struct {
@@ -217,7 +215,7 @@ fn allocate_queues(self: *Context, p_device: vk.PhysicalDevice) !?QueueAllocatio
     for (families, 0..) |properties, i| {
         const family: u32 = @intCast(i);
 
-        if (graphics_family == null and properties.queue_flags.graphics_bit) {
+        if (graphics_family == null and properties.queue_flags.graphics) {
             graphics_family = family;
         }
 

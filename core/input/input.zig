@@ -362,7 +362,7 @@ pub const InputSystem = struct {
         const owned_name = try self.alloc.dupe(u8, name);
         errdefer self.alloc.free(owned_name);
         try self.registry.append(self.alloc, .{ .name = owned_name });
-        return @enumFromInt(self.registry.items.len - 1);
+        return @fromBackingInt(@intCast(self.registry.items.len - 1));
     }
 
     pub fn add_action(self: *InputSystem, set: ActionSetHandle, name: []const u8, kind: ActionKind) ActionSetError!ActionHandle {
@@ -566,7 +566,7 @@ pub const InputSystem = struct {
     }
 
     fn set_ptr(self: *InputSystem, handle: ActionSetHandle) ?*ActionSet {
-        const i = @intFromEnum(handle);
+        const i = @backingInt(handle);
         if (i >= self.registry.items.len) return null;
         return &self.registry.items[i];
     }
@@ -581,7 +581,7 @@ pub const InputSystem = struct {
     fn active_action_ptr(self: *InputSystem, action: ActionHandle) ?*Action {
         if (action.is_null()) return null;
         const top = self.stack.top() orelse return null;
-        if (@intFromEnum(top.actions) != action.set_index) return null;
+        if (@backingInt(top.actions) != action.set_index) return null;
         const set = self.set_ptr(top.actions) orelse return null;
         if (!set.installed) return null;
         if (action.action_index >= set.actions.count()) return null;
@@ -601,8 +601,7 @@ pub const InputSystem = struct {
         while (gp_it.next()) |gb| {
             try session.held_at_start.append(self.alloc, .{ .gamepad_button = gb });
         }
-        inline for (std.meta.fields(Axis)) |f| {
-            const a: Axis = @enumFromInt(f.value);
+        inline for (comptime std.meta.tags(Axis)) |a| {
             if (@abs(self.device.axis(a)) > config.axis_activity_threshold) {
                 try session.held_at_start.append(self.alloc, .{ .gamepad_axis = a });
             }

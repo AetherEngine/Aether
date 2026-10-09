@@ -61,7 +61,7 @@ const StreamState = enum(u8) {
 };
 
 const Slot = struct {
-    state: std.atomic.Value(u8) = std.atomic.Value(u8).init(@intFromEnum(SlotState.inactive)),
+    state: std.atomic.Value(u8) = std.atomic.Value(u8).init(@backingInt(SlotState.inactive)),
     gain: std.atomic.Value(u32) = std.atomic.Value(u32).init(@bitCast(@as(f32, 0))),
     pan: std.atomic.Value(u32) = std.atomic.Value(u32).init(@bitCast(@as(f32, 0))),
     source: SlotSource = undefined,
@@ -77,7 +77,7 @@ const Slot = struct {
     // stream generation. The render thread can then discard stale FIFO bytes
     // without racing either FIFO endpoint.
     producer_generation: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
-    stream_state: std.atomic.Value(u8) = std.atomic.Value(u8).init(@intFromEnum(StreamState.none)),
+    stream_state: std.atomic.Value(u8) = std.atomic.Value(u8).init(@backingInt(StreamState.none)),
     stream_state_generation: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
     // Owned exclusively by the render thread.
     render_generation: u32 = 0,
@@ -289,9 +289,9 @@ pub fn deinit() void {
     }
 
     for (&slots) |*slot| {
-        slot.state.store(@intFromEnum(SlotState.inactive), .release);
+        slot.state.store(@backingInt(SlotState.inactive), .release);
         slot.producer_generation.store(0, .release);
-        slot.stream_state.store(@intFromEnum(StreamState.none), .release);
+        slot.stream_state.store(@backingInt(StreamState.none), .release);
         slot.stream_state_generation.store(0, .release);
         slot.render_generation = 0;
         slot.consumer_generation = 0;
@@ -332,24 +332,24 @@ pub fn play_slot(slot: u8, source: SlotSource) audio_api.PlaySlotError!void {
     _ = slots[i].generation.fetchAdd(1, .acq_rel);
     switch (source) {
         .buffer => {
-            slots[i].stream_state.store(@intFromEnum(StreamState.none), .release);
+            slots[i].stream_state.store(@backingInt(StreamState.none), .release);
             slots[i].stream_state_generation.store(0, .release);
         },
         .stream => {
-            slots[i].stream_state.store(@intFromEnum(StreamState.filling), .release);
+            slots[i].stream_state.store(@backingInt(StreamState.filling), .release);
             slots[i].stream_state_generation.store(0, .release);
         },
     }
-    slots[i].state.store(@intFromEnum(SlotState.pending), .release);
+    slots[i].state.store(@backingInt(SlotState.pending), .release);
     if (source == .stream) notify_stream_worker();
 }
 
 pub fn stop_slot(slot: u8) void {
     if (slot >= num_slots) return;
     _ = slots[slot].generation.fetchAdd(1, .acq_rel);
-    slots[slot].stream_state.store(@intFromEnum(StreamState.none), .release);
+    slots[slot].stream_state.store(@backingInt(StreamState.none), .release);
     slots[slot].stream_state_generation.store(0, .release);
-    slots[slot].state.store(@intFromEnum(SlotState.inactive), .release);
+    slots[slot].state.store(@backingInt(SlotState.inactive), .release);
     notify_stream_worker();
 }
 
@@ -361,7 +361,7 @@ pub fn set_slot_gain_pan(slot: u8, gain: f32, pan: f32) void {
 
 pub fn is_slot_active(slot: u8) bool {
     if (slot >= num_slots) return false;
-    const state: SlotState = @enumFromInt(slots[slot].state.load(.acquire));
+    const state: SlotState = @fromBackingInt(@intCast(slots[slot].state.load(.acquire)));
     return state != .inactive and state != .finished;
 }
 
@@ -436,12 +436,12 @@ fn fill_output_page(index: usize) void {
     var accum: [samples_per_page]i32 = @splat(0);
 
     for (&slots, 0..) |*slot, slot_index| {
-        var state: SlotState = @enumFromInt(slot.state.load(.acquire));
+        var state: SlotState = @fromBackingInt(@intCast(slot.state.load(.acquire)));
         if (state == .pending) {
             reset_render_state_for_generation(slot);
             if (!pending_slot_ready(slot, slot_index)) continue;
             state = .active;
-            slot.state.store(@intFromEnum(SlotState.active), .release);
+            slot.state.store(@backingInt(SlotState.active), .release);
         }
         if (state != .active) continue;
 
@@ -511,9 +511,9 @@ fn pending_slot_ready(slot: *Slot, slot_index: usize) bool {
             if (slot.generation.load(.acquire) != generation) return false;
 
             if (slot.stream_state_generation.load(.acquire) != generation) return false;
-            const stream_state: StreamState = @enumFromInt(slot.stream_state.load(.acquire));
+            const stream_state: StreamState = @fromBackingInt(@intCast(slot.stream_state.load(.acquire)));
             if (stream_state == .failed) {
-                slot.state.store(@intFromEnum(SlotState.finished), .release);
+                slot.state.store(@backingInt(SlotState.finished), .release);
                 return false;
             }
 
@@ -521,7 +521,7 @@ fn pending_slot_ready(slot: *Slot, slot_index: usize) bool {
             const start_bytes = @min(stream_start_bytes, fifo.capacity());
             const available = fifo.readable();
             if (stream_state == .eof and available < frame_size) {
-                slot.state.store(@intFromEnum(SlotState.finished), .release);
+                slot.state.store(@backingInt(SlotState.finished), .release);
                 return false;
             }
             return available >= start_bytes or (stream_state == .eof and available >= frame_size);
@@ -534,7 +534,7 @@ fn mix_slot_page(slot: *Slot, slot_index: usize, accum: *[samples_per_page]i32, 
     const frame_size = fmt.frame_size();
     const bytes_needed: usize = samples_per_page * frame_size;
     if (bytes_needed > read_buf_size) {
-        slot.state.store(@intFromEnum(SlotState.finished), .release);
+        slot.state.store(@backingInt(SlotState.finished), .release);
         return;
     }
 
@@ -559,7 +559,7 @@ fn mix_slot_page(slot: *Slot, slot_index: usize, accum: *[samples_per_page]i32, 
     }
 
     if (read.status == .end) {
-        slot.state.store(@intFromEnum(SlotState.finished), .release);
+        slot.state.store(@backingInt(SlotState.finished), .release);
     }
 }
 
@@ -569,7 +569,7 @@ fn mix_slot_page_resampled(slot: *Slot, slot_index: usize, accum: *[samples_per_
             .ok => slot.has_current_sample = true,
             .underflow => return,
             .end => {
-                slot.state.store(@intFromEnum(SlotState.finished), .release);
+                slot.state.store(@backingInt(SlotState.finished), .release);
                 return;
             },
         }
@@ -587,7 +587,7 @@ fn mix_slot_page_resampled(slot: *Slot, slot_index: usize, accum: *[samples_per_
             },
             .end => {
                 slot.has_current_sample = false;
-                slot.state.store(@intFromEnum(SlotState.finished), .release);
+                slot.state.store(@backingInt(SlotState.finished), .release);
                 return;
             },
         }
@@ -633,7 +633,7 @@ fn read_next_sample(slot: *Slot, slot_index: usize) SourceReadStatus {
 fn start_looping_output() !void {
     const data = output_data orelse std.debug.panic("3DS audio start failed: output buffer missing", .{});
     const physical = horizon.memory.toPhysical(@intFromPtr(data.ptr));
-    const physical_addr = @intFromEnum(physical);
+    const physical_addr = @backingInt(physical);
     if (physical_addr == 0 or !is_linear_audio_ptr(@intFromPtr(data.ptr))) {
         std.debug.panic("3DS audio start failed: output buffer is not CSND-playable linear memory, ptr=0x{x} phys=0x{x}", .{
             @intFromPtr(data.ptr),
@@ -654,7 +654,7 @@ fn start_looping_output() !void {
         .channel_volume = volumes,
         .capture_volume = volumes,
         .address = physical,
-        .second_address = physical,
+        .loop_address = physical,
         .size = total_output_bytes,
     })});
 }
@@ -683,7 +683,7 @@ fn samples_since(start_ns: u96) u64 {
 
 fn any_active_slots() bool {
     for (&slots) |*slot| {
-        const state: SlotState = @enumFromInt(slot.state.load(.acquire));
+        const state: SlotState = @fromBackingInt(@intCast(slot.state.load(.acquire)));
         if (state != .inactive and state != .finished) return true;
     }
     return false;
@@ -753,7 +753,7 @@ fn wait_command_completion_or_panic(shm: []align(horizon.heap.page_size) u8, byt
         @tagName(first.id),
         second_id,
         cmd_count,
-        @as(u16, @intFromEnum(first.next)),
+        @as(u16, @backingInt(first.next)),
     });
 }
 
@@ -873,7 +873,7 @@ fn stream_short_read_status(slot: *Slot) SourceReadStatus {
         return .underflow;
     }
 
-    const state: StreamState = @enumFromInt(slot.stream_state.load(.acquire));
+    const state: StreamState = @fromBackingInt(@intCast(slot.stream_state.load(.acquire)));
     return switch (state) {
         .eof, .failed, .none => .end,
         .filling => blk: {
@@ -907,19 +907,19 @@ const StreamWorkerProgress = struct {
 
 fn stream_slot_is_current(slot: *const Slot, generation: u32) bool {
     if (slot.generation.load(.acquire) != generation) return false;
-    const state: SlotState = @enumFromInt(slot.state.load(.acquire));
+    const state: SlotState = @fromBackingInt(@intCast(slot.state.load(.acquire)));
     return state == .pending or state == .active;
 }
 
 fn set_stream_state_if_current(slot: *Slot, generation: u32, state: StreamState) void {
     if (!stream_slot_is_current(slot, generation)) return;
     slot.stream_state_generation.store(generation, .release);
-    slot.stream_state.store(@intFromEnum(state), .release);
+    slot.stream_state.store(@backingInt(state), .release);
 }
 
 fn worker_refill_slot(slot_index: usize, scratch: []u8, progress: *StreamWorkerProgress) bool {
     const slot = &slots[slot_index];
-    const state: SlotState = @enumFromInt(slot.state.load(.acquire));
+    const state: SlotState = @fromBackingInt(@intCast(slot.state.load(.acquire)));
     if (state != .pending and state != .active) return false;
 
     const generation = slot.generation.load(.acquire);
@@ -937,7 +937,7 @@ fn worker_refill_slot(slot_index: usize, scratch: []u8, progress: *StreamWorkerP
         // generation only after that older work has completed.
         if (slot.generation.load(.acquire) != generation) return true;
         slot.stream_state_generation.store(generation, .release);
-        slot.stream_state.store(@intFromEnum(StreamState.filling), .release);
+        slot.stream_state.store(@backingInt(StreamState.filling), .release);
         slot.producer_generation.store(generation, .release);
 
         // If this FIFO belongs to a previous stream, wait for the sole
@@ -947,7 +947,7 @@ fn worker_refill_slot(slot_index: usize, scratch: []u8, progress: *StreamWorkerP
 
     if (!stream_slot_is_current(slot, generation)) return false;
     if (slot.stream_state_generation.load(.acquire) != generation) return false;
-    const stream_state: StreamState = @enumFromInt(slot.stream_state.load(.acquire));
+    const stream_state: StreamState = @fromBackingInt(@intCast(slot.stream_state.load(.acquire)));
     if (stream_state != .filling or !stream_refill_needed(slot_index)) return false;
 
     const frame_size: usize = stream.format.frame_size();

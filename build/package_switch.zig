@@ -4,20 +4,20 @@ const tools = @import("tool_options.zig");
 
 const ExportOptions = package_options.ExportOptions;
 
-fn c_backend_optimize_mode(exe: *std.Build.Step.Compile) std.builtin.OptimizeMode {
-    return exe.root_module.optimize orelse .Debug;
+fn c_backend_optimize_mode(exe: *std.Build.Step.Compile) std.lang.Optimize {
+    return exe.root_module.optimize orelse .debug;
 }
 
-fn c_backend_gcc_optimize_arg(optimize: std.builtin.OptimizeMode) []const u8 {
+fn c_backend_gcc_optimize_arg(optimize: std.lang.Optimize) []const u8 {
     return switch (optimize) {
-        .Debug => "-O0",
-        .ReleaseSafe, .ReleaseFast => "-O2",
-        .ReleaseSmall => "-Os",
+        .debug => "-O0",
+        .safe, .fast => "-O2",
+        .small => "-Os",
     };
 }
 
-fn c_backend_gcc_debug_arg(optimize: std.builtin.OptimizeMode) []const u8 {
-    return if (optimize == .Debug or optimize == .ReleaseSafe) "-g" else "-g0";
+fn c_backend_gcc_debug_arg(optimize: std.lang.Optimize) []const u8 {
+    return if (optimize == .debug or optimize == .safe) "-g" else "-g0";
 }
 
 /// Compiles the zig-emitted C with devkitA64, links against libnx, and
@@ -39,16 +39,12 @@ pub fn nro_pipeline(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOpt
     crt_query.cpu_model = .{ .explicit = game_target.result.cpu.model };
     const crt_target = b.resolveTargetQuery(crt_query);
 
-    const compiler_rt_path = b.pathJoin(&.{
-        b.graph.zig_lib_directory.path orelse ".",
-        "compiler_rt.zig",
-    });
     const crt_obj = b.addObject(.{
         .name = "aether_switch_compiler_rt",
         .root_module = b.createModule(.{
-            .root_source_file = .{ .cwd_relative = compiler_rt_path },
+            .root_source_file = std.Build.LazyPath.zig_lib.path(b, "compiler_rt.zig"),
             .target = crt_target,
-            .optimize = .ReleaseSmall,
+            .optimize = .small,
             .strip = true,
             // Switch homebrew uses libnx's switch.specs which links with
             // `-z text`. PIC is mandatory for any object that ends up in the
@@ -122,7 +118,7 @@ pub fn nro_pipeline(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOpt
     link.addArg(b.fmt("-I{s}", .{libnx_inc}));
     // zig's emitted C `#include "zig.h"`. The header lives in zig's own lib
     // directory; point gcc at it.
-    link.addArg(b.fmt("-I{s}", .{b.graph.zig_lib_directory.path orelse "."}));
+    link.addPrefixedDirectoryArg("-I", .zig_lib);
     link.addArg("-x");
     link.addArg("c");
     link.addArtifactArg(exe);

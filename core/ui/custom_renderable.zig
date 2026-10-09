@@ -31,7 +31,7 @@ pub const Command = struct {
     resolved_clip: ?layout.LogicalRect = null,
     payload_len: u8 = 0,
     payload_align: u8 = 1,
-    payload: [max_payload_bytes]u8 = [_]u8{0} ** max_payload_bytes,
+    payload: [max_payload_bytes]u8 = @splat(0),
 
     pub fn init(renderer: RendererId, bounds: layout.LogicalRect, layer: u8, clip: ClipMode, sequence: u16, value: anytype) Command {
         const T = @TypeOf(value);
@@ -74,14 +74,14 @@ pub const Renderer = struct {
 };
 
 pub const Registry = struct {
-    renderers: [@typeInfo(RendererId).@"enum".fields.len]?Renderer = [_]?Renderer{null} ** @typeInfo(RendererId).@"enum".fields.len,
+    renderers: [@typeInfo(RendererId).@"enum".field_names.len]?Renderer = @splat(null),
 
     pub fn register(self: *Registry, id: RendererId, renderer: Renderer) void {
-        self.renderers[@intFromEnum(id)] = renderer;
+        self.renderers[@backingInt(id)] = renderer;
     }
 
     pub fn get(self: *const Registry, id: RendererId) ?Renderer {
-        return self.renderers[@intFromEnum(id)];
+        return self.renderers[@backingInt(id)];
     }
 
     pub fn reset_all(self: *const Registry) void {
@@ -93,7 +93,7 @@ pub const Registry = struct {
     pub fn prepare_all(self: *const Registry, commands: []const Command) !void {
         for (self.renderers, 0..) |entry, i| {
             const renderer = entry orelse continue;
-            const id: RendererId = @enumFromInt(i);
+            const id: RendererId = @fromBackingInt(@intCast(i));
             var first: usize = 0;
             while (first < commands.len) {
                 while (first < commands.len and commands[first].renderer != id) : (first += 1) {}

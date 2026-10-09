@@ -2,19 +2,19 @@
     .name = .Aether,
     .version = "0.0.0",
     .fingerprint = 0x200ca2f6f2b63172, // Changing this has security and trust implications.
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.18.0-dev",
     .dependencies = .{
         .zigglgen = .{
-            .url = "git+https://github.com/castholm/zigglgen.git#6b21369ac50de8826f8af60a7edb33693b4ec7bf",
-            .hash = "zigglgen-0.5.0-zigglr_CLwBs1aABtYVtxNPo1SB8AzgKMVouoqULqkDQ",
+            .url = "git+https://github.com/castholm/zigglgen#38bfc858ce2182fcb9d5d1819210f97beb4a19d3",
+            .hash = "zigglgen-0.5.1-ziggliTOLwAZfmk4DG9VLmHGE2BexC4o_O5yZKW37vfl",
         },
         .vulkan_headers = .{
             .url = "https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/heads/vulkan-sdk-1.4.304.tar.gz",
             .hash = "N-V-__8AACUYwwHkOfRNOmzhES0A0wAstELzgG-GdNu-uUE5",
         },
         .pspsdk = .{
-            .url = "git+https://github.com/zPSP-Dev/Zig-PSP#35a7e02f1a2eafc200a851aea1ed0757128fe28e",
-            .hash = "pspsdk-0.7.0-BZphyk2bEgCFkzGUlGnNooIZmU52-Ezju6f4rU3JllQL",
+            .url = "git+https://github.com/zPSP-Dev/Zig-PSP#ca7481e4a78e1e425d284b022aa5d32aeceaf464",
+            .hash = "pspsdk-0.8.0-BZphysGbEgCFVNsbR1uGycHvoSUvvkp7-cO5iZCDK9hb",
         },
         .slangc_linux_x86_64 = .{
             .url = "https://github.com/shader-slang/slang/releases/download/v2026.5.1/slang-2026.5.1-linux-x86_64.tar.gz",
@@ -37,8 +37,8 @@
             .lazy = true,
         },
         .vulkan = .{
-            .url = "git+https://github.com/Snektron/vulkan-zig#3adbeefbc833c12656791d304b37a6315b357745",
-            .hash = "vulkan-0.0.0-r7YtxyBsAwD35FvkFhT2xruTNdCByD3TtGw44XWtfun8",
+            .url = "git+https://github.com/Snektron/vulkan-zig#f9688c6f4ebcb930f67044698ddd1322442e714b",
+            .hash = "vulkan-0.0.0-r7Ytx4yGAwDZf0XsT6_L1ol_XUAkyOgOyBqamf8begA0",
         },
         .system_sdk = .{
             .url = "https://github.com/zig-gamedev/system_sdk/archive/c0dbf11cdc17da5904ea8a17eadc54dee26567ec.tar.gz",
@@ -46,21 +46,17 @@
             .lazy = true,
         },
         .sdl3 = .{
-            .url = "git+https://codeberg.org/7Games/zig-sdl3?ref=master#69cf1fba30b39fe0a140fc2139d403692e650d16",
-            .hash = "sdl3-0.2.2-NmT1Q0ZUKgCxQv6PXwCIbr_MKILJYAgDWv1YhClnS4XH",
+            .url = "git+https://codeberg.org/IridescentRose/zig-sdl3#4f412843969c1a0def12286241771dfe5f50695f",
+            .hash = "sdl3-0.2.2-NmT1Q4thKgBrgurAk4FdrIMkofOzdZNl3ts8pazbE4Bb",
             .lazy = true,
         },
-        .zsflt = .{
-            .url = "git+https://github.com/GasInfinity/zsflt.git#1929cbae9d41c7e1178e494e42aa7b349a68cd8a",
-            .hash = "zsflt-0.0.1-_pCibQ4wAABnfZskVOk2Y14F056VNJtuqVpAEzUNBGfl",
-        },
         .zitrus = .{
-            .url = "git+https://codeberg.org/GasInfinity/zitrus.git#9a6864d3309c69e10a390fab2129263e775f505e",
-            .hash = "zitrus-0.0.0-Ewix9C2WHACB_SDYzcMHPhqVkOA2BlOJ7zjKOdKHmEdp",
+            .url = "git+https://codeberg.org/GasInfinity/zitrus#35cb3ecddb5a7abf4051d731757e73a16da3e64c",
+            .hash = "zitrus-0.0.0-Ewix9KcGIADBrToWj8CSU_t7ew_VgLRk4s7DsLi4fpsT",
         },
         .lint = .{
-            .url = "git+https://gitlab.com/hanabi_dev/tiger_lint#87ec426b183c71ae0d12a11faead6c00cb2c9778",
-            .hash = "tiger_lint-0.0.0-bKhmM1h-AwB_cGQluD-yzE_t7oy4bjY5-nAv6I2X-7zk",
+            .url = "git+https://gitlab.com/hanabi_dev/tiger_lint#3131804b31bd1898865415a507a502ef1118bf08",
+            .hash = "tiger_lint-0.0.0-bKhmM9agAwA8kiw7qOAMnu34tkOY2iAODMH3ejES5ILd",
         },
     },
     .paths = .{

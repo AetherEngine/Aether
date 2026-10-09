@@ -130,10 +130,10 @@ fn create_swapchain(self: *SwapChain) !void {
         .image_color_space = surface_format.color_space,
         .image_extent = surface_extent,
         .image_array_layers = 1,
-        .image_usage = .{ .color_attachment_bit = true, .transfer_dst_bit = true },
+        .image_usage = .{ .color_attachment = true, .transfer_dst = true },
         .image_sharing_mode = sharing_mode,
         .pre_transform = self.surface_capabilities.current_transform,
-        .composite_alpha = .{ .opaque_bit_khr = true },
+        .composite_alpha = .{ .opaque_khr = true },
         .present_mode = present_mode,
         .clipped = .true,
         .queue_family_index_count = qfi.len,
@@ -240,7 +240,7 @@ pub fn present(self: *SwapChain, cmdbuf: vk.CommandBuffer) !PresentState {
     const current = self.current_swap_image();
 
     // Reset only when we have acquired an image and are about to submit.
-    const wait_stage = [_]vk.PipelineStageFlags{.{ .color_attachment_output_bit = true }};
+    const wait_stage = [_]vk.PipelineStageFlags{.{ .color_attachment_output = true }};
     const frame_fence = self.frame_fences[self.frame_index];
     try self.context.logical_device.resetFences(@ptrCast(&frame_fence));
     try self.context.logical_device.queueSubmit(self.context.graphics_queue.handle, &[_]vk.SubmitInfo{.{
@@ -279,7 +279,7 @@ const SwapImage = struct {
             .format = format,
             .components = .{ .r = .identity, .g = .identity, .b = .identity, .a = .identity },
             .subresource_range = .{
-                .aspect_mask = .{ .color_bit = true },
+                .aspect_mask = .{ .color = true },
                 .base_mip_level = 0,
                 .level_count = 1,
                 .base_array_layer = 0,
@@ -316,7 +316,7 @@ fn create_frame_fences(self: *SwapChain) !void {
     };
 
     for (&self.frame_fences) |*fence| {
-        fence.* = try self.context.logical_device.createFence(&.{ .flags = .{ .signaled_bit = true } }, null);
+        fence.* = try self.context.logical_device.createFence(&.{ .flags = .{ .signaled = true } }, null);
         initialized += 1;
     }
 }

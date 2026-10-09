@@ -86,5 +86,5 @@ test "readable labels retain modifiers and report small output" {
     var buffer: [64]u8 = undefined;
     try std.testing.expectEqualStrings("Ctrl+Page Down", try format_label(&buffer, .{ .key = .PageDown }, .initOne(.ctrl), .readable));
     try std.testing.expectEqualStrings("0", key_name(.Num0, .compact));
-    try std.testing.expectError(error.NoSpaceLeft, format_label(buffer[0..2], .{ .key = .Escape }, .initEmpty(), .readable));
+    try std.testing.expectError(error.NoSpaceLeft, format_label(buffer[0..2], .{ .key = .Escape }, .empty, .readable));
 }

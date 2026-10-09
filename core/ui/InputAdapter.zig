@@ -56,7 +56,7 @@ pub fn open(self: *Adapter) void {
 pub fn poll(self: *Adapter, system: *input.InputSystem, actions: Actions, delta_seconds: f32, logical_scale: f32) Frame {
     const pointer = system.frame_pointer();
     var snapshot: Snapshot = .{ .pointer_x = pointer.position.x, .pointer_y = pointer.position.y, .pointer_moved = pointer.delta.x != 0 or pointer.delta.y != 0, .pointer_active = system.last_input_mode() == .keyboard_mouse };
-    inline for (std.meta.fields(Actions), 0..) |field, i| snapshot.buttons[i] = system.button(@field(actions, field.name));
+    inline for (comptime std.meta.fieldNames(Actions), 0..) |field_name, i| snapshot.buttons[i] = system.button(@field(actions, field_name));
     for (system.frame_events()) |event| switch (event.kind) {
         .mouse_wheel => |wheel| snapshot.wheel += wheel.delta.y,
         .mouse_move_abs, .mouse_move_rel => snapshot.pointer_moved = true,
@@ -90,7 +90,7 @@ pub fn update(self: *Adapter, snapshot: Snapshot, delta_seconds: f32, logical_sc
                     self.remaining[i] = @max(0.001, self.options.repeat_interval);
                 }
             }
-            if (fired and frame.direction == null) frame.direction = @enumFromInt(i);
+            if (fired and frame.direction == null) frame.direction = @fromBackingInt(@intCast(i));
         } else switch (i) {
             4 => frame.confirm = query.pressed(),
             5 => frame.cancel = query.pressed(),

@@ -22,7 +22,7 @@ pub fn app_bundle(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOptio
     // copy to its own cache-managed output path, keeping zig's caching honest.
     const patched_moltenvk = patch_dylib_id(
         b,
-        .{ .cwd_relative = b.pathJoin(&.{ molten_vk_dir, "libMoltenVK.dylib" }) },
+        b.graph.cwdRelativePath(b.pathJoin(&.{ molten_vk_dir, "libMoltenVK.dylib" })),
         "libMoltenVK.dylib",
     );
 
@@ -114,13 +114,13 @@ pub fn app_bundle(b: *std.Build, exe: *std.Build.Step.Compile, opts: ExportOptio
 
     // Must run after install_name_tool is long done. Sign leaves first, then
     // the exe, then the bundle dir.
-    const bundle_path = b.getInstallPath(.bin, app_name);
     const sign = b.addSystemCommand(&.{ "sh", "-c", b.fmt(
-        "codesign --force --sign - \"{s}/Contents/Frameworks/libMoltenVK.dylib\" && " ++
-            "codesign --force --sign - \"{s}/Contents/MacOS/{s}\" && " ++
-            "codesign --force --sign - \"{s}\"",
-        .{ bundle_path, bundle_path, exe.name, bundle_path },
-    ) });
+        "codesign --force --sign - \"$1/Contents/Frameworks/libMoltenVK.dylib\" && " ++
+            "codesign --force --sign - \"$1/Contents/MacOS/{s}\" && " ++
+            "codesign --force --sign - \"$1\"",
+        .{exe.name},
+    ), "sh" });
+    sign.addDirectoryArg(b.graph.path(.install_bin, app_name));
     sign.step.dependOn(&install.step);
     b.getInstallStep().dependOn(&sign.step);
 }

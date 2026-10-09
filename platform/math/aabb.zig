@@ -1,3 +1,4 @@
+const std = @import("std");
 const Vec3 = @import("vec3.zig");
 
 min: Vec3,
@@ -68,7 +69,6 @@ pub const SweepHit = struct {
 /// Parallel axes and zero-length directions are supported. Ties choose X, then
 /// Y, then Z. Invalid bounds/non-finite inputs return InvalidQuery.
 pub fn ray_intersection(self: Aabb, origin: Vec3, direction: Vec3, t_min: f32, t_max: f32) QueryError!?RayHit {
-    const std = @import("std");
     if (!self.valid() or !finite_vector(origin) or !finite_vector(direction) or
         !std.math.isFinite(t_min) or !std.math.isFinite(t_max) or t_min < 0 or t_max < t_min) return error.InvalidQuery;
     const mins = [3]f32{ self.min.x, self.min.y, self.min.z };
@@ -145,7 +145,6 @@ pub fn valid(self: Aabb) bool {
 }
 
 fn finite_vector(v: Vec3) bool {
-    const std = @import("std");
     return std.math.isFinite(v.x) and std.math.isFinite(v.y) and std.math.isFinite(v.z);
 }
 

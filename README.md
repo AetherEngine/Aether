@@ -36,7 +36,7 @@ content-neutral text, resource loading, streaming audio, and native services.
 
 ## Requirements
 
-- Zig **0.16.0** or later (see `build.zig.zon` for exact minimum)
+- Zig **0.17.0** or later (see `build.zig.zon` for exact minimum)
 - Vulkan SDK (for Vulkan headers; on macOS, MoltenVK is used)
 
 Desktop windowing, input, and audio use SDL3, which the build compiles from
@@ -222,7 +222,7 @@ zig build run -Dgfx=opengl
 zig build -Dtarget=mipsel-psp
 
 # Build in release mode
-zig build -Doptimize=ReleaseFast
+zig build -Doptimize=fast
 ```
 
 ## Input System

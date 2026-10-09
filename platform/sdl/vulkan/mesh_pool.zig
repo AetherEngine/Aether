@@ -60,18 +60,18 @@ const Page = struct {
         const device = context.logical_device;
         const buffer = try device.createBuffer(&.{
             .size = size,
-            .usage = .{ .vertex_buffer_bit = true, .index_buffer_bit = true },
+            .usage = .{ .vertex_buffer = true, .index_buffer = true },
             .sharing_mode = .exclusive,
         }, null);
         errdefer device.destroyBuffer(buffer, null);
         const requirements = device.getBufferMemoryRequirements(buffer);
         const memory = context.allocate_gpu_buffer(requirements, .{
-            .host_visible_bit = true,
-            .host_coherent_bit = true,
-            .device_local_bit = true,
+            .host_visible = true,
+            .host_coherent = true,
+            .device_local = true,
         }) catch try context.allocate_gpu_buffer(requirements, .{
-            .host_visible_bit = true,
-            .host_coherent_bit = true,
+            .host_visible = true,
+            .host_coherent = true,
         });
         errdefer device.freeMemory(memory, null);
         try device.bindBufferMemory(buffer, memory, 0);

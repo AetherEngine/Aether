@@ -9,8 +9,9 @@ pub const packaging = @import("build/packaging.zig");
 
 fn directory_exists(b: *std.Build, path: []const u8) bool {
     const io = b.graph.io;
-    const full_path = b.pathFromRoot(path);
-    var dir = std.Io.Dir.cwd().openDir(io, full_path, .{}) catch |err| switch (err) {
+    // Re-run configure if the entry appears or disappears.
+    b.dependOnDirectoryContents(b.path("."));
+    var dir = b.root.openDir(io, path, .{}) catch |err| switch (err) {
         error.FileNotFound, error.NotDir => return false,
         else => {
             std.debug.panic("unable to open directory '{s}': {s}", .{ path, @errorName(err) });
@@ -23,8 +24,8 @@ fn directory_exists(b: *std.Build, path: []const u8) bool {
 
 fn make_resource_manifest(b: *std.Build, resource_dir_path: []const u8) []const u8 {
     const io = b.graph.io;
-    const full_resource_dir_path = b.pathFromRoot(resource_dir_path);
-    var dir = std.Io.Dir.cwd().openDir(io, full_resource_dir_path, .{ .iterate = true }) catch |err| {
+    b.dependOnDirectoryContents(b.path(resource_dir_path));
+    var dir = b.root.openDir(io, resource_dir_path, .{ .iterate = true }) catch |err| {
         std.debug.panic("unable to open web resource directory '{s}': {s}", .{ resource_dir_path, @errorName(err) });
     };
     defer dir.close(io);
@@ -36,6 +37,10 @@ fn make_resource_manifest(b: *std.Build, resource_dir_path: []const u8) []const 
     while (walker.next(io) catch |err| {
         std.debug.panic("unable to walk web resource directory '{s}': {s}", .{ resource_dir_path, @errorName(err) });
     }) |entry| {
+        // Dependency tracking is not recursive; register every subdirectory.
+        if (entry.kind == .directory) {
+            b.dependOnDirectoryContents(b.path(b.pathJoin(&.{ resource_dir_path, entry.path })));
+        }
         if (entry.kind != .file) continue;
         if (std.mem.eql(u8, entry.path, "resources.manifest")) continue;
         manifest.appendSlice(b.allocator, entry.path) catch @panic("OOM");
@@ -53,12 +58,13 @@ pub fn build(b: *std.Build) void {
 
     const lint_dep = b.dependency("lint", .{
         .target = b.graph.host,
-        .optimize = .ReleaseSafe,
+        .optimize = .safe,
     });
     const run_lint = b.addRunArtifact(lint_dep.artifact("lint"));
     run_lint.setCwd(b.path("."));
-    if (b.args) |args| run_lint.addArgs(args);
+    run_lint.addPassthruArgs();
     run_lint.addArg(".");
+
     // Follow both module roots; named imports do not expose source paths.
     run_lint.addFileArg(b.path("core/root.zig"));
     run_lint.addFileArg(b.path("platform/platform.zig"));
@@ -75,7 +81,7 @@ pub fn build(b: *std.Build) void {
         .root_module = b.createModule(.{
             .root_source_file = b.path("tools/check_architecture.zig"),
             .target = b.graph.host,
-            .optimize = .ReleaseSafe,
+            .optimize = .safe,
         }),
     });
     const run_architecture_check = b.addRunArtifact(architecture_check);
@@ -95,7 +101,6 @@ pub fn build(b: *std.Build) void {
         .use_cwd = b.option(bool, "use-cwd", "Force resources+data dirs to CWD (debug/CI convenience; default: false)"),
         .flush_logs = b.option(bool, "flush-logs", "Flush aether.log after every log message (debugging hard hangs; default: false)"),
         .mesh_indexing = b.option(bool, "mesh-indexing", "Enable mesh index buffers (default: on except PSP/headless; override works on all backends)"),
-        .nintendo_switch = b.option(bool, "nintendo-switch", "Build for Nintendo Switch (requires -Dtarget=aarch64-freestanding-none and devkitA64/libnx)"),
     };
 
     const resolved_config = config.Config.resolve(target, overrides);
@@ -193,12 +198,10 @@ pub fn build(b: *std.Build) void {
         if (b.option(bool, "nxlink-server", "Switch: pass -s so nxlink stays listening after upload (relays stdout/stderr from nro)") orelse false) {
             link_cmd.addArg("-s");
         }
-        link_cmd.addArg(b.getInstallPath(.bin, "Aether-Switch/Aether.nro"));
+        link_cmd.addFileArg(b.graph.path(.install_bin, "Aether-Switch/Aether.nro"));
         link_cmd.step.dependOn(b.getInstallStep());
-        if (b.args) |args| {
-            link_cmd.addArg("--args");
-            link_cmd.addArgs(args);
-        }
+        // Arguments after the nro path are forwarded to the nro's argv.
+        link_cmd.addPassthruArgs();
 
         const link_step = b.step("nxlink", "Push the nro to a networked Switch via nxlink");
         link_step.dependOn(&link_cmd.step);
@@ -221,7 +224,7 @@ pub fn build(b: *std.Build) void {
     } else {
         const run_cmd = b.addRunArtifact(exe);
         run_cmd.step.dependOn(b.getInstallStep());
-        if (b.args) |args| run_cmd.addArgs(args);
+        run_cmd.addPassthruArgs();
         run_step.dependOn(&run_cmd.step);
     }
 
@@ -230,14 +233,10 @@ pub fn build(b: *std.Build) void {
     if (resolved_config.platform != .psp and resolved_config.platform != .nintendo_3ds and resolved_config.platform != .nintendo_switch) {
         const mod_tests = b.addTest(.{
             .root_module = exe.root_module.import_table.get("aether").?,
-            .use_llvm = exe.use_llvm,
-            .use_lld = exe.use_lld,
         });
         const run_mod_tests = b.addRunArtifact(mod_tests);
         const platform_tests = b.addTest(.{
             .root_module = modules.platform_module(exe),
-            .use_llvm = exe.use_llvm,
-            .use_lld = exe.use_lld,
         });
         const run_platform_tests = b.addRunArtifact(platform_tests);
 
