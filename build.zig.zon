@@ -46,8 +46,8 @@
             .lazy = true,
         },
         .sdl3 = .{
-            .url = "git+https://codeberg.org/ellie_leathe/zig-sdl3#b3061aa587b2c8076fbd55fdc7a29693e253a753",
-            .hash = "sdl3-0.2.2-NmT1Q4pjKgBHqH1hP9CfOv14LwWjuEsjtdituu0hK1Xq",
+            .url = "git+https://codeberg.org/IridescentRose/zig-sdl3#4f412843969c1a0def12286241771dfe5f50695f",
+            .hash = "sdl3-0.2.2-NmT1Q4thKgBrgurAk4FdrIMkofOzdZNl3ts8pazbE4Bb",
             .lazy = true,
         },
         .zitrus = .{
