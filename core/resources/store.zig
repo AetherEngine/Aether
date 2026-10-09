@@ -1,5 +1,6 @@
 const std = @import("std");
 const Source = @import("source.zig").Source;
+const MemorySource = @import("source.zig").MemorySource;
 
 /// A bounded set of decoded assets. Retained names keep their T address across
 /// successful apply/reload. Pointers are borrowed until that name is removed or
@@ -139,7 +140,6 @@ const TestLoader = struct {
 };
 
 fn check_staging(allocator: std.mem.Allocator) !void {
-    const MemorySource = @import("source.zig").MemorySource;
     var first: MemorySource = .{ .allocator = allocator, .files = &.{ .{ .path = "a", .bytes = "old" }, .{ .path = "b", .bytes = "second" } } };
     var next: MemorySource = .{ .allocator = allocator, .files = &.{ .{ .path = "a", .bytes = "new" }, .{ .path = "b", .bytes = "bad" } } };
     var store = AssetStoreType([]u8).init(allocator, .{ .load = TestLoader.load, .destroy = TestLoader.destroy }, 2);
@@ -169,7 +169,6 @@ test "asset reload stages values, preserves addresses and rolls back failures" {
 }
 
 fn check_retained(allocator: std.mem.Allocator) !void {
-    const MemorySource = @import("source.zig").MemorySource;
     var first: MemorySource = .{ .allocator = allocator, .files = &.{ .{ .path = "a", .bytes = "old" }, .{ .path = "b", .bytes = "second" } } };
     var next: MemorySource = .{ .allocator = allocator, .files = &.{ .{ .path = "a", .bytes = "bad" }, .{ .path = "c", .bytes = "new" } } };
     var store = AssetStoreType([]u8).init(allocator, .{ .load = TestLoader.load, .destroy = TestLoader.destroy }, 3);

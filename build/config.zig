@@ -7,11 +7,7 @@ pub const Platform = enum {
     wasm,
     psp,
     nintendo_3ds,
-    /// Nintendo Switch. Zig 0.16 has no `switch`/`horizon` OS tag, so the
-    /// canonical target is `aarch64-freestanding-none` and we can't infer
-    /// the platform from `target.os.tag` alone. Opt in with
-    /// `-Dnintendo-switch=true`; `Config.resolve` then promotes a
-    /// freestanding aarch64 target to this variant.
+    /// Nintendo Switch (`-Dtarget=aarch64-switch`).
     nintendo_switch,
 };
 
@@ -68,27 +64,17 @@ pub const Config = struct {
     mesh_indexing: bool = true,
 
     pub fn resolve(target: std.Build.ResolvedTarget, overrides: Overrides) Config {
-        const plat: Platform = blk: {
-            if (overrides.nintendo_switch == true) {
-                if (target.result.cpu.arch != .aarch64 or target.result.os.tag != .freestanding) {
-                    std.debug.panic(
-                        "-Dnintendo-switch=true requires -Dtarget=aarch64-freestanding-none (got {s}-{s})\n",
-                        .{ @tagName(target.result.cpu.arch), @tagName(target.result.os.tag) },
-                    );
-                }
-                break :blk .nintendo_switch;
-            }
-            break :blk switch (target.result.os.tag) {
-                .windows => .windows,
-                .macos => .macos,
-                .linux => .linux,
-                .wasi => .wasm,
-                .psp => .psp,
-                .@"3ds" => .nintendo_3ds,
-                else => |t| {
-                    std.debug.panic("Unsupported OS! {}\n", .{t});
-                },
-            };
+        const plat: Platform = switch (target.result.os.tag) {
+            .windows => .windows,
+            .macos => .macos,
+            .linux => .linux,
+            .wasi => .wasm,
+            .psp => .psp,
+            .@"3ds" => .nintendo_3ds,
+            .@"switch" => .nintendo_switch,
+            else => |t| {
+                std.debug.panic("Unsupported OS! {}\n", .{t});
+            },
         };
 
         const default_gfx: Gfx = switch (target.result.os.tag) {
@@ -123,9 +109,6 @@ pub const Config = struct {
         use_cwd: ?bool = null,
         flush_logs: ?bool = null,
         mesh_indexing: ?bool = null,
-        /// Promotes an `aarch64-freestanding-none` target to the
-        /// `nintendo_switch` platform. No effect when null/false.
-        nintendo_switch: ?bool = null,
     };
 };
 

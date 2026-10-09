@@ -134,11 +134,11 @@ test "spawned thread sees its requested priority" {
         .{ .allocator = std.testing.allocator, .priority = .high },
         struct {
             fn run(s: *std.atomic.Value(i8)) void {
-                s.store(@intFromEnum(Thread.current_priority()), .seq_cst);
+                s.store(@backingInt(Thread.current_priority()), .seq_cst);
             }
         }.run,
         .{&seen},
     );
     t.join();
-    try std.testing.expectEqual(@as(i8, @intFromEnum(Priority.high)), seen.load(.seq_cst));
+    try std.testing.expectEqual(@as(i8, @backingInt(Priority.high)), seen.load(.seq_cst));
 }

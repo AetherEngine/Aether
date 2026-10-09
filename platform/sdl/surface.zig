@@ -47,7 +47,7 @@ pub fn init(self: *Surface, width: u32, height: u32, title: [:0]const u8, fullsc
         sdl3.video.gl.setAttribute(.double_buffer, 1) catch return error.SurfaceInitFailed;
         sdl3.video.gl.setAttribute(.context_major_version, 4) catch return error.SurfaceInitFailed;
         sdl3.video.gl.setAttribute(.context_minor_version, 5) catch return error.SurfaceInitFailed;
-        sdl3.video.gl.setAttribute(.context_profile_mask, @intCast(@intFromEnum(sdl3.video.gl.Profile.core))) catch return error.SurfaceInitFailed;
+        sdl3.video.gl.setAttribute(.context_profile_mask, @intCast(@backingInt(sdl3.video.gl.Profile.core))) catch return error.SurfaceInitFailed;
         sdl3.video.gl.setAttribute(.framebuffer_srgb_capable, 0) catch return error.SurfaceInitFailed;
         flags.open_gl = true;
         Util.engine_logger.debug("Requesting OpenGL Core 4.5!", .{});

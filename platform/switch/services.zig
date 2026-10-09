@@ -14,16 +14,8 @@ const process_init = @import("aether").CProcessInit;
 const std = @import("std");
 const Cio = @import("aether").Cio;
 const entry_common = @import("aether_entry_common");
-const c = @cImport({
-    @cUndef("_GNU_SOURCE");
-    @cUndef("_DEFAULT_SOURCE");
-    @cDefine("_POSIX_C_SOURCE", "200809L");
-    @cDefine("wint_t", "__WINT_TYPE__");
-    @cDefine("__SWITCH__", "1");
-    @cDefine("_FORTIFY_SOURCE", "0");
-    @cInclude("stdio.h");
-    @cInclude("switch/runtime/devices/console.h");
-});
+// Translated from console.h by the build (see build/modules.zig).
+const c = @import("switch_console_c");
 
 pub const os = struct {
     pub const PATH_MAX = 1024;
@@ -117,14 +109,15 @@ export var __nx_exception_ignoredebug: u32 = 1;
 export var __nx_exception_stack: [32 * 1024]u8 align(16) = undefined;
 export const __nx_exception_stack_size: usize = __nx_exception_stack.len;
 
-fn entry(_: c_int, _: [*c][*c]u8) callconv(.c) c_int {
+fn entry(argc: c_int, argv: [*c][*c]u8) callconv(.c) c_int {
     if (program_stack_top == 0) {
         program_stack_top = asm volatile ("mov %[top], sp"
             : [top] "=r" (-> usize),
         );
     }
 
-    const init = process_init.make_init(.{ .vector = {} });
+    const args: [*]const [*:0]const u8 = @ptrCast(argv);
+    const init = process_init.make_init(.{ .vector = args[0..@intCast(argc)] });
     defer Cio.deinitNetworking();
     entry_common.call_main(init) catch |err| {
         fatal_main_error(err, @errorReturnTrace(), @returnAddress());
@@ -277,7 +270,7 @@ fn console_write(message: []const u8) void {
     }
 }
 
-fn fatal_main_error(err: anyerror, maybe_trace: ?*std.builtin.StackTrace, fallback_addr: usize) noreturn {
+fn fatal_main_error(err: anyerror, maybe_trace: ?*std.lang.StackTrace, fallback_addr: usize) noreturn {
     @branchHint(.cold);
     @setRuntimeSafety(false);
 
@@ -334,7 +327,7 @@ fn fatal_main_error(err: anyerror, maybe_trace: ?*std.builtin.StackTrace, fallba
     fatal_with_context(main_pc, entry_fp, entry_lr, entry_sp, 0, 0, 0, 0, addrs[0..n], 0);
 }
 
-pub fn panic(msg: []const u8, _: ?*std.builtin.StackTrace, first_trace_addr: ?usize) noreturn {
+pub fn panic(msg: []const u8, _: ?*std.lang.StackTrace, first_trace_addr: ?usize) noreturn {
     @branchHint(.cold);
     @setRuntimeSafety(false);
 

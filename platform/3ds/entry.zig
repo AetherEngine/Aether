@@ -87,7 +87,7 @@ fn detect_and_configure_new_3ds(srv: horizon.ServiceManager) bool {
     };
     defer ptm.close();
 
-    const is_new_3ds = ptm.sendIsNew3DS() catch |err| {
+    const is_new_3ds = ptm.sendIsNew3ds() catch |err| {
         log.warn("3DS New-model detection failed: {s}", .{@errorName(err)});
         return false;
     };

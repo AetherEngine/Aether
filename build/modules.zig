@@ -10,7 +10,7 @@ pub const GameOptions = struct {
     name: []const u8,
     root_source_file: std.Build.LazyPath,
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode = .Debug,
+    optimize: std.lang.Optimize = .debug,
     overrides: Config.Overrides = .{},
 };
 
@@ -18,7 +18,7 @@ pub const HeadlessOptions = struct {
     name: []const u8,
     root_source_file: std.Build.LazyPath,
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode = .Debug,
+    optimize: std.lang.Optimize = .debug,
     overrides: Config.Overrides = .{},
 };
 
@@ -45,15 +45,37 @@ fn entry_root_source(config: Config) []const u8 {
     };
 }
 
-fn add_nintendo_c_import_paths(_: *std.Build, mod: *std.Build.Module, config: Config, dkp: []const u8) void {
+const SwitchCImport = struct {
+    import_name: []const u8,
+    header: []const u8,
+};
+
+/// Platform-side libnx/deko3d headers.
+const switch_platform_c_imports = [_]SwitchCImport{
+    .{ .import_name = "switch_c", .header = "platform/switch/c.h" },
+    .{ .import_name = "switch_deko_c", .header = "platform/switch/deko.h" },
+};
+
+/// Console headers used by the Switch executable shim.
+const switch_entry_c_imports = [_]SwitchCImport{
+    .{ .import_name = "switch_console_c", .header = "platform/switch/console.h" },
+};
+
+fn add_nintendo_c_imports(owner: *std.Build, mod: *std.Build.Module, config: Config, dkp: []const u8, imports: []const SwitchCImport) void {
     const b = mod.owner;
     switch (config.platform) {
-        .nintendo_switch => {
-            // Zig's Switch C import can otherwise see newlib's fortified
-            // wrappers and emit references to __ssp_real_* symbols.
-            mod.addCMacro("_FORTIFY_SOURCE", "0");
-            mod.addIncludePath(.{ .cwd_relative = b.pathJoin(&.{ dkp, "devkitA64/aarch64-none-elf/include" }) });
-            mod.addIncludePath(.{ .cwd_relative = b.pathJoin(&.{ dkp, "libnx/include" }) });
+        .nintendo_switch => for (imports) |import| {
+            const translate = b.addTranslateC(.{
+                .root_source_file = owner.path(import.header),
+                .target = mod.resolved_target.?,
+                .optimize = mod.optimize.?,
+            });
+            // Newlib's fortified wrappers would otherwise emit references
+            // to __ssp_real_* symbols.
+            translate.defineCMacro("_FORTIFY_SOURCE", "0");
+            translate.addIncludePath(b.graph.cwdRelativePath(b.pathJoin(&.{ dkp, "devkitA64/aarch64-none-elf/include" })));
+            translate.addIncludePath(b.graph.cwdRelativePath(b.pathJoin(&.{ dkp, "libnx/include" })));
+            mod.addImport(import.import_name, translate.createModule());
         },
         else => {},
     }
@@ -90,7 +112,7 @@ pub fn add_game(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.
             .{ .name = "options", .module = options_module },
         },
     });
-    const mod = b.addModule("Aether", .{
+    const mod = b.createModule(.{
         .root_source_file = owner.path("core/root.zig"),
         .target = target,
         .optimize = opts.optimize,
@@ -178,7 +200,7 @@ pub fn add_game(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.
             platform_mod.linkSystemLibrary("objc", .{});
 
             // Link MoltenVK directly as the Vulkan ICD -- no loader.
-            platform_mod.addLibraryPath(.{ .cwd_relative = tools.macos_molten_vk_path(b) });
+            platform_mod.addLibraryPath(b.graph.cwdRelativePath(tools.macos_molten_vk_path(b)));
             platform_mod.linkSystemLibrary("MoltenVK", .{});
 
             // rpath for the .app bundle layout.
@@ -193,7 +215,7 @@ pub fn add_game(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.
     }
 
     if (uses_nintendo_c_io) {
-        add_nintendo_c_import_paths(owner, platform_mod, config, tools.devkit_pro_path(b));
+        add_nintendo_c_imports(owner, platform_mod, config, tools.devkit_pro_path(b), &switch_platform_c_imports);
     }
     shaders.add_internal_shader_module(owner, b, platform_mod, config);
 
@@ -243,17 +265,13 @@ pub fn add_game(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.
     }
     if (uses_nintendo_c_io) {
         // The Switch executable shim also imports native console headers.
-        add_nintendo_c_import_paths(owner, root_mod, config, tools.devkit_pro_path(b));
+        add_nintendo_c_imports(owner, root_mod, config, tools.devkit_pro_path(b), &switch_entry_c_imports);
     }
 
-    // Zig 0.16's self-hosted linker cannot handle .sframe in newer glibc CRT objects.
-    const linux_glibc = target.result.os.tag == .linux and target.result.abi.isGnu();
     const exe = b.addExecutable(.{
         .name = opts.name,
         .root_module = root_mod,
         .zig_lib_dir = if (zitrus_dep) |zd| zd.namedLazyPath("juice/zig_lib") else null,
-        .use_llvm = if (linux_glibc) true else null,
-        .use_lld = if (linux_glibc) true else null,
     });
 
     if (psp_dep) |pd| {
@@ -277,7 +295,7 @@ pub fn add_game(owner: *std.Build, b: *std.Build, opts: GameOptions) *std.Build.
         exe.setLinkerScript(zd.namedLazyPath("horizon/ld"));
     }
 
-    if (config.platform == .windows and (opts.optimize == .ReleaseFast or opts.optimize == .ReleaseSmall)) {
+    if (config.platform == .windows and (opts.optimize == .fast or opts.optimize == .small)) {
         exe.subsystem = .windows;
     }
 
@@ -332,7 +350,7 @@ pub fn add_headless(owner: *std.Build, b: *std.Build, opts: HeadlessOptions) *st
             .{ .name = "options", .module = options_module },
         },
     });
-    const mod = b.addModule("Aether", .{
+    const mod = b.createModule(.{
         .root_source_file = owner.path("core/root.zig"),
         .target = target,
         .optimize = opts.optimize,
@@ -355,7 +373,7 @@ pub fn add_headless(owner: *std.Build, b: *std.Build, opts: HeadlessOptions) *st
     }
 
     if (uses_nintendo_c_io) {
-        add_nintendo_c_import_paths(owner, platform_mod, config, tools.devkit_pro_path(b));
+        add_nintendo_c_imports(owner, platform_mod, config, tools.devkit_pro_path(b), &switch_platform_c_imports);
     }
 
     const user_mod = b.createModule(.{
@@ -403,17 +421,13 @@ pub fn add_headless(owner: *std.Build, b: *std.Build, opts: HeadlessOptions) *st
     }
     if (uses_nintendo_c_io) {
         // The Switch executable shim also imports native console headers.
-        add_nintendo_c_import_paths(owner, root_mod, config, tools.devkit_pro_path(b));
+        add_nintendo_c_imports(owner, root_mod, config, tools.devkit_pro_path(b), &switch_entry_c_imports);
     }
 
-    // Keep headless executables on the same Linux glibc linker path as games.
-    const linux_glibc = target.result.os.tag == .linux and target.result.abi.isGnu();
     const exe = b.addExecutable(.{
         .name = opts.name,
         .root_module = root_mod,
         .zig_lib_dir = if (zitrus_dep) |zd| zd.namedLazyPath("juice/zig_lib") else null,
-        .use_llvm = if (linux_glibc) true else null,
-        .use_lld = if (linux_glibc) true else null,
     });
 
     if (psp_dep) |pd| {

@@ -550,7 +550,7 @@ fn compute_glyph_widths(texture: *const Rendering.Texture) [glyph_count]u8 {
     assert(texture.width == 128);
     assert(texture.height == 128);
 
-    var widths: [glyph_count]u8 = [1]u8{0} ** glyph_count;
+    var widths: [glyph_count]u8 = @splat(0);
 
     var code: u32 = 0;
     while (code < glyph_count) : (code += 1) {

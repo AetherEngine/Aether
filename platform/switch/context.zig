@@ -73,7 +73,7 @@ fn dump_gpu_markers(self: *Context) void {
 }
 
 fn gpu_marker_offset(slot: GpuMarkerSlot) u32 {
-    return @intCast(@intFromEnum(slot) * debug_gpu_marker_slot_stride);
+    return @intCast(@backingInt(slot) * debug_gpu_marker_slot_stride);
 }
 
 fn gpu_marker_cpu_index(slot: GpuMarkerSlot) usize {
@@ -216,7 +216,7 @@ pub fn mark_gpu(self: *Context, command_buffer: dk.DkCmdBuf, marker: Marker) voi
     if (self.gpu_marker_gpu_addr == 0) return;
     self.gpu_marker_sequence +%= 1;
     self.report_gpu_marker_value(command_buffer, .sequence, self.gpu_marker_sequence);
-    self.report_gpu_marker_value(command_buffer, .phase, @intFromEnum(marker));
+    self.report_gpu_marker_value(command_buffer, .phase, @backingInt(marker));
 }
 
 pub fn mark_gpu_draw(
@@ -244,7 +244,7 @@ pub fn mark_gpu_draw(
     self.report_gpu_marker_value(command_buffer, .texture_id, texture_id);
     self.report_gpu_marker_value(command_buffer, .buffer_size, buffer_size);
     self.report_gpu_marker_value(command_buffer, .uniform_slot, uniform_slot);
-    self.report_gpu_marker_value(command_buffer, .phase, @intFromEnum(marker));
+    self.report_gpu_marker_value(command_buffer, .phase, @backingInt(marker));
 }
 
 pub fn create_mem_block(self: *Context, size: u32, flags: u32) !dk.DkMemBlock {

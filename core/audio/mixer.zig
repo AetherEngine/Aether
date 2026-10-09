@@ -641,7 +641,7 @@ test "owned streams close once after stop completion destroy failure and shutdow
     };
     const Mix = MixerType(Backend);
     const endings = enum { stop, complete, destroy, reject, shutdown, unplayed };
-    inline for (std.meta.tags(endings)) |ending| {
+    inline for (comptime std.meta.tags(endings)) |ending| {
         try Mix.init(std.testing.allocator, std.testing.io);
         var probe: Probe = .{};
         var input: std.Io.Reader = .fixed(&.{ 0, 0 });

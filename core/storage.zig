@@ -242,7 +242,7 @@ test "promotion failures restore old data and failed rollback preserves recovery
         }
     };
     const Failure = enum { initial_rename, promotion, rollback, cleanup, direct };
-    inline for (std.meta.tags(Failure)) |failure| {
+    inline for (comptime std.meta.tags(Failure)) |failure| {
         var tmp = t.tmpDir(.{});
         defer tmp.cleanup();
 

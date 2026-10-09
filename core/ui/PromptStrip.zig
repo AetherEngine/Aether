@@ -60,7 +60,7 @@ pub fn draw(list: *DrawList, font: *const FontBatcher, provider: ?GlyphProvider,
                 x = try add(x, g.width);
             } else {
                 var buffer: [64]u8 = undefined;
-                const label = try input.display.format_label(&buffer, source, .initEmpty(), .compact);
+                const label = try input.display.format_label(&buffer, source, .empty, .compact);
                 try text(list, font, label, x, options);
                 x = try add(x, font.string_width(label, options.spacing, options.text_scale));
             }

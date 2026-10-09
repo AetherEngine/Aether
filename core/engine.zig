@@ -129,7 +129,7 @@ pub const CategoryTracker = struct {
     }
 };
 
-const tracker_count = @typeInfo(Pool).@"enum".fields.len;
+const tracker_count = @typeInfo(Pool).@"enum".field_names.len;
 
 pub const Engine = struct {
     io: std.Io,
@@ -203,15 +203,15 @@ pub const Engine = struct {
         self.pool = memory.PoolAlloc.init(mem, "main");
         const inner = self.pool.allocator();
 
-        inline for (std.meta.fields(Pool), 0..) |f, i| {
+        inline for (comptime std.meta.fieldNames(Pool), 0..) |pool_name, i| {
             self.trackers[i] = .{
                 .inner = inner,
                 .used = 0,
-                .budget = @field(config.memory, f.name),
+                .budget = @field(config.memory, pool_name),
                 .high_water = 0,
                 .allocation_count = 0,
                 .last_failed_request = null,
-                .name = f.name,
+                .name = pool_name,
             };
         }
         self.frame_scratch = std.heap.ArenaAllocator.init(self.tracker_allocator(.frame));
@@ -285,7 +285,7 @@ pub const Engine = struct {
     }
 
     fn tracker_allocator(self: *Engine, p: Pool) std.mem.Allocator {
-        return self.trackers[@intFromEnum(p)].get_allocator();
+        return self.trackers[@backingInt(p)].get_allocator();
     }
 
     fn reset_frame_scratch(self: *Engine) void {
@@ -319,11 +319,11 @@ pub const Engine = struct {
     }
 
     pub fn pool_used(self: *const Engine, p: Pool) usize {
-        return self.trackers[@intFromEnum(p)].used;
+        return self.trackers[@backingInt(p)].used;
     }
 
     pub fn pool_budget(self: *const Engine, p: Pool) usize {
-        return self.trackers[@intFromEnum(p)].budget;
+        return self.trackers[@backingInt(p)].budget;
     }
 
     pub fn pool_remaining(self: *const Engine, p: Pool) usize {
@@ -336,44 +336,42 @@ pub const Engine = struct {
     };
 
     pub fn pool_high_water(self: *const Engine, p: Pool) usize {
-        return self.trackers[@intFromEnum(p)].high_water;
+        return self.trackers[@backingInt(p)].high_water;
     }
 
     pub fn pool_allocation_count(self: *const Engine, p: Pool) usize {
-        return self.trackers[@intFromEnum(p)].allocation_count;
+        return self.trackers[@backingInt(p)].allocation_count;
     }
 
     pub fn pool_last_failed_request(self: *const Engine, p: Pool) ?usize {
-        return self.trackers[@intFromEnum(p)].last_failed_request;
+        return self.trackers[@backingInt(p)].last_failed_request;
     }
 
     pub fn set_budget(self: *Engine, p: Pool, new_budget: usize) MemoryError!void {
         if (new_budget < self.pool_used(p)) return error.BudgetBelowCurrentUsage;
-        self.trackers[@intFromEnum(p)].budget = new_budget;
+        self.trackers[@backingInt(p)].budget = new_budget;
     }
 
     pub fn apply_memory_profile(self: *Engine, profile: *const MemoryProfile) MemoryError!void {
         if (profile.budgets.total() > self.pool.budget) return error.TotalBudgetExceedsBackingMemory;
 
-        inline for (std.meta.fields(Pool)) |f| {
-            const p: Pool = @enumFromInt(f.value);
-            const new_budget = @field(profile.budgets, f.name);
+        inline for (comptime std.meta.tags(Pool)) |p| {
+            const new_budget = @field(profile.budgets, @tagName(p));
             if (new_budget < self.pool_used(p)) return error.BudgetBelowCurrentUsage;
         }
 
-        inline for (std.meta.fields(Pool)) |f| {
-            const p: Pool = @enumFromInt(f.value);
-            self.trackers[@intFromEnum(p)].budget = @field(profile.budgets, f.name);
+        inline for (comptime std.meta.tags(Pool)) |p| {
+            self.trackers[@backingInt(p)].budget = @field(profile.budgets, @tagName(p));
         }
         self.current_memory_profile = profile.name;
     }
 
     pub fn memory_diagnostics(self: *const Engine) MemoryDiagnostics {
         var pools: [memory.pool_count]memory.PoolDiagnostics = undefined;
-        inline for (std.meta.fields(Pool), 0..) |f, i| {
+        inline for (comptime std.meta.fieldNames(Pool), 0..) |pool_name, i| {
             const tracker = self.trackers[i];
             pools[i] = .{
-                .name = f.name,
+                .name = pool_name,
                 .used = tracker.used,
                 .budget = tracker.budget,
                 .remaining_budget = tracker.budget -| tracker.used,
@@ -410,7 +408,7 @@ pub const Engine = struct {
         if (diagnostics.profile_name) |name| {
             Util.engine_logger.info("  profile: {s}", .{name});
         }
-        inline for (std.meta.fields(Pool), 0..) |_, i| {
+        inline for (0..memory.pool_count) |i| {
             const diag = diagnostics.pools[i];
             const used = diag.used;
             const budget = diag.budget;
@@ -745,15 +743,15 @@ test "frame scratch allocator resets tracked usage" {
         .frame = frame_budget,
         .user = 1024,
     };
-    inline for (std.meta.fields(Pool), 0..) |f, i| {
+    inline for (comptime std.meta.fieldNames(Pool), 0..) |pool_name, i| {
         engine.trackers[i] = .{
             .inner = inner,
             .used = 0,
-            .budget = @field(config, f.name),
+            .budget = @field(config, pool_name),
             .high_water = 0,
             .allocation_count = 0,
             .last_failed_request = null,
-            .name = f.name,
+            .name = pool_name,
         };
     }
     engine.frame_scratch = std.heap.ArenaAllocator.init(engine.tracker_allocator(.frame));
@@ -782,15 +780,15 @@ test "zero frame budget disables frame scratch allocations" {
         .frame = 0,
         .user = 1024,
     };
-    inline for (std.meta.fields(Pool), 0..) |f, i| {
+    inline for (comptime std.meta.fieldNames(Pool), 0..) |pool_name, i| {
         engine.trackers[i] = .{
             .inner = inner,
             .used = 0,
-            .budget = @field(config, f.name),
+            .budget = @field(config, pool_name),
             .high_water = 0,
             .allocation_count = 0,
             .last_failed_request = null,
-            .name = f.name,
+            .name = pool_name,
         };
     }
     engine.frame_scratch = std.heap.ArenaAllocator.init(engine.tracker_allocator(.frame));

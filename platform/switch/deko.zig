@@ -1,15 +1,7 @@
 const std = @import("std");
 
-const c = @cImport({
-    @cUndef("_GNU_SOURCE");
-    @cUndef("_DEFAULT_SOURCE");
-    @cDefine("_POSIX_C_SOURCE", "200809L");
-    @cDefine("wint_t", "__WINT_TYPE__");
-    @cDefine("__SWITCH__", "1");
-    @cDefine("__thread", "");
-    @cDefine("_FORTIFY_SOURCE", "0");
-    @cInclude("deko3d.h");
-});
+// Translated from deko.h by the build (see build/modules.zig).
+const c = @import("switch_deko_c");
 
 pub const DkDevice = c.DkDevice;
 pub const DkMemBlock = c.DkMemBlock;
@@ -49,7 +41,7 @@ pub const DkSampler = c.DkSampler;
 pub const DkIdxFormat = c.DkIdxFormat;
 pub const IdxFormatUint16 = c.DkIdxFormat_Uint16;
 
-// Zig demotes deko3d's C bitfield structs to opaque types during @cImport.
+// Zig demotes deko3d's C bitfield structs to opaque types during C translation.
 // Keep only these raw ABI mirrors locally so state setup remains explicit.
 pub const DkFence = c.DkFence;
 pub const DkRasterizerState = extern struct { bits: u32 };

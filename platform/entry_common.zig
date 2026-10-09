@@ -23,11 +23,11 @@ fn validate_user_root() void {
     }
 
     const main_info = @typeInfo(@TypeOf(app_root.main)).@"fn";
-    if (main_info.params.len != 1) {
+    if (main_info.param_types.len != 1) {
         @compileError("Aether apps must expose main(std.process.Init); alternate main signatures are no longer supported");
     }
 
-    const Param = main_info.params[0].type orelse
+    const Param = main_info.param_types[0] orelse
         @compileError("Aether app main parameter must have a concrete type");
     if (Param != std.process.Init) {
         @compileError("Aether app main parameter must be std.process.Init");

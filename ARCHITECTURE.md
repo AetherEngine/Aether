@@ -143,7 +143,7 @@ dependencies; target builds are still required to validate backend interfaces.
 
 ## Validation
 
-Run the relevant checks with Zig 0.16.0 or newer. Console targets require the
+Run the relevant checks with Zig 0.17.0 or newer. Console targets require the
 listed SDKs and tools in addition to the Zig package dependencies.
 
 | Command | Coverage / toolchain |
@@ -159,7 +159,7 @@ listed SDKs and tools in addition to the Zig package dependencies.
 | `node --test tools/test_web_file_export.mjs` | Virtual file export bytes, filename/MIME, initiation failure, and URL cleanup |
 | `zig build -Dtarget=mipsel-psp` | PSP build, using Zig and the Zig-PSP/pspsdk package tools |
 | `zig build -Dtarget=arm-3ds` | 3DS build, using Zig and the zitrus package/toolchain |
-| `zig build -Dtarget=aarch64-freestanding-none -Dnintendo-switch=true` | Switch build, using devkitA64, libnx, and uam |
+| `zig build -Dtarget=aarch64-switch` | Switch build, using devkitA64, libnx, and uam |
 | `zig build lint` | Lint and architecture scan |
 
 Browser API probes use `zig build check-api -Dtarget=wasm32-wasi

@@ -13,7 +13,7 @@ pub const MemoryConfig = struct {
 };
 
 pub const Pool = enum { render, audio, game, frame, user };
-pub const pool_count = @typeInfo(Pool).@"enum".fields.len;
+pub const pool_count = @typeInfo(Pool).@"enum".field_names.len;
 
 /// A named set of movable accounting budgets over the engine's one shared
 /// backing memory pool.

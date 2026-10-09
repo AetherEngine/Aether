@@ -40,7 +40,7 @@ const joystick_max: f32 = @floatFromInt(c.joystick_max);
 const max_text_bytes: usize = 1024;
 const swkbd_config_bytes: usize = 0x600;
 
-const axis_count = @typeInfo(input_api.Axis).@"enum".fields.len;
+const axis_count = @typeInfo(input_api.Axis).@"enum".field_names.len;
 
 var initialized: bool = false;
 var pad: c.PadState = undefined;
@@ -236,7 +236,7 @@ fn pump_touch(input: input_api.EventSink) void {
 }
 
 fn deliver_axis(input: input_api.EventSink, axis: input_api.Axis, value: f32) void {
-    const idx = @intFromEnum(axis);
+    const idx = @backingInt(axis);
     const prev = prev_axes[idx];
     if (value != 0.0 or prev != 0.0) input.deliver_gamepad_axis(axis, value);
     prev_axes[idx] = value;
@@ -244,9 +244,8 @@ fn deliver_axis(input: input_api.EventSink, axis: input_api.Axis, value: f32) vo
 
 fn release_all_input_state(input: input_api.EventSink) void {
     if (prev_buttons != 0) diff_buttons(input, 0);
-    inline for (std.meta.fields(input_api.Axis)) |f| {
-        const axis: input_api.Axis = @enumFromInt(f.value);
-        const index = @intFromEnum(axis);
+    inline for (comptime std.meta.tags(input_api.Axis)) |axis| {
+        const index = @backingInt(axis);
         if (prev_axes[index] != 0.0) deliver_axis(input, axis, 0.0);
     }
     if (prev_touch_down) input.deliver_mouse_button(.Left, .released, prev_touch_pos);

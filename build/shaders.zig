@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const config_mod = @import("config.zig");
 const tools = @import("tool_options.zig");
 
@@ -10,7 +11,6 @@ const ShaderStagePaths = struct {
 };
 
 fn slangc_path(owner: *std.Build) ?std.Build.LazyPath {
-    const builtin = @import("builtin");
     const dep_name = switch (builtin.os.tag) {
         .linux => switch (builtin.cpu.arch) {
             .x86_64 => "slangc_linux_x86_64",

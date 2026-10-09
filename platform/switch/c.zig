@@ -1,41 +1,10 @@
 const options = @import("options");
 
-const imported = @cImport({
-    @cUndef("_GNU_SOURCE");
-    @cUndef("_DEFAULT_SOURCE");
-    @cDefine("_POSIX_C_SOURCE", "200809L");
-    @cDefine("wint_t", "__WINT_TYPE__");
-
-    switch (options.config.platform) {
-        .nintendo_switch => {
-            @cDefine("__SWITCH__", "1");
-            @cDefine("__thread", "");
-        },
-        else => @compileError("platform/nintendo_c.zig is only wired for Nintendo targets"),
-    }
-
-    @cInclude("errno.h");
-    @cInclude("fcntl.h");
-    @cInclude("dirent.h");
-    @cInclude("sys/iosupport.h");
-    @cInclude("sys/stat.h");
-    @cInclude("sys/types.h");
-    @cInclude("sys/socket.h");
-    @cInclude("netinet/in.h");
-    @cInclude("arpa/inet.h");
-    @cInclude("netdb.h");
-    @cInclude("poll.h");
-    @cInclude("unistd.h");
-    @cInclude("malloc.h");
-    @cInclude("stdio.h");
-
-    switch (options.config.platform) {
-        .nintendo_switch => {
-            @cInclude("switch/types.h");
-        },
-        else => unreachable,
-    }
-});
+// Translated from c.h by the build (see build/modules.zig).
+const imported = switch (options.config.platform) {
+    .nintendo_switch => @import("switch_c"),
+    else => @compileError("platform/switch/c.zig is only wired for Nintendo targets"),
+};
 
 pub const c = imported;
 pub const switch_c = SwitchC;

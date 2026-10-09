@@ -38,12 +38,12 @@ pub fn add_serve_web_step(
         .root_module = b.createModule(.{
             .root_source_file = owner.path("tools/serve_web.zig"),
             .target = b.resolveTargetQuery(.{}),
-            .optimize = .Debug,
+            .optimize = .debug,
         }),
     });
     const serve_web_cmd = b.addRunArtifact(serve_web_exe);
     serve_web_cmd.step.dependOn(&web_install.step);
-    serve_web_cmd.addArg(b.getInstallPath(.prefix, "web"));
+    serve_web_cmd.addDirectoryArg(b.graph.path(.install_prefix, "web"));
     serve_web_cmd.addArg(host);
     serve_web_cmd.addArg(b.fmt("{d}", .{port}));
     return serve_web_cmd;

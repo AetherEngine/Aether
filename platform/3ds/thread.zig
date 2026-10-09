@@ -66,7 +66,7 @@ pub fn join(thread: Handle) void {
 
 pub fn set_priority(thread: Handle, p: api.Priority) anyerror!void {
     const handle = ThreadImpl.getHandle(thread);
-    const rc = horizon.setThreadPriority(handle, @intFromEnum(priority_to_3ds(p)));
+    const rc = horizon.setThreadPriority(handle, @backingInt(priority_to_3ds(p)));
     if (!rc.isSuccess()) return error.SystemResources;
     current_prio = p;
 }
@@ -86,7 +86,7 @@ pub fn change_current_priority(priority: api.Priority) anyerror!i32 {
         .success => |s| s.value,
         .failure => return error.SystemResources,
     };
-    if (!horizon.setThreadPriority(.current, @intFromEnum(priority_to_3ds(priority))).isSuccess()) return error.SystemResources;
+    if (!horizon.setThreadPriority(.current, @backingInt(priority_to_3ds(priority))).isSuccess()) return error.SystemResources;
     return previous;
 }
 
