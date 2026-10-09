@@ -2,7 +2,7 @@
     .name = .Aether,
     .version = "0.0.0",
     .fingerprint = 0x200ca2f6f2b63172, // Changing this has security and trust implications.
-    .minimum_zig_version = "0.17.0",
+    .minimum_zig_version = "0.18.0-dev",
     .dependencies = .{
         .zigglgen = .{
             .url = "git+https://github.com/castholm/zigglgen#38bfc858ce2182fcb9d5d1819210f97beb4a19d3",
