@@ -15,7 +15,8 @@ include Platform and shared configuration options. Platform owns backend SDK
 imports such as SDL3, OpenGL, Vulkan, pspsdk, and zitrus, along with generated
 shader modules and native library configuration. Target selection and SDK setup
 are wired in `build/modules.zig`; game code continues importing `aether`.
-Executable entry shims compose the application and engine at startup.
+Executable roots in `platform/root/` compose the application and engine at
+startup; see [Targets and entry](#targets-and-entry).
 The test step runs Core and Platform in separate test runners so tests inside
 the named Platform dependency remain covered.
 
@@ -32,21 +33,69 @@ the named Platform dependency remain covered.
 | `core/resources/` | Borrowed asset-source contracts, independent reader owners, and staged decoded asset stores |
 | `core/storage.zig`, `core/jobs.zig` | Replacement-write/JSON ownership and bounded serial job execution |
 | `core/util/` | Image decoding/regions, indexed ZIP readers, budget configuration, estimates, and public utility aliases |
-| `platform/*_api.zig` | Backend interfaces and error sets, checked at compile time |
+| `platform/backend.zig` | Target selection and the headless device overlay |
+| `platform/gfx.zig`, `surface.zig`, `audio.zig`, `input.zig`, `thread.zig`, `network.zig`, `system.zig`, `paths.zig`, `entry.zig` | One file per subsystem: the backend contract, its error sets, and dispatch to the selected backend, checked at compile time |
+| `platform/io.zig` | `AetherIo`, the `std.Io` every application receives |
 | `platform/graphics/` | Mesh/texture handles and descriptors, vertex layouts/position encoding, render state, pixel formats |
 | `platform/input/` | Device identifiers, raw events, frame storage, event sink, native text input requests |
 | `platform/math/` | Shared vectors, matrices, quaternions, bounds, ray/sweep queries, and frustum calculations |
 | `platform/util/` | Pool allocation, generational handles, resource tables, circular buffers, logging helpers |
-| `platform/logging.zig`, `platform/logging/`, `platform/thread.zig` | Logging and thread lifetime/dispatch |
-| `platform/paths.zig`, `platform/surface.zig` | Application directories and surface contract |
-| `platform/system.zig`, `platform/network.zig`, `platform/filesystem.zig`, `platform/file_export.zig` | Hardware facts, network-session dispatch, rename behavior, and browser export dispatch |
-| `platform/<target>/` | SDK calls, devices, event translation, native graphics/audio/thread implementations |
+| `platform/logging.zig`, `platform/logging/` | Logging |
+| `platform/<target>/` | One folder per target (`desktop`, `psp`, `3ds`, `switch`, `wasm`): process entry, base Io facts, native threads, directories, network sessions, public native services, and devices |
+| `platform/headless/` | Device overlay (graphics, surface, input, audio) usable on any target |
+| `platform/root/` | Executable roots: the declarations std and target SDKs read from `@import("root")` |
 | `platform/shaders/` | Shared built-in shader sources; target-specific shaders stay under their target |
 | `build/packaging.zig` | Target artifact packaging and copying application-supplied resources |
 
 Math and storage primitives belong to Platform because both backends and Core
 use them. They have no dependency on engine objects. Core exposes them through
 `Core.Math` and `Core.Util` so applications retain convenient access.
+
+## Targets and entry
+
+Every target folder has the same shape. `backend.zig` is its manifest; the
+other files implement one contract each:
+
+| File | Contract |
+| --- | --- |
+| `entry.zig` | Process start: native services, `std.process.Init`, and the application's `main` (`entry.Interface`) |
+| `io.zig` | Path limits, rename behavior, and where `async`/`concurrent` tasks run |
+| `thread.zig` | Native threads and priorities (`thread.Interface`) |
+| `system.zig`, `paths.zig`, `network.zig` | Hardware facts, application directories, network sessions |
+| `native.zig` | Target services exposed as `aether.Psp`, `aether.N3ds`, or `aether.Web` |
+| `gfx`, `surface.zig`, `input.zig`, `audio.zig` | Devices; `texture_pixels` names the CPU texture layout |
+
+Target-private helpers sit beside these files (for example `psp/dialogs.zig`,
+`switch/deko.zig`, `desktop/vulkan/`). `headless/` provides only devices:
+`-Dgfx=headless` replaces graphics, surface, and input, and `-Daudio=none`
+replaces audio, while process services, Io, and threads stay the target's own.
+
+Each executable's root module is `platform/root/<target>.zig`. It declares what
+std and the target SDK read from `@import("root")` and calls the target's
+`entry.zig`, which runs the application's `pub fn main(std.process.Init)`. The
+application never supplies an entry point, panic handler, or std options of
+its own; `aether_options` configures them.
+
+`init.io` is an `AetherIo` on every target: the target's base Io, completed
+where it lacks concurrency. Each target's `io.zig` declares where tasks run.
+Where the base Io implements `async`, `concurrent`, and groups (std.Io.Threaded
+on desktop, pspsdk's Io, the browser's single-threaded Io, Zitrus' Horizon Io),
+the application receives that Io unchanged, including its cancellation. Switch's
+newlib Io has none, so AetherIo forwards every other operation and runs tasks on
+libnx threads; those tasks cannot be interrupted, so `cancel` waits like `await`.
+
+The browser has one JS event-loop thread, and Zitrus' Horizon Io (3DS) runs
+`async` inline with no `concurrent` or groups. Native threads remain available
+through `Util.Thread` on every target but the browser, including 3DS, with
+explicit names, stack sizes, and priorities; `Util.PriorityScope` changes the
+calling thread's priority. `System.info().background_workers` reports whether
+`Util.Thread` can spawn. Jobs executors and engine workers (logging, 3DS audio)
+use these threads.
+
+The browser drives frames, so `main` must not block. It initializes and calls
+`Engine.run`, which hands the loop to the page and returns. Keep the Engine and
+its memory in static storage; the page calls `Engine.deinit` through the host
+when it stops the loop.
 
 ## Data crossing the boundary
 
@@ -72,7 +121,7 @@ text editing sessions and their callbacks remain Core responsibilities. The sink
 borrows its receiver, so the receiver must remain alive at a stable address until
 input has been detached. `Engine` manages that lifetime.
 
-Audio backends consume PCM and slot source contracts from `audio_api.zig`. Core
+Audio backends consume PCM and slot source contracts from `audio.zig`. Core
 owns sound loading, mixing, voices, and spatial calculations. Platform logging
 and threads can therefore be used by audio and graphics backends without
 depending on the engine utility barrel.
@@ -106,9 +155,10 @@ quality choices.
 The high-level `aether.Engine`, `Core.InputSystem`, `Audio`, `Rendering`, `Ui`,
 `Util`, and `Math` entry points remain available. Source files have moved, so
 code importing implementation files by relative path must use their new paths.
-`Resources`, `Storage`, `Jobs`, `System`, `Network`, and `FileExport` are available
-through both Core and the public facade. Their source declarations document
-ownership, validation, and lifetime requirements.
+`Resources`, `Storage`, `Jobs`, `System`, and `Network` are available through both
+Core and the public facade. Their source declarations document ownership,
+validation, and lifetime requirements. Browser file export moved to
+`aether.Web.FileExport`.
 
 Custom input backends must implement the sink/request signatures in
 `PlatformApi.input.Interface`. Engine-managed input attaches these services
@@ -132,9 +182,11 @@ handle contract described above.
 - Platform backends must not import Core, the public engine root, or an engine
   module by name. Extend the contract or add a callback when a backend needs to
   report something to Core.
-- Executable entry shims are composition points. `platform/entry*.zig`, the PSP
-  and 3DS `entry.zig` files, and Switch `services.zig` may import the application
-  and public engine module to establish startup options and invoke `main`.
+- Executable roots are composition points and separate modules. Files in
+  `platform/root/` reach Platform and the application only by module name:
+  `root/common.zig` imports `aether` and the application root to validate it and
+  adapt its `main`; each target root imports `platform` and that adapter. No
+  other file imports a root, and roots import no files by path.
 
 `zig build check-architecture` checks the source tree and import direction for
 every target, including targets whose SDKs are unavailable on the current host.
@@ -151,7 +203,7 @@ listed SDKs and tools in addition to the Zig package dependencies.
 | `zig build` | Vulkan desktop build |
 | `zig build test` | Desktop unit tests and architecture checks |
 | `zig build test -Dgfx=headless -Daudio=none` | Headless unit tests and architecture checks |
-| `zig build test-api -Dgfx=headless -Daudio=none` | CPU geometry, worker cwd setup, and serial job lifetime probes on the host |
+| `zig build test-api -Dgfx=headless -Daudio=none` | CPU geometry, worker cwd setup, Io task/group, and serial job lifetime probes on the host |
 | `zig build check-api` | Compile public service, resource, audio, UI, and rendering probes; accepts the same target flags as the sample build |
 | `zig build -Dgfx=opengl` | OpenGL desktop build |
 | `zig build web` | WASM/WebGL bundle, using Slang and spirv-cross |

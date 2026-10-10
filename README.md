@@ -104,7 +104,7 @@ builder (`b`). This lets Aether resolve its own internal dependencies (SDL3,
 Vulkan, Slang, pspsdk) from its `build.zig.zon` while building artifacts that
 belong to your project.
 
-The returned executable root is Aether's platform entry shim. Add imports for
+The returned executable root is Aether's platform entry (`platform/root/`). Add imports for
 your game root through `user_root_module`:
 
 ```zig
@@ -170,6 +170,22 @@ pub fn main(init: std.process.Init) !void {
     };
 }
 ```
+
+Aether owns every target's entry point, so `main` always receives
+`std.process.Init`. `init.io` is the target's Io, completed by Aether where it
+lacks concurrency: `io.async`, `io.concurrent`, and `std.Io.Group` run on std's
+thread pool (desktop), PSP kernel threads, or libnx threads (Switch). The
+browser and 3DS run `async` inline and report `concurrent` unavailable.
+
+For threads with a specific name, stack size, or priority, or on any target
+with native threads (`ae.System.info().background_workers`, which includes 3DS),
+use `ae.Util.Thread`; scope the calling thread's priority with
+`ae.Util.PriorityScope`.
+
+In the browser, `engine.run()` hands
+the loop to the page and returns immediately, so keep the engine and its memory
+in static storage there instead of deinitializing after `run` (see
+`test/web_main.zig`).
 
 Platform and graphics backend are available as comptime constants for per-platform configuration:
 

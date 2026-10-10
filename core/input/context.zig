@@ -2,7 +2,7 @@
 
 const action = @import("action.zig");
 
-pub const CursorMode = @import("platform").input_api.CursorMode;
+pub const CursorMode = @import("platform").input.CursorMode;
 
 pub const InputContext = struct {
     name: []const u8,

@@ -2,7 +2,7 @@
 //! Aether enum integer values and call the exported delivery functions below.
 
 const std = @import("std");
-const input_api = @import("../input_api.zig");
+const input_api = @import("../input.zig");
 
 extern "aether_host" fn aether_input_apply_cursor_mode(mode: u32) void;
 

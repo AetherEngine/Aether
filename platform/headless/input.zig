@@ -5,7 +5,7 @@
 //! fresh empty list every update rather than indefinitely-stale data.
 
 const std = @import("std");
-const input_api = @import("../input_api.zig");
+const input_api = @import("../input.zig");
 
 pub fn setup(_: std.mem.Allocator, _: std.Io, _: input_api.EventSink) void {}
 

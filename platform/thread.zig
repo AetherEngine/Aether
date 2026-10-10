@@ -1,26 +1,120 @@
-//! Thread ownership and backend selection.
-//! `Config.allocator` owns the console thread's closure until it returns.
+//! Native thread contract, the selected thread backend, and scoped priorities.
+//!
+//! `Thread` (public as `Util.Thread`) runs on native threads on every target
+//! except the browser, including 3DS, where the Io has no concurrency. Where a
+//! target's base Io lacks concurrency, AetherIo spawns its tasks through this
+//! backend too. `Config.allocator` owns the console thread's closure until it
+//! returns.
 
 const std = @import("std");
 const builtin = @import("builtin");
-const options = @import("options");
-const thread_api = @import("thread_api.zig");
 const system = @import("system.zig");
+const contract = @import("contract.zig");
+const backend = @import("backend.zig");
 
-pub const Api = switch (options.config.platform) {
-    .psp => @import("psp/psp_thread.zig"),
-    .nintendo_3ds => @import("3ds/thread.zig"),
-    .nintendo_switch => @import("switch/switch_thread.zig"),
-    .wasm => @import("wasm/wasm_thread.zig"),
-    else => @import("std_thread.zig"),
+pub const Priority = enum(i8) { lowest, low, normal, high, highest };
+
+pub const default_stack_size: usize = switch (builtin.os.tag) {
+    .psp, .@"3ds" => 16 * 1024,
+    else => 1 * 1024 * 1024,
 };
 
-comptime {
-    thread_api.assert_impl(Api);
+pub const Config = struct {
+    /// Display name (PSP shows this in dev tools; ignored on desktop).
+    /// Truncated to 31 chars on PSP.
+    name: [:0]const u8 = "aether",
+    /// Stack size in bytes. PSP rounds up to a multiple of 256.
+    stack_size: usize = default_stack_size,
+    /// Priority bucket. PSP applies natively. Desktop stores it in a
+    /// thread-local so `current_priority()` round-trips, but does NOT change
+    /// OS-level scheduling.
+    priority: Priority = .normal,
+    /// Required on PSP (used to allocate the trampoline closure). Desktop
+    /// forwards it to `std.Thread.spawn`.
+    allocator: ?std.mem.Allocator = null,
+    /// Supply I/O to inherit the caller's cwd on PSP. Other targets inherit
+    /// their process directory normally. This value must outlive the thread.
+    io: ?std.Io = null,
+};
+
+pub fn InterfaceType(comptime Backend: type) type {
+    return struct {
+        join: fn (Backend.Handle) void,
+        set_priority: fn (Backend.Handle, Priority) anyerror!void,
+        current_priority: fn () Priority,
+        change_current_priority: fn (Priority) anyerror!i32,
+        change_current_priority_by: fn (i32) anyerror!i32,
+        restore_current_priority: fn (i32) anyerror!void,
+        /// Give same-priority threads a turn on cooperative schedulers (3DS).
+        /// A no-op where the native scheduler is preemptive.
+        cooperative_yield: fn () void,
+    };
 }
 
-pub const Priority = thread_api.Priority;
-pub const Config = thread_api.Config;
+/// Runs a spawned thread's function from a backend trampoline, logging an
+/// error return instead of propagating it across the native thread boundary.
+pub fn run_entry(comptime func: anytype, args: anytype) void {
+    const Ret = @typeInfo(@TypeOf(func)).@"fn".return_type.?;
+    switch (@typeInfo(Ret)) {
+        .void, .noreturn => @call(.auto, func, args),
+        .error_union => @call(.auto, func, args) catch |err| {
+            std.log.err("aether thread errored: {s}", .{@errorName(err)});
+        },
+        else => @compileError("thread fn must return void, !void, or noreturn"),
+    }
+}
+
+/// Native priority arithmetic shared by backends. Never clamp a requested
+/// change: an invalid delta must leave the calling thread unchanged.
+pub fn relative_priority(previous: i32, delta: i32, minimum: i32, maximum: i32) error{InvalidPriority}!i32 {
+    if (previous < minimum or previous > maximum) return error.InvalidPriority;
+    const next = std.math.add(i32, previous, delta) catch return error.InvalidPriority;
+    if (next < minimum or next > maximum) return error.InvalidPriority;
+    return next;
+}
+
+test "relative thread priority preserves native values and rejects range and overflow" {
+    try std.testing.expectEqual(@as(i32, 0x16), try relative_priority(0x20, -10, 0x08, 0x77));
+    try std.testing.expectEqual(@as(i32, 0x08), try relative_priority(0x12, -10, 0x08, 0x77));
+    try std.testing.expectEqual(@as(i32, 0x77), try relative_priority(0x76, 1, 0x08, 0x77));
+    try std.testing.expectEqual(@as(i32, 0), try relative_priority(1, -1, 0, 63));
+    try std.testing.expectEqual(@as(i32, 63), try relative_priority(62, 1, 0, 63));
+    try std.testing.expectError(error.InvalidPriority, relative_priority(0x08, -1, 0x08, 0x77));
+    try std.testing.expectError(error.InvalidPriority, relative_priority(0x77, 1, 0x08, 0x77));
+    try std.testing.expectError(error.InvalidPriority, relative_priority(0, -1, 0, 63));
+    try std.testing.expectError(error.InvalidPriority, relative_priority(63, 1, 0, 63));
+    try std.testing.expectError(error.InvalidPriority, relative_priority(64, -1, 0, 63));
+    try std.testing.expectError(error.InvalidPriority, relative_priority(63, std.math.maxInt(i32), 0, 63));
+    try std.testing.expectError(error.InvalidPriority, relative_priority(1, std.math.minInt(i32), 0, 63));
+}
+
+pub fn assert_impl(comptime Backend: type) void {
+    if (!@hasDecl(Backend, "Handle")) {
+        @compileError("thread backend " ++ @typeName(Backend) ++ " is missing decl: Handle");
+    }
+
+    contract.assert_impl("thread", Backend, InterfaceType(Backend));
+
+    if (!@hasDecl(Backend, "spawn")) {
+        @compileError("thread backend " ++ @typeName(Backend) ++ " is missing decl: spawn");
+    }
+    // Generic spawn cannot be a function field; type-check a call without running it.
+    const dummy = struct {
+        fn f() void {}
+    }.f;
+    const SpawnRet = @TypeOf(Backend.spawn(Config{}, dummy, .{}));
+    const ti = @typeInfo(SpawnRet);
+    if (ti != .error_union or ti.error_union.payload != Backend.Handle) {
+        @compileError("thread backend " ++ @typeName(Backend) ++
+            ".spawn must return E!Handle, got " ++ @typeName(SpawnRet));
+    }
+}
+
+pub const Api = backend.target.thread;
+
+comptime {
+    assert_impl(Api);
+}
 
 /// Restore on the same thread, in reverse nesting order. The token retains
 /// the native priority exactly, including values between priority buckets.
@@ -68,6 +162,8 @@ pub const Thread = struct {
         return Api.current_priority();
     }
 };
+
+pub const cooperative_yield = Api.cooperative_yield;
 
 test "spawn/join roundtrip" {
     if (builtin.os.tag == .psp) return error.SkipZigTest;

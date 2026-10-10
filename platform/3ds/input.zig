@@ -1,7 +1,7 @@
 const std = @import("std");
 const zitrus = @import("zitrus");
 const app_3ds = @import("app.zig");
-const input_api = @import("../input_api.zig");
+const input_api = @import("../input.zig");
 const audio = @import("../audio.zig");
 const gfx = @import("../gfx.zig");
 

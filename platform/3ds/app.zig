@@ -1,3 +1,4 @@
+//! Horizon application state the 3DS entry records for the backends.
 const std = @import("std");
 const zitrus = @import("zitrus");
 
@@ -7,7 +8,6 @@ const Application = horizon.Init.Application;
 var app_init_storage: Application = undefined;
 var app_init: ?*const Application = null;
 var new_3ds = false;
-var network_ready = false;
 var stream_cache_bytes: usize = 512 * 1024;
 
 pub fn set_application(app: Application, is_new_3ds: bool, cache_bytes: usize) void {
@@ -20,17 +20,7 @@ pub fn set_application(app: Application, is_new_3ds: bool, cache_bytes: usize) v
 pub fn clear_application() void {
     app_init = null;
     new_3ds = false;
-    network_ready = false;
     stream_cache_bytes = 512 * 1024;
-}
-
-/// Set by the entry shim after standard I/O socket initialization.
-pub fn set_network_available(available: bool) void {
-    network_ready = available;
-}
-
-pub fn network_available() bool {
-    return network_ready;
 }
 
 pub fn current_application() ?*const Application {

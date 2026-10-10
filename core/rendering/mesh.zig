@@ -132,7 +132,7 @@ pub fn MeshType(comptime V: type) type {
 
         handle: Handle,
 
-        pub fn init(desc: *const Desc) Platform.gfx_api.CreateMeshError!Mesh {
+        pub fn init(desc: *const Desc) Platform.gfx.CreateMeshError!Mesh {
             return .{
                 .handle = try gfx.api.create_mesh(desc),
             };

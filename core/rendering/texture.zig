@@ -37,7 +37,7 @@ pub const Error = error{
 
 pub const CreateError = Error ||
     std.mem.Allocator.Error ||
-    @import("platform").gfx_api.CreateTextureError;
+    @import("platform").gfx.CreateTextureError;
 
 pub const LoadError = CreateError ||
     std.Io.Reader.Error ||

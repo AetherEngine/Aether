@@ -1,7 +1,7 @@
 const std = @import("std");
 const Util = @import("../util/util.zig");
 
-pub const PcmFormat = @import("platform").audio_api.PcmFormat;
+pub const PcmFormat = @import("platform").audio.PcmFormat;
 
 pub const SoundBufferHandleTag = enum {};
 pub const SoundBufferHandle = Util.HandleType(SoundBufferHandleTag);
@@ -21,4 +21,4 @@ pub const StreamingSoundDesc = struct {
     byte_length: ?u64 = null,
 };
 
-pub const SlotSource = @import("platform").audio_api.SlotSource;
+pub const SlotSource = @import("platform").audio.SlotSource;

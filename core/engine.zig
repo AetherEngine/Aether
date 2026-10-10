@@ -464,11 +464,32 @@ pub const Engine = struct {
         return self.running;
     }
 
+    /// Runs frames until the engine quits. Where the host drives frames
+    /// (WASM), this hands the loop to the host and returns immediately: keep
+    /// the Engine and its memory in static storage, and let the host tear it
+    /// down with `deinit` when the page stops the loop.
     pub fn run(self: *Engine) !void {
         self.begin_run();
+        if (comptime Platform.entry.hosts_frame_loop) {
+            Platform.entry.host_frame_loop(.{ .context = self, .step = hosted_step, .finish = hosted_finish });
+            return;
+        }
         while (self.running) {
             try self.step_frame_internal(true);
         }
+    }
+
+    fn hosted_step(context: *anyopaque) bool {
+        const self: *Engine = @ptrCast(@alignCast(context));
+        return self.step_frame() catch |err| {
+            Util.engine_logger.err("engine frame failed: {s}", .{@errorName(err)});
+            return false;
+        };
+    }
+
+    fn hosted_finish(context: *anyopaque) void {
+        const self: *Engine = @ptrCast(@alignCast(context));
+        self.deinit();
     }
 
     fn step_frame_internal(self: *Engine, allow_sleep: bool) !void {
@@ -530,10 +551,10 @@ pub const Engine = struct {
         }
 
         const platform_start_ns = clock.now(self.io).toNanoseconds();
-        if (!Platform.update(self.input.event_sink())) self.running = false;
+        if (!Platform.update()) self.running = false;
         if (self.running) {
             Audio.update();
-            Platform.yield_thread();
+            Platform.thread.cooperative_yield();
         }
         const platform_done_ns = clock.now(self.io).toNanoseconds();
         var pre_update_elapsed_ns = elapsed_ns_between(platform_start_ns, platform_done_ns);

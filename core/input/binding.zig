@@ -1,6 +1,6 @@
 //! Bindings map device values into action components.
 
-const data = @import("platform").input_api.data;
+const data = @import("platform").input.data;
 
 pub const BindingSourceKind = enum(u8) {
     key,

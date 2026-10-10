@@ -3,7 +3,7 @@
 //! identifier spellings (for example `key:Space`, `gamepad_axis:LeftX`). Those
 //! v1 spellings form a persistence contract, independent of Zig union layout.
 const std = @import("std");
-const data = @import("platform").input_api.data;
+const data = @import("platform").input.data;
 const binding = @import("binding.zig");
 
 pub const Record = struct {

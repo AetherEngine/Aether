@@ -100,9 +100,10 @@ fn allowed_import(alloc: std.mem.Allocator, path: []const u8, import_path: []con
         const resolved = try std.fs.path.resolvePosix(alloc, &.{ "/", parent, normalized });
         defer alloc.free(resolved);
 
-        // Entry modules compose the engine and application. Importing one
-        // from an ordinary module would hide a dependency on those roots.
-        if (is_entry(resolved[1..]) and !is_entry(path)) return false;
+        // Executable roots are separate modules. They reach Platform and the
+        // application only by module name, and nothing imports them by path:
+        // either direction would place one file in two modules.
+        if (is_root(path) or is_root(resolved[1..])) return false;
         if (std.mem.startsWith(u8, path, "platform/")) {
             return std.mem.startsWith(u8, resolved, "/platform/");
         }
@@ -114,8 +115,11 @@ fn allowed_import(alloc: std.mem.Allocator, path: []const u8, import_path: []con
     } else if (std.mem.startsWith(u8, path, "platform/") or std.mem.startsWith(u8, path, "core/")) {
         // Executable roots compose the application and engine. Backend modules
         // must never reach through these named imports into the engine API.
-        inline for (.{ "core", "aether", "aether_user_root", "aether_entry_common", "root" }) |name| {
-            if (std.mem.eql(u8, import_path, name)) return allowed_entry_import(path, import_path);
+        inline for (.{ "core", "aether", "aether_user_root", "aether_app", "root" }) |name| {
+            if (std.mem.eql(u8, import_path, name)) return allowed_root_import(path, import_path);
+        }
+        if (std.mem.eql(u8, import_path, "platform") and std.mem.startsWith(u8, path, "platform/")) {
+            return allowed_root_import(path, import_path);
         }
         if (std.mem.startsWith(u8, path, "core/")) {
             // These build-provided modules expose backend SDKs. Core uses
@@ -128,52 +132,36 @@ fn allowed_import(alloc: std.mem.Allocator, path: []const u8, import_path: []con
     return true;
 }
 
-fn allowed_entry_import(path: []const u8, import_path: []const u8) bool {
-    const EntryImport = struct { path: []const u8, module: []const u8 };
-    inline for ([_]EntryImport{
-        .{ .path = "platform/entry.zig", .module = "aether_entry_common" },
-        .{ .path = "platform/entry_common.zig", .module = "aether" },
-        .{ .path = "platform/entry_common.zig", .module = "aether_user_root" },
-        .{ .path = "platform/psp/entry.zig", .module = "aether_entry_common" },
-        .{ .path = "platform/3ds/entry.zig", .module = "aether" },
-        .{ .path = "platform/3ds/entry.zig", .module = "aether_entry_common" },
-        .{ .path = "platform/switch/services.zig", .module = "aether" },
-        .{ .path = "platform/switch/services.zig", .module = "aether_entry_common" },
-    }) |entry| {
-        if (std.mem.eql(u8, path, entry.path) and std.mem.eql(u8, import_path, entry.module)) return true;
+/// `root/common.zig` adapts the application; each target root composes
+/// Platform's entry with that adapter.
+fn allowed_root_import(path: []const u8, import_path: []const u8) bool {
+    if (!is_root(path)) return false;
+    if (std.mem.eql(u8, path, "platform/root/common.zig")) {
+        return std.mem.eql(u8, import_path, "aether") or std.mem.eql(u8, import_path, "aether_user_root");
     }
-    return false;
+    return std.mem.eql(u8, import_path, "platform") or std.mem.eql(u8, import_path, "aether_app");
 }
 
-fn is_entry(path: []const u8) bool {
-    inline for (.{
-        "platform/entry.zig",
-        "platform/entry_common.zig",
-        "platform/psp/entry.zig",
-        "platform/3ds/entry.zig",
-        "platform/switch/services.zig",
-    }) |entry| {
-        if (std.mem.eql(u8, path, entry)) return true;
-    }
-    return false;
+fn is_root(path: []const u8) bool {
+    return std.mem.startsWith(u8, path, "platform/root/");
 }
 
 test "platform dependencies stay below Core and Core uses the named platform module" {
     const alloc = std.testing.allocator;
-    try std.testing.expect(try allowed_import(alloc, "platform/sdl/input.zig", "../input_api.zig"));
-    try std.testing.expect(!try allowed_import(alloc, "platform/sdl/input.zig", "../../core/input/input.zig"));
+    try std.testing.expect(try allowed_import(alloc, "platform/desktop/input.zig", "../input.zig"));
+    try std.testing.expect(!try allowed_import(alloc, "platform/desktop/input.zig", "../../core/input/input.zig"));
     try std.testing.expect(!try allowed_import(alloc, "platform/gfx.zig", "../root.zig"));
     try std.testing.expect(!try allowed_import(alloc, "platform/gfx.zig", "../core/root.zig"));
     try std.testing.expect(!try allowed_import(alloc, "platform/gfx.zig", "core"));
     try std.testing.expect(!try allowed_import(alloc, "platform/gfx.zig", "aether"));
-    try std.testing.expect(try allowed_import(alloc, "platform/3ds/entry.zig", "aether"));
+    try std.testing.expect(!try allowed_import(alloc, "platform/3ds/entry.zig", "aether"));
     try std.testing.expect(try allowed_import(alloc, "core/engine.zig", "platform"));
     try std.testing.expect(try allowed_import(alloc, "core/root.zig", "core.zig"));
     try std.testing.expect(try allowed_import(alloc, "core/root.zig", "platform"));
     try std.testing.expect(try allowed_import(alloc, "core/input/input.zig", "../resources.zig"));
     try std.testing.expect(!try allowed_import(alloc, "core/engine.zig", "../platform/platform.zig"));
-    try std.testing.expect(!try allowed_import(alloc, "core/engine.zig", "../platform/sdl/surface.zig"));
-    try std.testing.expect(!try allowed_import(alloc, "core/input/input.zig", "../../platform/input_api.zig"));
+    try std.testing.expect(!try allowed_import(alloc, "core/engine.zig", "../platform/desktop/surface.zig"));
+    try std.testing.expect(!try allowed_import(alloc, "core/input/input.zig", "../../platform/input.zig"));
     try std.testing.expect(!try allowed_import(alloc, "core/input/input.zig", "../../platform/input/frame.zig"));
     try std.testing.expect(!try allowed_import(alloc, "core/root.zig", "../tools/check_architecture.zig"));
 }
@@ -191,34 +179,39 @@ test "Core cannot import SDKs or application roots by module name" {
     inline for (.{ "std", "builtin", "options" }) |name| {
         try std.testing.expect(try allowed_import(alloc, "core/engine.zig", name));
     }
-    inline for (.{ "sdl3", "vulkan", "gl", "pspsdk", "zitrus", "core", "aether", "aether_user_root", "aether_entry_common", "root" }) |name| {
+    inline for (.{ "sdl3", "vulkan", "gl", "pspsdk", "zitrus", "core", "aether", "aether_user_root", "aether_app", "root" }) |name| {
         try std.testing.expect(!try allowed_import(alloc, "core/engine.zig", name));
     }
     try std.testing.expect(try allowed_import(alloc, "platform/3ds/gfx.zig", "zitrus"));
 }
 
-test "bootstrap exceptions are limited to the required file and module pairs" {
+test "executable roots reach Platform and the application only by module name" {
     const alloc = std.testing.allocator;
-    try std.testing.expect(try allowed_import(alloc, "platform/entry_common.zig", "aether_user_root"));
-    try std.testing.expect(try allowed_import(alloc, "platform/switch/services.zig", "aether_entry_common"));
-    try std.testing.expect(!try allowed_import(alloc, "platform/switch/services.zig", "aether_user_root"));
-    try std.testing.expect(!try allowed_import(alloc, "platform/psp/entry.zig", "aether"));
-    try std.testing.expect(!try allowed_import(alloc, "platform/entry_common.zig", "root"));
-    try std.testing.expect(!try allowed_import(alloc, "platform/entry_common.zig", "core"));
+    try std.testing.expect(try allowed_import(alloc, "platform/root/common.zig", "aether_user_root"));
+    try std.testing.expect(try allowed_import(alloc, "platform/root/common.zig", "aether"));
+    try std.testing.expect(try allowed_import(alloc, "platform/root/switch.zig", "aether_app"));
+    try std.testing.expect(try allowed_import(alloc, "platform/root/psp.zig", "platform"));
+    try std.testing.expect(try allowed_import(alloc, "platform/root/3ds.zig", "zitrus"));
+    try std.testing.expect(!try allowed_import(alloc, "platform/root/switch.zig", "aether_user_root"));
+    try std.testing.expect(!try allowed_import(alloc, "platform/root/psp.zig", "aether"));
+    try std.testing.expect(!try allowed_import(alloc, "platform/root/common.zig", "root"));
+    try std.testing.expect(!try allowed_import(alloc, "platform/root/common.zig", "core"));
+    try std.testing.expect(!try allowed_import(alloc, "platform/root/desktop.zig", "../desktop/entry.zig"));
     try std.testing.expect(!try allowed_import(alloc, "platform/3ds/entry.zig", "core"));
-    try std.testing.expect(!try allowed_import(alloc, "platform/sdl/entry.zig", "aether"));
-    try std.testing.expect(!try allowed_import(alloc, "platform/gfx.zig", "entry_common.zig"));
-    try std.testing.expect(!try allowed_import(alloc, "core/engine.zig", "../platform/entry_common.zig"));
+    try std.testing.expect(!try allowed_import(alloc, "platform/3ds/entry.zig", "platform"));
+    try std.testing.expect(!try allowed_import(alloc, "platform/desktop/entry.zig", "aether_app"));
+    try std.testing.expect(!try allowed_import(alloc, "platform/gfx.zig", "root/common.zig"));
+    try std.testing.expect(!try allowed_import(alloc, "core/engine.zig", "../platform/root/common.zig"));
 }
 
 test "relative traversal cannot bypass layer or backend checks" {
     const alloc = std.testing.allocator;
-    try std.testing.expect(!try allowed_import(alloc, "platform/sdl/gfx.zig", "../util/../../core/engine.zig"));
-    try std.testing.expect(!try allowed_import(alloc, "core/engine.zig", "../platform/util/../sdl/surface.zig"));
-    try std.testing.expect(!try allowed_import(alloc, "platform/sdl/gfx.zig", "../util/../entry_common.zig"));
+    try std.testing.expect(!try allowed_import(alloc, "platform/desktop/gfx.zig", "../util/../../core/engine.zig"));
+    try std.testing.expect(!try allowed_import(alloc, "core/engine.zig", "../platform/util/../desktop/surface.zig"));
+    try std.testing.expect(!try allowed_import(alloc, "platform/desktop/gfx.zig", "../util/../root/common.zig"));
     try std.testing.expect(!try allowed_import(alloc, "core/input/input.zig", "../../platform/math/../input/data.zig"));
-    try std.testing.expect(!try allowed_import(alloc, "platform/sdl/gfx.zig", "..\\..\\core\\root.zig"));
-    try std.testing.expect(!try allowed_import(alloc, "core/input/input.zig", "..\\..\\platform\\input_api.zig"));
+    try std.testing.expect(!try allowed_import(alloc, "platform/desktop/gfx.zig", "..\\..\\core\\root.zig"));
+    try std.testing.expect(!try allowed_import(alloc, "core/input/input.zig", "..\\..\\platform\\input.zig"));
     try std.testing.expect(try allowed_import(alloc, "core/input/input.zig", "..\\input\\action.zig"));
 }
 

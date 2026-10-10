@@ -1,0 +1,237 @@
+//! SDL pulls stereo float PCM from a callback on its audio thread.
+
+const std = @import("std");
+const sdl3 = @import("sdl3");
+const audio_api = @import("../audio.zig");
+const SlotSource = audio_api.SlotSource;
+const PcmFormat = audio_api.PcmFormat;
+
+const sdl_audio_flags = sdl3.InitFlags{ .audio = true };
+const device_sample_rate: usize = 44_100;
+const device_channels: usize = 2;
+const num_slots: usize = 32;
+const output_frame_bytes: usize = device_channels * @sizeOf(f32);
+const max_period_frames: usize = 1024;
+const read_buf_size: usize = max_period_frames * 2 * 4;
+
+const SlotState = enum(u8) {
+    inactive = 0,
+    /// Game thread wrote a new source; audio thread should pick it up.
+    pending = 1,
+    active = 2,
+    /// Stream exhausted or read error; mixer should reap.
+    finished = 3,
+};
+
+const Slot = struct {
+    state: std.atomic.Value(u8) = std.atomic.Value(u8).init(@backingInt(SlotState.inactive)),
+    gain: std.atomic.Value(u32) = std.atomic.Value(u32).init(@bitCast(@as(f32, 0))),
+    pan: std.atomic.Value(u32) = std.atomic.Value(u32).init(@bitCast(@as(f32, 0))),
+    source: SlotSource = undefined,
+    read_buf: [read_buf_size]u8 = undefined,
+};
+
+var slots: [num_slots]Slot = @splat(.{});
+
+var device_stream: ?sdl3.audio.Stream = null;
+var sdl_audio_initialized = false;
+var output_buf: [max_period_frames * device_channels]f32 = undefined;
+
+pub const dispatch_on_play = false;
+
+pub fn init(_: std.mem.Allocator, _: std.Io) audio_api.InitError!void {
+    sdl3.init(sdl_audio_flags) catch return error.AudioInitFailed;
+    sdl_audio_initialized = true;
+    errdefer {
+        sdl3.quit(sdl_audio_flags);
+        sdl_audio_initialized = false;
+    }
+
+    const spec = sdl3.audio.Spec{
+        .format = .floating_32_bit,
+        .num_channels = device_channels,
+        .sample_rate = device_sample_rate,
+    };
+
+    const stream = sdl3.audio.Device.default_playback.openStream(spec, anyopaque, data_callback, null) catch return error.AudioInitFailed;
+    device_stream = stream;
+    errdefer {
+        stream.deinit();
+        device_stream = null;
+    }
+
+    stream.resumeDevice() catch return error.AudioInitFailed;
+}
+
+pub fn deinit() void {
+    if (device_stream) |stream| {
+        stream.pauseDevice() catch {};
+        stream.deinit();
+        device_stream = null;
+    }
+    if (sdl_audio_initialized) {
+        sdl3.quit(sdl_audio_flags);
+        sdl_audio_initialized = false;
+    }
+    slots = @splat(.{});
+}
+
+pub fn update() void {}
+
+pub fn max_voices() u32 {
+    return num_slots;
+}
+
+pub fn play_slot(slot: u8, source: SlotSource) audio_api.PlaySlotError!void {
+    if (slot >= num_slots) return error.InvalidArgs;
+    slots[slot].source = source;
+    // Release ensures the stream write is visible to the audio thread.
+    slots[slot].state.store(@backingInt(SlotState.pending), .release);
+}
+
+pub fn stop_slot(slot: u8) void {
+    if (slot >= num_slots) return;
+    slots[slot].state.store(@backingInt(SlotState.inactive), .release);
+}
+
+pub fn set_slot_gain_pan(slot: u8, gain: f32, pan: f32) void {
+    if (slot >= num_slots) return;
+    slots[slot].gain.store(@bitCast(gain), .release);
+    slots[slot].pan.store(@bitCast(pan), .release);
+}
+
+pub fn is_slot_active(slot: u8) bool {
+    if (slot >= num_slots) return false;
+    const state: SlotState = @fromBackingInt(@intCast(slots[slot].state.load(.acquire)));
+    return state != .inactive and state != .finished;
+}
+
+fn data_callback(
+    _: ?*anyopaque,
+    stream: sdl3.audio.Stream,
+    additional_amount: usize,
+    _: usize,
+) void {
+    var bytes_remaining = additional_amount;
+    while (bytes_remaining > 0) {
+        const frames = @min(
+            max_period_frames,
+            (bytes_remaining + output_frame_bytes - 1) / output_frame_bytes,
+        );
+        const out = output_buf[0 .. frames * device_channels];
+        fill_output(out, frames);
+
+        const bytes = std.mem.sliceAsBytes(out);
+        stream.putData(bytes) catch return;
+
+        if (bytes_remaining <= bytes.len) break;
+        bytes_remaining -= bytes.len;
+    }
+}
+
+fn fill_output(out: []f32, frame_count: usize) void {
+    @memset(out, 0);
+
+    for (&slots) |*slot| {
+        const raw_state = slot.state.load(.acquire);
+        var state: SlotState = @fromBackingInt(@intCast(raw_state));
+
+        if (state == .pending) {
+            state = .active;
+            slot.state.store(@backingInt(SlotState.active), .release);
+        }
+        if (state != .active) continue;
+
+        const gain: f32 = @bitCast(slot.gain.load(.acquire));
+        const pan: f32 = @bitCast(slot.pan.load(.acquire));
+
+        const left_gain = gain * std.math.clamp(1.0 - pan, 0.0, 1.0);
+        const right_gain = gain * std.math.clamp(1.0 + pan, 0.0, 1.0);
+
+        const fmt = slot.source.format();
+        const bytes_needed: usize = frame_count * @as(usize, fmt.frame_size());
+
+        if (bytes_needed > read_buf_size) {
+            slot.state.store(@backingInt(SlotState.finished), .release);
+            continue;
+        }
+
+        const buf = slot.read_buf[0..bytes_needed];
+
+        if (!read_source(&slot.source, buf)) {
+            slot.state.store(@backingInt(SlotState.finished), .release);
+            continue;
+        }
+
+        mix_into(out, buf, fmt, frame_count, left_gain, right_gain);
+    }
+}
+
+fn read_source(source: *SlotSource, dst: []u8) bool {
+    switch (source.*) {
+        .buffer => |buffer| {
+            const cursor = buffer.cursor.load(.acquire);
+            if (cursor >= buffer.pcm.len) return false;
+            const remaining = buffer.pcm.len - cursor;
+            const n = @min(dst.len, remaining);
+            @memcpy(dst[0..n], buffer.pcm[cursor..][0..n]);
+            if (n < dst.len) @memset(dst[n..], 0);
+            buffer.cursor.store(cursor + n, .release);
+            return true;
+        },
+        .stream => |stream| {
+            stream.reader.readSliceAll(dst) catch return false;
+            return true;
+        },
+    }
+}
+
+fn read_i16(buf: []const u8, index: usize) f32 {
+    const off = index * 2;
+    const raw = std.mem.readInt(i16, buf[off..][0..2], .little);
+    return @as(f32, @floatFromInt(raw)) * (1.0 / 32768.0);
+}
+
+fn read_f32(buf: []const u8, index: usize) f32 {
+    const off = index * 4;
+    return @bitCast(std.mem.readInt(u32, buf[off..][0..4], .little));
+}
+
+fn mix_into(
+    out: []f32,
+    buf: []const u8,
+    fmt: PcmFormat,
+    frame_count: usize,
+    left_gain: f32,
+    right_gain: f32,
+) void {
+    if (fmt.bit_depth == 16) {
+        if (fmt.channels == 1) {
+            for (0..frame_count) |f| {
+                const s = read_i16(buf, f);
+                out[f * 2] += s * left_gain;
+                out[f * 2 + 1] += s * right_gain;
+            }
+        } else {
+            for (0..frame_count) |f| {
+                const l = read_i16(buf, f * 2);
+                const r = read_i16(buf, f * 2 + 1);
+                out[f * 2] += l * left_gain;
+                out[f * 2 + 1] += r * right_gain;
+            }
+        }
+    } else if (fmt.bit_depth == 32) {
+        if (fmt.channels == 1) {
+            for (0..frame_count) |f| {
+                const s = read_f32(buf, f);
+                out[f * 2] += s * left_gain;
+                out[f * 2 + 1] += s * right_gain;
+            }
+        } else {
+            for (0..frame_count) |f| {
+                out[f * 2] += read_f32(buf, f * 2) * left_gain;
+                out[f * 2 + 1] += read_f32(buf, f * 2 + 1) * right_gain;
+            }
+        }
+    }
+}

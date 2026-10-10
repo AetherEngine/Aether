@@ -1,6 +1,6 @@
 const std = @import("std");
 const Vec3 = @import("platform").math.Vec3;
-const audio_api = @import("platform").audio_api;
+const audio_api = @import("platform").audio;
 const Util = @import("../util/util.zig");
 const stream_mod = @import("stream.zig");
 const resources = @import("../resources/source.zig");
@@ -75,7 +75,7 @@ const VoiceSource = union(enum) {
 };
 
 /// Schedules virtual voices onto PCM output slots.
-/// `Backend` must satisfy platform/audio_api.Interface.
+/// `Backend` must satisfy platform/audio.zig Interface.
 pub fn MixerType(comptime Backend: type) type {
     return struct {
         pub const max_voices: usize = 64;

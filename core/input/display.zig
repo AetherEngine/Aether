@@ -1,6 +1,6 @@
 //! ASCII display names; application glyph artwork remains caller supplied.
 const std = @import("std");
-const data = @import("platform").input_api.data;
+const data = @import("platform").input.data;
 const binding = @import("binding.zig");
 
 pub const Style = enum { readable, compact };

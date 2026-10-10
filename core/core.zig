@@ -8,7 +8,8 @@ pub const InputSystem = input.InputSystem;
 pub const paths = @import("platform").paths;
 pub const System = @import("platform").system;
 pub const Network = @import("platform").network;
-pub const FileExport = @import("platform").file_export;
+/// The application's `std.Io` (`AetherIo`) and the target's I/O facts.
+pub const Io = @import("platform").io;
 pub const Storage = @import("storage.zig");
 pub const Jobs = @import("jobs.zig");
 pub const Resources = @import("resources/resources.zig");

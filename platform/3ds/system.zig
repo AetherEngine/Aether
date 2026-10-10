@@ -1,7 +1,7 @@
-const api = @import("../system_api.zig");
+const system = @import("../system.zig");
 const app = @import("app.zig");
 
-pub fn info() api.Info {
+pub fn info() system.Info {
     const new = app.is_new();
     return .{ .hardware = if (new) .new_3ds else .old_3ds, .input = .{
         .pointer = true,

@@ -1,11 +1,11 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const sdk = @import("pspsdk");
-const api = @import("../network_api.zig");
-const dialogs = @import("psp_dialogs.zig");
+const network = @import("../network.zig");
+const dialogs = @import("dialogs.zig");
 var references: u32 = 0;
 
-pub fn prepare() api.Error!void {
+pub fn prepare() network.Error!void {
     if (references == std.math.maxInt(u32)) return error.TooManySessions;
     if (references == 0) {
         try initialize();
@@ -18,7 +18,7 @@ pub fn prepare() api.Error!void {
     references += 1;
 }
 
-fn initialize() api.Error!void {
+fn initialize() network.Error!void {
     // The SDK marks initialization complete only after every stage succeeds.
     // Its deinit is a no-op before that point, so unwind successful stages here.
     sdk.extra.net.init() catch |err| {
@@ -48,7 +48,7 @@ pub fn release() void {
     }
 }
 
-pub fn configure_stream(stream: std.Io.net.Stream, opts: api.StreamOptions) api.Error!void {
+pub fn configure_stream(stream: std.Io.net.Stream, opts: network.StreamOptions) network.Error!void {
     const enabled = opts.no_delay orelse return;
     sdk.extra.net.setTcpNoDelay(@intCast(stream.socket.handle), enabled) catch return error.ConfigureFailed;
 }

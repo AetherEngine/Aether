@@ -3,7 +3,7 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
-const data = @import("platform").input_api.data;
+const data = @import("platform").input.data;
 const binding_mod = @import("binding.zig");
 
 pub const ActionKind = enum(u8) {
@@ -115,7 +115,7 @@ pub const ActionHandle = packed struct(u64) {
     }
 };
 
-pub const DeviceState = @import("platform").input_api.DeviceState;
+pub const DeviceState = @import("platform").input.DeviceState;
 
 /// Apply the binding's deadzone and multiplier to its device value.
 pub fn binding_contribution(b: binding_mod.Binding, dev: *const DeviceState) f32 {

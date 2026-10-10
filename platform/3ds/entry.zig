@@ -1,53 +1,43 @@
-//! 3DS entry shim.
-//!
-//! Zitrus owns the real process entry on 3DS, but Aether keeps that detail
-//! inside the platform layer. User roots can keep accepting `std.process.Init`
-//! like they do on other Aether targets.
-
+//! 3DS process entry. Zitrus owns the process start and hands over a Horizon
+//! application; this brings up storage, sockets, and model detection, then
+//! runs the application with `std.process.Init` like every other target.
 const std = @import("std");
-const aether = @import("aether");
-const entry = @import("aether_entry_common");
 const zitrus = @import("zitrus");
+const entry = @import("../entry.zig");
+const backend = @import("../backend.zig");
+const gfx = @import("../gfx.zig");
+const audio = @import("../audio.zig");
+const app = @import("app.zig");
+const network = @import("network.zig");
 
-const Application = zitrus.horizon.Init.Application;
 const horizon = zitrus.horizon;
-const min_stack_size: u32 = 768 * 1024;
-const soc_buffer_len: usize = 1024 * 1024;
+const Application = horizon.Init.Application;
 const log = std.log.scoped(.aether_3ds_entry);
 
-pub const zitrus_options: zitrus.Options = .{
-    .stack_size = @max(min_stack_size, entry.options.nintendo_3ds.stack_size),
+pub const hosts_frame_loop = false;
+
+pub const Options = struct {
+    audio_stream_cache_bytes: usize,
 };
 
-pub const std_options = entry.options.std_options;
-pub const std_os_options = zitrus.std_os_options;
-pub const panic = std.debug.FullPanic(zitrus.horizon.debug.defaultPanic);
-pub const std_options_debug_threaded_io = null;
-pub const std_options_debug_io: std.Io = zitrus.horizon.Io.debug_io;
-pub const std_options_cwd = zitrus.horizon.Io.Dir.cwd;
-
-pub fn main(init: Application) !void {
+pub fn run(init: Application, opts: Options, app_main: entry.AppMain) anyerror!void {
     const is_new_3ds = detect_and_configure_new_3ds(init.srv);
 
-    aether.N3ds.set_application(init, is_new_3ds, entry.options.nintendo_3ds.audio_stream_cache_bytes);
-    defer aether.N3ds.clear_application();
+    app.set_application(init, is_new_3ds, opts.audio_stream_cache_bytes);
+    defer app.clear_application();
 
-    try zitrus.horizon.Io.global.initStorage(init.srv, .fs, 0);
-    defer zitrus.horizon.Io.global.deinitFilesystem();
+    try horizon.Io.global.initStorage(init.srv, .fs, 0);
+    defer horizon.Io.global.deinitFilesystem();
 
-    var network = NetworkContext.init(init.srv, init.base.gpa) catch |err| blk: {
+    network.start(init.srv, init.base.gpa) catch |err| {
         log.warn("3DS network init skipped: {s}", .{@errorName(err)});
-        break :blk null;
     };
-    defer if (network) |*ctx| ctx.deinit();
+    defer network.stop();
 
-    aether.N3ds.set_network_available(network != null);
-    defer aether.N3ds.set_network_available(false);
+    horizon.Io.global.mountSelfRomFs("romfs") catch {};
+    horizon.Io.global.mountArchive("sdmc", .sdmc, .empty, &.{}) catch {};
 
-    zitrus.horizon.Io.global.mountSelfRomFs("romfs") catch {};
-    zitrus.horizon.Io.global.mountArchive("sdmc", .sdmc, .empty, &.{}) catch {};
-
-    const linear_gpa = zitrus.horizon.heap.linear_page_allocator;
+    const linear_gpa = horizon.heap.linear_page_allocator;
 
     var arena = std.heap.ArenaAllocator.init(linear_gpa);
     defer arena.deinit();
@@ -70,7 +60,30 @@ pub fn main(init: Application) !void {
         .preopens = .empty,
     };
 
-    try entry.call_main(process_init);
+    return entry.run_app(process_init, app_main);
+}
+
+/// Handles HOME, sleep, and quit requests from the applet manager.
+pub fn poll() bool {
+    return app.update(suspend_for_applet, resume_from_applet);
+}
+
+const ScreenCapture = horizon.services.GraphicsServerGpu.ScreenCapture;
+
+fn suspend_for_applet() anyerror!ScreenCapture {
+    const capture = if (backend.native_video)
+        try gfx.surface.suspend_for_applet()
+    else blk: {
+        const current = app.current_application() orelse return error.NoCurrentApplication;
+        break :blk try current.gsp.sendImportDisplayCaptureInfo();
+    };
+    if (backend.native_audio) audio.Api.suspend_for_applet();
+    return capture;
+}
+
+fn resume_from_applet() void {
+    if (backend.native_video) gfx.surface.resume_from_applet();
+    if (backend.native_audio) audio.Api.resume_from_applet();
 }
 
 /// Detects New Nintendo 3DS hardware and enables its higher CPU clock and L2
@@ -104,43 +117,3 @@ fn detect_and_configure_new_3ds(srv: horizon.ServiceManager) bool {
     log.info("3DS New-model performance mode enabled (804 MHz + L2 cache)", .{});
     return true;
 }
-
-const NetworkContext = struct {
-    soc: horizon.services.SocketUser,
-    memory: horizon.MemoryBlock,
-    buffer: []align(horizon.heap.page_size) u8,
-    alloc: std.mem.Allocator,
-
-    fn init(srv: horizon.ServiceManager, alloc: std.mem.Allocator) !NetworkContext {
-        const soc = try horizon.services.SocketUser.open(srv);
-        errdefer soc.close();
-
-        const buffer = try alloc.alignedAlloc(u8, .fromByteUnits(horizon.heap.page_size), soc_buffer_len);
-        errdefer alloc.free(buffer);
-
-        const memory: horizon.MemoryBlock = try .create(buffer.ptr, buffer.len, .none, .rw);
-        errdefer memory.close();
-
-        try soc.sendInitialize(memory, buffer.len);
-        errdefer soc.sendDeinitialize();
-
-        try horizon.Io.global.initNetwork(.{ .soc = soc, .extra = .unowned });
-
-        return .{
-            .soc = soc,
-            .memory = memory,
-            .buffer = buffer,
-            .alloc = alloc,
-        };
-    }
-
-    fn deinit(self: *NetworkContext) void {
-        defer self.* = undefined;
-
-        horizon.Io.global.deinitNetwork();
-        self.soc.sendDeinitialize();
-        self.memory.close();
-        self.alloc.free(self.buffer);
-        self.soc.close();
-    }
-};

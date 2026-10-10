@@ -2,7 +2,7 @@
 //! first be released; key repeats never complete capture.
 
 const std = @import("std");
-const data = @import("platform").input_api.data;
+const data = @import("platform").input.data;
 const binding_mod = @import("binding.zig");
 const display = @import("display.zig");
 

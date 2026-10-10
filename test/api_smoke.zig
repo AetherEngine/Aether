@@ -86,6 +86,8 @@ fn exercise(init: std.process.Init) !void {
         thread.join();
         if (counter.load(.acquire) != 1) return error.ThreadDidNotRun;
     }
+    // Zitrus' Horizon Io (3DS) has no group operations to compile against.
+    if (comptime ae.Core.Io.interposes) try io_probe_tasks(init.io);
     const executor = try ae.Jobs.Executor.init(init.gpa, init.io, .{ .capacity = 2 });
     defer executor.deinit();
 
@@ -106,6 +108,21 @@ fn exercise(init: std.process.Init) !void {
         error.UnsupportedPlatform => {},
         else => return err,
     }
+}
+
+/// `async` and groups work everywhere; they run inline without concurrency.
+fn io_probe_tasks(io: std.Io) !void {
+    var counter = std.atomic.Value(u32).init(0);
+    var task = io.async(count_probe, .{&counter});
+    task.await(io);
+    var group: std.Io.Group = .init;
+    group.async(io, count_probe, .{&counter});
+    try group.await(io);
+    if (counter.load(.acquire) != 2) return error.TaskDidNotRun;
+}
+
+fn count_probe(counter: *std.atomic.Value(u32)) void {
+    _ = counter.fetchAdd(1, .acq_rel);
 }
 
 fn thread_probe(counter: *std.atomic.Value(u32)) void {
@@ -154,8 +171,10 @@ export fn aether_api_smoke_render(texture: *Rendering.Texture, batch: *Rendering
 }
 
 export fn aether_api_smoke_export() bool {
-    ae.FileExport.download("api-smoke.bin", .{ .filename = "api-smoke.bin" }) catch return false;
-    return true;
+    if (comptime ae.platform != .wasm) return false else {
+        ae.Web.FileExport.download("api-smoke.bin", .{ .filename = "api-smoke.bin" }) catch return false;
+        return true;
+    }
 }
 
 /// Compile-only I/O coverage. A harness must provide a disposable writable

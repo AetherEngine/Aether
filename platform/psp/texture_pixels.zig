@@ -1,4 +1,4 @@
-const linear = @import("../texture_pixels.zig");
+const linear = @import("../graphics/texture_pixels.zig");
 const compact = @import("options").config.psp_display_mode == .rgb565;
 
 pub const color_mode = if (compact) @import("../graphics/pixel_format.zig").PixelFormat.rgba4444 else linear.color_mode;

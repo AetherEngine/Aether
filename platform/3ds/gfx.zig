@@ -7,7 +7,6 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const zitrus = @import("zitrus");
-const gfx_api = @import("../gfx_api.zig");
 const Util = @import("../util/util.zig");
 const Mat4 = @import("../math/math.zig").Mat4;
 const Graphics = @import("../graphics/graphics.zig");
@@ -173,7 +172,7 @@ pub fn setup(alloc: std.mem.Allocator, io: std.Io) void {
     render_io = io;
 }
 
-pub fn init() gfx_api.InitError!void {
+pub fn init() gfx.InitError!void {
     _ = render_io;
     command_pool = gfx.surface.device.createCommandPool(.{
         .initial_command_buffers = command_buffer_count,
@@ -534,7 +533,7 @@ pub fn wait_for_borrowed_meshes() void {
     };
 }
 
-pub fn create_mesh(_: *const Mesh.Desc) gfx_api.CreateMeshError!Mesh.Handle {
+pub fn create_mesh(_: *const Mesh.Desc) gfx.CreateMeshError!Mesh.Handle {
     return meshes.add(.{}) orelse error.OutOfMeshes;
 }
 
@@ -620,7 +619,7 @@ fn create_mesh_buffer_data(data: []const u8, label: []const u8) ?MeshBufferData 
     };
 }
 
-pub fn create_texture(desc: *const Texture.UploadDesc) gfx_api.CreateTextureError!Texture.Handle {
+pub fn create_texture(desc: *const Texture.UploadDesc) gfx.CreateTextureError!Texture.Handle {
     const width = desc.width;
     const height = desc.height;
     const data = desc.pixels;

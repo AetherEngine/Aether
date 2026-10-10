@@ -1,7 +1,7 @@
 //! Bounded settings I/O and replacement writes. Callers serialize writes to a
 //! destination and reserve its .aether-tmp/.aether-previous sibling names.
 const std = @import("std");
-const filesystem = @import("platform").filesystem;
+const platform_io = @import("platform").io;
 
 pub const ReplaceOptions = struct {
     strategy: enum { platform_default, replace, backup } = .platform_default,
@@ -29,12 +29,12 @@ pub fn write_replace(io: std.Io, dir: std.Io.Dir, path: []const u8, body: anytyp
 
 fn write_replace_using(io: std.Io, dir: std.Io.Dir, path: []const u8, body: anytype, opts: ReplaceOptions, operations: anytype) !ReplaceResult {
     if (path.len == 0 or std.mem.indexOfScalar(u8, path, 0) != null) return error.InvalidPath;
-    var temp_buf: [filesystem.max_path_bytes]u8 = undefined;
-    var previous_buf: [filesystem.max_path_bytes]u8 = undefined;
+    var temp_buf: [platform_io.max_path_bytes]u8 = undefined;
+    var previous_buf: [platform_io.max_path_bytes]u8 = undefined;
     const temp = try std.fmt.bufPrint(&temp_buf, "{s}.aether-tmp", .{path});
     const previous = try std.fmt.bufPrint(&previous_buf, "{s}.aether-previous", .{path});
     const replace = switch (opts.strategy) {
-        .platform_default => filesystem.rename_replaces_destination,
+        .platform_default => platform_io.rename_replaces_destination,
         .replace => true,
         .backup => false,
     };

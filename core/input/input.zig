@@ -7,10 +7,10 @@ pub const serialization = @import("serialization.zig");
 
 const std = @import("std");
 const platform_input = @import("platform").input;
-const input_api = @import("platform").input_api;
+const input_api = @import("platform").input;
 
-pub const data = @import("platform").input_api.data;
-pub const frame = @import("platform").input_api.frame;
+pub const data = @import("platform").input.data;
+pub const frame = @import("platform").input.frame;
 pub const binding_mod = @import("binding.zig");
 pub const action_mod = @import("action.zig");
 pub const context_mod = @import("context.zig");

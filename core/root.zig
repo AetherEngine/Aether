@@ -10,7 +10,6 @@ pub const Ui = Core.Ui;
 pub const Audio = Core.Audio;
 pub const System = Core.System;
 pub const Network = Core.Network;
-pub const FileExport = Core.FileExport;
 pub const Storage = Core.Storage;
 pub const Jobs = Core.Jobs;
 pub const Resources = Core.Resources;
@@ -23,21 +22,23 @@ pub const PspModuleMode = AppOptions.PspModuleMode;
 pub const Nintendo3dsOptions = AppOptions.Nintendo3dsOptions;
 pub const ctx_to_self = Util.ctx_to_self;
 pub const PlatformApi = struct {
-    pub const gfx = @import("platform").gfx_api;
-    pub const audio = @import("platform").audio_api;
-    pub const input = @import("platform").input_api;
+    pub const gfx = @import("platform").gfx;
+    pub const audio = @import("platform").audio;
+    pub const input = @import("platform").input;
     pub const surface = @import("platform").surface;
-    pub const thread = @import("platform").thread_api;
+    pub const thread = @import("platform").thread;
     pub const graphics = @import("platform").graphics;
-    pub const system = @import("platform").system.api;
-    pub const network = @import("platform").network.api;
+    pub const system = @import("platform").system;
+    pub const network = @import("platform").network;
 };
 
-/// PSP system dialogs (keyboard and network configuration).
-pub const Psp = if (platform == .psp) @import("platform").Psp else void;
-pub const N3ds = if (platform == .nintendo_3ds) @import("platform").N3ds else void;
-pub const Cio = if (platform == .nintendo_switch) @import("platform").Cio else void;
-pub const CProcessInit = if (platform == .nintendo_switch) @import("platform").CProcessInit else void;
+/// Target-specific services; void on other targets.
+/// PSP: system dialogs (on-screen keyboard and network configuration).
+pub const Psp = if (platform == .psp) @import("platform").native else void;
+/// 3DS: New-model detection and the running Horizon application.
+pub const N3ds = if (platform == .nintendo_3ds) @import("platform").native else void;
+/// Browser: file downloads.
+pub const Web = if (platform == .wasm) @import("platform").native else void;
 
 /// Build-selected platform and graphics backend.
 pub const Platform = @TypeOf(options.config.platform);

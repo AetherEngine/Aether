@@ -2,7 +2,8 @@
 //! engine update and translates them into Aether core input events.
 
 const std = @import("std");
-const input_api = @import("../input_api.zig");
+const input_api = @import("../input.zig");
+const gfx = @import("../gfx.zig");
 const Util = @import("../util/util.zig");
 const c = @import("c.zig").switch_c;
 
@@ -78,6 +79,9 @@ pub fn deinit() void {
 }
 
 pub fn pump(input: input_api.EventSink) void {
+    // Headless builds replace surface and input together, so the active
+    // surface is always the Switch one here.
+    if (gfx.surface.take_docked_mode_entered()) handle_docked_mode_entered(input);
     c.padUpdate(&pad);
 
     diff_buttons(input, pad.buttons_cur);
@@ -95,7 +99,7 @@ pub fn apply_cursor_mode(mode: input_api.CursorMode) void {
 /// Requests controller support after entering docked mode. The public libnx
 /// applet intentionally returns without displaying UI when the current
 /// controller assignment already satisfies this request.
-pub fn handle_docked_mode_entered(input: input_api.EventSink) void {
+fn handle_docked_mode_entered(input: input_api.EventSink) void {
     if (!initialized) return;
 
     release_all_input_state(input);

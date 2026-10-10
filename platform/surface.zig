@@ -1,3 +1,4 @@
+//! Window/display surface contract and the selected surface.
 const contract = @import("contract.zig");
 
 pub const InitError = error{
@@ -20,4 +21,12 @@ pub fn InterfaceType(comptime Backend: type) type {
 
 pub fn assert_impl(comptime Backend: type) void {
     contract.assert_impl("surface", Backend, InterfaceType(Backend));
+}
+
+/// Selected surface (`headless/` for headless builds). Graphics owns the
+/// instance; see `gfx.surface`.
+pub const Surface = @import("backend.zig").surface;
+
+comptime {
+    assert_impl(Surface);
 }

@@ -7,8 +7,8 @@ const std = @import("std");
 const sdk = @import("pspsdk");
 const ctrl = sdk.ctrl;
 
-const input_api = @import("../input_api.zig");
-const dialogs = @import("psp_dialogs.zig");
+const input_api = @import("../input.zig");
+const dialogs = @import("dialogs.zig");
 
 var prev_pad: ctrl.Data = std.mem.zeroes(ctrl.Data);
 var have_prev: bool = false;

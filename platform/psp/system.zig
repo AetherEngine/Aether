@@ -1,7 +1,7 @@
 const sdk = @import("pspsdk");
-const api = @import("../system_api.zig");
+const system = @import("../system.zig");
 
-pub fn info() api.Info {
+pub fn info() system.Info {
     return .{
         .hardware = switch (sdk.model.current()) {
             .phat => .psp_phat,
@@ -10,6 +10,5 @@ pub fn info() api.Info {
         .input = .{ .native_text_entry = true, .built_in_sticks = 1 },
         .worker_inherits_cwd = false,
         .native_thread_priority = true,
-        .rename_replaces_destination = false,
     };
 }

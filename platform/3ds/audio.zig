@@ -4,7 +4,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 const zitrus = @import("zitrus");
 const app_3ds = @import("app.zig");
-const audio_api = @import("../audio_api.zig");
+const audio_api = @import("../audio.zig");
 const thread_mod = @import("../thread.zig");
 const audio_fifo = @import("audio_fifo.zig");
 const SlotSource = audio_api.SlotSource;
@@ -108,6 +108,9 @@ var stream_fifos: [num_slots]audio_fifo.ByteFifo = undefined;
 var stream_underflows: std.atomic.Value(usize) = std.atomic.Value(usize).init(0);
 var output_underruns: std.atomic.Value(usize) = std.atomic.Value(usize).init(0);
 var initialized = false;
+
+/// New voices dispatch before the next DSP output page, without a frame of delay.
+pub const dispatch_on_play = true;
 
 pub fn init(alloc: std.mem.Allocator, io: std.Io) audio_api.InitError!void {
     audio_alloc = alloc;

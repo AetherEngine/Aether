@@ -1,8 +1,7 @@
 //! 3DS thread backend -- delegates to Zitrus' std.Thread-compatible wrapper.
 
-const std = @import("std");
 const zitrus = @import("zitrus");
-const api = @import("../thread_api.zig");
+const api = @import("../thread.zig");
 const app = @import("app.zig");
 
 const horizon = zitrus.horizon;
@@ -41,14 +40,7 @@ pub fn spawn(cfg: api.Config, comptime func: anytype, args: anytype) !Handle {
     const Wrapped = struct {
         fn run(prio: api.Priority, fn_args: Args) void {
             current_prio = prio;
-            const Ret = @typeInfo(@TypeOf(func)).@"fn".return_type.?;
-            switch (@typeInfo(Ret)) {
-                .void, .noreturn => @call(.auto, func, fn_args),
-                .error_union => @call(.auto, func, fn_args) catch |e| {
-                    std.log.err("aether thread errored: {s}", .{@errorName(e)});
-                },
-                else => @compileError("thread fn must return void, !void, or noreturn"),
-            }
+            api.run_entry(func, fn_args);
         }
     };
 
@@ -103,4 +95,10 @@ pub fn change_current_priority_by(delta: i32) anyerror!i32 {
 pub fn restore_current_priority(token: i32) anyerror!void {
     if (token < 0 or token > 63) return error.InvalidPriority;
     if (!horizon.setThreadPriority(.current, @intCast(token)).isSuccess()) return error.SystemResources;
+}
+
+/// The app core schedules cooperatively among equal priorities; give audio
+/// and logger workers a turn each frame.
+pub fn cooperative_yield() void {
+    horizon.sleepThread(0);
 }

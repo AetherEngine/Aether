@@ -133,7 +133,7 @@ pub fn add(self: *BillboardBatcher, billboard: Billboard) Error!void {
     self.count += 1;
 }
 
-pub fn upload(self: *BillboardBatcher) Platform.gfx_api.CreateMeshError!void {
+pub fn upload(self: *BillboardBatcher) Platform.gfx.CreateMeshError!void {
     if (self.gpu_mesh == null) self.gpu_mesh = try Mesh.init(&.{});
     self.gpu_mesh.?.update(&self.data);
 }

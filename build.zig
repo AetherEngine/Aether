@@ -65,12 +65,13 @@ pub fn build(b: *std.Build) void {
     run_lint.addPassthruArgs();
     run_lint.addArg(".");
 
-    // Follow both module roots; named imports do not expose source paths.
+    // Follow every module root; named imports do not expose source paths.
     run_lint.addFileArg(b.path("core/root.zig"));
     run_lint.addFileArg(b.path("platform/platform.zig"));
-    // This module is imported by its build-system name, aether_entry_common.
-    run_lint.addFileArg(b.path("platform/entry_common.zig"));
-    // Its only importer is the excluded C I/O wrapper; still check its implementation.
+    inline for (.{ "common", "desktop", "psp", "3ds", "switch", "wasm" }) |root| {
+        run_lint.addFileArg(b.path("platform/root/" ++ root ++ ".zig"));
+    }
+    // Its only importer is the excluded Switch I/O file; still check its implementation.
     run_lint.addFileArg(b.path("platform/switch/time.zig"));
 
     const lint_step = b.step("lint", "Lint the codebase with tiger_lint");
@@ -232,7 +233,7 @@ pub fn build(b: *std.Build) void {
     // can't be linked or analyzed under the test runner).
     if (resolved_config.platform != .psp and resolved_config.platform != .nintendo_3ds and resolved_config.platform != .nintendo_switch) {
         const mod_tests = b.addTest(.{
-            .root_module = exe.root_module.import_table.get("aether").?,
+            .root_module = modules.engine_module(exe),
         });
         const run_mod_tests = b.addRunArtifact(mod_tests);
         const platform_tests = b.addTest(.{
