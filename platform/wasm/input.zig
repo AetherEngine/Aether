@@ -8,7 +8,7 @@ extern "aether_host" fn aether_input_apply_cursor_mode(mode: u32) void;
 
 var active_input: ?input_api.EventSink = null;
 
-pub fn setup(_: std.mem.Allocator, _: std.Io, input: input_api.EventSink) void {
+pub fn setup(_: std.Io, input: input_api.EventSink) void {
     active_input = input;
 }
 

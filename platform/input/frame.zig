@@ -1,6 +1,6 @@
 //! Published events and text remain valid until the next frame boundary.
 
-const std = @import("std");
+const options = @import("options");
 const data = @import("data.zig");
 
 pub const Vec2 = extern struct {
@@ -38,80 +38,76 @@ pub const InputFrame = struct {
     sequence: u64 = 0,
     events: []const RawEvent = &.{},
     pointer: Pointer = .{},
+    dropped_events: u32 = 0,
+};
+
+pub const limits = struct {
+    pub const max_events_per_frame: usize = switch (options.config.platform) {
+        .psp, .nintendo_3ds, .nintendo_switch => 128,
+        .windows, .linux, .macos, .wasm => 512,
+    };
+    pub const max_text_bytes_per_frame: usize = switch (options.config.platform) {
+        .psp, .nintendo_3ds, .nintendo_switch => 512,
+        .windows, .linux, .macos, .wasm => 4096,
+    };
+};
+
+const FrameSide = struct {
+    events: [limits.max_events_per_frame]RawEvent = undefined,
+    event_count: usize = 0,
+    text: [limits.max_text_bytes_per_frame]u8 = undefined,
+    text_len: usize = 0,
+    dropped: u32 = 0,
+
+    fn clear(self: *FrameSide) void {
+        self.event_count = 0;
+        self.text_len = 0;
+        self.dropped = 0;
+    }
 };
 
 pub const FrameBuffer = struct {
-    alloc: std.mem.Allocator,
-    accum_events: std.ArrayList(RawEvent) = .empty,
-    published: std.ArrayList(RawEvent) = .empty,
-    accum_strings: std.heap.ArenaAllocator,
-    published_strings: std.heap.ArenaAllocator,
+    sides: [2]FrameSide = @splat(.{}),
+    accum: u1 = 0,
     sequence: u64 = 0,
     frame_sequence: u64 = 0,
 
-    pub fn init(alloc: std.mem.Allocator) FrameBuffer {
-        return .{
-            .alloc = alloc,
-            .accum_strings = .init(alloc),
-            .published_strings = .init(alloc),
-        };
-    }
-
-    pub fn deinit(self: *FrameBuffer) void {
-        defer self.* = undefined;
-
-        self.accum_events.deinit(self.alloc);
-        self.published.deinit(self.alloc);
-        self.accum_strings.deinit();
-        self.published_strings.deinit();
-    }
-
-    pub fn append_event(self: *FrameBuffer, kind: RawEvent.Kind) !u64 {
+    pub fn record_event(self: *FrameBuffer, kind: RawEvent.Kind) void {
+        const side = &self.sides[self.accum];
+        if (side.event_count == side.events.len) {
+            side.dropped +|= 1;
+            return;
+        }
         self.sequence += 1;
-        try self.accum_events.append(self.alloc, .{ .sequence = self.sequence, .kind = kind });
-        return self.sequence;
+        side.events[side.event_count] = .{ .sequence = self.sequence, .kind = kind };
+        side.event_count += 1;
     }
 
-    /// Text survives further appends and remains valid through publication.
-    pub fn intern_text(self: *FrameBuffer, text: []const u8) ![]const u8 {
-        return self.accum_strings.allocator().dupe(u8, text);
+    /// Text is copied and remains valid through publication of its frame.
+    pub fn record_text(self: *FrameBuffer, text: []const u8) void {
+        const side = &self.sides[self.accum];
+        if (side.event_count == side.events.len or text.len > side.text.len - side.text_len) {
+            side.dropped +|= 1;
+            return;
+        }
+        const stored = side.text[side.text_len..][0..text.len];
+        @memcpy(stored, text);
+        side.text_len += text.len;
+        self.record_event(.{ .text_utf8 = .{ .text = stored } });
     }
 
     pub fn signal_frame_boundary(self: *FrameBuffer) void {
-        std.mem.swap(std.ArrayList(RawEvent), &self.accum_events, &self.published);
-        std.mem.swap(std.heap.ArenaAllocator, &self.accum_strings, &self.published_strings);
+        self.accum ^= 1;
+        self.sides[self.accum].clear();
         self.frame_sequence += 1;
-        self.accum_events.clearRetainingCapacity();
-        _ = self.accum_strings.reset(.retain_capacity);
     }
 
-    pub fn published_events(self: *FrameBuffer) []const RawEvent {
-        return self.published.items;
+    pub fn published_events(self: *const FrameBuffer) []const RawEvent {
+        const side = &self.sides[self.accum ^ 1];
+        return side.events[0..side.event_count];
+    }
+
+    pub fn published_dropped(self: *const FrameBuffer) u32 {
+        return self.sides[self.accum ^ 1].dropped;
     }
 };
-
-test "frame text survives arena growth and the next accumulator" {
-    var fb = FrameBuffer.init(std.testing.allocator);
-    defer fb.deinit();
-
-    const first = try fb.intern_text("first");
-    _ = try fb.append_event(.{ .text_utf8 = .{ .text = first } });
-    const large = try std.testing.allocator.alloc(u8, 64 * 1024);
-    defer std.testing.allocator.free(large);
-
-    @memset(large, 'x');
-    const second = try fb.intern_text(large);
-    _ = try fb.append_event(.{ .text_utf8 = .{ .text = second } });
-
-    fb.signal_frame_boundary();
-    const published = fb.published_events();
-    try std.testing.expectEqualStrings("first", published[0].kind.text_utf8.text);
-    try std.testing.expectEqualStrings(large, published[1].kind.text_utf8.text);
-    const next = try fb.intern_text("next");
-    _ = try fb.append_event(.{ .text_utf8 = .{ .text = next } });
-    try std.testing.expectEqualStrings("first", published[0].kind.text_utf8.text);
-
-    fb.signal_frame_boundary();
-    try std.testing.expectEqual(@as(usize, 1), fb.published_events().len);
-    try std.testing.expectEqualStrings("next", fb.published_events()[0].kind.text_utf8.text);
-}

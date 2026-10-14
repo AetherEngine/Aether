@@ -23,41 +23,51 @@ pub const CaptureResult = struct {
     }
 };
 
+/// Sources held when capture began that have not yet been released.
+pub const HeldSources = struct {
+    keys: std.EnumSet(data.Key) = .{},
+    mouse_buttons: std.EnumSet(data.MouseButton) = .{},
+    gamepad_buttons: std.EnumSet(data.Button) = .{},
+    gamepad_axes: std.EnumSet(data.Axis) = .{},
+
+    fn contains(self: *const HeldSources, src: binding_mod.BindingSource) bool {
+        return switch (src) {
+            .key => |k| self.keys.contains(k),
+            .mouse_button => |mb| self.mouse_buttons.contains(mb),
+            .gamepad_button => |gb| self.gamepad_buttons.contains(gb),
+            .gamepad_axis => |a| self.gamepad_axes.contains(a),
+            .mouse_wheel, .mouse_delta => false,
+        };
+    }
+
+    fn remove(self: *HeldSources, src: binding_mod.BindingSource) void {
+        switch (src) {
+            .key => |k| self.keys.remove(k),
+            .mouse_button => |mb| self.mouse_buttons.remove(mb),
+            .gamepad_button => |gb| self.gamepad_buttons.remove(gb),
+            .gamepad_axis => |a| self.gamepad_axes.remove(a),
+            .mouse_wheel, .mouse_delta => {},
+        }
+    }
+};
+
 pub const CaptureNextInputSession = struct {
     eligible_kinds: std.EnumSet(binding_mod.BindingSourceKind),
-    held_at_start: std.ArrayList(binding_mod.BindingSource) = .empty,
+    held_at_start: HeldSources = .{},
     status: CaptureNextInputStatus = .waiting,
     result: CaptureResult = undefined,
-
-    pub fn deinit(self: *CaptureNextInputSession, alloc: std.mem.Allocator) void {
-        defer self.* = undefined;
-
-        self.held_at_start.deinit(alloc);
-    }
 
     pub fn is_terminal(self: *const CaptureNextInputSession) bool {
         return self.status == .captured or self.status == .cancelled;
     }
 };
 
-pub fn source_eq(a: binding_mod.BindingSource, b: binding_mod.BindingSource) bool {
-    return std.meta.eql(a, b);
-}
-
 pub fn arm_on_release(session: *CaptureNextInputSession, src: binding_mod.BindingSource) void {
-    for (session.held_at_start.items, 0..) |held, i| {
-        if (source_eq(held, src)) {
-            _ = session.held_at_start.swapRemove(i);
-            return;
-        }
-    }
+    session.held_at_start.remove(src);
 }
 
 pub fn eligible_to_complete(session: *const CaptureNextInputSession, src: binding_mod.BindingSource) bool {
-    for (session.held_at_start.items) |held| {
-        if (source_eq(held, src)) return false;
-    }
-    return true;
+    return !session.held_at_start.contains(src);
 }
 
 pub fn format_label(buf: *[64]u8, src: binding_mod.BindingSource, mods: data.ModifierSet) u8 {

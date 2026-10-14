@@ -221,13 +221,10 @@ pub const Engine = struct {
         self.dirs = try Core.paths.resolve(sys_io, environ_map, app_name);
         errdefer self.dirs.close(self.io);
 
-        try logger.init(sys_io, self.dirs.data, self.allocator(.game));
+        try logger.init(sys_io, self.dirs.data);
         errdefer logger.deinit(self.io);
 
-        self.input.init(self.allocator(.game)) catch |err| switch (err) {
-            error.OutOfMemory => return error.InputInitOutOfMemory,
-            else => return err,
-        };
+        self.input.init();
         errdefer self.input.deinit();
 
         Platform.gfx.init(self.allocator(.render), self.io, config.width, config.height, config.title, config.fullscreen, config.vsync, config.resizable) catch |err| switch (err) {
@@ -243,7 +240,7 @@ pub const Engine = struct {
         errdefer Audio.deinit();
 
         // Input attaches to the surface created by graphics.
-        self.input.init_platform(self.allocator(.game), self.io) catch |err| switch (err) {
+        self.input.init_platform(self.io) catch |err| switch (err) {
             error.OutOfMemory => return error.InputInitOutOfMemory,
             else => return err,
         };
@@ -760,7 +757,6 @@ test "frame scratch allocator resets tracked usage" {
     const config = MemoryConfig{
         .render = 1024,
         .audio = 1024,
-        .game = 1024,
         .frame = frame_budget,
         .user = 1024,
     };
@@ -797,7 +793,6 @@ test "zero frame budget disables frame scratch allocations" {
     const config = MemoryConfig{
         .render = 1024,
         .audio = 1024,
-        .game = 1024,
         .frame = 0,
         .user = 1024,
     };
@@ -869,7 +864,7 @@ test "failed state initialization releases engine resources" {
     } };
     const config = Engine.Config{
         .app_name = "init-failure",
-        .memory = .{ .render = 4096, .audio = 4096, .game = 128 * 1024, .frame = 4096, .user = 0 },
+        .memory = .{ .render = 4096, .audio = 4096, .frame = 4096, .user = 0 },
     };
 
     // Retry against the same globals to catch incomplete subsystem teardown.

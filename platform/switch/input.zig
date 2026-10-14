@@ -52,7 +52,7 @@ var prev_touch_pos: input_api.Vec2 = .{};
 var current_cursor_mode: input_api.CursorMode = .visible;
 var active_input: ?input_api.EventSink = null;
 
-pub fn setup(_: std.mem.Allocator, _: std.Io, input: input_api.EventSink) void {
+pub fn setup(_: std.Io, input: input_api.EventSink) void {
     active_input = input;
     initialized = false;
     pad = std.mem.zeroes(c.PadState);

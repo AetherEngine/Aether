@@ -157,12 +157,7 @@ pub fn begin(state: *State, draw: *DrawList, options: Options) Error!Context {
             if (state.owns_session(session) and session.status == .active) for (system.frame_events()) |event| switch (event.kind) {
                 .key_down => |key| {
                     if (key.key == .Backspace) {
-                        const edit = @constCast(session);
-                        if (edit.buffer.items.len > 0) {
-                            var at = edit.buffer.items.len - 1;
-                            while (at > 0 and (edit.buffer.items[at] & 0xc0) == 0x80) : (at -= 1) {}
-                            edit.buffer.items.len = at;
-                        }
+                        system.delete_text_codepoint();
                     } else if (key.key == .Enter and !key.is_repeat) {
                         system.submit_text() catch {};
                         self.confirm_claimed = true;
@@ -470,7 +465,7 @@ pub fn text_field(self: *Context, id: WidgetId, rect: layout.LogicalRect, buffer
         if (system.current_text_session()) |session| {
             if (!self.state.owns_session(session)) self.state.cancel_text() else switch (session.status) {
                 .active, .suspended => {
-                    display_text = session.buffer.items;
+                    display_text = session.text();
                     if (self.options.live_text and !self.options.replay) {
                         const take = @min(buffer.len, display_text.len);
                         result.changed = !std.mem.eql(u8, buffer[0..length.*], display_text[0..take]);
@@ -480,8 +475,8 @@ pub fn text_field(self: *Context, id: WidgetId, rect: layout.LogicalRect, buffer
                     result.editing = true;
                 },
                 .submitted => {
-                    length.* = @min(buffer.len, session.buffer.items.len);
-                    @memcpy(buffer[0..length.*], session.buffer.items[0..length.*]);
+                    length.* = @min(buffer.len, session.text().len);
+                    @memcpy(buffer[0..length.*], session.text()[0..length.*]);
                     display_text = buffer[0..length.*];
                     result.submitted = true;
                     self.state.cancel_text();
@@ -631,7 +626,7 @@ test "scrolling clamps and clips child geometry" {
 
 test "text widgets submit through existing bounded sessions and cancel on removal" {
     var system: input_api.InputSystem = .{};
-    try system.init(std.testing.allocator);
+    system.init();
     defer system.deinit();
 
     var state = try State.init(std.testing.allocator, .{});
@@ -720,7 +715,7 @@ test "draw replay preserves controller slider capture until cancel" {
 
 test "text widgets handle live edits backspace and submit without replaying events" {
     var system: input_api.InputSystem = .{};
-    try system.init(std.testing.allocator);
+    system.init();
     defer system.deinit();
 
     const actions = try system.register_action_set("text-ui");
@@ -750,7 +745,7 @@ test "text widgets handle live edits backspace and submit without replaying even
     context = try begin(&state, &draw, .{ .bounds = bounds, .paint = false, .live_text = true, .text_events = true, .replay = true });
     _ = try context.text_field(1, bounds, &text, &length, true);
     try context.end();
-    try std.testing.expectEqualStrings("ab", system.current_text_session().?.buffer.items);
+    try std.testing.expectEqualStrings("ab", system.current_text_session().?.text());
     system.deliver_key_down(.Enter, .{}, false);
     system.signal_frame_boundary();
     context = try begin(&state, &draw, .{ .bounds = bounds, .paint = false, .live_text = true, .text_events = true, .input = .{ .input_system = &system, .confirm = true } });

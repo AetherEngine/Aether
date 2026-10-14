@@ -41,6 +41,7 @@ pub const ActionKind = action_mod.ActionKind;
 pub const ActionValue = action_mod.ActionValue;
 pub const Action = action_mod.Action;
 pub const ActionSet = action_mod.ActionSet;
+pub const ActionName = action_mod.Name;
 pub const ActionSetHandle = action_mod.ActionSetHandle;
 pub const ActionHandle = action_mod.ActionHandle;
 pub const ButtonQuery = action_mod.ButtonQuery;
@@ -63,16 +64,21 @@ pub const CaptureNextInputSession = capture_session_mod.CaptureNextInputSession;
 pub const config = struct {
     pub const axis_activity_threshold: f32 = 0.1;
     pub const default_axis_deadzone: f32 = binding_mod.default_axis_deadzone;
-};
-
-pub const InitError = error{
-    OutOfMemory,
-    ContextStackFull,
+    pub const max_action_sets = action_mod.limits.max_action_sets;
+    pub const max_actions = action_mod.limits.max_actions;
+    pub const max_bindings = action_mod.limits.max_bindings;
+    pub const max_name_bytes = action_mod.limits.max_name_bytes;
+    pub const max_text_input_bytes = text_session_mod.max_text_input_bytes;
+    pub const max_events_per_frame = frame.limits.max_events_per_frame;
+    pub const max_text_bytes_per_frame = frame.limits.max_text_bytes_per_frame;
 };
 
 pub const ActionSetError = error{
-    OutOfMemory,
     UnknownActionSet,
+    TooManyActionSets,
+    TooManyActions,
+    TooManyBindings,
+    NameTooLong,
     ActionAlreadyExists,
     ActionNotFound,
     Vector2BindingNeedsComponent,
@@ -100,77 +106,53 @@ pub const TextSessionError = error{
 };
 
 pub const CaptureError = error{
-    OutOfMemory,
     CaptureInFlight,
     NoCaptureSession,
     CaptureTerminal,
 };
 
 const base_set_name = "__base";
+const base_set_index = 0;
 
 pub const TextSessionBeginHook = *const fn (*InputSystem, *const TextInputTarget, *const TextInputOptions) TextSessionError!void;
 pub const TextSessionEndHook = *const fn (*InputSystem) void;
 
 pub const InputSystem = struct {
-    alloc: std.mem.Allocator = undefined,
-    fb: frame.FrameBuffer = undefined,
+    fb: frame.FrameBuffer = .{},
     device: action_mod.DeviceState = .{},
     pub_frame: InputFrame = .{},
-    registry: std.ArrayList(ActionSet) = .empty,
+    store: action_mod.ActionStore = .{},
     stack: ContextStack = .{},
     text_session_state: ?TextInputSession = null,
     capture_session_state: ?CaptureNextInputSession = null,
     current_modifiers: ModifierSet = .{},
     last_mode: InputMode = .keyboard_mouse,
-    initialised: bool = false,
     begin_text_session_hook: ?TextSessionBeginHook = null,
     end_text_session_hook: ?TextSessionEndHook = null,
 
-    pub fn init(self: *InputSystem, allocator: std.mem.Allocator) InitError!void {
-        self.* = .{ .alloc = allocator, .fb = frame.FrameBuffer.init(allocator) };
+    pub fn init(self: *InputSystem) void {
+        self.* = .{};
 
         // Seed an installed empty base set so the stack always has a top.
-        const base_handle = self.register_action_set(base_set_name) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            else => std.debug.panic("input init: unexpected base action set registration error: {s}", .{@errorName(err)}),
-        };
-        self.install_action_set(base_handle) catch |err| {
-            std.debug.panic("input init: unexpected base action set install error: {s}", .{@errorName(err)});
-        };
-        try self.stack.push(.{
+        self.store.sets[base_set_index] = .{ .name = comptime ActionName.init(base_set_name) catch unreachable, .installed = true };
+        self.store.set_count = 1;
+        self.stack.push(.{
             .name = "base",
             .cursor_mode = .visible,
-            .actions = base_handle,
-        });
-
-        self.initialised = true;
+            .actions = @fromBackingInt(base_set_index),
+        }) catch |err| {
+            std.debug.panic("input init: unexpected base context push error: {s}", .{@errorName(err)});
+        };
     }
 
     pub fn deinit(self: *InputSystem) void {
-        defer self.* = undefined;
-
-        if (!self.initialised) return;
-        if (self.text_session_state) |*s| s.deinit(self.alloc);
-        if (self.capture_session_state) |*s| s.deinit(self.alloc);
-
-        for (self.registry.items) |*set| {
-            for (set.actions.keys(), set.actions.values()) |name, *action| {
-                action.bindings.deinit(self.alloc);
-                self.alloc.free(name);
-            }
-            set.actions.deinit(self.alloc);
-            self.alloc.free(set.name);
-        }
-        self.registry.deinit(self.alloc);
-
-        self.device.deinit(self.alloc);
-        self.fb.deinit();
+        self.* = undefined;
     }
 
     /// Attach the platform's device and keyboard services to this system.
     /// The input system must remain at this address until deinit_platform.
-    pub fn init_platform(self: *InputSystem, allocator: std.mem.Allocator, io: std.Io) input_api.InitError!void {
-        try platform_input.init(self.event_sink(), allocator, io);
+    pub fn init_platform(self: *InputSystem, io: std.Io) input_api.InitError!void {
+        try platform_input.init(self.event_sink(), io);
         self.set_text_session_hooks(begin_platform_text_session, end_platform_text_session);
     }
 
@@ -212,9 +194,9 @@ pub const InputSystem = struct {
         const session = self.current_text_session() orelse return error.NoActiveTextSession;
         try platform_input.begin_text_input_session(self.event_sink(), &.{
             .prompt = target.id,
-            .initial = session.buffer.items,
+            .initial = session.text(),
             .multiline = options.multiline,
-            .max_bytes = options.max_bytes,
+            .max_bytes = session.limit(),
         });
     }
 
@@ -224,38 +206,37 @@ pub const InputSystem = struct {
 
     pub fn deliver_key_down(self: *InputSystem, key: Key, mods: ModifierSet, is_repeat: bool) void {
         self.current_modifiers = mods;
-        if (!is_repeat) _ = self.device.keys.put(self.alloc, key, {}) catch return;
-        _ = self.fb.append_event(.{ .key_down = .{ .key = key, .modifiers = mods, .is_repeat = is_repeat } }) catch return;
+        if (!is_repeat) self.device.keys.insert(key);
+        self.fb.record_event(.{ .key_down = .{ .key = key, .modifiers = mods, .is_repeat = is_repeat } });
         self.last_mode = .keyboard_mouse;
         self.capture_on_down(.{ .key = key }, mods, is_repeat);
     }
 
     pub fn deliver_key_up(self: *InputSystem, key: Key, mods: ModifierSet) void {
         self.current_modifiers = mods;
-        _ = self.device.keys.remove(key);
-        _ = self.fb.append_event(.{ .key_up = .{ .key = key, .modifiers = mods } }) catch return;
+        self.device.keys.remove(key);
+        self.fb.record_event(.{ .key_up = .{ .key = key, .modifiers = mods } });
         self.capture_on_release(.{ .key = key });
     }
 
     pub fn deliver_text(self: *InputSystem, text: []const u8) void {
-        const interned = self.fb.intern_text(text) catch return;
-        _ = self.fb.append_event(.{ .text_utf8 = .{ .text = interned } }) catch return;
+        self.fb.record_text(text);
         self.last_mode = .keyboard_mouse;
         const top = self.stack.top() orelse return;
         if (!top.consumes_text) return;
         const session = &(self.text_session_state orelse return);
-        if (session.status == .active) session.append(self.alloc, interned) catch {};
+        if (session.status == .active) session.append(text);
     }
 
     pub fn deliver_mouse_button(self: *InputSystem, mouse_button: MouseButton, edge: ButtonState, position: Vec2) void {
         self.device.pointer_position = position;
         if (edge == .pressed) {
             self.device.mouse_buttons.insert(mouse_button);
-            _ = self.fb.append_event(.{ .mouse_button_down = .{ .button = mouse_button, .position = position } }) catch return;
+            self.fb.record_event(.{ .mouse_button_down = .{ .button = mouse_button, .position = position } });
             self.capture_on_down(.{ .mouse_button = mouse_button }, self.current_modifiers, false);
         } else {
             self.device.mouse_buttons.remove(mouse_button);
-            _ = self.fb.append_event(.{ .mouse_button_up = .{ .button = mouse_button, .position = position } }) catch return;
+            self.fb.record_event(.{ .mouse_button_up = .{ .button = mouse_button, .position = position } });
             self.capture_on_release(.{ .mouse_button = mouse_button });
         }
         self.last_mode = .keyboard_mouse;
@@ -265,9 +246,9 @@ pub const InputSystem = struct {
         self.device.pointer_position = position;
         self.device.pointer_delta_accum.x += delta.x;
         self.device.pointer_delta_accum.y += delta.y;
-        _ = self.fb.append_event(.{ .mouse_move_abs = .{ .position = position } }) catch {};
+        self.fb.record_event(.{ .mouse_move_abs = .{ .position = position } });
         if (delta.x != 0 or delta.y != 0) {
-            _ = self.fb.append_event(.{ .mouse_move_rel = .{ .delta = delta } }) catch {};
+            self.fb.record_event(.{ .mouse_move_rel = .{ .delta = delta } });
             self.last_mode = .keyboard_mouse;
         }
     }
@@ -275,19 +256,19 @@ pub const InputSystem = struct {
     pub fn deliver_mouse_wheel(self: *InputSystem, delta: Vec2) void {
         self.device.wheel_accum.x += delta.x;
         self.device.wheel_accum.y += delta.y;
-        _ = self.fb.append_event(.{ .mouse_wheel = .{ .delta = delta } }) catch return;
+        self.fb.record_event(.{ .mouse_wheel = .{ .delta = delta } });
         if (delta.x != 0 or delta.y != 0) self.last_mode = .keyboard_mouse;
     }
 
     pub fn deliver_gamepad_button(self: *InputSystem, gamepad_button: Button, edge: ButtonState) void {
         if (edge == .pressed) {
             self.device.gamepad_buttons.insert(gamepad_button);
-            _ = self.fb.append_event(.{ .gamepad_button_down = .{ .button = gamepad_button } }) catch return;
+            self.fb.record_event(.{ .gamepad_button_down = .{ .button = gamepad_button } });
             self.last_mode = .gamepad;
             self.capture_on_down(.{ .gamepad_button = gamepad_button }, self.current_modifiers, false);
         } else {
             self.device.gamepad_buttons.remove(gamepad_button);
-            _ = self.fb.append_event(.{ .gamepad_button_up = .{ .button = gamepad_button } }) catch return;
+            self.fb.record_event(.{ .gamepad_button_up = .{ .button = gamepad_button } });
             self.capture_on_release(.{ .gamepad_button = gamepad_button });
         }
     }
@@ -295,7 +276,7 @@ pub const InputSystem = struct {
     pub fn deliver_gamepad_axis(self: *InputSystem, gamepad_axis: Axis, value: f32) void {
         const prev = self.device.axis(gamepad_axis);
         self.device.set_axis(gamepad_axis, value);
-        _ = self.fb.append_event(.{ .gamepad_axis_changed = .{ .axis = gamepad_axis, .value = value } }) catch return;
+        self.fb.record_event(.{ .gamepad_axis_changed = .{ .axis = gamepad_axis, .value = value } });
         if (@abs(value) > config.axis_activity_threshold) self.last_mode = .gamepad;
 
         const was_active = @abs(prev) > config.axis_activity_threshold;
@@ -310,12 +291,12 @@ pub const InputSystem = struct {
     pub fn deliver_focus_change(self: *InputSystem, gained: bool) void {
         self.device.focused = gained;
         if (gained) {
-            _ = self.fb.append_event(.focus_gained) catch return;
+            self.fb.record_event(.focus_gained);
             if (self.text_session_state) |*s| {
                 if (s.status == .suspended) s.status = .active;
             }
         } else {
-            _ = self.fb.append_event(.focus_lost) catch return;
+            self.fb.record_event(.focus_lost);
             if (self.text_session_state) |*s| {
                 if (s.status == .active) s.status = .suspended;
             }
@@ -328,6 +309,7 @@ pub const InputSystem = struct {
         self.pub_frame = .{
             .sequence = self.fb.frame_sequence,
             .events = self.fb.published_events(),
+            .dropped_events = self.fb.published_dropped(),
             .pointer = .{
                 .position = self.device.pointer_position,
                 .delta = self.device.pointer_delta_accum,
@@ -339,7 +321,7 @@ pub const InputSystem = struct {
     pub fn update(self: *InputSystem) void {
         if (self.stack.top()) |top| {
             if (self.set_ptr(top.actions)) |set| {
-                if (set.installed) action_mod.evaluate_set(set, &self.device);
+                if (set.installed) self.store.evaluate(top.actions, &self.device);
             }
         }
         self.device.pointer_delta_accum = .{};
@@ -359,30 +341,37 @@ pub const InputSystem = struct {
     }
 
     pub fn register_action_set(self: *InputSystem, name: []const u8) ActionSetError!ActionSetHandle {
-        const owned_name = try self.alloc.dupe(u8, name);
-        errdefer self.alloc.free(owned_name);
-        try self.registry.append(self.alloc, .{ .name = owned_name });
-        return @fromBackingInt(@intCast(self.registry.items.len - 1));
+        const st = &self.store;
+        if (st.set_count == st.sets.len) return error.TooManyActionSets;
+        st.sets[st.set_count] = .{ .name = try ActionName.init(name) };
+        st.set_count += 1;
+        return @fromBackingInt(@intCast(st.set_count - 1));
     }
 
     pub fn add_action(self: *InputSystem, set: ActionSetHandle, name: []const u8, kind: ActionKind) ActionSetError!ActionHandle {
-        const s = self.set_ptr(set) orelse return error.UnknownActionSet;
-        if (s.actions.getIndex(name) != null) return error.ActionAlreadyExists;
+        _ = self.set_ptr(set) orelse return error.UnknownActionSet;
+        const st = &self.store;
+        if (st.find_action(set, name) != null) return error.ActionAlreadyExists;
+        if (st.action_count == st.actions.len) return error.TooManyActions;
 
-        const owned_name = try self.alloc.dupe(u8, name);
-        errdefer self.alloc.free(owned_name);
-        try s.actions.put(self.alloc, owned_name, .{
+        st.actions[st.action_count] = .{
+            .set = set,
+            .name = try ActionName.init(name),
             .kind = kind,
             .current_value = Action.zero(kind),
             .previous_value = Action.zero(kind),
-        });
-        return ActionHandle.from_parts(set, s.actions.count() - 1);
+        };
+        st.action_count += 1;
+        return ActionHandle.from_parts(set, st.action_count - 1);
     }
 
     pub fn bind_action(self: *InputSystem, action: ActionHandle, b: *const Binding) ActionSetError!void {
-        const a = self.action_ptr(action) orelse return error.ActionNotFound;
+        const a = self.store.action_ptr(action) orelse return error.ActionNotFound;
         if (a.kind == .vector2 and b.component == .none) return error.Vector2BindingNeedsComponent;
-        try a.bindings.append(self.alloc, b.*);
+        const st = &self.store;
+        if (st.binding_count == st.bindings.len) return error.TooManyBindings;
+        st.bindings[st.binding_count] = .{ .action_index = action.action_index, .binding = b.* };
+        st.binding_count += 1;
     }
 
     pub fn install_action_set(self: *InputSystem, set: ActionSetHandle) ActionSetError!void {
@@ -399,19 +388,16 @@ pub const InputSystem = struct {
     }
 
     pub fn find_action(self: *InputSystem, set: ActionSetHandle, name: []const u8) ?ActionHandle {
-        const s = self.set_ptr(set) orelse return null;
-        const index = s.actions.getIndex(name) orelse return null;
-        return ActionHandle.from_parts(set, index);
+        return self.store.find_action(set, name);
     }
 
     pub fn action_name(self: *InputSystem, action: ActionHandle) ?[]const u8 {
-        const s = self.set_ptr(action.set()) orelse return null;
-        if (action.action_index >= s.actions.count()) return null;
-        return s.actions.keys()[action.action_index];
+        const a = self.store.action_ptr(action) orelse return null;
+        return a.name.slice();
     }
 
     pub fn action_kind(self: *InputSystem, action: ActionHandle) ?ActionKind {
-        const a = self.action_ptr(action) orelse return null;
+        const a = self.store.action_ptr(action) orelse return null;
         return a.kind;
     }
 
@@ -457,7 +443,7 @@ pub const InputSystem = struct {
     pub fn push_context(self: *InputSystem, ctx: *const InputContext) ContextError!void {
         const s = self.set_ptr(ctx.actions) orelse return error.UnknownActionSet;
         if (!s.installed) return error.ActionSetNotInstalled;
-        action_mod.sync_set(s, &self.device);
+        self.store.sync(ctx.actions, &self.device);
         try self.stack.push(ctx.*);
     }
 
@@ -468,7 +454,7 @@ pub const InputSystem = struct {
     pub fn replace_top(self: *InputSystem, ctx: *const InputContext) ContextError!InputContext {
         const s = self.set_ptr(ctx.actions) orelse return error.UnknownActionSet;
         if (!s.installed) return error.ActionSetNotInstalled;
-        action_mod.sync_set(s, &self.device);
+        self.store.sync(ctx.actions, &self.device);
         return try self.stack.replace_top(ctx.*);
     }
 
@@ -487,17 +473,13 @@ pub const InputSystem = struct {
     pub fn begin_text_input(self: *InputSystem, target: *const TextInputTarget, options: *const TextInputOptions) TextSessionError!*TextInputSession {
         if (self.text_session_state) |*s| {
             if (!s.is_terminal()) return error.TextSessionInFlight;
-            s.deinit(self.alloc);
         }
         self.text_session_state = .{
             .target = target.*,
             .options = options.*,
         };
-        errdefer {
-            self.text_session_state.?.deinit(self.alloc);
-            self.text_session_state = null;
-        }
-        if (options.initial) |seed| try self.text_session_state.?.append(self.alloc, seed);
+        errdefer self.text_session_state = null;
+        if (options.initial) |seed| self.text_session_state.?.append(seed);
         if (self.begin_text_session_hook) |h| try h(self, target, options);
         return &self.text_session_state.?;
     }
@@ -531,11 +513,17 @@ pub const InputSystem = struct {
         return null;
     }
 
+    /// Erase the final UTF-8 codepoint of an active session.
+    pub fn delete_text_codepoint(self: *InputSystem) void {
+        const s = &(self.text_session_state orelse return);
+        if (s.status == .active) s.delete_last_codepoint();
+    }
+
     /// Replace session text after a system keyboard completes.
     pub fn write_text_session_buffer(self: *InputSystem, text: []const u8, terminal: TextInputStatus) void {
         if (self.text_session_state) |*s| {
-            s.buffer.clearRetainingCapacity();
-            s.append(self.alloc, text) catch {};
+            s.clear();
+            s.append(text);
             s.status = terminal;
         }
     }
@@ -543,11 +531,11 @@ pub const InputSystem = struct {
     pub fn begin_capture_next_input(self: *InputSystem, eligible: std.EnumSet(BindingSourceKind)) CaptureError!void {
         if (self.capture_session_state) |*s| {
             if (s.status == .waiting) return error.CaptureInFlight;
-            s.deinit(self.alloc);
         }
-        var session = CaptureNextInputSession{ .eligible_kinds = eligible };
-        try self.snapshot_held_sources(&session);
-        self.capture_session_state = session;
+        self.capture_session_state = .{
+            .eligible_kinds = eligible,
+            .held_at_start = self.held_sources(),
+        };
     }
 
     pub fn cancel_capture(self: *InputSystem) CaptureError!void {
@@ -566,16 +554,7 @@ pub const InputSystem = struct {
     }
 
     fn set_ptr(self: *InputSystem, handle: ActionSetHandle) ?*ActionSet {
-        const i = @backingInt(handle);
-        if (i >= self.registry.items.len) return null;
-        return &self.registry.items[i];
-    }
-
-    fn action_ptr(self: *InputSystem, action: ActionHandle) ?*Action {
-        if (action.is_null()) return null;
-        const set = self.set_ptr(action.set()) orelse return null;
-        if (action.action_index >= set.actions.count()) return null;
-        return &set.actions.values()[action.action_index];
+        return self.store.set_ptr(handle);
     }
 
     fn active_action_ptr(self: *InputSystem, action: ActionHandle) ?*Action {
@@ -584,28 +563,19 @@ pub const InputSystem = struct {
         if (@backingInt(top.actions) != action.set_index) return null;
         const set = self.set_ptr(top.actions) orelse return null;
         if (!set.installed) return null;
-        if (action.action_index >= set.actions.count()) return null;
-        return &set.actions.values()[action.action_index];
+        return self.store.action_ptr(action);
     }
 
-    fn snapshot_held_sources(self: *InputSystem, session: *CaptureNextInputSession) !void {
-        var k_it = self.device.keys.keyIterator();
-        while (k_it.next()) |k| {
-            try session.held_at_start.append(self.alloc, .{ .key = k.* });
-        }
-        var mb_it = self.device.mouse_buttons.iterator();
-        while (mb_it.next()) |mb| {
-            try session.held_at_start.append(self.alloc, .{ .mouse_button = mb });
-        }
-        var gp_it = self.device.gamepad_buttons.iterator();
-        while (gp_it.next()) |gb| {
-            try session.held_at_start.append(self.alloc, .{ .gamepad_button = gb });
-        }
+    fn held_sources(self: *const InputSystem) capture_session_mod.HeldSources {
+        var held: capture_session_mod.HeldSources = .{
+            .keys = self.device.keys,
+            .mouse_buttons = self.device.mouse_buttons,
+            .gamepad_buttons = self.device.gamepad_buttons,
+        };
         inline for (comptime std.meta.tags(Axis)) |a| {
-            if (@abs(self.device.axis(a)) > config.axis_activity_threshold) {
-                try session.held_at_start.append(self.alloc, .{ .gamepad_axis = a });
-            }
+            if (@abs(self.device.axis(a)) > config.axis_activity_threshold) held.gamepad_axes.insert(a);
         }
+        return held;
     }
 
     fn capture_on_down(self: *InputSystem, src: BindingSource, mods: ModifierSet, is_repeat: bool) void {
@@ -628,7 +598,7 @@ pub const InputSystem = struct {
 
 test "platform event sink preserves action edges, capture, and published device events" {
     var input = InputSystem{};
-    try input.init(std.testing.allocator);
+    input.init();
     defer input.deinit();
 
     const gameplay = try input.register_action_set("gameplay");
@@ -667,14 +637,14 @@ test "platform event sink preserves action edges, capture, and published device 
 
 test "platform text events respect context, focus, limits, and terminal sessions" {
     var input = InputSystem{};
-    try input.init(std.testing.allocator);
+    input.init();
     defer input.deinit();
 
     const sink = input.event_sink();
 
     const session = try input.begin_text_input(&.{ .id = "name" }, &.{ .initial = "seed", .max_bytes = 8 });
     sink.deliver_text("ignored");
-    try std.testing.expectEqualStrings("seed", session.buffer.items);
+    try std.testing.expectEqualStrings("seed", session.text());
 
     var text_context = input.stack_top().?.*;
     text_context.consumes_text = true;
@@ -682,23 +652,23 @@ test "platform text events respect context, focus, limits, and terminal sessions
     sink.deliver_focus_change(false);
     sink.deliver_text("ignored");
     try std.testing.expectEqual(TextInputStatus.suspended, session.status);
-    try std.testing.expectEqualStrings("seed", session.buffer.items);
+    try std.testing.expectEqualStrings("seed", session.text());
 
     sink.deliver_focus_change(true);
     sink.deliver_text("more than fits");
     try std.testing.expectEqual(TextInputStatus.active, session.status);
-    try std.testing.expectEqualStrings("seedmore", session.buffer.items);
+    try std.testing.expectEqualStrings("seedmore", session.text());
     sink.complete_text("finished text", .submitted);
     try std.testing.expectEqual(TextInputStatus.submitted, session.status);
-    try std.testing.expectEqualStrings("finished", session.buffer.items);
+    try std.testing.expectEqualStrings("finished", session.text());
     sink.complete_text("late result", .cancelled);
     try std.testing.expectEqual(TextInputStatus.submitted, session.status);
-    try std.testing.expectEqualStrings("finished", session.buffer.items);
+    try std.testing.expectEqualStrings("finished", session.text());
 
     const next = try input.begin_text_input(&.{ .id = "name" }, &.{ .initial = "original" });
     sink.complete_text("original", .cancelled);
     try std.testing.expectEqual(TextInputStatus.cancelled, next.status);
-    try std.testing.expectEqualStrings("original", next.buffer.items);
+    try std.testing.expectEqualStrings("original", next.text());
 }
 
 test "failed keyboard startup releases session state and permits a retry" {
@@ -709,7 +679,7 @@ test "failed keyboard startup releases session state and permits a retry" {
     };
 
     var input = InputSystem{};
-    try input.init(std.testing.allocator);
+    input.init();
     defer input.deinit();
 
     input.set_text_session_hooks(FailingKeyboard.begin, null);
@@ -719,12 +689,12 @@ test "failed keyboard startup releases session state and permits a retry" {
     input.set_text_session_hooks(null, null);
     const session = try input.begin_text_input(&.{ .id = "name" }, &.{ .initial = "retry" });
     try std.testing.expectEqual(TextInputStatus.active, session.status);
-    try std.testing.expectEqualStrings("retry", session.buffer.items);
+    try std.testing.expectEqualStrings("retry", session.text());
 }
 
 test "action handles drive button edges" {
     var input = InputSystem{};
-    try input.init(std.testing.allocator);
+    input.init();
     defer input.deinit();
 
     const gameplay = try input.register_action_set("gameplay");
@@ -760,7 +730,7 @@ test "action handles drive button edges" {
 
 test "action handles are neutral outside active context" {
     var input = InputSystem{};
-    try input.init(std.testing.allocator);
+    input.init();
     defer input.deinit();
 
     const gameplay = try input.register_action_set("gameplay");
@@ -795,7 +765,7 @@ test "action handles are neutral outside active context" {
 
 test "axis and vector2 handles report values and deltas" {
     var input = InputSystem{};
-    try input.init(std.testing.allocator);
+    input.init();
     defer input.deinit();
 
     const gameplay = try input.register_action_set("gameplay");
@@ -824,10 +794,10 @@ test "axis and vector2 handles report values and deltas" {
 test "input systems keep device and action state independent" {
     var first = InputSystem{};
     var second = InputSystem{};
-    try first.init(std.testing.allocator);
+    first.init();
     defer first.deinit();
 
-    try second.init(std.testing.allocator);
+    second.init();
     defer second.deinit();
 
     const first_set = try first.register_action_set("gameplay");
@@ -851,7 +821,7 @@ test "input systems keep device and action state independent" {
 
 test "capture ignores held inputs and repeats until a fresh edge" {
     var input = InputSystem{};
-    try input.init(std.testing.allocator);
+    input.init();
     defer input.deinit();
 
     input.deliver_key_down(.Space, .{}, false);
@@ -873,6 +843,23 @@ test "capture ignores held inputs and repeats until a fresh edge" {
     input.deliver_gamepad_axis(.RightTrigger, 0.75);
     try std.testing.expectEqual(CaptureNextInputStatus.captured, input.current_capture_session().?.status);
     try std.testing.expectEqual(Axis.RightTrigger, input.current_capture_session().?.result.source.gamepad_axis);
+}
+
+test "fixed input tables report capacity limits" {
+    var input = InputSystem{};
+    input.init();
+    defer input.deinit();
+
+    const long_name: [config.max_name_bytes + 1]u8 = @splat('x');
+    try std.testing.expectError(error.NameTooLong, input.register_action_set(&long_name));
+    var name_buf: [16]u8 = undefined;
+    for (1..config.max_action_sets) |i| {
+        _ = try input.register_action_set(try std.fmt.bufPrint(&name_buf, "set{d}", .{i}));
+    }
+    try std.testing.expectError(error.TooManyActionSets, input.register_action_set("extra"));
+
+    const session = try input.begin_text_input(&.{ .id = "name" }, &.{ .max_bytes = config.max_text_input_bytes + 1 });
+    try std.testing.expectEqual(config.max_text_input_bytes, session.limit());
 }
 
 comptime {

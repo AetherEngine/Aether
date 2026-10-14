@@ -68,6 +68,11 @@ var log_io: std.Io = undefined;
 var log_data_dir: std.Io.Dir = undefined;
 var logger_thread: ?Thread = null;
 
+// PSP heap-allocates a spawn closure that lives until the thread returns. One
+// logger thread at a time makes a static buffer enough.
+var thread_closure_buffer: [2048]u8 align(16) = undefined;
+var thread_closure_fba: std.heap.FixedBufferAllocator = undefined;
+
 var queue_mutex: std.Io.Mutex = .init;
 var queue_wakeup: std.Io.Event = .unset;
 var startup_complete: std.Io.Event = .unset;
@@ -94,7 +99,7 @@ pub const Error = std.Io.File.OpenError || error{
 /// Starts the logger worker. Startup waits for the worker to report file-open
 /// errors so Engine.init retains its existing error behavior, but the actual
 /// filesystem operation runs on the worker.
-pub fn init(io: std.Io, data_dir: std.Io.Dir, allocator: std.mem.Allocator) Error!void {
+pub fn init(io: std.Io, data_dir: std.Io.Dir) Error!void {
     if (lifecycle.load(.acquire) != .bootstrap) return error.AlreadyInitialized;
 
     // Publish these before making `.starting` visible. A producer racing this
@@ -109,9 +114,10 @@ pub fn init(io: std.Io, data_dir: std.Io.Dir, allocator: std.mem.Allocator) Erro
     startup_complete.reset();
     lifecycle.store(.starting, .release);
 
+    thread_closure_fba = .init(&thread_closure_buffer);
     logger_thread = Thread.spawn(
         .{
-            .allocator = allocator,
+            .allocator = thread_closure_fba.allocator(),
             .name = "aether_logger",
             .priority = .lowest,
         },

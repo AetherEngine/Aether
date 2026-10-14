@@ -1,6 +1,12 @@
 //! Focus loss suspends text input without discarding the session's buffer.
 
-const std = @import("std");
+const options = @import("options");
+
+/// Upper bound on session text; `TextInputOptions.max_bytes` may lower it.
+pub const max_text_input_bytes: usize = switch (options.config.platform) {
+    .psp, .nintendo_3ds, .nintendo_switch => 512,
+    .windows, .linux, .macos, .wasm => 4096,
+};
 
 pub const TextInputStatus = enum(u8) {
     active,
@@ -23,18 +29,34 @@ pub const TextInputOptions = struct {
 pub const TextInputSession = struct {
     target: TextInputTarget,
     options: TextInputOptions,
-    buffer: std.ArrayList(u8) = .empty,
+    buffer: [max_text_input_bytes]u8 = undefined,
+    len: usize = 0,
     status: TextInputStatus = .active,
 
-    pub fn append(self: *TextInputSession, alloc: std.mem.Allocator, text: []const u8) !void {
-        const remaining = if (self.options.max_bytes) |limit| limit -| self.buffer.items.len else text.len;
-        try self.buffer.appendSlice(alloc, text[0..@min(remaining, text.len)]);
+    pub fn text(self: *const TextInputSession) []const u8 {
+        return self.buffer[0..self.len];
     }
 
-    pub fn deinit(self: *TextInputSession, alloc: std.mem.Allocator) void {
-        defer self.* = undefined;
+    pub fn limit(self: *const TextInputSession) usize {
+        return @min(self.options.max_bytes orelse self.buffer.len, self.buffer.len);
+    }
 
-        self.buffer.deinit(alloc);
+    /// Bytes past `limit` are discarded.
+    pub fn append(self: *TextInputSession, bytes: []const u8) void {
+        const take = @min(self.limit() -| self.len, bytes.len);
+        @memcpy(self.buffer[self.len..][0..take], bytes[0..take]);
+        self.len += take;
+    }
+
+    pub fn clear(self: *TextInputSession) void {
+        self.len = 0;
+    }
+
+    pub fn delete_last_codepoint(self: *TextInputSession) void {
+        if (self.len == 0) return;
+        var at = self.len - 1;
+        while (at > 0 and (self.buffer[at] & 0xc0) == 0x80) : (at -= 1) {}
+        self.len = at;
     }
 
     pub fn is_terminal(self: *const TextInputSession) bool {

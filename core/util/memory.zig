@@ -3,16 +3,15 @@ const pool_alloc = @import("platform").util;
 pub const MemoryConfig = struct {
     render: usize,
     audio: usize,
-    game: usize,
     frame: usize,
     user: usize,
 
     pub fn total(self: *const MemoryConfig) usize {
-        return self.render + self.audio + self.game + self.frame + self.user;
+        return self.render + self.audio + self.frame + self.user;
     }
 };
 
-pub const Pool = enum { render, audio, game, frame, user };
+pub const Pool = enum { render, audio, frame, user };
 pub const pool_count = @typeInfo(Pool).@"enum".field_names.len;
 
 /// A named set of movable accounting budgets over the engine's one shared

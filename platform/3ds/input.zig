@@ -19,7 +19,6 @@ const max_osk_utf8_bytes = max_osk_text_units * 4;
 const default_osk_bytes = 256;
 const axis_count = @typeInfo(input_api.Axis).@"enum".field_names.len;
 
-var input_alloc: std.mem.Allocator = undefined;
 var ir_service: ?IrRst = null;
 var ir_input: ?IrRst.Input = null;
 var ir_started: bool = false;
@@ -31,8 +30,7 @@ var prev_touch_pos: input_api.Vec2 = .{};
 var current_cursor_mode: input_api.CursorMode = .visible;
 var active_input: ?input_api.EventSink = null;
 
-pub fn setup(alloc: std.mem.Allocator, _: std.Io, input: input_api.EventSink) void {
-    input_alloc = alloc;
+pub fn setup(_: std.Io, input: input_api.EventSink) void {
     active_input = input;
     reset_state();
 }

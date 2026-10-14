@@ -13,7 +13,7 @@ const dialogs = @import("dialogs.zig");
 var prev_pad: ctrl.Data = std.mem.zeroes(ctrl.Data);
 var have_prev: bool = false;
 
-pub fn setup(_: std.mem.Allocator, _: std.Io, _: input_api.EventSink) void {
+pub fn setup(_: std.Io, _: input_api.EventSink) void {
     prev_pad = std.mem.zeroes(ctrl.Data);
     have_prev = false;
 }

@@ -117,7 +117,7 @@ pub const EventSink = struct {
 };
 
 pub const Interface = struct {
-    setup: fn (std.mem.Allocator, std.Io, EventSink) void,
+    setup: fn (std.Io, EventSink) void,
     init: fn () InitError!void,
     deinit: fn () void,
 
@@ -144,8 +144,8 @@ comptime {
     assert_impl(api);
 }
 
-pub fn init(sink: EventSink, alloc: std.mem.Allocator, io: std.Io) InitError!void {
-    api.setup(alloc, io, sink);
+pub fn init(sink: EventSink, io: std.Io) InitError!void {
+    api.setup(io, sink);
     try api.init();
 }
 

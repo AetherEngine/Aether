@@ -1,5 +1,5 @@
 //! Game actions evaluated from Platform's delivered device state.
-//! Handles remain valid when action sets and their maps grow.
+//! Storage is fixed-capacity and append-only, so handles never dangle.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -64,9 +64,34 @@ pub const Vector2Query = struct {
     }
 };
 
+pub const limits = struct {
+    /// Includes the input system's base set.
+    pub const max_action_sets: usize = 16;
+    pub const max_actions: usize = 128;
+    pub const max_bindings: usize = 256;
+    pub const max_name_bytes: usize = 32;
+};
+
+pub const Name = struct {
+    bytes: [limits.max_name_bytes]u8 = undefined,
+    len: u8 = 0,
+
+    pub fn init(text: []const u8) error{NameTooLong}!Name {
+        if (text.len > limits.max_name_bytes) return error.NameTooLong;
+        var name: Name = .{ .len = @intCast(text.len) };
+        @memcpy(name.bytes[0..text.len], text);
+        return name;
+    }
+
+    pub fn slice(self: *const Name) []const u8 {
+        return self.bytes[0..self.len];
+    }
+};
+
 pub const Action = struct {
+    set: ActionSetHandle,
+    name: Name,
     kind: ActionKind,
-    bindings: std.ArrayList(binding_mod.Binding) = .empty,
     current_value: ActionValue,
     previous_value: ActionValue,
 
@@ -80,16 +105,19 @@ pub const Action = struct {
 };
 
 pub const ActionSet = struct {
-    name: []const u8,
-    actions: std.StringArrayHashMapUnmanaged(Action) = .empty,
+    name: Name,
     installed: bool = false,
+};
+
+pub const ActionBinding = struct {
+    action_index: u32,
+    binding: binding_mod.Binding,
 };
 
 pub const ActionSetHandle = enum(u32) { _ };
 
 /// Opaque handle to an action inside an action set. The action index is the
-/// insertion-order index in the set's name map. Actions are never removed, so
-/// this remains stable across map growth and rehashing.
+/// action's slot in `ActionStore.actions`; lookups also check the set index.
 pub const ActionHandle = packed struct(u64) {
     const null_index = std.math.maxInt(u32);
 
@@ -146,49 +174,74 @@ pub fn binding_contribution(b: binding_mod.Binding, dev: *const DeviceState) f32
     return raw * b.multiplier;
 }
 
-/// Advance action values, retaining the previous values for edge queries.
-pub fn evaluate_set(set: *ActionSet, dev: *const DeviceState) void {
-    for (set.actions.values()) |*a| {
-        a.previous_value = a.current_value;
-        a.current_value = compute(a, dev);
-    }
-}
+pub const ActionStore = struct {
+    sets: [limits.max_action_sets]ActionSet = undefined,
+    set_count: usize = 0,
+    actions: [limits.max_actions]Action = undefined,
+    action_count: usize = 0,
+    bindings: [limits.max_bindings]ActionBinding = undefined,
+    binding_count: usize = 0,
 
-/// Recompute a set without creating edges. Used when a context becomes active
-/// so already-held inputs do not look like fresh presses.
-pub fn sync_set(set: *ActionSet, dev: *const DeviceState) void {
-    for (set.actions.values()) |*a| {
-        a.current_value = compute(a, dev);
-        a.previous_value = a.current_value;
+    pub fn set_ptr(self: *ActionStore, handle: ActionSetHandle) ?*ActionSet {
+        const i = @backingInt(handle);
+        if (i >= self.set_count) return null;
+        return &self.sets[i];
     }
-}
 
-pub fn compute(a: *const Action, dev: *const DeviceState) ActionValue {
-    return switch (a.kind) {
-        .button => blk: {
-            for (a.bindings.items) |b| {
-                if (binding_contribution(b, dev) > 0.0) break :blk .{ .button = .pressed };
-            }
-            break :blk .{ .button = .released };
+    pub fn action_ptr(self: *ActionStore, handle: ActionHandle) ?*Action {
+        if (handle.is_null() or handle.action_index >= self.action_count) return null;
+        const a = &self.actions[handle.action_index];
+        if (a.set != handle.set()) return null;
+        return a;
+    }
+
+    pub fn find_action(self: *const ActionStore, set: ActionSetHandle, name: []const u8) ?ActionHandle {
+        for (self.actions[0..self.action_count], 0..) |*a, i| {
+            if (a.set == set and std.mem.eql(u8, a.name.slice(), name)) return .from_parts(set, i);
+        }
+        return null;
+    }
+
+    /// Recompute a set's actions, keeping the prior values for edge queries.
+    pub fn evaluate(self: *ActionStore, set: ActionSetHandle, dev: *const DeviceState) void {
+        for (self.actions[0..self.action_count]) |*a| {
+            if (a.set == set) a.previous_value = a.current_value;
+        }
+        self.recompute(set, dev);
+    }
+
+    /// Recompute a set without creating edges. Used when a context becomes
+    /// active so already-held inputs do not look like fresh presses.
+    pub fn sync(self: *ActionStore, set: ActionSetHandle, dev: *const DeviceState) void {
+        self.recompute(set, dev);
+        for (self.actions[0..self.action_count]) |*a| {
+            if (a.set == set) a.previous_value = a.current_value;
+        }
+    }
+
+    fn recompute(self: *ActionStore, set: ActionSetHandle, dev: *const DeviceState) void {
+        for (self.actions[0..self.action_count]) |*a| {
+            if (a.set == set) a.current_value = Action.zero(a.kind);
+        }
+        for (self.bindings[0..self.binding_count]) |entry| {
+            const a = &self.actions[entry.action_index];
+            if (a.set != set) continue;
+            accumulate(&a.current_value, entry.binding, dev);
+        }
+    }
+};
+
+fn accumulate(value: *ActionValue, b: binding_mod.Binding, dev: *const DeviceState) void {
+    const c = binding_contribution(b, dev);
+    switch (value.*) {
+        .button => |*state| if (c > 0.0) {
+            state.* = .pressed;
         },
-        .axis => blk: {
-            var v: f32 = 0.0;
-            for (a.bindings.items) |b| v += binding_contribution(b, dev);
-            break :blk .{ .axis = v };
+        .axis => |*v| v.* += c,
+        .vector2 => |*v| switch (b.component) {
+            .x => v[0] += c,
+            .y => v[1] += c,
+            .none => {},
         },
-        .vector2 => blk: {
-            var x: f32 = 0.0;
-            var y: f32 = 0.0;
-            for (a.bindings.items) |b| {
-                if (b.component == .none) continue;
-                const c = binding_contribution(b, dev);
-                switch (b.component) {
-                    .x => x += c,
-                    .y => y += c,
-                    .none => unreachable,
-                }
-            }
-            break :blk .{ .vector2 = .{ x, y } };
-        },
-    };
+    }
 }

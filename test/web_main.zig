@@ -14,9 +14,8 @@ pub fn main(init: std.process.Init) !void {
     const memory_config: ae.Util.MemoryConfig = .{
         .render = 12 * 1024 * 1024,
         .audio = 10 * 1024 * 1024,
-        .game = 2 * 1024 * 1024,
         .frame = 2 * 1024 * 1024,
-        .user = 8 * 1024 * 1024,
+        .user = 10 * 1024 * 1024,
     };
     // Lives as long as the page; the host never returns it.
     const memory = try init.gpa.alignedAlloc(u8, .fromByteUnits(16), memory_config.total());

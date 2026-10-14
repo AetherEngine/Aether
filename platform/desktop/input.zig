@@ -181,7 +181,7 @@ fn convert_mods(mod: sdl3.keycode.KeyModifier) input_api.ModifierSet {
 
 // -- Interface ---------------------------------------------------------------
 
-pub fn setup(_: std.mem.Allocator, _: std.Io, _: input_api.EventSink) void {
+pub fn setup(_: std.Io, _: input_api.EventSink) void {
     prev_cursor_x = 0;
     prev_cursor_y = 0;
     have_prev_cursor = false;
