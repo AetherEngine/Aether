@@ -2,7 +2,7 @@
     .name = .Aether,
     .version = "0.0.0",
     .fingerprint = 0x200ca2f6f2b63172, // Changing this has security and trust implications.
-    .minimum_zig_version = "0.18.0-dev",
+    .minimum_zig_version = "0.18.0-dev.146+35accc06e",
     .dependencies = .{
         .zigglgen = .{
             .url = "git+https://github.com/castholm/zigglgen#38bfc858ce2182fcb9d5d1819210f97beb4a19d3",
@@ -13,8 +13,8 @@
             .hash = "N-V-__8AACUYwwHkOfRNOmzhES0A0wAstELzgG-GdNu-uUE5",
         },
         .pspsdk = .{
-            .url = "git+https://github.com/zPSP-Dev/Zig-PSP#ca7481e4a78e1e425d284b022aa5d32aeceaf464",
-            .hash = "pspsdk-0.8.0-BZphysGbEgCFVNsbR1uGycHvoSUvvkp7-cO5iZCDK9hb",
+            .url = "git+https://github.com/zPSP-Dev/Zig-PSP#1b43abfcf032777ecb4102533eef3110a2537014",
+            .hash = "pspsdk-0.8.0-BZphys-bEgBRp2T_9qkuWRfi1c7O6iY50LbSYPnDjxgy",
         },
         .slangc_linux_x86_64 = .{
             .url = "https://github.com/shader-slang/slang/releases/download/v2026.5.1/slang-2026.5.1-linux-x86_64.tar.gz",
