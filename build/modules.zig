@@ -332,7 +332,7 @@ fn add_desktop_dependencies(
         if (owner.lazyDependency("system_sdk", .{})) |system_sdk| {
             platform_mod.addFrameworkPath(system_sdk.path("macos12/System/Library/Frameworks"));
             platform_mod.addSystemIncludePath(system_sdk.path("macos12/usr/include"));
-            platform_mod.addLibraryPath(system_sdk.path("macos12/usr/lib"));
+            if (!target.query.isNativeOs()) platform_mod.addLibraryPath(system_sdk.path("macos12/usr/lib"));
         }
     }
 }
