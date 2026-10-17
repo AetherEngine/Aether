@@ -1146,13 +1146,17 @@ async function main() {
     };
     requestAnimationFrame(frame);
     window.addEventListener("resize", () => resizeCanvas());
+    const unlockEvents = ["pointerdown", "keydown", "touchend"];
     const resumeAudio = async () => {
       if (!ensureAudioContext()) return;
       await audioContext.resume();
+      if (audioContext.state !== "running") return;
+      for (const type of unlockEvents)
+        window.removeEventListener(type, resumeAudio, true);
       startQueuedAudio();
     };
-    window.addEventListener("pointerdown", resumeAudio, { once: true });
-    window.addEventListener("keydown", resumeAudio, { once: true });
+    for (const type of unlockEvents)
+      window.addEventListener(type, resumeAudio, true);
   } catch (err) {
     console.error(err);
     setStatus(`Error: ${err.message}`);
