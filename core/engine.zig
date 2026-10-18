@@ -496,7 +496,10 @@ pub const Engine = struct {
         const us_per_s: u64 = std.time.us_per_s;
         const ns_per_us: i64 = 1000;
 
-        const updates_hz: u32 = if (options.config.platform == .psp) 60 else 144;
+        const updates_hz: u32 = switch (options.config.platform) {
+            .windows, .linux, .macos => 144,
+            .wasm, .psp, .nintendo_3ds, .nintendo_switch => 60,
+        };
         const ticks_hz: u32 = 20;
         const update_us: u64 = us_per_s / updates_hz;
         const tick_interval_us: u64 = us_per_s / ticks_hz;
