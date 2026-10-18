@@ -39,6 +39,12 @@ pub fn platform_module(exe: *std.Build.Step.Compile) *std.Build.Module {
     return engine_module(exe).import_table.get("platform").?;
 }
 
+/// Aether's maths, as a module with no platform dependencies
+pub fn math_module(owner: *std.Build) *std.Build.Module {
+    if (owner.modules.get("math")) |existing| return existing;
+    return owner.addModule("math", .{ .root_source_file = owner.path("platform/math/math.zig") });
+}
+
 /// Every target's executable root lives in platform/root/.
 fn entry_root_source(config: Config) []const u8 {
     return switch (config.platform) {
@@ -136,6 +142,7 @@ fn add_executable(
         .link_libc = link_libc,
         .imports = &.{
             .{ .name = "options", .module = options_module },
+            .{ .name = "math", .module = math_module(owner) },
         },
     });
     const mod = b.createModule(.{

@@ -6,6 +6,7 @@ const input_api = @import("../input.zig");
 const gfx = @import("../gfx.zig");
 const Util = @import("../util/util.zig");
 const c = @import("c.zig").switch_c;
+const math = @import("math");
 
 const hid_npad_style_standard: u32 = c.HidNpadStyleTag_NpadFullKey |
     c.HidNpadStyleTag_NpadHandheld |
@@ -266,23 +267,23 @@ fn reset_previous_input_state() void {
 
 fn normalize_stick(raw: i32) f32 {
     const value = @as(f32, @floatFromInt(raw)) / joystick_max;
-    return std.math.clamp(value, -1.0, 1.0);
+    return math.clamp(value, -1.0, 1.0);
 }
 
 fn output_buffer_size(limit: ?usize) usize {
-    const max = @min(limit orelse (max_text_bytes - 1), max_text_bytes - 1);
+    const max = math.min(limit orelse (max_text_bytes - 1), max_text_bytes - 1);
     return max + 1;
 }
 
 fn copy_initial_text(text: []const u8, dst: []u8) usize {
-    const n = @min(dst.len - 1, text.len);
+    const n = math.min(dst.len - 1, text.len);
     @memcpy(dst[0..n], text[0..n]);
     dst[n] = 0;
     return n;
 }
 
 fn copy_z(dst: []u8, text: []const u8) [:0]const u8 {
-    const n = @min(dst.len - 1, text.len);
+    const n = math.min(dst.len - 1, text.len);
     @memcpy(dst[0..n], text[0..n]);
     dst[n] = 0;
     return dst[0..n :0];

@@ -7,7 +7,7 @@
 
 const std = @import("std");
 const Util = @import("../util/util.zig");
-const Mat4 = @import("../math/math.zig").Mat4;
+const Mat4 = @import("math").Mat4;
 const Graphics = @import("../graphics/graphics.zig");
 const vertex = Graphics.vertex;
 const Mesh = Graphics.mesh;
@@ -31,6 +31,7 @@ const display = sdk.display;
 const cache_writeback = @import("cache_writeback.zig");
 const pool_alloc = @import("../util/pool_alloc.zig");
 const gfx = @import("../gfx.zig");
+const math = @import("math");
 // VRAM sizing uses GU pixel-format enums; we only import gu for these
 // constants. All other state goes through the ge_list API.
 const gu_types = sdk.gu.types;
@@ -826,9 +827,9 @@ pub fn set_uv_offset(u: f32, v: f32) void {
 pub fn set_fog(enabled: bool, _: f32, _: f32, start: f32, end: f32, r: f32, g: f32, b: f32) void {
     const before = cmd.current();
     if (enabled) {
-        const ri: u32 = @intFromFloat(@max(0.0, @min(1.0, r)) * 255.0);
-        const gi: u32 = @intFromFloat(@max(0.0, @min(1.0, g)) * 255.0);
-        const bi: u32 = @intFromFloat(@max(0.0, @min(1.0, b)) * 255.0);
+        const ri: u32 = @intFromFloat(math.max(0.0, math.min(1.0, r)) * 255.0);
+        const gi: u32 = @intFromFloat(math.max(0.0, math.min(1.0, g)) * 255.0);
+        const bi: u32 = @intFromFloat(math.max(0.0, math.min(1.0, b)) * 255.0);
         const color: u24 = @intCast((bi << 16) | (gi << 8) | ri);
         // Compare the values consumed by the GE, including packed color.
         if (fog_color == null or fog_color.? != color) {
@@ -852,9 +853,9 @@ pub fn set_fog(enabled: bool, _: f32, _: f32, start: f32, end: f32, r: f32, g: f
 }
 
 pub fn set_clear_color(r: f32, g: f32, b: f32, _: f32) void {
-    const ri: u8 = @intFromFloat(@max(0.0, @min(1.0, r)) * 255.0);
-    const gi: u8 = @intFromFloat(@max(0.0, @min(1.0, g)) * 255.0);
-    const bi: u8 = @intFromFloat(@max(0.0, @min(1.0, b)) * 255.0);
+    const ri: u8 = @intFromFloat(math.max(0.0, math.min(1.0, r)) * 255.0);
+    const gi: u8 = @intFromFloat(math.max(0.0, math.min(1.0, g)) * 255.0);
+    const bi: u8 = @intFromFloat(math.max(0.0, math.min(1.0, b)) * 255.0);
     clear_color = (@as(u24, bi) << 16) | (@as(u24, gi) << 8) | ri;
 }
 

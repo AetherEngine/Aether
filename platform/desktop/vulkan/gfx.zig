@@ -9,7 +9,7 @@ const Util = @import("../../util/util.zig");
 // passes, sky plane), so behavior matches the non-macOS path for current
 // shaders. See context.zig for the device-feature side.
 const is_macos = builtin.target.os.tag == .macos;
-const Mat4 = @import("../../math/math.zig").Mat4;
+const Mat4 = @import("math").Mat4;
 
 const vk = @import("vulkan");
 const vk_constants = @import("constants.zig");

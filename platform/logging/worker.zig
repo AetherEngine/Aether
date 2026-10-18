@@ -7,6 +7,7 @@ const assert = std.debug.assert;
 
 const options = @import("options");
 const Thread = @import("../thread.zig").Thread;
+const math = @import("math");
 
 const message_capacity = 1024;
 const queue_capacity = 32;
@@ -333,7 +334,7 @@ fn logger_worker_loop(file: std.Io.File, io: std.Io, writer: *std.Io.Writer) voi
 }
 
 fn flush_bootstrap_to_file(file: std.Io.File, io: std.Io, writer: *std.Io.Writer) void {
-    const count = @min(bootstrap_count.load(.acquire), bootstrap_queue.len);
+    const count = math.min(bootstrap_count.load(.acquire), bootstrap_queue.len);
     for (bootstrap_queue[0..count]) |*message| {
         write_message(file, io, writer, message);
     }
@@ -343,7 +344,7 @@ fn flush_bootstrap_to_file(file: std.Io.File, io: std.Io, writer: *std.Io.Writer
 }
 
 fn write_bootstrap_to_debug() void {
-    const count = @min(bootstrap_count.load(.acquire), bootstrap_queue.len);
+    const count = math.min(bootstrap_count.load(.acquire), bootstrap_queue.len);
     for (bootstrap_queue[0..count]) |*message| {
         std.debug.print("{s}", .{message.slice()});
     }

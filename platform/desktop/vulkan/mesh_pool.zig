@@ -4,6 +4,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 const vk = @import("vulkan");
 const Context = @import("context.zig");
+const math = @import("math");
 
 const Pool = @This();
 const page_bytes = 4 * 1024 * 1024;
@@ -143,14 +144,14 @@ pub fn deinit(self: *Pool) void {
 }
 
 pub fn allocate(self: *Pool, needed: usize) !Region {
-    const capacity = try std.math.ceilPowerOfTwo(usize, @max(minimum_capacity, needed));
+    const capacity = try std.math.ceilPowerOfTwo(usize, math.max(minimum_capacity, needed));
     for (self.pages.items, 0..) |*page, i| {
         if (try page.allocate(self.allocator, capacity)) |offset| {
             return .{ .page = i, .offset = offset, .capacity = capacity };
         }
     }
     try self.pages.ensureUnusedCapacity(self.allocator, 1);
-    var page = try Page.init(self.context, self.allocator, @max(page_bytes, capacity));
+    var page = try Page.init(self.context, self.allocator, math.max(page_bytes, capacity));
     errdefer page.deinit(self.context, self.allocator);
     const offset = (try page.allocate(self.allocator, capacity)).?;
     self.pages.appendAssumeCapacity(page);

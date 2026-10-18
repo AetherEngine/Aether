@@ -9,6 +9,7 @@ const Platform = @import("platform");
 const Rendering = @import("rendering/rendering.zig");
 const Audio = @import("audio/audio.zig");
 const options = @import("options");
+const Math = @import("platform").math;
 
 pub const Pool = memory.Pool;
 pub const MemoryConfig = memory.MemoryConfig;
@@ -42,7 +43,7 @@ pub const CategoryTracker = struct {
             return null;
         };
         self.used += len;
-        self.high_water = @max(self.high_water, self.used);
+        self.high_water = Math.max(self.high_water, self.used);
         self.allocation_count += 1;
         self.last_failed_request = null;
         return result;
@@ -89,7 +90,7 @@ pub const CategoryTracker = struct {
         if (ok) {
             if (new_len >= buf.len) {
                 self.used += new_len - buf.len;
-                self.high_water = @max(self.high_water, self.used);
+                self.high_water = Math.max(self.high_water, self.used);
             } else {
                 self.used -= buf.len - new_len;
             }
@@ -113,7 +114,7 @@ pub const CategoryTracker = struct {
         if (result != null) {
             if (new_len >= buf.len) {
                 self.used += new_len - buf.len;
-                self.high_water = @max(self.high_water, self.used);
+                self.high_water = Math.max(self.high_water, self.used);
             } else {
                 self.used -= buf.len - new_len;
             }
@@ -524,7 +525,7 @@ pub const Engine = struct {
                 try std.Io.sleep(self.io, .fromNanoseconds(std.time.ns_per_ms), clock);
             }
             now_us = elapsed_us_since(self.run_loop.run_start_ns, clock.now(self.io).toNanoseconds());
-            frame_dt_us = @max(0, now_us -| self.run_loop.last_us);
+            frame_dt_us = Math.max(0, now_us -| self.run_loop.last_us);
             if (frame_dt_us <= 0) {
                 frame_dt_us = 1000;
             }
@@ -647,7 +648,7 @@ pub const Engine = struct {
         }
 
         const frame_dt_s: f32 = @as(f32, @floatFromInt(frame_dt_us)) / @as(f32, us_per_s);
-        const slack_us: i64 = @as(i64, @intCast(update_us)) - @max(0, self.run_loop.update_accum);
+        const slack_us: i64 = @as(i64, @intCast(update_us)) - Math.max(0, self.run_loop.update_accum);
         const draw_budget_ns: i64 = if (self.vsync)
             slack_us * ns_per_us
         else
@@ -714,7 +715,7 @@ pub const Engine = struct {
                 if (options.config.gfx == .headless) {
                     const next_update = @as(i64, @intCast(update_us)) - self.run_loop.update_accum;
                     const next_tick = @as(i64, @intCast(tick_interval_us)) - self.run_loop.tick_accum;
-                    const sleep_us = @max(0, @min(next_update, next_tick));
+                    const sleep_us = Math.max(0, Math.min(next_update, next_tick));
                     if (sleep_us > 0) {
                         const sleep_ns = sleep_us * ns_per_us;
                         try std.Io.sleep(self.io, .fromNanoseconds(@intCast(sleep_ns)), clock);
@@ -747,7 +748,7 @@ pub const Engine = struct {
 };
 
 fn elapsed_ns_between(start_ns: i96, end_ns: i96) i64 {
-    return @intCast(std.math.clamp(end_ns - start_ns, std.math.minInt(i64), std.math.maxInt(i64)));
+    return @intCast(Math.clamp(end_ns - start_ns, std.math.minInt(i64), std.math.maxInt(i64)));
 }
 
 fn elapsed_us_since(start_ns: i96, end_ns: i96) i64 {

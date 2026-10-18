@@ -5,6 +5,7 @@ const audio = @import("../audio.zig");
 const SlotSource = audio.SlotSource;
 const PcmFormat = audio.PcmFormat;
 const c = @import("c.zig").switch_c;
+const math = @import("math");
 
 const device_sample_rate: u32 = 48_000;
 const device_channels: usize = 2;
@@ -159,10 +160,10 @@ fn fill_output_buffer(buf: *c.AudioOutBuffer) void {
 
             if (slot.state != .active) continue;
 
-            const left_gain = slot.gain * std.math.clamp(1.0 - slot.pan, 0.0, 1.0);
-            const right_gain = slot.gain * std.math.clamp(1.0 + slot.pan, 0.0, 1.0);
-            const left_vol: i32 = @intFromFloat(std.math.clamp(left_gain, 0.0, 1.0) * 32768.0);
-            const right_vol: i32 = @intFromFloat(std.math.clamp(right_gain, 0.0, 1.0) * 32768.0);
+            const left_gain = slot.gain * math.clamp(1.0 - slot.pan, 0.0, 1.0);
+            const right_gain = slot.gain * math.clamp(1.0 + slot.pan, 0.0, 1.0);
+            const left_vol: i32 = @intFromFloat(math.clamp(left_gain, 0.0, 1.0) * 32768.0);
+            const right_vol: i32 = @intFromFloat(math.clamp(right_gain, 0.0, 1.0) * 32768.0);
 
             left_acc += (@as(i32, slot.current_left) * left_vol) >> 15;
             right_acc += (@as(i32, slot.current_right) * right_vol) >> 15;
@@ -209,7 +210,7 @@ fn read_next_sample(slot: *Slot) bool {
 }
 
 fn clamp_i16(v: i32) i16 {
-    return @intCast(std.math.clamp(v, std.math.minInt(i16), std.math.maxInt(i16)));
+    return @intCast(math.clamp(v, std.math.minInt(i16), std.math.maxInt(i16)));
 }
 
 fn read_source_exact(source: *SlotSource, dst: []u8) std.Io.Reader.Error!void {

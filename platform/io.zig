@@ -13,6 +13,7 @@
 const std = @import("std");
 const thread = @import("thread.zig");
 const target_io = @import("backend.zig").target.io;
+const math = @import("math");
 
 const Io = std.Io;
 const Alignment = std.mem.Alignment;
@@ -97,7 +98,7 @@ const Task = struct {
         const alignment = Alignment.max(Alignment.of(Task), Alignment.max(context_alignment, result_alignment));
         const context_offset = context_alignment.forward(@sizeOf(Task));
         const result_offset = result_alignment.forward(context_offset + context_bytes.len);
-        const len = result_offset + @max(result_len, 1);
+        const len = result_offset + math.max(result_len, 1);
         const memory = gpa.rawAlloc(len, alignment, @returnAddress()) orelse return null;
         const task: *Task = @ptrCast(@alignCast(memory));
         task.* = .{

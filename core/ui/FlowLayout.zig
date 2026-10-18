@@ -4,6 +4,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 const Context = @import("Context.zig");
 const layout = @import("layout.zig");
+const Math = @import("platform").math;
 const Flow = @This();
 pub const Axis = Context.Axis;
 pub const Size = Context.Size;
@@ -64,7 +65,7 @@ pub fn reserve(self: *Flow, size: layout.Point) layout.LogicalRect {
     else
         .{ .x0 = scope.cursor, .y0 = scope.options.padding.top, .x1 = scope.cursor + size.x, .y1 = scope.options.padding.top + size.y };
     scope.cursor += if (scope.options.axis == .vertical) size.y else size.x;
-    scope.cross = @max(scope.cross, if (scope.options.axis == .vertical) size.x else size.y);
+    scope.cross = Math.max(scope.cross, if (scope.options.axis == .vertical) size.x else size.y);
     scope.children += 1;
     return rect;
 }
@@ -110,7 +111,7 @@ pub fn end(self: *Flow, context: *Context) !void {
         try context.register_scroll(id, viewport, size.y);
         for (context.state.scrolls[0..context.state.scroll_count]) |*entry| if (entry.id == id) {
             entry.geometry = .{ .first = scope.first, .last = context.mark() };
-            entry.wheel_step = @max(0, options.wheel_step);
+            entry.wheel_step = Math.max(0, options.wheel_step);
             break;
         };
         context.state.scopes[context.state.depth - 1].scroll_id = scope.prior_scroll;
@@ -131,7 +132,7 @@ pub fn end(self: *Flow, context: *Context) !void {
     if (self.depth > 0) try self.record(context, first, rect);
 }
 fn resolve(size: Size, content: i16, parent: i16, min: i16, max: i16) i16 {
-    return std.math.clamp(switch (size) {
+    return Math.clamp(switch (size) {
         .fixed => |fixed| fixed,
         .content => content,
         .fill => parent,

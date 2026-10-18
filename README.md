@@ -20,6 +20,13 @@ See [the architecture guide](ARCHITECTURE.md) for ownership and extension rules.
 
 The existing `aether.Engine`, `Audio`, `Rendering`, `Ui`, `Util`, and `Math`
 exports remain available; these are also grouped under `aether.Core`.
+
+`Math` is also its own module, `dependency("engine", ...).module("math")`, for
+code that never links the engine, such as shared server logic or host tools.
+Besides vectors and matrices it has `min`, `max`, `clamp`, `floor`, `ceil`,
+`trunc`, `round`, `sin`, `cos` and `tan`, which tiger_lint requires over the
+builtins: on the PSP those are library calls or software f64, while these stay
+in compares, native conversions and single-precision polynomials.
 Text markup and resource-pack formats belong to applications. The engine provides
 content-neutral text, resource loading, streaming audio, and native services.
 

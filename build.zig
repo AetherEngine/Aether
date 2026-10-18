@@ -56,6 +56,9 @@ pub fn build(b: *std.Build) void {
     const web_host = b.option([]const u8, "web-host", "serve-web: bind host (default: 127.0.0.1)") orelse "127.0.0.1";
     const web_port = b.option(u16, "web-port", "serve-web: bind port (default: 8080)") orelse 8080;
 
+    // Exposed for dependents as `dependency("engine", ...).module("math")`.
+    const math_module = modules.math_module(b);
+
     const lint_dep = b.dependency("lint", .{
         .target = b.graph.host,
         .optimize = .safe,
@@ -68,6 +71,7 @@ pub fn build(b: *std.Build) void {
     // Follow every module root; named imports do not expose source paths.
     run_lint.addFileArg(b.path("core/root.zig"));
     run_lint.addFileArg(b.path("platform/platform.zig"));
+    run_lint.addFileArg(b.path("platform/math/math.zig"));
     inline for (.{ "common", "desktop", "psp", "3ds", "switch", "wasm" }) |root| {
         run_lint.addFileArg(b.path("platform/root/" ++ root ++ ".zig"));
     }
@@ -237,10 +241,20 @@ pub fn build(b: *std.Build) void {
             .root_module = modules.platform_module(exe),
         });
         const run_platform_tests = b.addRunArtifact(platform_tests);
+        // Its own module, so Platform's tests don't reach it
+        const math_tests = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = math_module.root_source_file,
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
+        const run_math_tests = b.addRunArtifact(math_tests);
 
         const test_step = b.step("test", "Run tests");
         test_step.dependOn(&run_mod_tests.step);
         test_step.dependOn(&run_platform_tests.step);
+        test_step.dependOn(&run_math_tests.step);
         test_step.dependOn(&run_architecture_check.step);
     }
 }

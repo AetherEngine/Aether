@@ -1,6 +1,6 @@
 const std = @import("std");
 const gfx_api = @import("../gfx.zig");
-const Mat4 = @import("../math/math.zig").Mat4;
+const Mat4 = @import("math").Mat4;
 const Graphics = @import("../graphics/graphics.zig");
 const Mesh = Graphics.mesh;
 const Texture = Graphics.texture;

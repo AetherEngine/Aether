@@ -17,7 +17,7 @@ pub const audio = @import("audio.zig");
 pub const input = @import("input.zig");
 pub const logging = @import("logging.zig");
 pub const graphics = @import("graphics/graphics.zig");
-pub const math = @import("math/math.zig");
+pub const math = @import("math");
 pub const util = @import("util/util.zig");
 
 /// Target-specific services exposed by the public engine facade.

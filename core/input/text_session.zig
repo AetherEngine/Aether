@@ -1,6 +1,7 @@
 //! Focus loss suspends text input without discarding the session's buffer.
 
 const options = @import("options");
+const Math = @import("platform").math;
 
 /// Upper bound on session text; `TextInputOptions.max_bytes` may lower it.
 pub const max_text_input_bytes: usize = switch (options.config.platform) {
@@ -38,12 +39,12 @@ pub const TextInputSession = struct {
     }
 
     pub fn limit(self: *const TextInputSession) usize {
-        return @min(self.options.max_bytes orelse self.buffer.len, self.buffer.len);
+        return Math.min(self.options.max_bytes orelse self.buffer.len, self.buffer.len);
     }
 
     /// Bytes past `limit` are discarded.
     pub fn append(self: *TextInputSession, bytes: []const u8) void {
-        const take = @min(self.limit() -| self.len, bytes.len);
+        const take = Math.min(self.limit() -| self.len, bytes.len);
         @memcpy(self.buffer[self.len..][0..take], bytes[0..take]);
         self.len += take;
     }

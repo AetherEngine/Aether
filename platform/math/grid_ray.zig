@@ -3,6 +3,7 @@
 //! the diagonal cell once and omit cells touched only at an edge or corner.
 const std = @import("std");
 const Vec3 = @import("vec3.zig");
+const scalar = @import("scalar.zig");
 const GridRay = @This();
 
 pub const Error = error{ InvalidQuery, CoordinateOverflow };
@@ -35,7 +36,7 @@ pub fn init(origin: Vec3, direction: Vec3, max_t: f32) Error!GridRay {
         const o: f64 = origins[axis];
         const d: f64 = directions[axis];
         if (!std.math.isFinite(o) or !std.math.isFinite(d)) return error.InvalidQuery;
-        const floor = @floor(o);
+        const floor = scalar.floor(o);
         const cell = floor - @as(f64, if (d < 0 and o == floor) 1 else 0);
         if (cell < std.math.minInt(i32) or cell > std.math.maxInt(i32)) return error.CoordinateOverflow;
         self.coordinate[axis] = @intFromFloat(cell);
@@ -58,7 +59,7 @@ pub fn next(self: *GridRay) Error!?Cell {
         self.first = false;
         return .{ .coordinate = self.coordinate, .enter = 0, .normal = .{ 0, 0, 0 } };
     }
-    const enter = @min(self.next_boundary[0], self.next_boundary[1], self.next_boundary[2]);
+    const enter = scalar.min(scalar.min(self.next_boundary[0], self.next_boundary[1]), self.next_boundary[2]);
     if (enter > self.max_t) {
         self.done = true;
         return null;

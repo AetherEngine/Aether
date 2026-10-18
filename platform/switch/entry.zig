@@ -12,6 +12,7 @@ const assert = std.debug.assert;
 const entry = @import("../entry.zig");
 const io = @import("io.zig");
 const c = @import("c.zig").c;
+const math = @import("math");
 
 pub const hosts_frame_loop = false;
 
@@ -78,7 +79,7 @@ const process_heap = struct {
 
     fn alloc(_: *anyopaque, len: usize, alignment: std.mem.Alignment, _: usize) ?[*]u8 {
         assert(len > 0);
-        const effective_alignment = @max(alignment.toByteUnits(), @sizeOf(usize));
+        const effective_alignment = math.max(alignment.toByteUnits(), @sizeOf(usize));
         const ptr = c.memalign(effective_alignment, len) orelse return null;
         assert(alignment.check(@intFromPtr(ptr)));
         return @ptrCast(ptr);
@@ -286,7 +287,7 @@ fn show_crash_screen(title: []const u8, message: []const u8, pc: usize, stack: [
         console_write("\n");
     }
 
-    const show = @min(stack.len, 24);
+    const show = math.min(stack.len, 24);
     for (stack[0..show], 0..) |addr, i| {
         console_print("BT{d} = 0x{x}", .{ i, addr });
         if (addr >= base and addr < text_end) console_print(" (+0x{x})", .{addr - base});
@@ -322,7 +323,7 @@ fn console_print(comptime fmt: []const u8, args: anytype) void {
 fn console_write(message: []const u8) void {
     var rest = message;
     while (rest.len != 0) {
-        const n = @min(rest.len, @as(usize, @intCast(std.math.maxInt(c_int))));
+        const n = math.min(rest.len, @as(usize, @intCast(std.math.maxInt(c_int))));
         _ = c.printf("%.*s", @as(c_int, @intCast(n)), rest.ptr);
         rest = rest[n..];
     }
@@ -338,7 +339,7 @@ fn fatal_main_error(err: anyerror, maybe_trace: ?*std.lang.StackTrace, fallback_
     panic_stage = 1;
 
     const main_pc = if (maybe_trace) |trace| blk: {
-        const nn = @min(trace.index, trace.instruction_addresses.len);
+        const nn = math.min(trace.index, trace.instruction_addresses.len);
         if (nn > 0) break :blk trace.instruction_addresses[0];
         break :blk fallback_addr;
     } else fallback_addr;
@@ -363,7 +364,7 @@ fn fatal_main_error(err: anyerror, maybe_trace: ?*std.lang.StackTrace, fallback_
     fixed.print("entry_fp=0x{x} entry_sp=0x{x}\n", .{ entry_fp, entry_sp }) catch {};
 
     if (maybe_trace) |trace| {
-        const nerr = @min(trace.index, trace.instruction_addresses.len);
+        const nerr = math.min(trace.index, trace.instruction_addresses.len);
         if (nerr > 0) {
             fixed.writeAll("error return trace:\n") catch {};
             for (trace.instruction_addresses[0..nerr], 0..) |a, i| {
@@ -373,7 +374,7 @@ fn fatal_main_error(err: anyerror, maybe_trace: ?*std.lang.StackTrace, fallback_
     }
 
     fixed.writeAll("stack trace:\n") catch {};
-    const show = @min(n, 24);
+    const show = math.min(n, 24);
     for (addrs[0..show], 0..) |a, i| {
         fixed.print("{d: >2}: 0x{x:0>16}\n", .{ i, a }) catch {};
     }
@@ -415,7 +416,7 @@ pub fn panic(msg: []const u8, _: ?*std.lang.StackTrace, first_trace_addr: ?usize
     fixed.print("entry_fp=0x{x} entry_sp=0x{x}\n", .{ entry_fp, entry_sp }) catch {};
 
     if (@errorReturnTrace()) |t| {
-        const nerr = @min(t.index, t.instruction_addresses.len);
+        const nerr = math.min(t.index, t.instruction_addresses.len);
         if (nerr > 0) {
             fixed.writeAll("error return trace:\n") catch {};
             for (t.instruction_addresses[0..nerr], 0..) |a, i| {
@@ -425,7 +426,7 @@ pub fn panic(msg: []const u8, _: ?*std.lang.StackTrace, first_trace_addr: ?usize
     }
 
     fixed.writeAll("stack trace:\n") catch {};
-    const show = @min(n, 32);
+    const show = math.min(n, 32);
     for (addrs[0..show], 0..) |a, i| {
         fixed.print("{d: >2}: 0x{x:0>16}\n", .{ i, a }) catch {};
     }
@@ -474,7 +475,7 @@ fn exception_handler(dump: *ThreadExceptionDump) callconv(.c) noreturn {
         dump.cpu_gprs[2].x,
         dump.cpu_gprs[3].x,
     }) catch {};
-    const show = @min(n, 24);
+    const show = math.min(n, 24);
     for (addrs[0..show], 0..) |a, i| {
         fixed.print("{d: >2}: 0x{x:0>16}\n", .{ i, a }) catch {};
     }
@@ -535,7 +536,7 @@ fn fatal_with_context(
     ctx.aarch64_ctx.esr = esr;
     ctx.aarch64_ctx.register_set_flags = (@as(u64, 1) << 29) | (@as(u64, 1) << 30) | (@as(u64, 1) << 31);
 
-    const n = @min(stack.len, ctx.aarch64_ctx.stack_trace.len);
+    const n = math.min(stack.len, ctx.aarch64_ctx.stack_trace.len);
     for (stack[0..n], 0..) |addr, i| {
         ctx.aarch64_ctx.stack_trace[i] = @intCast(addr);
     }

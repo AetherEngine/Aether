@@ -1,4 +1,5 @@
 const options = @import("options");
+const math = @import("math");
 
 const StandardVertex = extern struct {
     pos: [3]i16,
@@ -137,7 +138,7 @@ pub const native_position_normalization: PositionNormalization = if (options.con
 /// caller. snorm16 excludes -32768 to avoid its asymmetric clamped endpoint.
 pub const PositionEncoding = struct {
     const std = @import("std");
-    const Vec3 = @import("../math/vec3.zig");
+    const Vec3 = @import("math").Vec3;
     pub const Error = error{ InvalidScale, PositionOutOfRange };
 
     units_per_world_unit: f32,
@@ -154,7 +155,7 @@ pub const PositionEncoding = struct {
     }
 
     pub fn encode_component(self: PositionEncoding, value: f32) Error!i16 {
-        const scaled = @round(value * self.units_per_world_unit);
+        const scaled = math.round(value * self.units_per_world_unit);
         const minimum: f32 = if (self.normalization == .snorm16) -32767 else -32768;
         if (!std.math.isFinite(scaled) or scaled < minimum or scaled > 32767) return error.PositionOutOfRange;
         return @intFromFloat(scaled);

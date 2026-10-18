@@ -3,6 +3,7 @@
 //! Oversized words split at glyph boundaries. A single oversized glyph is emitted
 //! and reported via `overflowed_width`. Optional zero-width controls stay whole.
 const std = @import("std");
+const Math = @import("platform").math;
 
 pub const Options = struct {
     max_width: i16,
@@ -98,7 +99,7 @@ fn first_glyph_end(text: []const u8, options: Options) usize {
         if (length == 0) break;
         i += length;
     }
-    return @min(i + 1, text.len);
+    return Math.min(i + 1, text.len);
 }
 fn last_space(text: []const u8, options: Options) ?usize {
     var result: ?usize = null;

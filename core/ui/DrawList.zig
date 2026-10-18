@@ -92,7 +92,7 @@ pub fn add_region(self: *List, texture: *const Rendering.Texture, region: textur
             count = 2;
         },
         .nine_slice => |slice| {
-            if (slice.left < 0 or slice.right < 0 or slice.top < 0 or slice.bottom < 0 or @as(i32, slice.left) + slice.right > @min(region.w, bounds.width()) or @as(i32, slice.top) + slice.bottom > @min(region.h, bounds.height())) return error.InvalidBounds;
+            if (slice.left < 0 or slice.right < 0 or slice.top < 0 or slice.bottom < 0 or @as(i32, slice.left) + slice.right > Math.min(region.w, bounds.width()) or @as(i32, slice.top) + slice.bottom > Math.min(region.h, bounds.height())) return error.InvalidBounds;
             const source_x = [4]i16{ region.x, try sum(region.x, slice.left), try sum(region.x, region.w - slice.right), try sum(region.x, region.w) };
             const source_y = [4]i16{ region.y, try sum(region.y, slice.top), try sum(region.y, region.h - slice.bottom), try sum(region.y, region.h) };
             const dest_x = [4]i16{ bounds.x0, try sum(bounds.x0, slice.left), bounds.x1 - slice.right, bounds.x1 };

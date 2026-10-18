@@ -1,5 +1,6 @@
 const std = @import("std");
 const Util = @import("util.zig");
+const Math = @import("platform").math;
 
 pub const Confidence = enum { p50, p75, p95, max };
 
@@ -63,7 +64,7 @@ pub const Estimator = struct {
     pub fn fit_in(self: *const Estimator, available_ns: i64, confidence: Confidence) usize {
         const cost = self.estimate_cost(confidence);
         if (cost <= 0 or available_ns <= 0) return 1;
-        return @max(1, @as(usize, @intCast(@divFloor(available_ns, cost))));
+        return Math.max(1, @as(usize, @intCast(@divFloor(available_ns, cost))));
     }
 
     pub fn is_warming_up(self: *const Estimator) bool {

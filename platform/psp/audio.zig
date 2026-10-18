@@ -3,6 +3,7 @@
 const std = @import("std");
 const sdk = @import("pspsdk");
 const audio_api = @import("../audio.zig");
+const math = @import("math");
 const SlotSource = audio_api.SlotSource;
 const PcmFormat = audio_api.PcmFormat;
 
@@ -147,10 +148,10 @@ fn fill_buffer(buf: *[output_buf_bytes]u8) void {
         const gain: f32 = @bitCast(slot.gain.load(.acquire));
         const pan: f32 = @bitCast(slot.pan.load(.acquire));
 
-        const left_gain = gain * std.math.clamp(1.0 - pan, 0.0, 1.0);
-        const right_gain = gain * std.math.clamp(1.0 + pan, 0.0, 1.0);
-        const left_vol: i32 = @intFromFloat(std.math.clamp(left_gain, 0.0, 1.0) * 32768.0);
-        const right_vol: i32 = @intFromFloat(std.math.clamp(right_gain, 0.0, 1.0) * 32768.0);
+        const left_gain = gain * math.clamp(1.0 - pan, 0.0, 1.0);
+        const right_gain = gain * math.clamp(1.0 + pan, 0.0, 1.0);
+        const left_vol: i32 = @intFromFloat(math.clamp(left_gain, 0.0, 1.0) * 32768.0);
+        const right_vol: i32 = @intFromFloat(math.clamp(right_gain, 0.0, 1.0) * 32768.0);
 
         const fmt = slot.source.format();
         const bytes_needed: usize = samples_per_buf * fmt.frame_size();
@@ -177,7 +178,7 @@ fn read_source(source: *SlotSource, dst: []u8) bool {
             const cursor = buffer.cursor.load(.acquire);
             if (cursor >= buffer.pcm.len) return false;
             const remaining = buffer.pcm.len - cursor;
-            const n = @min(dst.len, remaining);
+            const n = math.min(dst.len, remaining);
             @memcpy(dst[0..n], buffer.pcm[cursor..][0..n]);
             if (n < dst.len) @memset(dst[n..], 0);
             buffer.cursor.store(cursor + n, .release);

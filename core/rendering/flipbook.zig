@@ -4,6 +4,7 @@
 const std = @import("std");
 const Image = @import("../util/image.zig");
 const Texture = @import("texture.zig");
+const Math = @import("platform").math;
 const Flipbook = @This();
 
 pub const Playback = enum { loop, once, ping_pong };
@@ -37,11 +38,11 @@ pub fn init(source: Image.View, desc: Desc) (Error || Image.RegionError)!Flipboo
 
 pub fn frame_at(self: Flipbook, elapsed_seconds: f64) Error!u32 {
     if (!std.math.isFinite(elapsed_seconds) or elapsed_seconds < 0) return error.InvalidTime;
-    const step = @floor(elapsed_seconds * self.desc.frames_per_second);
+    const step = Math.floor(elapsed_seconds * self.desc.frames_per_second);
     if (!std.math.isFinite(step)) return error.InvalidTime;
     const count: f64 = @floatFromInt(self.desc.frame_count);
     return switch (self.desc.playback) {
-        .once => @intFromFloat(@min(step, count - 1)),
+        .once => @intFromFloat(Math.min(step, count - 1)),
         .loop => @intFromFloat(@mod(step, count)),
         .ping_pong => if (self.desc.frame_count == 1) 0 else blk: {
             const period = 2 * (count - 1);

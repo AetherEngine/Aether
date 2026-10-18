@@ -1,4 +1,5 @@
 const Vec3 = @import("vec3.zig");
+const scalar = @import("scalar.zig");
 
 x: f32,
 y: f32,
@@ -13,9 +14,9 @@ pub fn identity() Quat {
 
 pub fn from_axis_angle(axis: Vec3, angle: f32) Quat {
     const half = angle * 0.5;
-    const s = @sin(half);
+    const s = scalar.sin(half);
     const n = axis.normalize();
-    return .{ .x = n.x * s, .y = n.y * s, .z = n.z * s, .w = @cos(half) };
+    return .{ .x = n.x * s, .y = n.y * s, .z = n.z * s, .w = scalar.cos(half) };
 }
 
 /// Euler angles in radians: pitch (X), yaw (Y), roll (Z), applied in ZXY order.
@@ -23,12 +24,12 @@ pub fn from_euler(pitch: f32, yaw: f32, roll: f32) Quat {
     const hp = pitch * 0.5;
     const hy = yaw * 0.5;
     const hr = roll * 0.5;
-    const sp = @sin(hp);
-    const cp = @cos(hp);
-    const sy = @sin(hy);
-    const cy = @cos(hy);
-    const sr = @sin(hr);
-    const cr = @cos(hr);
+    const sp = scalar.sin(hp);
+    const cp = scalar.cos(hp);
+    const sy = scalar.sin(hy);
+    const cy = scalar.cos(hy);
+    const sr = scalar.sin(hr);
+    const cr = scalar.cos(hr);
     return .{
         .x = sp * cy * cr + cp * sy * sr,
         .y = cp * sy * cr - sp * cy * sr,

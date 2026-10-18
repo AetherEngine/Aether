@@ -7,6 +7,7 @@ const app_3ds = @import("app.zig");
 const audio_api = @import("../audio.zig");
 const thread_mod = @import("../thread.zig");
 const audio_fifo = @import("audio_fifo.zig");
+const math = @import("math");
 const SlotSource = audio_api.SlotSource;
 const PcmFormat = audio_api.PcmFormat;
 
@@ -373,7 +374,7 @@ fn audio_thread_fn() void {
     var written_samples: u64 = 0;
     var start_ns: u96 = 0;
     const lead_target_samples: u64 = samples_per_page * lead_page_count;
-    const sleep_ns: i64 = @intCast(@max(page_ns / 4, @as(u64, std.time.ns_per_ms)));
+    const sleep_ns: i64 = @intCast(math.max(page_ns / 4, @as(u64, std.time.ns_per_ms)));
 
     while (running.load(.acquire) != 0) {
         if (applet_suspended.load(.acquire) != 0) {
@@ -450,10 +451,10 @@ fn fill_output_page(index: usize) void {
 
         const gain: f32 = @bitCast(slot.gain.load(.acquire));
         const pan: f32 = @bitCast(slot.pan.load(.acquire));
-        const left_gain = gain * std.math.clamp(1.0 - pan, 0.0, 1.0);
-        const right_gain = gain * std.math.clamp(1.0 + pan, 0.0, 1.0);
-        const left_vol: i32 = @intFromFloat(std.math.clamp(left_gain, 0.0, 1.0) * 32768.0);
-        const right_vol: i32 = @intFromFloat(std.math.clamp(right_gain, 0.0, 1.0) * 32768.0);
+        const left_gain = gain * math.clamp(1.0 - pan, 0.0, 1.0);
+        const right_gain = gain * math.clamp(1.0 + pan, 0.0, 1.0);
+        const left_vol: i32 = @intFromFloat(math.clamp(left_gain, 0.0, 1.0) * 32768.0);
+        const right_vol: i32 = @intFromFloat(math.clamp(right_gain, 0.0, 1.0) * 32768.0);
 
         if (can_bulk_mix(slot)) {
             mix_slot_page(slot, slot_index, &accum, left_vol, right_vol);
@@ -521,7 +522,7 @@ fn pending_slot_ready(slot: *Slot, slot_index: usize) bool {
             }
 
             const frame_size: usize = slot.format.frame_size();
-            const start_bytes = @min(stream_start_bytes, fifo.capacity());
+            const start_bytes = math.min(stream_start_bytes, fifo.capacity());
             const available = fifo.readable();
             if (stream_state == .eof and available < frame_size) {
                 slot.state.store(@backingInt(SlotState.finished), .release);
@@ -770,8 +771,8 @@ fn choose_channel(mask: u32) ?Channel.Id {
 }
 
 fn csnd_volume(volume: f32, pan: f32) Channel.Volume {
-    const vol_norm: u15 = @trunc(std.math.clamp(volume * 32767.0, 0, std.math.maxInt(i16)));
-    const pan_norm: i16 = @trunc(std.math.clamp(pan * 32767.0, std.math.minInt(i16), std.math.maxInt(i16)));
+    const vol_norm: u15 = @intFromFloat(math.clamp(volume * 32767.0, 0, std.math.maxInt(i16)));
+    const pan_norm: i16 = @intFromFloat(math.clamp(pan * 32767.0, std.math.minInt(i16), std.math.maxInt(i16)));
     return .init(vol_norm, pan_norm);
 }
 
@@ -811,7 +812,7 @@ fn invalidate_cache_or_panic(comptime where: []const u8, data: []u8) void {
 }
 
 fn clamp_i16(v: i32) i16 {
-    return @intCast(std.math.clamp(v, std.math.minInt(i16), std.math.maxInt(i16)));
+    return @intCast(math.clamp(v, std.math.minInt(i16), std.math.maxInt(i16)));
 }
 
 fn read_source_short(slot: *Slot, slot_index: usize, dst: []u8) SourceRead {
@@ -820,7 +821,7 @@ fn read_source_short(slot: *Slot, slot_index: usize, dst: []u8) SourceRead {
             const cursor = buffer.cursor.load(.acquire);
             if (cursor >= buffer.pcm.len) break :blk .{ .bytes_read = 0, .status = .end };
             const remaining = buffer.pcm.len - cursor;
-            const n = @min(dst.len, remaining);
+            const n = math.min(dst.len, remaining);
             @memcpy(dst[0..n], buffer.pcm[cursor..][0..n]);
             buffer.cursor.store(cursor + n, .release);
             break :blk .{
@@ -832,7 +833,7 @@ fn read_source_short(slot: *Slot, slot_index: usize, dst: []u8) SourceRead {
             const fifo = &stream_fifos[slot_index];
             const frame_size: usize = @intCast(slot.format.frame_size());
             const available = fifo.readable();
-            const n = (@min(dst.len, available) / frame_size) * frame_size;
+            const n = (math.min(dst.len, available) / frame_size) * frame_size;
             const copied = fifo.read(dst[0..n]);
             assert(copied == n);
             if (fifo.readable() < fifo.capacity() / 2) notify_stream_worker();
@@ -893,7 +894,7 @@ fn format_supported(fmt: PcmFormat) bool {
 
 fn stream_refill_needed(slot_index: usize) bool {
     const fifo = &stream_fifos[slot_index];
-    const minimum_write = @min(stream_prefetch_chunk_bytes / 2, fifo.capacity() / 2);
+    const minimum_write = math.min(stream_prefetch_chunk_bytes / 2, fifo.capacity() / 2);
     return fifo.writable() >= minimum_write and fifo.readable() < (fifo.capacity() * 3) / 4;
 }
 
@@ -956,10 +957,10 @@ fn worker_refill_slot(slot_index: usize, scratch: []u8, progress: *StreamWorkerP
     const frame_size: usize = stream.format.frame_size();
     const bytes_read = progress.bytes_read;
     const max_by_length: usize = if (stream.byte_length) |length|
-        @intCast(@min(length -| bytes_read, @as(u64, std.math.maxInt(usize))))
+        @intCast(math.min(length -| bytes_read, @as(u64, std.math.maxInt(usize))))
     else
         scratch.len;
-    const max_read = @min(@min(scratch.len, fifo.writable()), max_by_length);
+    const max_read = math.min(math.min(scratch.len, fifo.writable()), max_by_length);
     const request_len = (max_read / frame_size) * frame_size;
     if (request_len == 0) {
         if (stream.byte_length) |length| {

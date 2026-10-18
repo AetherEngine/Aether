@@ -2,6 +2,7 @@ const std = @import("std");
 const flate = std.compress.flate;
 
 pub const ColorMode = @import("platform").graphics.PixelFormat;
+const Math = @import("platform").math;
 
 pub const Image = struct {
     width: u32,
@@ -278,7 +279,7 @@ pub fn load_png_ex(scratch: std.mem.Allocator, render: std.mem.Allocator, reader
     const expected_raw_size: usize = @as(usize, height) * (1 + raw_stride);
     if (raw.len < expected_raw_size) return error.InvalidPNG;
 
-    const bpp: u32 = @max(1, @as(u32, bit_depth) * channels / 8);
+    const bpp: u32 = Math.max(1, @as(u32, bit_depth) * channels / 8);
 
     const unfiltered = try scratch.alloc(u8, @as(usize, height) * raw_stride);
     defer scratch.free(unfiltered);

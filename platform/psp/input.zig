@@ -9,6 +9,7 @@ const ctrl = sdk.ctrl;
 
 const input_api = @import("../input.zig");
 const dialogs = @import("dialogs.zig");
+const math = @import("math");
 
 var prev_pad: ctrl.Data = std.mem.zeroes(ctrl.Data);
 var have_prev: bool = false;
@@ -47,7 +48,7 @@ pub fn begin_text_input_session(input: input_api.EventSink, request: *const inpu
     const desc_len = std.unicode.utf8ToUtf16Le(&desc_buf, request.prompt) catch 0;
     if (desc_len < desc_buf.len) desc_buf[desc_len] = 0;
 
-    const max_chars: usize = if (request.max_bytes) |m| @min(m, 256) else 256;
+    const max_chars: usize = if (request.max_bytes) |m| math.min(m, 256) else 256;
     var out_buf: [257]u16 = @splat(0);
     const out_slice = out_buf[0 .. max_chars + 1];
 
@@ -56,7 +57,7 @@ pub fn begin_text_input_session(input: input_api.EventSink, request: *const inpu
     if (request.initial.len > 0) {
         const cap: usize = in_buf.len - 1;
         const written = std.unicode.utf8ToUtf16Le(&in_buf, request.initial) catch 0;
-        in_len = @min(written, cap);
+        in_len = math.min(written, cap);
         in_buf[in_len] = 0;
     }
     const in_slice: []const u16 = if (in_len > 0) in_buf[0 .. in_len + 1] else &.{};

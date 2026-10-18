@@ -2,6 +2,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 const vk = @import("vulkan");
 const Context = @import("context.zig");
+const math = @import("math");
 
 const SwapChain = @This();
 
@@ -57,8 +58,8 @@ fn choose_swap_extent(capabilities: vk.SurfaceCapabilitiesKHR, drawable: vk.Exte
         capabilities.current_extent
     else
         vk.Extent2D{
-            .width = std.math.clamp(drawable.width, capabilities.min_image_extent.width, capabilities.max_image_extent.width),
-            .height = std.math.clamp(drawable.height, capabilities.min_image_extent.height, capabilities.max_image_extent.height),
+            .width = math.clamp(drawable.width, capabilities.min_image_extent.width, capabilities.max_image_extent.width),
+            .height = math.clamp(drawable.height, capabilities.min_image_extent.height, capabilities.max_image_extent.height),
         };
     if (drawable.width == 0 or drawable.height == 0 or extent.width == 0 or extent.height == 0) return error.ZeroExtent;
     return extent;
@@ -102,7 +103,7 @@ fn create_swapchain(self: *SwapChain) !void {
     const present_mode = try self.choose_present_mode();
 
     // We want triple buffering so...
-    var image_count = @max(3, self.surface_capabilities.min_image_count);
+    var image_count = math.max(3, self.surface_capabilities.min_image_count);
     image_count = if (self.surface_capabilities.max_image_count > 0 and image_count > self.surface_capabilities.max_image_count) self.surface_capabilities.max_image_count else image_count;
 
     const qfi = [_]u32{ self.context.graphics_queue.family, self.context.present_queue.family };

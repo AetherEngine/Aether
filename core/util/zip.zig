@@ -7,6 +7,7 @@ const assert = std.debug.assert;
 const Io = std.Io;
 const zip = std.zip;
 const resources = @import("../resources/source.zig");
+const Math = @import("platform").math;
 
 pub const Options = struct {
     max_streams: usize = 2,
@@ -58,7 +59,7 @@ const Slot = struct {
         if (self.failure != null) return error.ReadFailed;
         if (self.remaining == 0) return error.EndOfStream;
         var scratch: [4096]u8 = undefined;
-        const size: usize = @intCast(@min(self.remaining, limit.minInt(scratch.len)));
+        const size: usize = @intCast(Math.min(self.remaining, limit.minInt(scratch.len)));
         if (size == 0) return 0;
         const count = self.input.readSliceShort(scratch[0..size]) catch {
             self.failure = error.ReadFailed;
@@ -124,7 +125,7 @@ pub fn init_options(allocator: std.mem.Allocator, io: Io, dir: Io.Dir, path: []c
     errdefer file.close(io);
     const slots = try allocator.alloc(Slot, options.max_streams);
     errdefer allocator.free(slots);
-    const windows = try allocator.alloc(Window, @min(options.max_deflate_streams orelse options.max_streams, options.max_streams));
+    const windows = try allocator.alloc(Window, Math.min(options.max_deflate_streams orelse options.max_streams, options.max_streams));
     errdefer allocator.free(windows);
     for (slots) |*slot| slot.* = .{};
     for (windows) |*window| window.* = .{};
@@ -230,7 +231,7 @@ pub fn open(self: *Zip, path: []const u8) !Stream {
     var compared: usize = 0;
     var name_buffer: [256]u8 = undefined;
     while (compared < path.len) {
-        const n = @min(path.len - compared, name_buffer.len);
+        const n = Math.min(path.len - compared, name_buffer.len);
         try slot.file_reader.interface.readSliceAll(name_buffer[0..n]);
         if (!std.mem.eql(u8, name_buffer[0..n], path[compared..][0..n])) return error.ZipHeaderMismatch;
         compared += n;

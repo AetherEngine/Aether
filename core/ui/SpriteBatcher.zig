@@ -229,10 +229,10 @@ pub fn append_geometry(mesh: *BatchMeshData, sprite: *const Sprite, screen_w: u3
     const raw_x0: i32 = @as(i32, ref.x) + sprite.pos_offset.x - orig.x;
     const raw_y0: i32 = @as(i32, ref.y) + sprite.pos_offset.y - orig.y;
     const bounds = layout.intersection(.{ .x0 = 0, .y0 = 0, .x1 = max_lx, .y1 = max_ly }, clip);
-    const x0: i16 = @intCast(@min(bounds.x1, @max(raw_x0, bounds.x0)));
-    const y0: i16 = @intCast(@min(bounds.y1, @max(raw_y0, bounds.y0)));
-    const x1: i16 = @intCast(@max(bounds.x0, @min(raw_x0 + sprite.pos_extent.x, bounds.x1)));
-    const y1: i16 = @intCast(@max(bounds.y0, @min(raw_y0 + sprite.pos_extent.y, bounds.y1)));
+    const x0: i16 = @intCast(Math.min(bounds.x1, Math.max(raw_x0, bounds.x0)));
+    const y0: i16 = @intCast(Math.min(bounds.y1, Math.max(raw_y0, bounds.y0)));
+    const x1: i16 = @intCast(Math.max(bounds.x0, Math.min(raw_x0 + sprite.pos_extent.x, bounds.x1)));
+    const y1: i16 = @intCast(Math.max(bounds.y0, Math.min(raw_y0 + sprite.pos_extent.y, bounds.y1)));
 
     if (x0 >= x1 or y0 >= y1) return;
 

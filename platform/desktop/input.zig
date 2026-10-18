@@ -6,6 +6,7 @@ const std = @import("std");
 const sdl3 = @import("sdl3");
 const input_api = @import("../input.zig");
 const gfx = @import("../gfx.zig");
+const math = @import("math");
 
 // The binding does not re-export the scancode module, so recover the payload
 // field's type from the event struct.
@@ -262,7 +263,7 @@ pub fn end_text_input_session(_: input_api.EventSink) void {}
 fn handle_event(input: input_api.EventSink, event: sdl3.events.Event) void {
     switch (event) {
         .quit, .window_close_requested => gfx.surface.request_quit(),
-        .window_pixel_size_changed => |e| gfx.surface.notify_resized(@intCast(@max(0, e.width)), @intCast(@max(0, e.height))),
+        .window_pixel_size_changed => |e| gfx.surface.notify_resized(@intCast(math.max(0, e.width)), @intCast(math.max(0, e.height))),
         .window_focus_gained => input.deliver_focus_change(true),
         .window_focus_lost => input.deliver_focus_change(false),
         .key_down, .key_up => |e| {
@@ -384,7 +385,7 @@ fn pump_gamepad(input: input_api.EventSink) void {
         const value = if (mapping.sdl == .left_trigger or mapping.sdl == .right_trigger)
             @as(f32, @floatFromInt(raw)) / 32767.0
         else
-            std.math.clamp(@as(f32, @floatFromInt(raw)) / 32767.0, -1.0, 1.0);
+            math.clamp(@as(f32, @floatFromInt(raw)) / 32767.0, -1.0, 1.0);
         axes[i] = value;
         const prev: f32 = if (have_prev_pad) prev_axes[i] else 0;
         // Emit when active OR when transitioning back to zero, so core's

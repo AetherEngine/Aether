@@ -3,6 +3,7 @@
 const std = @import("std");
 const sdl3 = @import("sdl3");
 const audio_api = @import("../audio.zig");
+const math = @import("math");
 const SlotSource = audio_api.SlotSource;
 const PcmFormat = audio_api.PcmFormat;
 
@@ -114,7 +115,7 @@ fn data_callback(
 ) void {
     var bytes_remaining = additional_amount;
     while (bytes_remaining > 0) {
-        const frames = @min(
+        const frames = math.min(
             max_period_frames,
             (bytes_remaining + output_frame_bytes - 1) / output_frame_bytes,
         );
@@ -145,8 +146,8 @@ fn fill_output(out: []f32, frame_count: usize) void {
         const gain: f32 = @bitCast(slot.gain.load(.acquire));
         const pan: f32 = @bitCast(slot.pan.load(.acquire));
 
-        const left_gain = gain * std.math.clamp(1.0 - pan, 0.0, 1.0);
-        const right_gain = gain * std.math.clamp(1.0 + pan, 0.0, 1.0);
+        const left_gain = gain * math.clamp(1.0 - pan, 0.0, 1.0);
+        const right_gain = gain * math.clamp(1.0 + pan, 0.0, 1.0);
 
         const fmt = slot.source.format();
         const bytes_needed: usize = frame_count * @as(usize, fmt.frame_size());
@@ -173,7 +174,7 @@ fn read_source(source: *SlotSource, dst: []u8) bool {
             const cursor = buffer.cursor.load(.acquire);
             if (cursor >= buffer.pcm.len) return false;
             const remaining = buffer.pcm.len - cursor;
-            const n = @min(dst.len, remaining);
+            const n = math.min(dst.len, remaining);
             @memcpy(dst[0..n], buffer.pcm[cursor..][0..n]);
             if (n < dst.len) @memset(dst[n..], 0);
             buffer.cursor.store(cursor + n, .release);

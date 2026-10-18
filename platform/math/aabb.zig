@@ -1,5 +1,6 @@
 const std = @import("std");
 const Vec3 = @import("vec3.zig");
+const scalar = @import("scalar.zig");
 
 min: Vec3,
 max: Vec3,
@@ -28,14 +29,14 @@ pub fn intersects(a: Aabb, b: Aabb) bool {
 pub fn expand(self: Aabb, p: Vec3) Aabb {
     return .{
         .min = Vec3.new(
-            @min(self.min.x, p.x),
-            @min(self.min.y, p.y),
-            @min(self.min.z, p.z),
+            scalar.min(self.min.x, p.x),
+            scalar.min(self.min.y, p.y),
+            scalar.min(self.min.z, p.z),
         ),
         .max = Vec3.new(
-            @max(self.max.x, p.x),
-            @max(self.max.y, p.y),
-            @max(self.max.z, p.z),
+            scalar.max(self.max.x, p.x),
+            scalar.max(self.max.y, p.y),
+            scalar.max(self.max.z, p.z),
         ),
     };
 }
@@ -92,14 +93,14 @@ pub fn ray_intersection(self: Aabb, origin: Vec3, direction: Vec3, t_min: f32, t
         }
         const a = (lo - o) / d;
         const b = (hi - o) / d;
-        const near = @min(a, b);
-        const far = @max(a, b);
+        const near = scalar.min(a, b);
+        const far = scalar.max(a, b);
         if (near > enter) {
             enter = near;
             normal = .{ 0, 0, 0 };
             normal[axis] = if (d > 0) -1 else 1;
         }
-        exit = @min(exit, far);
+        exit = scalar.min(exit, far);
         if (enter > exit) return null;
     }
     return .{

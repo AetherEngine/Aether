@@ -214,7 +214,7 @@ pub fn string_width(self: *const FontBatcher, str: []const u8, spacing: i8, text
     if (visible == 0) return 0;
     const gaps: i32 = @intCast(visible - 1);
     total += gaps * (@as(i32, default_spacing) + @as(i32, spacing)) * s;
-    return @intCast(@min(total, std.math.maxInt(i16)));
+    return @intCast(Math.min(total, std.math.maxInt(i16)));
 }
 
 /// Returns the longest prefix fitting `max_w`, in bytes, without splitting application styling controls.
@@ -423,8 +423,8 @@ fn emit_string_screen(
     const bounds = layout.intersection(.{ .x0 = 0, .y0 = 0, .x1 = @intCast(layout.logical_width(screen_w, ui_scale)), .y1 = @intCast(layout.logical_height(screen_h, ui_scale)) }, clip);
     const ts: i32 = text_scale;
 
-    const y0: i16 = @intCast(@min(@max(start_y, bounds.y0), bounds.y1));
-    const y1: i16 = @intCast(@max(bounds.y0, @min(start_y + @as(i32, glyph_size) * ts, bounds.y1)));
+    const y0: i16 = @intCast(Math.min(Math.max(start_y, bounds.y0), bounds.y1));
+    const y1: i16 = @intCast(Math.max(bounds.y0, Math.min(start_y + @as(i32, glyph_size) * ts, bounds.y1)));
     if (y0 >= y1) return;
     const sy0 = logical_to_snorm_y(y0, screen_h, ui_scale);
     const sy1 = logical_to_snorm_y(y1, screen_h, ui_scale);
@@ -448,8 +448,8 @@ fn emit_string_screen(
             continue;
         }
         const scaled_w: i32 = @as(i32, gw) * ts;
-        const x0: i16 = @intCast(@min(bounds.x1, @max(cursor, bounds.x0)));
-        const x1: i16 = @intCast(@max(bounds.x0, @min(cursor + scaled_w, bounds.x1)));
+        const x0: i16 = @intCast(Math.min(bounds.x1, Math.max(cursor, bounds.x0)));
+        const x1: i16 = @intCast(Math.max(bounds.x0, Math.min(cursor + scaled_w, bounds.x1)));
         if (x0 < x1) {
             const base = glyph_uvs(self, byte, gw);
             const uv_span: i32 = @as(i32, base[2]) - @as(i32, base[0]);

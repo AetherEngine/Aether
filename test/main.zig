@@ -50,7 +50,7 @@ const BatchBColors = [_]u32{
 };
 
 fn snorm16(v: f32) i16 {
-    return @intFromFloat(std.math.clamp(v, -1.0, 1.0) * 32767.0);
+    return @intFromFloat(Math.clamp(v, -1.0, 1.0) * 32767.0);
 }
 
 fn vertex(x: f32, y: f32, color: u32, u: f32, v: f32) Vertex {
@@ -62,8 +62,8 @@ fn vertex(x: f32, y: f32, color: u32, u: f32, v: f32) Vertex {
 }
 
 fn oriented_point(cx: f32, cy: f32, lx: f32, ly: f32, angle: f32) [2]f32 {
-    const c = @cos(angle);
-    const s = @sin(angle);
+    const c = Math.cos(angle);
+    const s = Math.sin(angle);
     return .{
         cx + lx * c - ly * s,
         cy + lx * s + ly * c,
@@ -107,12 +107,12 @@ fn build_batch_a(alloc: std.mem.Allocator, mesh: *MyMeshData) !void {
     for (0..spoke_count) |i| {
         const t = @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(spoke_count));
         const angle = t * std.math.pi * 2.0;
-        const tip_radius = 0.78 + @sin(angle * 3.0) * 0.04;
-        const base_radius = 0.31 + @cos(angle * 2.0) * 0.035;
-        const half_width = 0.075 + @sin(angle * 5.0) * 0.012;
-        const tip = [2]f32{ @cos(angle) * tip_radius, @sin(angle) * tip_radius };
-        const left = [2]f32{ @cos(angle - half_width) * base_radius, @sin(angle - half_width) * base_radius };
-        const right = [2]f32{ @cos(angle + half_width) * base_radius, @sin(angle + half_width) * base_radius };
+        const tip_radius = 0.78 + Math.sin(angle * 3.0) * 0.04;
+        const base_radius = 0.31 + Math.cos(angle * 2.0) * 0.035;
+        const half_width = 0.075 + Math.sin(angle * 5.0) * 0.012;
+        const tip = [2]f32{ Math.cos(angle) * tip_radius, Math.sin(angle) * tip_radius };
+        const left = [2]f32{ Math.cos(angle - half_width) * base_radius, Math.sin(angle - half_width) * base_radius };
+        const right = [2]f32{ Math.cos(angle + half_width) * base_radius, Math.sin(angle + half_width) * base_radius };
 
         try mesh.add_tri(
             alloc,
@@ -131,8 +131,8 @@ fn build_batch_a(alloc: std.mem.Allocator, mesh: *MyMeshData) !void {
         try append_oriented_triangle(
             alloc,
             mesh,
-            @cos(angle) * radius,
-            @sin(angle) * radius,
+            Math.cos(angle) * radius,
+            Math.sin(angle) * radius,
             size * 0.75,
             size,
             angle + std.math.pi * 0.5,
@@ -156,7 +156,7 @@ fn build_batch_b(alloc: std.mem.Allocator, mesh: *MyMeshData) !void {
             const x = -0.88 + fx * 1.76;
             const y = -0.67 + fy * 1.34;
             const size = 0.04 + @as(f32, @floatFromInt((idx + row) % 5)) * 0.008;
-            const angle = @as(f32, @floatFromInt(idx)) * 0.43 + @sin(fy * std.math.pi) * 0.35;
+            const angle = @as(f32, @floatFromInt(idx)) * 0.43 + Math.sin(fy * std.math.pi) * 0.35;
 
             try append_oriented_triangle(
                 alloc,
@@ -177,7 +177,7 @@ fn build_batch_b(alloc: std.mem.Allocator, mesh: *MyMeshData) !void {
     for (0..wave_count) |i| {
         const t = @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(wave_count - 1));
         const x = -0.94 + t * 1.88;
-        const y = 0.78 + @sin(t * std.math.pi * 6.0) * 0.095;
+        const y = 0.78 + Math.sin(t * std.math.pi * 6.0) * 0.095;
         const size = 0.035 + @as(f32, @floatFromInt(i % 3)) * 0.007;
         const angle = t * std.math.pi * 4.0;
 
@@ -282,7 +282,7 @@ pub const MyState = struct {
             // Rotate around the listener at varying distances.
             const angle = @as(f32, @floatFromInt(n)) * std.math.pi / 3.0;
             const dist = 1.0 + @as(f32, @floatFromInt(n % 5)) * 4.0;
-            const pos = Vec3.new(@cos(angle) * dist, 0, @sin(angle) * dist);
+            const pos = Vec3.new(Math.cos(angle) * dist, 0, Math.sin(angle) * dist);
 
             _ = Audio.play_buffer_at(self.grass_buffer, pos, &.{
                 .ref_distance = 1.0,
@@ -300,13 +300,13 @@ pub const MyState = struct {
         self.batch_a_transform.rot.z += 76.0 * dt;
         self.batch_b_transform.rot.z -= 18.0 * dt;
 
-        const batch_a_pulse = 1.0 + @sin(self.time * 1.8) * 0.06;
-        const batch_b_x = 1.0 + @cos(self.time * 0.9) * 0.035;
-        const batch_b_y = 1.0 + @sin(self.time * 1.1) * 0.035;
+        const batch_a_pulse = 1.0 + Math.sin(self.time * 1.8) * 0.06;
+        const batch_b_x = 1.0 + Math.cos(self.time * 0.9) * 0.035;
+        const batch_b_y = 1.0 + Math.sin(self.time * 1.1) * 0.035;
 
         self.batch_a_transform.scale = Vec3.new(batch_a_pulse, batch_a_pulse, 1.0);
         self.batch_b_transform.scale = Vec3.new(batch_b_x, batch_b_y, 1.0);
-        self.batch_b_transform.pos = Vec3.new(@sin(self.time * 0.7) * 0.075, @cos(self.time * 0.5) * 0.04, 0.0);
+        self.batch_b_transform.pos = Vec3.new(Math.sin(self.time * 0.7) * 0.075, Math.cos(self.time * 0.5) * 0.04, 0.0);
     }
 
     fn draw(ctx: *anyopaque, _: *ae.Engine, _: f32, _: *const Util.BudgetContext) anyerror!void {

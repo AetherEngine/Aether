@@ -2,6 +2,7 @@
 const std = @import("std");
 const input = @import("../input/input.zig");
 const layout = @import("layout.zig");
+const Math = @import("platform").math;
 const Adapter = @This();
 
 pub const Direction = enum { up, down, left, right };
@@ -69,7 +70,7 @@ pub fn poll(self: *Adapter, system: *input.InputSystem, actions: Actions, delta_
 /// Also useful for application-specific pointer sources and deterministic tests.
 /// Invalid/nonfinite timing is treated as zero; invalid scale falls back to 1.
 pub fn update(self: *Adapter, snapshot: Snapshot, delta_seconds: f32, logical_scale: f32) Frame {
-    const dt = if (std.math.isFinite(delta_seconds)) @max(0, delta_seconds) else 0;
+    const dt = if (std.math.isFinite(delta_seconds)) Math.max(0, delta_seconds) else 0;
     const scale = if (std.math.isFinite(logical_scale) and logical_scale > 0) logical_scale else 1;
     var frame: Frame = .{ .pointer_moved = snapshot.pointer_moved };
     if (snapshot.pointer_active) frame.pointer = .{ .x = coordinate(snapshot.pointer_x / scale), .y = coordinate(snapshot.pointer_y / scale) };
@@ -83,11 +84,11 @@ pub fn update(self: *Adapter, snapshot: Snapshot, delta_seconds: f32, logical_sc
                 continue;
             }
             var fired = query.pressed();
-            if (fired) self.remaining[i] = @max(0, self.options.repeat_delay) else {
+            if (fired) self.remaining[i] = Math.max(0, self.options.repeat_delay) else {
                 self.remaining[i] -= dt;
                 if (self.remaining[i] <= 0) {
                     fired = true;
-                    self.remaining[i] = @max(0.001, self.options.repeat_interval);
+                    self.remaining[i] = Math.max(0.001, self.options.repeat_interval);
                 }
             }
             if (fired and frame.direction == null) frame.direction = @fromBackingInt(@intCast(i));
@@ -102,13 +103,13 @@ pub fn update(self: *Adapter, snapshot: Snapshot, delta_seconds: f32, logical_sc
             else => unreachable,
         }
     }
-    if (std.math.isFinite(snapshot.wheel)) self.wheel_remainder = std.math.clamp(self.wheel_remainder + snapshot.wheel, -32767, 32767);
-    frame.wheel = @intFromFloat(@trunc(self.wheel_remainder));
+    if (std.math.isFinite(snapshot.wheel)) self.wheel_remainder = Math.clamp(self.wheel_remainder + snapshot.wheel, -32767, 32767);
+    frame.wheel = @intFromFloat(Math.trunc(self.wheel_remainder));
     self.wheel_remainder -= @floatFromInt(frame.wheel);
     self.opening = false;
     return frame;
 }
 fn coordinate(value: f32) i16 {
     if (!std.math.isFinite(value)) return 0;
-    return @intFromFloat(std.math.clamp(@floor(value), -32768, 32767));
+    return @intFromFloat(Math.clamp(Math.floor(value), -32768, 32767));
 }

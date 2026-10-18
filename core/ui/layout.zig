@@ -1,4 +1,4 @@
-const std = @import("std");
+const Math = @import("platform").math;
 
 pub const Anchor = enum(u8) {
     top_left,
@@ -34,9 +34,9 @@ pub const LogicalRect = struct {
 /// Empty intersections have zero extent; rectangles must have ordered edges.
 pub fn intersection(a: LogicalRect, optional_b: ?LogicalRect) LogicalRect {
     const b = optional_b orelse return a;
-    const x0 = @max(a.x0, b.x0);
-    const y0 = @max(a.y0, b.y0);
-    return .{ .x0 = x0, .y0 = y0, .x1 = @max(x0, @min(a.x1, b.x1)), .y1 = @max(y0, @min(a.y1, b.y1)) };
+    const x0 = Math.max(a.x0, b.x0);
+    const y0 = Math.max(a.y0, b.y0);
+    return .{ .x0 = x0, .y0 = y0, .x1 = Math.max(x0, Math.min(a.x1, b.x1)), .y1 = Math.max(y0, Math.min(a.y1, b.y1)) };
 }
 
 pub fn contains_rect(outer: LogicalRect, inner: LogicalRect) bool {
@@ -82,12 +82,12 @@ pub fn logical_to_snorm_x(x: i16, screen_w: u32, scale: u32) i16 {
     const s: i32 = @intCast(scale);
     const sw: i32 = @intCast(screen_w);
     const v = @divTrunc((2 * @as(i32, x) * s - sw) * 32767, sw);
-    return @intCast(std.math.clamp(v, -32767, 32767));
+    return @intCast(Math.clamp(v, -32767, 32767));
 }
 
 pub fn logical_to_snorm_y(y: i16, screen_h: u32, scale: u32) i16 {
     const s: i32 = @intCast(scale);
     const sh: i32 = @intCast(screen_h);
     const v = @divTrunc((sh - 2 * @as(i32, y) * s) * 32767, sh);
-    return @intCast(std.math.clamp(v, -32767, 32767));
+    return @intCast(Math.clamp(v, -32767, 32767));
 }

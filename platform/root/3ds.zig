@@ -12,7 +12,7 @@ const zitrus = @import("zitrus");
 const min_stack_size: u32 = 768 * 1024;
 
 pub const zitrus_options: zitrus.Options = .{
-    .stack_size = @max(min_stack_size, app.options.nintendo_3ds.stack_size),
+    .stack_size = platform.math.max(min_stack_size, app.options.nintendo_3ds.stack_size),
 };
 
 pub const std_options = app.options.std_options;

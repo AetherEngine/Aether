@@ -1,6 +1,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const FogState = @import("../graphics/render_state.zig").FogState;
+const math = @import("math");
 
 /// Each screen owns its table; command bindings are reset for every recording.
 pub const Cache = struct {
@@ -39,7 +40,7 @@ pub const Cache = struct {
         cache.enabled = fog.enabled;
         if (fog.enabled) {
             var color: [3]u8 = undefined;
-            for (&color, fog.color) |*out, value| out.* = @intFromFloat(std.math.clamp(value, 0, 1) * 255);
+            for (&color, fog.color) |*out, value| out.* = @intFromFloat(math.clamp(value, 0, 1) * 255);
             const table: [4]f32 = .{ fog.near, fog.far, fog.start, fog.end };
             changes.color = cache.color == null or !std.meta.eql(cache.color.?, color);
             changes.rebuild_table = cache.table == null or !std.meta.eql(cache.table.?, table);

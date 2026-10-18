@@ -8,13 +8,14 @@ const std = @import("std");
 const assert = std.debug.assert;
 const zitrus = @import("zitrus");
 const Util = @import("../util/util.zig");
-const Mat4 = @import("../math/math.zig").Mat4;
+const Mat4 = @import("math").Mat4;
 const Graphics = @import("../graphics/graphics.zig");
 const vertex = Graphics.vertex;
 const Mesh = Graphics.mesh;
 const Texture = Graphics.texture;
 const FogCache = @import("fog_state.zig").Cache;
 const gfx = @import("../gfx.zig");
+const math = @import("math");
 const basic_vert align(@alignOf(u32)) = @embedFile("aether_basic_vert").*;
 
 pub const mesh_source_mode = Mesh.SourceMode.borrowed_cpu;
@@ -349,7 +350,7 @@ const FogTableContext = struct {
     pub fn map(raw: ?*anyopaque, x: f32) callconv(.c) f32 {
         const ctx: *const FogTableContext = @ptrCast(@alignCast(raw));
         const view_depth = ctx.near + x * (ctx.far - ctx.near);
-        return std.math.clamp((ctx.end - view_depth) / (ctx.end - ctx.start), 0.0, 1.0);
+        return math.clamp((ctx.end - view_depth) / (ctx.end - ctx.start), 0.0, 1.0);
     }
 };
 
@@ -466,8 +467,8 @@ pub fn end_frame() void {
         };
         bottom_presented = true;
     }
-    top_frame_wait = @max(top_frame_wait, top_wait);
-    if (update_bottom) bottom_frame_wait = @max(bottom_frame_wait, bottom_wait);
+    top_frame_wait = math.max(top_frame_wait, top_wait);
+    if (update_bottom) bottom_frame_wait = math.max(bottom_frame_wait, bottom_wait);
 }
 
 pub fn clear_depth() void {
@@ -1476,7 +1477,7 @@ fn tiled_pixel_offset(width: u32, x: u32, y: u32) usize {
 }
 
 fn float_to_u8(v: f32) u8 {
-    return @intFromFloat(std.math.clamp(v, 0.0, 1.0) * 255.0);
+    return @intFromFloat(math.clamp(v, 0.0, 1.0) * 255.0);
 }
 
 fn unorm8_scale() f32 {

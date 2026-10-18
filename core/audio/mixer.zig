@@ -4,6 +4,7 @@ const Util = @import("../util/util.zig");
 const stream_mod = @import("stream.zig");
 const resources = @import("../resources/source.zig");
 const wav = @import("wav.zig");
+const Math = @import("platform").math;
 
 pub const SoundHandleTag = enum {};
 pub const SoundHandle = Util.HandleType(SoundHandleTag);
@@ -258,7 +259,7 @@ pub fn MixerType(comptime Backend: type) type {
         pub fn update() void {
             Backend.update();
 
-            const max_slots: usize = @min(Backend.max_voices(), slot_capacity);
+            const max_slots: usize = Math.min(Backend.max_voices(), slot_capacity);
 
             for (0..max_voices) |i| {
                 if (voices[i] != null) {
@@ -296,7 +297,7 @@ pub fn MixerType(comptime Backend: type) type {
                 }
             }
 
-            for (@min(count, max_slots)..count) |rank| {
+            for (Math.min(count, max_slots)..count) |rank| {
                 const vi = order[rank];
                 if (voices[vi].?.slot) |s| {
                     Backend.stop_slot(s);
@@ -305,14 +306,14 @@ pub fn MixerType(comptime Backend: type) type {
             }
 
             var used: [slot_capacity]bool = @splat(false);
-            for (0..@min(count, max_slots)) |rank| {
+            for (0..Math.min(count, max_slots)) |rank| {
                 const vi = order[rank];
                 if (voices[vi].?.slot) |s| {
                     used[s] = true;
                 }
             }
 
-            for (0..@min(count, max_slots)) |rank| {
+            for (0..Math.min(count, max_slots)) |rank| {
                 const vi = order[rank];
                 if (voices[vi].?.slot == null) {
                     if (scores[vi] <= 0) continue;
@@ -460,7 +461,7 @@ pub fn MixerType(comptime Backend: type) type {
 
         /// Inverse-distance clamped attenuation.
         fn compute_attenuation(dist: f32, ref_dist: f32, max_dist: f32) f32 {
-            const d = std.math.clamp(dist, ref_dist, max_dist);
+            const d = Math.clamp(dist, ref_dist, max_dist);
             if (d <= ref_dist) return 1.0;
             return ref_dist / (ref_dist + (d - ref_dist));
         }
@@ -482,7 +483,7 @@ pub fn MixerType(comptime Backend: type) type {
             if (dist > 0.001) {
                 const right = Vec3.cross(listener_fwd, listener_up).normalize();
                 const dir = to_source.scale(1.0 / dist);
-                pan = std.math.clamp(Vec3.dot(dir, right), -1.0, 1.0);
+                pan = Math.clamp(Vec3.dot(dir, right), -1.0, 1.0);
             }
 
             return .{ .gain = gain, .pan = pan };

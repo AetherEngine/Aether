@@ -12,6 +12,7 @@
 //! only guaranteed to be block_size-aligned.
 
 const std = @import("std");
+const math = @import("math");
 const assert = std.debug.assert;
 
 /// All returned user-data pointers satisfy at least this alignment.
@@ -146,7 +147,7 @@ pub const PoolAlloc = struct {
             const bit: u5 = @intCast(block & word_mask);
             if (self.l0[word] & (@as(u32, 1) << bit) != 0) {
                 current += 1;
-                largest = @max(largest, current);
+                largest = math.max(largest, current);
             } else {
                 current = 0;
             }
@@ -161,7 +162,7 @@ pub const PoolAlloc = struct {
         while (remaining > 0) {
             const wi = blk / word_bits;
             const bit: u5 = @intCast(blk & word_mask);
-            const bits_in_word = @min(remaining, @as(u32, word_bits) - bit);
+            const bits_in_word = math.min(remaining, @as(u32, word_bits) - bit);
 
             const mask: u32 = if (bits_in_word == word_bits)
                 0xFFFF_FFFF
@@ -187,7 +188,7 @@ pub const PoolAlloc = struct {
         while (remaining > 0) {
             const wi = blk / word_bits;
             const bit: u5 = @intCast(blk & word_mask);
-            const bits_in_word = @min(remaining, @as(u32, word_bits) - bit);
+            const bits_in_word = math.min(remaining, @as(u32, word_bits) - bit);
 
             const mask: u32 = if (bits_in_word == word_bits)
                 0xFFFF_FFFF
@@ -211,7 +212,7 @@ pub const PoolAlloc = struct {
         while (remaining > 0) {
             const wi = blk / word_bits;
             const bit: u5 = @intCast(blk & word_mask);
-            const bits_in_word = @min(remaining, @as(u32, word_bits) - bit);
+            const bits_in_word = math.min(remaining, @as(u32, word_bits) - bit);
 
             const mask: u32 = if (bits_in_word == word_bits)
                 0xFFFF_FFFF
@@ -348,7 +349,7 @@ pub const PoolAlloc = struct {
                     const zeros: u32 = @ctz(remaining);
                     bit_off += zeros;
                     if (bit_off >= word_bits) break;
-                    remaining >>= @intCast(@min(zeros, 31));
+                    remaining >>= @intCast(math.min(zeros, 31));
                     if (zeros > 0 and zeros < 32) {
                         // We shifted past allocated blocks.
                     } else if (zeros >= 32) {

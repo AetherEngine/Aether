@@ -3,7 +3,7 @@ const assert = std.debug.assert;
 
 const gl = @import("gl");
 const gl_constants = @import("constants.zig");
-const Mat4 = @import("../../math/math.zig").Mat4;
+const Mat4 = @import("math").Mat4;
 const Util = @import("../../util/util.zig");
 
 pub const ShaderState = struct {

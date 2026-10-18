@@ -10,6 +10,7 @@ const input_api = @import("../input/input.zig");
 const InputAdapter = @import("InputAdapter.zig");
 const Context = @This();
 const WidgetStyle = @import("WidgetStyle.zig");
+const Math = @import("platform").math;
 pub const WidgetId = u64;
 pub const Axis = enum { horizontal, vertical };
 pub const Size = union(enum) { fixed: i16, content, fill };
@@ -177,7 +178,7 @@ pub fn begin(state: *State, draw: *DrawList, options: Options) Error!Context {
         }
         if (options.deferred_hit_test) if (self.frame.pointer) |pointer| for (state.scrolls[0..state.scroll_count]) |*scroll| {
             if (scroll.viewport.contains(pointer.x, pointer.y)) {
-                scroll.offset = @intCast(std.math.clamp(@as(i32, scroll.offset) - @as(i32, self.frame.wheel) * scroll.wheel_step, 0, @max(0, @as(i32, scroll.content_height) - scroll.viewport.height())));
+                scroll.offset = @intCast(Math.clamp(@as(i32, scroll.offset) - @as(i32, self.frame.wheel) * scroll.wheel_step, 0, Math.max(0, @as(i32, scroll.content_height) - scroll.viewport.height())));
                 self.frame.wheel = 0;
             }
         };
@@ -226,8 +227,8 @@ pub fn next(self: *Context, box: Box, intrinsic: layout.Point) Error!layout.Logi
     const scope = &self.state.scopes[self.state.depth - 1];
     const left: i16 = if (scope.axis == .horizontal) scope.cursor else 0;
     const top: i16 = if (scope.axis == .vertical) scope.cursor else 0;
-    const w = try dimension(box.width, intrinsic.x, @max(0, scope.bounds.width() - left));
-    const h = try dimension(box.height, intrinsic.y, @max(0, scope.bounds.height() - top));
+    const w = try dimension(box.width, intrinsic.x, Math.max(0, scope.bounds.width() - left));
+    const h = try dimension(box.height, intrinsic.y, Math.max(0, scope.bounds.height() - top));
     const x = try add(scope.bounds.x0, left);
     const y = try add(scope.bounds.y0, top);
     const rect: layout.LogicalRect = .{ .x0 = x, .y0 = y, .x1 = try add(x, w), .y1 = try add(y, h) };
@@ -271,13 +272,13 @@ pub fn scroll_list(self: *Context, id: WidgetId, viewport: layout.LogicalRect, c
     scroll.viewport = viewport;
     scroll.content_height = content_height;
     scroll.wheel_step = wheel_step;
-    const maximum = @max(0, @as(i32, content_height) - viewport.height());
+    const maximum = Math.max(0, @as(i32, content_height) - viewport.height());
     var offset: i32 = scroll.offset;
     if (self.frame.pointer) |pointer| if (viewport.contains(pointer.x, pointer.y)) {
         offset -= @as(i32, self.frame.wheel) * wheel_step;
         self.frame.wheel = 0;
     };
-    scroll.offset = @intCast(std.math.clamp(offset, 0, maximum));
+    scroll.offset = @intCast(Math.clamp(offset, 0, maximum));
     var bounds = viewport;
     bounds.y0 = try add(viewport.y0, -scroll.offset);
     bounds.y1 = try add(bounds.y0, content_height);
@@ -388,7 +389,7 @@ pub fn register_scroll(self: *Context, id: WidgetId, viewport: layout.LogicalRec
     for (self.state.scrolls[0..self.state.scroll_count]) |*scroll| if (scroll.id == id) {
         scroll.viewport = viewport;
         scroll.content_height = content_height;
-        scroll.offset = @min(scroll.offset, @max(0, content_height - viewport.height()));
+        scroll.offset = Math.min(scroll.offset, Math.max(0, content_height - viewport.height()));
         return;
     };
     if (self.state.scroll_count == self.state.scrolls.len) return error.ScrollCapacity;
@@ -425,18 +426,18 @@ pub fn slider(self: *Context, id: WidgetId, rect: layout.LogicalRect, value: *f3
     if (!std.math.isFinite(min) or !std.math.isFinite(max) or !std.math.isFinite(step) or !std.math.isFinite(value.*) or min >= max or step <= 0 or rect.x1 <= rect.x0) return error.InvalidValue;
     const previous = value.*;
     const interaction = try self.interact(id, rect, .slider, enabled);
-    value.* = std.math.clamp(value.*, min, max);
+    value.* = Math.clamp(value.*, min, max);
     const hit = self.hit_bounds(id, rect);
     if (!self.options.replay and enabled and self.state.captured == id and self.state.captured_via_click) if (self.frame.pointer) |pointer| {
-        value.* = min + (max - min) * std.math.clamp(@as(f32, @floatFromInt(@as(i32, pointer.x) - hit.x0)) / @as(f32, @floatFromInt(hit.width())), 0, 1);
+        value.* = min + (max - min) * Math.clamp(@as(f32, @floatFromInt(@as(i32, pointer.x) - hit.x0)) / @as(f32, @floatFromInt(hit.width())), 0, 1);
     };
     if (enabled and interaction.focused and (!self.options.slider_capture or self.state.captured == id)) if (self.frame.direction) |direction| {
-        if (direction == .left) value.* = @max(min, value.* - step);
-        if (direction == .right) value.* = @min(max, value.* + step);
+        if (direction == .left) value.* = Math.max(min, value.* - step);
+        if (direction == .right) value.* = Math.min(max, value.* + step);
     };
     try self.background(id, rect, enabled, interaction, if (self.style.slider) |theme| theme.track else null);
     if (!self.options.paint) return previous != value.*;
-    const knob_width = @min(rect.width(), @max(1, self.style.knob_width));
+    const knob_width = Math.min(rect.width(), Math.max(1, self.style.knob_width));
     const x: i16 = @intCast(@as(i32, rect.x0) + @as(i32, @intFromFloat((value.* - min) / (max - min) * @as(f32, @floatFromInt(rect.width() - knob_width)))));
     const knob: layout.LogicalRect = .{ .x0 = x, .y0 = rect.y0, .x1 = x + knob_width, .y1 = rect.y1 };
     if (self.style.slider) |theme| try theme.knob.paint(enabled, interaction.focused or interaction.hovered, self.state.captured == id).draw(self.draw, knob) else try self.draw.add_rect(knob, self.style.foreground, 0);
@@ -467,7 +468,7 @@ pub fn text_field(self: *Context, id: WidgetId, rect: layout.LogicalRect, buffer
                 .active, .suspended => {
                     display_text = session.text();
                     if (self.options.live_text and !self.options.replay) {
-                        const take = @min(buffer.len, display_text.len);
+                        const take = Math.min(buffer.len, display_text.len);
                         result.changed = !std.mem.eql(u8, buffer[0..length.*], display_text[0..take]);
                         @memcpy(buffer[0..take], display_text[0..take]);
                         length.* = take;
@@ -475,7 +476,7 @@ pub fn text_field(self: *Context, id: WidgetId, rect: layout.LogicalRect, buffer
                     result.editing = true;
                 },
                 .submitted => {
-                    length.* = @min(buffer.len, session.text().len);
+                    length.* = Math.min(buffer.len, session.text().len);
                     @memcpy(buffer[0..length.*], session.text()[0..length.*]);
                     display_text = buffer[0..length.*];
                     result.submitted = true;
@@ -499,7 +500,7 @@ pub fn selectable_grid(self: *Context, id: WidgetId, rect: layout.LogicalRect, c
     if (columns == 0 or rect.width() <= 0 or rect.height() <= 0) return error.InvalidValue;
     const interaction = try self.interact(id, rect, .grid, enabled and count > 0);
     if (count == 0) return false;
-    selected.* = @min(selected.*, count - 1);
+    selected.* = Math.min(selected.*, count - 1);
     const rows = std.math.divCeil(usize, count, columns) catch return error.InvalidValue;
     if (rows > 32767 or columns > 32767) return error.InvalidValue;
     const previous_selected = selected.*;
@@ -523,7 +524,7 @@ pub fn selectable_grid(self: *Context, id: WidgetId, rect: layout.LogicalRect, c
         const pointer = self.frame.pointer.?;
         const col: usize = @intCast(@divTrunc((@as(i32, pointer.x) - hit.x0) * @as(i32, @intCast(columns)), hit.width()));
         const row: usize = @intCast(@divTrunc((@as(i32, pointer.y) - hit.y0) * @as(i32, @intCast(rows)), hit.height()));
-        selected.* = @min(row * columns + col, count - 1);
+        selected.* = Math.min(row * columns + col, count - 1);
     }
     for (0..count) |i| {
         const col: i32 = @intCast(i % columns);
@@ -571,7 +572,7 @@ fn navigate(self: *Context, direction: InputAdapter.Direction, force: bool) void
         self.state.focused = target.id;
         if (target.scroll_id) |scroll_id| for (self.state.scrolls[0..self.state.scroll_count]) |*scroll| if (scroll.id == scroll_id) {
             const adjustment: i32 = if (target.bounds.y0 < scroll.viewport.y0) @as(i32, target.bounds.y0) - scroll.viewport.y0 else if (target.bounds.y1 > scroll.viewport.y1) @as(i32, target.bounds.y1) - scroll.viewport.y1 else 0;
-            scroll.offset = @intCast(std.math.clamp(@as(i32, scroll.offset) + adjustment, 0, @max(0, @as(i32, scroll.content_height) - scroll.viewport.height())));
+            scroll.offset = @intCast(Math.clamp(@as(i32, scroll.offset) + adjustment, 0, Math.max(0, @as(i32, scroll.content_height) - scroll.viewport.height())));
             break;
         };
     }

@@ -6,7 +6,7 @@
 
 const std = @import("std");
 const Util = @import("../util/util.zig");
-const Mat4 = @import("../math/math.zig").Mat4;
+const Mat4 = @import("math").Mat4;
 const Graphics = @import("../graphics/graphics.zig");
 const vertex = Graphics.vertex;
 const Mesh = Graphics.mesh;
@@ -19,6 +19,7 @@ const dk = @import("deko.zig");
 const Context = @import("context.zig");
 const Swapchain = @import("swapchain.zig");
 const GarbageCollector = @import("garbage_collector.zig");
+const math = @import("math");
 
 pub const mesh_source_mode = Mesh.SourceMode.uploaded_copy;
 
@@ -776,7 +777,7 @@ fn upload_texture_pixels(handle: Texture.Handle, tex: *TextureData, data: []cons
     dk.dkImageDescriptorInitialize(&descriptor, &tex.view, false, false);
     const texture_index = texture_slots.raw_index(handle) orelse return error.OutOfTextures;
     image_descriptors[texture_index] = descriptor;
-    image_descriptor_count = @max(image_descriptor_count, @as(u32, @intCast(texture_index + 1)));
+    image_descriptor_count = math.max(image_descriptor_count, @as(u32, @intCast(texture_index + 1)));
     image_descriptors_dirty = true;
     dk.dkCmdBufBarrier(upload_command_buffer, dk.BarrierFull, dk.InvalidateImage);
     submit_upload_commands("texture upload");
@@ -954,7 +955,7 @@ fn recompute_image_descriptor_count() void {
     var count: u32 = 1;
     for (texture_slots.slots, 0..) |slot, index| {
         if (slot) |tex| {
-            if (tex.alive) count = @max(count, @as(u32, @intCast(index + 1)));
+            if (tex.alive) count = math.max(count, @as(u32, @intCast(index + 1)));
         }
     }
     image_descriptor_count = count;
@@ -1019,8 +1020,8 @@ fn init_layout(data: *PipelineData, layout: vertex.VertexLayout) !void {
 
         const loc: usize = attr.location;
         data.attribs[loc] = vtx_attrib(attr);
-        max_location = @max(max_location, attr.location + 1);
-        max_binding = @max(max_binding, attr.binding + 1);
+        max_location = math.max(max_location, attr.location + 1);
+        max_binding = math.max(max_binding, attr.binding + 1);
     }
 
     for (data.vtx_buffers[0..max_binding]) |*buf| {
@@ -1028,7 +1029,7 @@ fn init_layout(data: *PipelineData, layout: vertex.VertexLayout) !void {
     }
 
     data.attrib_count = max_location;
-    data.vtx_buffer_count = @max(max_binding, 1);
+    data.vtx_buffer_count = math.max(max_binding, 1);
 }
 
 fn vtx_attrib(attr: vertex.Attribute) dk.DkVtxAttribState {

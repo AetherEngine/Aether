@@ -3,6 +3,7 @@
 //! is the real-time mixer thread.
 
 const std = @import("std");
+const math = @import("math");
 const assert = std.debug.assert;
 
 pub const ByteFifo = struct {
@@ -58,7 +59,7 @@ pub const ByteFifo = struct {
         const used = write_pos -% read_pos;
         assert(used <= self.bytes.len);
 
-        const n = @min(src.len, self.bytes.len - used);
+        const n = math.min(src.len, self.bytes.len - used);
         copy_in(self.bytes, write_pos % self.bytes.len, src[0..n]);
         self.write_count.store(write_pos +% n, .release);
         return n;
@@ -72,7 +73,7 @@ pub const ByteFifo = struct {
         const available = write_pos -% read_pos;
         assert(available <= self.bytes.len);
 
-        const n = @min(dst.len, available);
+        const n = math.min(dst.len, available);
         copy_out(dst[0..n], self.bytes, read_pos % self.bytes.len);
         self.read_count.store(read_pos +% n, .release);
         return n;
@@ -81,14 +82,14 @@ pub const ByteFifo = struct {
 
 fn copy_in(dst: []u8, start: usize, src: []const u8) void {
     if (src.len == 0) return;
-    const first_len = @min(src.len, dst.len - start);
+    const first_len = math.min(src.len, dst.len - start);
     @memcpy(dst[start..][0..first_len], src[0..first_len]);
     if (first_len < src.len) @memcpy(dst[0 .. src.len - first_len], src[first_len..]);
 }
 
 fn copy_out(dst: []u8, src: []const u8, start: usize) void {
     if (dst.len == 0) return;
-    const first_len = @min(dst.len, src.len - start);
+    const first_len = math.min(dst.len, src.len - start);
     @memcpy(dst[0..first_len], src[start..][0..first_len]);
     if (first_len < dst.len) @memcpy(dst[first_len..], src[0 .. dst.len - first_len]);
 }

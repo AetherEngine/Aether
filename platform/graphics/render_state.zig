@@ -1,4 +1,4 @@
-const Mat4 = @import("../math/math.zig").Mat4;
+const Mat4 = @import("math").Mat4;
 const Texture = @import("texture.zig");
 
 pub const BlendMode = enum {

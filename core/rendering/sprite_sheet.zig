@@ -1,6 +1,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const UvRegion = @import("billboard_batcher.zig").UvRegion;
+const Math = @import("platform").math;
 const SpriteSheet = @This();
 
 const snorm_uv_max: u32 = 32767;
@@ -52,8 +53,8 @@ pub fn point(self: SpriteSheet, column: u16, row: u16, u: f32, v: f32) [2]i16 {
     const column_f: f32 = @floatFromInt(column);
     const row_f: f32 = @floatFromInt(row);
 
-    const x = column_f * w + std.math.clamp(u * w, edge_inset, w - edge_inset);
-    const y = row_f * h + std.math.clamp(v * h, edge_inset, h - edge_inset);
+    const x = column_f * w + Math.clamp(u * w, edge_inset, w - edge_inset);
+    const y = row_f * h + Math.clamp(v * h, edge_inset, h - edge_inset);
 
     return .{
         to_uv_f(x, self.width),
@@ -88,5 +89,5 @@ fn to_uv(pixel: u32, size: u16) i16 {
 fn to_uv_f(pixel: f32, size: u16) i16 {
     const max: f32 = @floatFromInt(snorm_uv_max);
     const size_f: f32 = @floatFromInt(size);
-    return @intFromFloat(@round(pixel / size_f) * max);
+    return @intFromFloat(Math.round(pixel / size_f) * max);
 }

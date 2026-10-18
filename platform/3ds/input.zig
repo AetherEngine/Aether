@@ -4,6 +4,7 @@ const app_3ds = @import("app.zig");
 const input_api = @import("../input.zig");
 const audio = @import("../audio.zig");
 const gfx = @import("../gfx.zig");
+const math = @import("math");
 
 const horizon = zitrus.horizon;
 const Hid = horizon.services.Hid;
@@ -280,12 +281,12 @@ fn deliver_axis(input: input_api.EventSink, axis: input_api.Axis, value: f32) vo
 
 fn normalize_stick(raw: i16) f32 {
     const value = @as(f32, @floatFromInt(raw)) / stick_max;
-    const clamped = std.math.clamp(value, -1.0, 1.0);
+    const clamped = math.clamp(value, -1.0, 1.0);
     return if (@abs(clamped) < stick_deadzone) 0.0 else clamped;
 }
 
 fn copy_initial_text_for_osk(request: *const input_api.TextInputRequest, dst: []u8) []const u8 {
-    const limit = @min(osk_text_limit(request.max_bytes), dst.len - 1);
+    const limit = math.min(osk_text_limit(request.max_bytes), dst.len - 1);
     const text = valid_utf8_prefix(request.initial, limit);
     @memcpy(dst[0..text.len], text);
     return dst[0..text.len];
@@ -296,16 +297,16 @@ fn osk_max_length(limit: ?usize) u16 {
 }
 
 fn osk_text_limit(limit: ?usize) usize {
-    return @min(limit orelse default_osk_bytes, max_osk_text_units - 1);
+    return math.min(limit orelse default_osk_bytes, max_osk_text_units - 1);
 }
 
 fn clamp_utf8_to_max_bytes(text: []const u8, limit: ?usize) []const u8 {
     const max = limit orelse return text;
-    return valid_utf8_prefix(text, @min(max, text.len));
+    return valid_utf8_prefix(text, math.min(max, text.len));
 }
 
 fn valid_utf8_prefix(text: []const u8, limit: usize) []const u8 {
-    var n = @min(text.len, limit);
+    var n = math.min(text.len, limit);
     while (true) {
         const candidate = text[0..n];
         if (std.unicode.utf8ValidateSlice(candidate)) return candidate;

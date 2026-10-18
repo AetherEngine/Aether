@@ -2,7 +2,7 @@ const std = @import("std");
 const sdl3 = @import("sdl3");
 const gl = @import("gl");
 const gl_constants = @import("constants.zig");
-const Mat4 = @import("../../math/math.zig").Mat4;
+const Mat4 = @import("math").Mat4;
 const Util = @import("../../util/util.zig");
 
 const shader = @import("shader.zig");
