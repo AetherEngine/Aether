@@ -69,7 +69,6 @@
         "web",
         "LICENSE",
         "README.md",
-        "ARCHITECTURE.md",
         "tiger_lint.json",
     },
 }
