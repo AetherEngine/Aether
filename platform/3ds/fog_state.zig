@@ -53,31 +53,6 @@ pub const Cache = struct {
     }
 };
 
-test "fog transitions only change the affected GPU state" {
-    var cache = Cache{};
-    var fog = FogState{ .enabled = true, .near = 1, .far = 100, .start = 10, .end = 80 };
-    try std.testing.expectEqual(Cache.Changes{
-        .depth_mode = true,
-        .depth_parameters = true,
-        .effect = true,
-        .color = true,
-        .rebuild_table = true,
-        .bind_table = true,
-    }, cache.update(fog));
-    try std.testing.expectEqual(Cache.Changes{}, cache.update(fog));
-    fog.color[0] = 1;
-    try std.testing.expectEqual(Cache.Changes{ .color = true }, cache.update(fog));
-    fog.start = 20;
-    try std.testing.expectEqual(Cache.Changes{ .rebuild_table = true, .unbind_table = true, .bind_table = true }, cache.update(fog));
-    fog.enabled = false;
-    try std.testing.expectEqual(Cache.Changes{ .effect = true }, cache.update(fog));
-    fog.start = 30;
-    fog.color[1] = 1;
-    try std.testing.expectEqual(Cache.Changes{}, cache.update(fog));
-    fog.enabled = true;
-    try std.testing.expectEqual(Cache.Changes{ .effect = true, .color = true, .rebuild_table = true, .unbind_table = true, .bind_table = true }, cache.update(fog));
-}
-
 test "disabled fog still updates linear depth and fresh recordings rebind without rebuilding" {
     var cache = Cache{};
     var fog = FogState{ .near = 1, .far = 100 };

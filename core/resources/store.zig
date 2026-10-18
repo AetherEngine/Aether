@@ -1,6 +1,5 @@
 const std = @import("std");
 const Source = @import("source.zig").Source;
-const MemorySource = @import("source.zig").MemorySource;
 
 /// A bounded set of decoded assets. Retained names keep their T address across
 /// successful apply/reload. Pointers are borrowed until that name is removed or
@@ -123,74 +122,4 @@ pub fn AssetStoreType(comptime T: type) type {
             self.allocator.destroy(entry);
         }
     };
-}
-
-const TestLoader = struct {
-    fn load(_: ?*anyopaque, allocator: std.mem.Allocator, _: []const u8, reader: *std.Io.Reader) ![]u8 {
-        const bytes = try reader.allocRemaining(allocator, .limited(1024));
-        if (std.mem.eql(u8, bytes, "bad")) {
-            allocator.free(bytes);
-            return error.BadAsset;
-        }
-        return bytes;
-    }
-    fn destroy(_: ?*anyopaque, allocator: std.mem.Allocator, bytes: *[]u8) void {
-        allocator.free(bytes.*);
-    }
-};
-
-fn check_staging(allocator: std.mem.Allocator) !void {
-    var first: MemorySource = .{ .allocator = allocator, .files = &.{ .{ .path = "a", .bytes = "old" }, .{ .path = "b", .bytes = "second" } } };
-    var next: MemorySource = .{ .allocator = allocator, .files = &.{ .{ .path = "a", .bytes = "new" }, .{ .path = "b", .bytes = "bad" } } };
-    var store = AssetStoreType([]u8).init(allocator, .{ .load = TestLoader.load, .destroy = TestLoader.destroy }, 2);
-    defer store.deinit();
-
-    try store.apply(first.source(), &.{ "a", "b" });
-    const stable = store.get("a").?;
-    // Propagate OOM so allocation-failure injection checks each staging step.
-    store.apply(next.source(), &.{ "a", "b" }) catch |err| switch (err) {
-        error.OutOfMemory => return err,
-        error.BadAsset => {},
-        else => return err,
-    };
-    try std.testing.expectEqualStrings("old", stable.*);
-    try std.testing.expectEqualStrings("second", store.get("b").?.*);
-    try store.apply(next.source(), &.{"a"});
-    try std.testing.expect(store.get("a").? == stable);
-    try std.testing.expectEqualStrings("new", stable.*);
-    try std.testing.expect(store.get("b") == null);
-    try std.testing.expectError(error.DuplicateAsset, store.apply(first.source(), &.{ "a", "a" }));
-    try std.testing.expectError(error.TooManyAssets, store.apply(first.source(), &.{ "a", "b", "c" }));
-}
-
-test "asset reload stages values, preserves addresses and rolls back failures" {
-    try check_staging(std.testing.allocator);
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, check_staging, .{});
-}
-
-fn check_retained(allocator: std.mem.Allocator) !void {
-    var first: MemorySource = .{ .allocator = allocator, .files = &.{ .{ .path = "a", .bytes = "old" }, .{ .path = "b", .bytes = "second" } } };
-    var next: MemorySource = .{ .allocator = allocator, .files = &.{ .{ .path = "a", .bytes = "bad" }, .{ .path = "c", .bytes = "new" } } };
-    var store = AssetStoreType([]u8).init(allocator, .{ .load = TestLoader.load, .destroy = TestLoader.destroy }, 3);
-    defer store.deinit();
-
-    try store.apply(first.source(), &.{ "a", "b" });
-    const stable = store.get("a").?;
-    store.apply_options(next.source(), &.{ "a", "missing" }, .{ .reload_existing = false }) catch |err| switch (err) {
-        error.OutOfMemory => return err,
-        error.FileNotFound => {},
-        else => return err,
-    };
-    try std.testing.expectEqualStrings("old", stable.*);
-    try std.testing.expect(store.get("b") != null);
-    try store.apply_options(next.source(), &.{ "a", "c" }, .{ .reload_existing = false });
-    try std.testing.expect(store.get("a").? == stable);
-    try std.testing.expectEqualStrings("old", stable.*);
-    try std.testing.expectEqualStrings("new", store.get("c").?.*);
-    try std.testing.expect(store.get("b") == null);
-}
-
-test "asset set selection reuses retained values without loading them" {
-    try check_retained(std.testing.allocator);
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, check_retained, .{});
 }

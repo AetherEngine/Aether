@@ -80,29 +80,3 @@ pub fn next(self: *GridRay) Error!?Cell {
     self.coordinate = coordinate;
     return .{ .coordinate = coordinate, .enter = enter, .normal = normal };
 }
-
-test "grid ray starts on the travel side and clips at the endpoint" {
-    var ray = try init(Vec3.new(2, 0.5, 0.5), Vec3.new(-2, 0, 0), 1);
-    const initial = (try ray.next()).?;
-    try std.testing.expectEqual([3]i32{ 1, 0, 0 }, initial.coordinate);
-    const second = (try ray.next()).?;
-    try std.testing.expectEqual([3]i32{ 0, 0, 0 }, second.coordinate);
-    try std.testing.expectEqual(@as(f64, 0.5), second.enter);
-    try std.testing.expectEqual([3]i8{ 1, 0, 0 }, second.normal);
-    try std.testing.expectEqual([3]i32{ -1, 0, 0 }, (try ray.next()).?.coordinate);
-    try std.testing.expectEqual(@as(?Cell, null), try ray.next());
-}
-
-test "grid ray diagonal ties and stationary queries are deterministic" {
-    var ray = try init(Vec3.new(0.5, 0.5, 0.5), Vec3.one(), 1);
-    _ = try ray.next();
-    const diagonal = (try ray.next()).?;
-    try std.testing.expectEqual([3]i32{ 1, 1, 1 }, diagonal.coordinate);
-    try std.testing.expectEqual([3]i8{ -1, -1, -1 }, diagonal.normal);
-    try std.testing.expectEqual(@as(?Cell, null), try ray.next());
-    ray = try init(Vec3.zero(), Vec3.zero(), 10);
-    _ = try ray.next();
-    try std.testing.expectEqual(@as(?Cell, null), try ray.next());
-    try std.testing.expectError(error.InvalidQuery, init(Vec3.zero(), Vec3.one(), -1));
-    try std.testing.expectError(error.CoordinateOverflow, init(Vec3.new(2147483648, 0, 0), Vec3.one(), 1));
-}

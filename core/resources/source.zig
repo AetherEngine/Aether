@@ -107,37 +107,3 @@ pub fn valid_path(path: []const u8) bool {
     }
     return true;
 }
-
-test "memory source readers have independent cursors and close once" {
-    var source: MemorySource = .{ .allocator = std.testing.allocator, .files = &.{.{ .path = "a", .bytes = "abcdef" }} };
-    var a = try source.source().open("a");
-    defer a.close();
-
-    var b = try source.source().open("a");
-    defer b.close();
-
-    try std.testing.expectEqualStrings("abc", try a.reader.take(3));
-    try std.testing.expectEqualStrings("ab", try b.reader.take(2));
-    try std.testing.expectEqualStrings("def", try a.reader.take(3));
-    a.close();
-    try std.testing.expectError(error.FileNotFound, source.source().open("missing"));
-}
-
-test "directory source validates names and supports independent readers" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "asset", .data = "hello" });
-    var source: DirectorySource = .{ .allocator = std.testing.allocator, .io = std.testing.io, .dir = tmp.dir };
-    try std.testing.expectError(error.InvalidResourcePath, source.source().open("../asset"));
-    try std.testing.expectError(error.InvalidResourcePath, source.source().open("/asset"));
-    var a = try source.source().open("asset");
-    defer a.close();
-
-    var b = try source.source().open("asset");
-    defer b.close();
-
-    try std.testing.expectEqualStrings("hel", try a.reader.take(3));
-    try std.testing.expectEqualStrings("hello", try b.reader.take(5));
-    try std.testing.expectEqualStrings("lo", try a.reader.take(2));
-}

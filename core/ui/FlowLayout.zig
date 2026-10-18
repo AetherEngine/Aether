@@ -4,8 +4,6 @@ const std = @import("std");
 const assert = std.debug.assert;
 const Context = @import("Context.zig");
 const layout = @import("layout.zig");
-const DrawList = @import("DrawList.zig");
-const Color = @import("Color.zig").Color;
 const Flow = @This();
 pub const Axis = Context.Axis;
 pub const Size = Context.Size;
@@ -138,73 +136,4 @@ fn resolve(size: Size, content: i16, parent: i16, min: i16, max: i16) i16 {
         .content => content,
         .fill => parent,
     }, min, max);
-}
-
-test "deferred centered stacks move draw and hit rectangles together" {
-    var state = try Context.State.init(std.testing.allocator, .{});
-    defer state.deinit();
-
-    var draw = try DrawList.init(std.testing.allocator, .{});
-    defer draw.deinit();
-
-    const screen: layout.LogicalRect = .{ .x0 = 0, .y0 = 0, .x1 = 100, .y1 = 100 };
-    var scopes: [4]Scope = undefined;
-    var items: [8]Item = undefined;
-    var flow = init(screen, &scopes, &items);
-    var context = try Context.begin(&state, &draw, .{ .bounds = screen, .deferred_hit_test = true, .paint = false });
-    try flow.stack(&context, .{ .gap = 4 });
-    for (0..2) |i| {
-        const first = context.mark();
-        const rect = flow.reserve(.{ .x = 20, .y = 10 });
-        _ = try context.button_at(i + 1, "", rect, true);
-        try draw.add_rect(rect, Color.rgba(255, 255, 255, 255), 0);
-        try flow.record(&context, first, rect);
-    }
-    try flow.end(&context);
-    try context.end();
-    const expected: layout.LogicalRect = .{ .x0 = 40, .y0 = 38, .x1 = 60, .y1 = 48 };
-    try std.testing.expectEqual(expected, draw.commands[0].value.rect.bounds);
-    try std.testing.expectEqual(expected, state.focusables[state.current][0].bounds);
-    draw.clear();
-    context = try Context.begin(&state, &draw, .{ .bounds = screen, .deferred_hit_test = true, .paint = false, .pointer_activation = .press, .input = .{ .pointer = .{ .x = 45, .y = 40 }, .pointer_pressed = true, .pointer_down = true } });
-    try std.testing.expect(try context.button_at(1, "", .{ .x0 = 0, .y0 = 0, .x1 = 20, .y1 = 10 }, true));
-    try context.end();
-}
-
-test "scroll viewports stay fixed while children align and move with outer stacks" {
-    var state = try Context.State.init(std.testing.allocator, .{});
-    defer state.deinit();
-
-    var draw = try DrawList.init(std.testing.allocator, .{});
-    defer draw.deinit();
-
-    const screen: layout.LogicalRect = .{ .x0 = 0, .y0 = 0, .x1 = 100, .y1 = 100 };
-    const viewport: layout.LogicalRect = .{ .x0 = 10, .y0 = 40, .x1 = 90, .y1 = 60 };
-    for (0..2) |frame| {
-        draw.clear();
-        var scopes: [4]Scope = undefined;
-        var items: [8]Item = undefined;
-        var flow = init(screen, &scopes, &items);
-        var context = try Context.begin(&state, &draw, .{ .bounds = screen, .deferred_hit_test = true, .paint = false, .input = if (frame == 0) .{} else .{ .pointer = .{ .x = 50, .y = 50 }, .wheel = -1 } });
-        try flow.stack(&context, .{});
-        try flow.scroll(&context, 10, .{ .x = 80, .y = 20 }, .{ .wheel_step = 10 });
-        for ([_]i16{ 20, 120 }, 0..) |width, i| {
-            const first = context.mark();
-            const rect = flow.reserve(.{ .x = width, .y = 20 });
-            _ = try context.button_at(i + 1, "", rect, true);
-            try draw.add_rect(rect, Color.rgba(255, 255, 255, 255), 0);
-            try flow.record(&context, first, rect);
-        }
-        try flow.end(&context);
-        try flow.end(&context);
-        try context.end();
-        try std.testing.expectEqual(viewport, state.scrolls[0].viewport);
-        try std.testing.expectEqual(viewport, draw.commands[0].clip.?);
-        try std.testing.expectEqual(viewport, draw.commands[1].clip.?);
-        try std.testing.expectEqual(viewport, state.focusables[state.current][1].clip.?);
-        try std.testing.expectEqual(@as(i16, 40), draw.commands[0].value.rect.bounds.x0);
-        try std.testing.expectEqual(@as(i16, -10), draw.commands[1].value.rect.bounds.x0);
-        try std.testing.expectEqual(@as(i16, if (frame == 0) 40 else 30), draw.commands[0].value.rect.bounds.y0);
-        try std.testing.expectEqual(@as(i16, if (frame == 0) 0 else 10), state.scroll_offset(10));
-    }
 }

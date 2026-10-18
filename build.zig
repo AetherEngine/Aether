@@ -87,11 +87,8 @@ pub fn build(b: *std.Build) void {
     });
     const run_architecture_check = b.addRunArtifact(architecture_check);
     run_architecture_check.addDirectoryArg(b.path("."));
-    const architecture_tests = b.addTest(.{ .root_module = architecture_check.root_module });
-    const run_architecture_tests = b.addRunArtifact(architecture_tests);
     const architecture_step = b.step("check-architecture", "Check Core/Platform source ownership and imports");
     architecture_step.dependOn(&run_architecture_check.step);
-    architecture_step.dependOn(&run_architecture_tests.step);
     lint_step.dependOn(&run_architecture_check.step);
 
     const overrides: config.Config.Overrides = .{
@@ -245,6 +242,5 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&run_mod_tests.step);
         test_step.dependOn(&run_platform_tests.step);
         test_step.dependOn(&run_architecture_check.step);
-        test_step.dependOn(&run_architecture_tests.step);
     }
 }

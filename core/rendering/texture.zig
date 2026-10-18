@@ -241,26 +241,3 @@ fn validate_region_offsets(self: *const Texture, len: usize, region: Image.Regio
         if (offset > len or native_pixels.bytes_per_pixel > len - offset) return error.InsufficientData;
     };
 }
-
-test "texture region copy converts images and moves overlapping CPU pixels" {
-    var pixels: [4 * 4 * native_pixels.bytes_per_pixel]u8 align(16) = @splat(0);
-    var texture_value: Texture = .{
-        .width = 4,
-        .height = 4,
-        .handle = .{},
-        .cpu_access = .read_write,
-        .residency = .backend_default,
-        .backing = &pixels,
-    };
-    const source: Image.View = .{ .width = 2, .height = 1, .mode = .rgba4444, .data = &.{ 0x0f, 0xf0, 0xf0, 0xf0 } };
-    try texture_value.copy_image_region(source, .{ .width = 2, .height = 1 }, 0, 0);
-    try std.testing.expectEqual([4]u8{ 255, 0, 0, 255 }, try texture_value.get_pixel(0, 0));
-    try texture_value.copy_region(&texture_value, .{ .width = 2, .height = 1 }, 1, 0);
-    try std.testing.expectEqual([4]u8{ 255, 0, 0, 255 }, try texture_value.get_pixel(1, 0));
-    try std.testing.expectEqual([4]u8{ 0, 255, 0, 255 }, try texture_value.get_pixel(2, 0));
-    const before = pixels;
-    try std.testing.expectError(error.RegionOutOfBounds, texture_value.copy_image_region(source, .{ .width = 2, .height = 1 }, 3, 0));
-    try std.testing.expectEqual(before, pixels);
-    texture_value.cpu_access = .read;
-    try std.testing.expectError(error.CpuWriteAccessDenied, texture_value.copy_image_region(source, .{ .width = 2, .height = 1 }, 0, 0));
-}

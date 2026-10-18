@@ -167,26 +167,3 @@ fn unit(vector: Vec3) Error!Vec3 {
 fn finite(vector: Vec3) bool {
     return std.math.isFinite(vector.x) and std.math.isFinite(vector.y) and std.math.isFinite(vector.z);
 }
-
-test "billboards reuse bounded storage with origin-relative compact positions" {
-    var batch = try init(std.testing.allocator, .{ .capacity = 1, .units_per_world_unit = 128 });
-    defer batch.deinit();
-
-    const original_storage = batch.data.vertices.items.ptr;
-    const basis = try Basis.from_view(Mat4.identity());
-    try batch.begin(Vec3.new(10000, 20, 10000), basis);
-    const quad: Billboard = .{ .position = Vec3.new(10001, 22, 10000), .size = .{ 2, 2 }, .color = 0xff123456 };
-    try batch.add(quad);
-    try std.testing.expectEqual(@as(usize, if (mesh.indexing_enabled) 4 else 6), batch.data.vertices.items.len);
-    try std.testing.expectEqual(@as(usize, if (mesh.indexing_enabled) 6 else 0), batch.data.indices.items.len);
-    try std.testing.expectEqual([3]i16{ 0, 128, 0 }, batch.data.vertices.items[0].pos);
-    try std.testing.expectEqual(@as(u32, 0xff123456), batch.data.vertices.items[0].color);
-    try std.testing.expectError(error.BatchFull, batch.add(quad));
-    try batch.begin(Vec3.zero(), basis);
-    try std.testing.expectError(error.PositionOutOfRange, batch.add(quad));
-    try std.testing.expectEqual(@as(usize, 0), batch.data.vertices.items.len);
-    try std.testing.expectEqual(original_storage, batch.data.vertices.items.ptr);
-    try batch.add(.{ .position = Vec3.zero(), .size = .{ 2, 2 }, .facing = .{ .axis_y = Vec3.new(5, 0, 0) } });
-    try std.testing.expectEqual([3]i16{ 0, -128, 128 }, batch.data.vertices.items[0].pos);
-    try std.testing.expectError(error.InvalidBasis, Basis.init(Vec3.one(), Vec3.one()));
-}

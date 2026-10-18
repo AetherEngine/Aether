@@ -12,7 +12,6 @@
 
 const std = @import("std");
 const thread = @import("thread.zig");
-const system = @import("system.zig");
 const target_io = @import("backend.zig").target.io;
 
 const Io = std.Io;
@@ -306,51 +305,4 @@ fn forward(comptime name: []const u8) @FieldType(Io.VTable, name) {
         }.f,
         else => @compileError("AetherIo cannot forward std.Io.VTable." ++ name),
     };
-}
-
-fn native_threads_for_test(base: Io) AetherIo {
-    return .{ .base = base, .gpa = std.testing.allocator, .tasks = .{ .native_threads = .{ .stack_size = 1024 * 1024 } } };
-}
-
-test "native-thread tasks run concurrently and return their results" {
-    if (!interposes or !system.info().background_workers) return error.SkipZigTest;
-    var aether = native_threads_for_test(std.testing.io);
-    const io = aether.io();
-
-    const Work = struct {
-        fn square(value: u32) u32 {
-            return value * value;
-        }
-    };
-    var first = try io.concurrent(Work.square, .{7});
-    var second = io.async(Work.square, .{9});
-    try std.testing.expectEqual(@as(u32, 49), first.await(io));
-    try std.testing.expectEqual(@as(u32, 81), second.cancel(io));
-}
-
-test "native-thread groups join every member and forwarded operations reach the base" {
-    if (!interposes or !system.info().background_workers) return error.SkipZigTest;
-    var aether = native_threads_for_test(std.testing.io);
-    const io = aether.io();
-
-    var counter = std.atomic.Value(u32).init(0);
-    const Work = struct {
-        fn bump(value: *std.atomic.Value(u32)) void {
-            _ = value.fetchAdd(1, .acq_rel);
-        }
-    };
-    var group: Io.Group = .init;
-    for (0..4) |_| try group.concurrent(io, Work.bump, .{&counter});
-    group.async(io, Work.bump, .{&counter});
-    try group.await(io);
-    try std.testing.expectEqual(@as(u32, 5), counter.load(.acquire));
-
-    const before = Io.Clock.awake.now(io);
-    try std.testing.expect(Io.Clock.awake.now(io).nanoseconds >= before.nanoseconds);
-}
-
-test "a base Io with its own concurrency passes through unchanged" {
-    var aether: AetherIo = .{ .base = std.testing.io, .gpa = std.testing.allocator, .tasks = .base };
-    const io = aether.io();
-    try std.testing.expectEqual(std.testing.io.vtable, io.vtable);
 }

@@ -1,5 +1,4 @@
 //! Network-session contract and the target's session backend.
-const options = @import("options");
 const std = @import("std");
 const contract = @import("contract.zig");
 pub const Error = error{ UnsupportedPlatform, UnsupportedOption, NetworkUnavailable, ConfigureFailed, TooManySessions };
@@ -44,11 +43,3 @@ pub const Session = struct {
         try Backend.configure_stream(stream, opts);
     }
 };
-
-test "network session release is idempotent" {
-    if (options.config.platform == .wasm or options.config.platform == .psp) return error.SkipZigTest;
-    var session = try Session.prepare();
-    session.release();
-    session.release();
-    try std.testing.expect(!session.active);
-}

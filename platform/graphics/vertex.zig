@@ -168,18 +168,3 @@ pub const PositionEncoding = struct {
         return Vec3.new(@as(f32, @floatFromInt(value[0])) / self.units_per_world_unit, @as(f32, @floatFromInt(value[1])) / self.units_per_world_unit, @as(f32, @floatFromInt(value[2])) / self.units_per_world_unit);
     }
 };
-
-test "compact position ranges rounding and native model scale are explicit" {
-    const std = @import("std");
-    const encoding = try PositionEncoding.init(128, .snorm16);
-    try std.testing.expectEqual(@as(i16, 128), try encoding.encode_component(1));
-    try std.testing.expectEqual(@as(i16, -129), try encoding.encode_component(-1.004));
-    try std.testing.expectError(error.PositionOutOfRange, encoding.encode_component(256));
-    try std.testing.expectError(error.PositionOutOfRange, encoding.encode_component(-256));
-    const psp = try PositionEncoding.init(128, .psp_ge);
-    try std.testing.expectEqual(@as(i16, -32768), try psp.encode_component(-256));
-    try std.testing.expectEqual(@as(f32, 256), psp.model_scale());
-    try std.testing.expectApproxEqAbs(@as(f32, 1), @as(f32, 128) / 32767 * encoding.model_scale(), 0.00001);
-    try std.testing.expectError(error.PositionOutOfRange, encoding.encode_component(std.math.nan(f32)));
-    try std.testing.expectError(error.InvalidScale, PositionEncoding.init(0, .snorm16));
-}

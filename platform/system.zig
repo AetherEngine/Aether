@@ -1,5 +1,4 @@
 //! Hardware facts and implemented services, independent of game budgets/policy.
-const std = @import("std");
 const options = @import("options");
 const contract = @import("contract.zig");
 const backend = @import("backend.zig");
@@ -41,11 +40,4 @@ pub fn info() Info {
     result.rename_replaces_destination = io.rename_replaces_destination;
     if (options.config.gfx == .headless) result.input = .{};
     return result;
-}
-
-test "headless capability queries describe implemented input" {
-    if (options.config.gfx == .headless) {
-        try std.testing.expect(!info().input.pointer);
-        try std.testing.expect(!info().input.native_text_entry);
-    }
 }

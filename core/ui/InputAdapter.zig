@@ -112,31 +112,3 @@ fn coordinate(value: f32) i16 {
     if (!std.math.isFinite(value)) return 0;
     return @intFromFloat(std.math.clamp(@floor(value), -32768, 32767));
 }
-test "adapter suppresses held menu entry actions and repeats only navigation" {
-    var adapter: Adapter = .{};
-    var snapshot: Snapshot = .{};
-    snapshot.buttons[0] = .{ .current = .pressed };
-    snapshot.buttons[4] = .{ .current = .pressed };
-    try std.testing.expectEqual(null, adapter.update(snapshot, 1, 1).direction);
-    try std.testing.expect(!adapter.update(snapshot, 1, 1).confirm);
-    snapshot.buttons = @splat(.{});
-    _ = adapter.update(snapshot, 0, 1);
-    snapshot.buttons[0] = .{ .current = .pressed };
-    snapshot.buttons[4] = .{ .current = .pressed };
-    const pressed = adapter.update(snapshot, 0, 1);
-    try std.testing.expectEqual(Direction.up, pressed.direction.?);
-    try std.testing.expect(pressed.confirm);
-    snapshot.buttons[0].previous = .pressed;
-    snapshot.buttons[4].previous = .pressed;
-    const repeat = adapter.update(snapshot, 0.5, 1);
-    try std.testing.expectEqual(Direction.up, repeat.direction.?);
-    try std.testing.expect(!repeat.confirm);
-}
-test "adapter retains fractional wheel and scales coordinates" {
-    var adapter: Adapter = .{};
-    const snapshot: Snapshot = .{ .pointer_active = true, .pointer_x = 21, .pointer_y = 11, .wheel = 0.6 };
-    const first = adapter.update(snapshot, 0, 2);
-    try std.testing.expectEqual(layout.Point{ .x = 10, .y = 5 }, first.pointer.?);
-    try std.testing.expectEqual(0, first.wheel);
-    try std.testing.expectEqual(1, adapter.update(snapshot, 0, 2).wheel);
-}

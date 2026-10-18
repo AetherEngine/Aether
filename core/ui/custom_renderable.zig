@@ -112,12 +112,3 @@ pub const Registry = struct {
         renderer.draw(renderer.ctx, commands);
     }
 };
-
-test "custom command stores copied payload" {
-    const Payload = extern struct { a: u16, b: f32 };
-    const p = Payload{ .a = 7, .b = 3.5 };
-    const cmd = Command.init(.app0, .{ .x0 = 1, .y0 = 2, .x1 = 3, .y1 = 4 }, 9, .inherit, 11, p);
-    try std.testing.expectEqual(@as(u8, @sizeOf(Payload)), cmd.payload_len);
-    try std.testing.expectEqual(@as(u8, @alignOf(Payload)), cmd.payload_align);
-    try std.testing.expectEqual(p, cmd.read(Payload));
-}

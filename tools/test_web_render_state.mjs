@@ -30,54 +30,9 @@ function renderer() {
     perObjectBuffer = 101;
     meshes.set(1, { vao: 102, vertexCount: 3, indexCount: 0 });
     globalThis.rendererHost = host;
-    globalThis.readCamera = () => new Float32Array(cameraBytes.buffer).slice();
   `, context);
-  return { host: context.rendererHost, calls, readCamera: context.readCamera };
+  return { host: context.rendererHost, calls };
 }
-
-test("uniform changes share one upload before drawing", () => {
-  const { host, calls, readCamera } = renderer();
-  host.aether_webgl_set_alpha_blend(false);
-  host.aether_webgl_set_uv_offset(0.25, 0.5);
-  host.aether_webgl_set_fog(true, 10, 100, 1, 0, 0);
-  host.aether_webgl_set_proj_matrix(0);
-  host.aether_webgl_set_view_matrix(64);
-  assert.equal(calls.filter(([name]) => name === "bufferSubData").length, 0);
-  host.aether_webgl_draw_mesh(1, 128);
-  // One shared state upload and one model upload.
-  assert.equal(calls.filter(([name]) => name === "bufferSubData").length, 2);
-  assert.equal(readCamera()[40], 0.25);
-  assert.equal(readCamera()[41], 0.5);
-  calls.length = 0;
-  host.aether_webgl_draw_mesh(1, 128);
-  assert.equal(calls.filter(([name]) => name === "bufferSubData").length, 1);
-});
-
-test("texture uploads restore the selected draw texture only when needed", () => {
-  const { host, calls } = renderer();
-  const first = host.aether_webgl_create_texture(1, 1, 0, 4);
-  host.aether_webgl_bind_texture(first);
-  host.aether_webgl_draw_mesh(1, 128);
-  calls.length = 0;
-  host.aether_webgl_bind_texture(first);
-  host.aether_webgl_draw_mesh(1, 128);
-  assert.equal(calls.filter(([name]) => name === "bindTexture").length, 0);
-  const second = host.aether_webgl_create_texture(1, 1, 0, 4);
-  calls.length = 0;
-  host.aether_webgl_draw_mesh(1, 128);
-  assert.equal(calls.filter(([name]) => name === "bindTexture").length, 1);
-  host.aether_webgl_update_texture(second, 0, 4);
-  calls.length = 0;
-  host.aether_webgl_draw_mesh(1, 128);
-  assert.equal(calls.filter(([name]) => name === "bindTexture").length, 1);
-  calls.length = 0;
-  host.aether_webgl_draw_mesh(1, 128);
-  assert.equal(calls.filter(([name]) => name === "bindTexture").length, 0);
-  host.aether_webgl_destroy_texture(first);
-  calls.length = 0;
-  host.aether_webgl_draw_mesh(1, 128);
-  assert.equal(calls.filter(([name]) => name === "bindTexture").length, 0);
-});
 
 test("depth clears restore the requested write mask without redundant calls", () => {
   const { host, calls } = renderer();

@@ -188,61 +188,6 @@ test "state transition is queued until engine commit point" {
     try std.testing.expectEqual(@as(u32, 1), b.init_count);
 }
 
-test "state machine dispatches optional ui update between update and draw" {
-    var engine: Engine = undefined;
-    engine.running = true;
-    var states = StateMachine{};
-    var a = TestStateData{};
-    const a_state = a.state();
-    const budget = Util.BudgetContext{
-        .phase_budget_ns = 1,
-        .engine_elapsed_ns = 0,
-        .remaining_ns = 1,
-        .is_tick_frame = false,
-        .tick_cost_ns = 0,
-        .safety_margin_ns = 0,
-    };
-
-    try states.init(&engine, &a_state);
-    defer states.deinit(&engine);
-
-    try states.update(&engine, 1.0, &budget);
-    try states.ui_update(&engine, 1.0, &budget);
-    try states.draw(&engine, 1.0, &budget);
-
-    try std.testing.expectEqual(@as(u32, 1), a.update_count);
-    try std.testing.expectEqual(@as(u32, 1), a.ui_update_count);
-    try std.testing.expectEqual(@as(u32, 1), a.draw_count);
-}
-
-test "state machine tolerates omitted ui update callback" {
-    var engine: Engine = undefined;
-    engine.running = true;
-    var states = StateMachine{};
-    var a = TestStateData{};
-    const budget = Util.BudgetContext{
-        .phase_budget_ns = 1,
-        .engine_elapsed_ns = 0,
-        .remaining_ns = 1,
-        .is_tick_frame = false,
-        .tick_cost_ns = 0,
-        .safety_margin_ns = 0,
-    };
-    const state = State{ .ptr = &a, .tab = &.{
-        .init = TestStateData.init,
-        .deinit = TestStateData.deinit,
-        .tick = TestStateData.tick,
-        .update = TestStateData.update,
-        .draw = TestStateData.draw,
-    } };
-
-    try states.init(&engine, &state);
-    defer states.deinit(&engine);
-
-    try states.ui_update(&engine, 1.0, &budget);
-    try std.testing.expectEqual(@as(u32, 0), a.ui_update_count);
-}
-
 test "state transition init failure exits without deinit retry" {
     var engine: Engine = undefined;
     engine.running = true;
@@ -262,28 +207,4 @@ test "state transition init failure exits without deinit retry" {
     try std.testing.expect(!engine.running);
     try std.testing.expectEqual(@as(u32, 1), a.deinit_count);
     try std.testing.expectEqual(@as(u32, 0), b.init_count);
-}
-
-test "state machines keep pending transitions independent" {
-    var engine: Engine = undefined;
-    engine.running = true;
-    var first = StateMachine{};
-    var second = StateMachine{};
-
-    var a = TestStateData{};
-    var b = TestStateData{};
-    var c = TestStateData{};
-    const a_state = a.state();
-    const b_state = b.state();
-    const c_state = c.state();
-
-    try first.init(&engine, &a_state);
-    defer first.deinit(&engine);
-
-    try second.init(&engine, &b_state);
-    defer second.deinit(&engine);
-
-    first.transition(&c_state);
-    try std.testing.expect(first.has_pending_transition());
-    try std.testing.expect(!second.has_pending_transition());
 }

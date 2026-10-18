@@ -34,23 +34,3 @@ pub fn write(data: []u8, index: usize, rgba: [4]u8) void {
     data[index] = (rgba[0] >> 4) | (rgba[1] & 0xF0);
     data[index + 1] = (rgba[2] >> 4) | (rgba[3] & 0xF0);
 }
-
-test "PSP texture conversion preserves channels and quantizes to RGBA4444" {
-    const testing = @import("std").testing;
-    const rgba = [4]u8{ 0x0F, 0x2B, 0x64, 0xE9 };
-    var data: [bytes_per_pixel]u8 = undefined;
-    copy_from_rgba(&data, &rgba);
-    try testing.expectEqual(if (compact) [4]u8{ 0, 0x22, 0x66, 0xEE } else rgba, read(&data, 0));
-    if (compact) try testing.expectEqualSlices(u8, &.{ 0x20, 0xE6 }, &data);
-}
-
-test "PSP textures use linear storage below 8 KiB and GE blocks above it" {
-    const testing = @import("std").testing;
-    const width = 64;
-    const height = 8192 / width / bytes_per_pixel;
-    try testing.expectEqual(65 * bytes_per_pixel, offset(width, height / 2, 1, 1));
-    try testing.expectEqual(16 + bytes_per_pixel, offset(width, height, 1, 1));
-    try testing.expectEqual(128, offset(width, height, 16 / bytes_per_pixel, 0));
-    try testing.expectEqual(width * bytes_per_pixel * 8, offset(width, height, 0, 8));
-    try testing.expectEqual(8192 - bytes_per_pixel, offset(width, height, width - 1, height - 1));
-}

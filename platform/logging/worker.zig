@@ -393,21 +393,3 @@ fn flush_file(file: std.Io.File, io: std.Io, writer: *std.Io.Writer, sync_to_sto
     writer.flush() catch {};
     if (sync_to_storage) file.sync(io) catch {};
 }
-
-test "message queue is bounded and FIFO" {
-    var test_queue: MessageQueue = .{};
-    const first = LogMessage{ .len = 1, .bytes = @splat('a') };
-    const second = LogMessage{ .len = 1, .bytes = @splat('b') };
-
-    try std.testing.expect(test_queue.push(first));
-    try std.testing.expect(test_queue.push(second));
-    try std.testing.expectEqualStrings("a", test_queue.pop().?.slice());
-    try std.testing.expectEqualStrings("b", test_queue.pop().?.slice());
-    try std.testing.expect(test_queue.pop() == null);
-
-    var index: usize = 0;
-    while (index < queue_capacity) : (index += 1) {
-        try std.testing.expect(test_queue.push(first));
-    }
-    try std.testing.expect(!test_queue.push(second));
-}

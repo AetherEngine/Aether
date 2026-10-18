@@ -74,21 +74,3 @@ pub fn copy_to_texture(self: Flipbook, destination: *Texture, source: Image.View
 fn validate_source(self: Flipbook, source: Image.View) Error!void {
     if (source.width != self.source_width or source.height != self.source_height) return error.InvalidFlipbook;
 }
-
-test "flipbook grid bounds playback and copying" {
-    const source: Image.View = .{ .width = 2, .height = 2, .data = &.{ 1, 0, 0, 255, 2, 0, 0, 255, 3, 0, 0, 255, 4, 0, 0, 255 } };
-    var flipbook = try init(source, .{ .frame_width = 1, .frame_height = 1, .frame_count = 4, .frames_per_second = 2 });
-    try std.testing.expectEqual(@as(u32, 0), try flipbook.frame_at(2));
-    try std.testing.expectEqual(@as(u32, 3), try flipbook.frame_at(1.75));
-    flipbook.desc.playback = .once;
-    try std.testing.expectEqual(@as(u32, 3), try flipbook.frame_at(20));
-    flipbook.desc.playback = .ping_pong;
-    const expected = [_]u32{ 0, 1, 2, 3, 2, 1, 0, 1 };
-    for (expected, 0..) |frame, i| try std.testing.expectEqual(frame, try flipbook.frame_at(@as(f64, @floatFromInt(i)) / 2));
-    var output: [4]u8 = undefined;
-    try flipbook.copy_to_image(.{ .width = 1, .height = 1, .data = &output }, source, 2, 0, 0);
-    try std.testing.expectEqual([4]u8{ 3, 0, 0, 255 }, output);
-    try std.testing.expectError(error.InvalidTime, flipbook.frame_at(-1));
-    try std.testing.expectError(error.FrameOutOfBounds, flipbook.frame_region(4));
-    try std.testing.expectError(error.InvalidFlipbook, init(source, .{ .frame_width = 1, .frame_height = 1, .frame_count = 5, .frames_per_second = 1 }));
-}

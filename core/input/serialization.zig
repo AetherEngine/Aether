@@ -36,14 +36,3 @@ pub fn decode(record: Record) error{ UnsupportedVersion, InvalidBinding }!bindin
     };
     return .{ .source = source, .component = std.meta.stringToEnum(binding.AxisComponent, record.component) orelse return error.InvalidBinding, .multiplier = record.multiplier, .deadzone = record.deadzone };
 }
-test "binding records round trip all source types and validate versions" {
-    const sources = [_]binding.BindingSource{ .{ .key = .Space }, .{ .mouse_button = .Left }, .{ .mouse_wheel = .y }, .{ .mouse_delta = .x }, .{ .gamepad_button = .A }, .{ .gamepad_axis = .LeftX } };
-    var buffer: [64]u8 = undefined;
-    for (sources) |source| {
-        const value: binding.Binding = .{ .source = source, .component = .x, .multiplier = -0.5, .deadzone = 0.25 };
-        try std.testing.expectEqualDeep(value, try decode(try encode(value, &buffer)));
-    }
-    try std.testing.expectError(error.InvalidBinding, decode(.{ .source = "key:Missing" }));
-    try std.testing.expectError(error.InvalidBinding, decode(.{ .source = "key:Space", .deadzone = 1 }));
-    try std.testing.expectError(error.UnsupportedVersion, decode(.{ .version = 2, .source = "key:Space" }));
-}

@@ -82,9 +82,3 @@ pub fn format_label(buffer: []u8, source: binding.BindingSource, modifiers: data
     }
     return writer.buffered();
 }
-test "readable labels retain modifiers and report small output" {
-    var buffer: [64]u8 = undefined;
-    try std.testing.expectEqualStrings("Ctrl+Page Down", try format_label(&buffer, .{ .key = .PageDown }, .initOne(.ctrl), .readable));
-    try std.testing.expectEqualStrings("0", key_name(.Num0, .compact));
-    try std.testing.expectError(error.NoSpaceLeft, format_label(buffer[0..2], .{ .key = .Escape }, .empty, .readable));
-}

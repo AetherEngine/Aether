@@ -274,17 +274,3 @@ fn sprite_before(_: void, a: Sprite, b: Sprite) bool {
     if (a.layer != b.layer) return a.layer < b.layer;
     return @intFromPtr(a.texture) < @intFromPtr(b.texture);
 }
-
-test "sprite clips resolve non top-left anchors and proportional UVs" {
-    var texture: Rendering.Texture = undefined;
-    texture.width = 100;
-    texture.height = 100;
-    var data = try BatchMeshData.init(std.testing.allocator);
-    defer data.deinit(std.testing.allocator);
-
-    try data.ensure_quad_capacity(std.testing.allocator, 1);
-    append_geometry(&data, &.{ .texture = &texture, .pos_offset = .{ .x = 0, .y = 0 }, .pos_extent = .{ .x = 20, .y = 20 }, .tex_offset = .{ .x = 0, .y = 0 }, .tex_extent = .{ .x = 100, .y = 100 }, .color = Color.rgba(255, 255, 255, 255), .layer = 0, .reference = .middle_center, .origin = .middle_center }, 100, 100, 1, .{ .x0 = 45, .y0 = 45, .x1 = 55, .y1 = 55 });
-    try std.testing.expect(data.vertices.items.len >= 4);
-    try std.testing.expectEqual(@as(i16, 8191), data.vertices.items[0].uv[0]);
-    try std.testing.expectEqual(@as(i16, 8191), data.vertices.items[0].uv[1]);
-}

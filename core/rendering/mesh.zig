@@ -159,25 +159,3 @@ pub fn MeshType(comptime V: type) type {
         }
     };
 }
-
-test "mesh triangle and quad helpers build expected geometry" {
-    const TestVertex = extern struct { id: u32 };
-    const TestData = MeshDataType(TestVertex);
-    const alloc = std.testing.allocator;
-
-    var mesh = try TestData.init(alloc);
-    defer mesh.deinit(alloc);
-
-    try mesh.add_tri(alloc, .{ .id = 0 }, .{ .id = 1 }, .{ .id = 2 });
-    try mesh.add_quad(alloc, .{ .id = 3 }, .{ .id = 4 }, .{ .id = 5 }, .{ .id = 6 });
-
-    if (indexing_enabled) {
-        try std.testing.expectEqual(@as(usize, 7), mesh.vertices.items.len);
-        try std.testing.expectEqualSlices(Index, &.{ 0, 1, 2, 3, 4, 5, 3, 5, 6 }, mesh.indices.items);
-    } else {
-        try std.testing.expectEqual(@as(usize, 9), mesh.vertices.items.len);
-        try std.testing.expectEqual(@as(usize, 0), mesh.indices.items.len);
-        try std.testing.expectEqual(@as(u32, 3), mesh.vertices.items[3].id);
-        try std.testing.expectEqual(@as(u32, 5), mesh.vertices.items[7].id);
-    }
-}

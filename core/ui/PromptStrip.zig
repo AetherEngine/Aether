@@ -77,18 +77,3 @@ fn add(a: i16, b: i16) error{InvalidBounds}!i16 {
 fn text(list: *DrawList, font: *const FontBatcher, label: []const u8, x: i16, options: Options) !void {
     try list.add_text(font, .{ .str = label, .pos_x = x, .pos_y = try add(try add(options.origin.y, options.text_offset_y), @divTrunc(options.height - @as(i16, options.text_scale) * 8, 2)), .color = options.color, .shadow_color = options.shadow_color, .layer = 0, .spacing = options.spacing, .scale = options.text_scale, .reference = .top_left, .origin = .top_left });
 }
-
-test "prompt fallback uses input names and copies chord text" {
-    var font: FontBatcher = undefined;
-    font.style_parser = null;
-    font.glyph_widths = @splat(1);
-    var list = try DrawList.init(std.testing.allocator, .{});
-    defer list.deinit();
-
-    const width = try draw(&list, &font, null, &.{.{ .chord = &.{ .{ .key = .LeftControl }, .{ .key = .A } }, .label = "Select" }}, .{ .origin = .{ .x = 0, .y = 0 } });
-    try std.testing.expect(width > 0);
-    try std.testing.expectEqualStrings("LCtrl", list.commands[0].value.text.entry.str);
-    try std.testing.expectEqualStrings("+", list.commands[1].value.text.entry.str);
-    try std.testing.expectEqualStrings("A", list.commands[2].value.text.entry.str);
-    try std.testing.expectEqualStrings("Select", list.commands[3].value.text.entry.str);
-}

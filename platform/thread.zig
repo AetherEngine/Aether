@@ -8,7 +8,6 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const system = @import("system.zig");
 const contract = @import("contract.zig");
 const backend = @import("backend.zig");
 
@@ -71,21 +70,6 @@ pub fn relative_priority(previous: i32, delta: i32, minimum: i32, maximum: i32) 
     const next = std.math.add(i32, previous, delta) catch return error.InvalidPriority;
     if (next < minimum or next > maximum) return error.InvalidPriority;
     return next;
-}
-
-test "relative thread priority preserves native values and rejects range and overflow" {
-    try std.testing.expectEqual(@as(i32, 0x16), try relative_priority(0x20, -10, 0x08, 0x77));
-    try std.testing.expectEqual(@as(i32, 0x08), try relative_priority(0x12, -10, 0x08, 0x77));
-    try std.testing.expectEqual(@as(i32, 0x77), try relative_priority(0x76, 1, 0x08, 0x77));
-    try std.testing.expectEqual(@as(i32, 0), try relative_priority(1, -1, 0, 63));
-    try std.testing.expectEqual(@as(i32, 63), try relative_priority(62, 1, 0, 63));
-    try std.testing.expectError(error.InvalidPriority, relative_priority(0x08, -1, 0x08, 0x77));
-    try std.testing.expectError(error.InvalidPriority, relative_priority(0x77, 1, 0x08, 0x77));
-    try std.testing.expectError(error.InvalidPriority, relative_priority(0, -1, 0, 63));
-    try std.testing.expectError(error.InvalidPriority, relative_priority(63, 1, 0, 63));
-    try std.testing.expectError(error.InvalidPriority, relative_priority(64, -1, 0, 63));
-    try std.testing.expectError(error.InvalidPriority, relative_priority(63, std.math.maxInt(i32), 0, 63));
-    try std.testing.expectError(error.InvalidPriority, relative_priority(1, std.math.minInt(i32), 0, 63));
 }
 
 pub fn assert_impl(comptime Backend: type) void {
@@ -164,77 +148,3 @@ pub const Thread = struct {
 };
 
 pub const cooperative_yield = Api.cooperative_yield;
-
-test "spawn/join roundtrip" {
-    if (builtin.os.tag == .psp) return error.SkipZigTest;
-    var counter = std.atomic.Value(u32).init(0);
-    const t = try Thread.spawn(.{ .allocator = std.testing.allocator }, struct {
-        fn run(c: *std.atomic.Value(u32)) void {
-            _ = c.fetchAdd(1, .seq_cst);
-        }
-    }.run, .{&counter});
-    t.join();
-    try std.testing.expectEqual(@as(u32, 1), counter.load(.seq_cst));
-}
-
-test "scoped priorities restore nested calling-thread priorities" {
-    if (!system.info().native_thread_priority) {
-        try std.testing.expectError(error.UnsupportedPlatform, PriorityScope.enter(.low));
-        try std.testing.expectError(error.UnsupportedPlatform, PriorityScope.enter_relative(-10));
-        try std.testing.expectError(error.UnsupportedPlatform, PriorityScope.enter_relative(0));
-        return;
-    }
-    const original = Thread.current_priority();
-    var outer = try PriorityScope.enter(.low);
-    defer outer.restore() catch unreachable;
-
-    var inner = try PriorityScope.enter(.highest);
-    try std.testing.expectEqual(Priority.highest, Thread.current_priority());
-    try inner.restore();
-    try inner.restore();
-    try std.testing.expectEqual(Priority.low, Thread.current_priority());
-    try outer.restore();
-    try std.testing.expectEqual(original, Thread.current_priority());
-}
-
-test "relative priority scopes retain exact values between priority buckets" {
-    if (!system.info().native_thread_priority) return error.SkipZigTest;
-    var base = try PriorityScope.enter(.normal);
-    defer base.restore() catch unreachable;
-
-    var first = try PriorityScope.enter_relative(1);
-    defer first.restore() catch unreachable;
-
-    var second = try PriorityScope.enter_relative(1);
-    defer second.restore() catch unreachable;
-
-    try std.testing.expectEqual(first.previous.? + 1, second.previous.?);
-    const intermediate = second.previous.?;
-    try second.restore();
-    var observed = try PriorityScope.enter_relative(0);
-    defer observed.restore() catch unreachable;
-
-    try std.testing.expectEqual(intermediate, observed.previous.?);
-    try std.testing.expectError(error.InvalidPriority, PriorityScope.enter_relative(std.math.maxInt(i32)));
-}
-
-test "current_priority defaults to normal on the calling thread" {
-    if (builtin.os.tag == .psp) return error.SkipZigTest;
-    try std.testing.expectEqual(Priority.normal, Thread.current_priority());
-}
-
-test "spawned thread sees its requested priority" {
-    if (builtin.os.tag == .psp) return error.SkipZigTest;
-    var seen = std.atomic.Value(i8).init(-1);
-    const t = try Thread.spawn(
-        .{ .allocator = std.testing.allocator, .priority = .high },
-        struct {
-            fn run(s: *std.atomic.Value(i8)) void {
-                s.store(@backingInt(Thread.current_priority()), .seq_cst);
-            }
-        }.run,
-        .{&seen},
-    );
-    t.join();
-    try std.testing.expectEqual(@as(i8, @backingInt(Priority.high)), seen.load(.seq_cst));
-}

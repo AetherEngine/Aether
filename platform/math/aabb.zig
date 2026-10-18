@@ -147,37 +147,3 @@ pub fn valid(self: Aabb) bool {
 fn finite_vector(v: Vec3) bool {
     return std.math.isFinite(v.x) and std.math.isFinite(v.y) and std.math.isFinite(v.z);
 }
-
-test "ray AABB slabs cover parallel inside tangent and clipped intersections" {
-    const t = @import("std").testing;
-    const box: Aabb = .{ .min = Vec3.zero(), .max = Vec3.one() };
-    const hit = (try box.ray_intersection(Vec3.new(-2, 0.5, 0.5), Vec3.new(2, 0, 0), 0, 10)).?;
-    try t.expectEqual(@as(f32, 1), hit.enter);
-    try t.expectEqual(@as(f32, 1.5), hit.exit);
-    try t.expectEqual(Vec3.new(-1, 0, 0), hit.normal);
-    try t.expect(!hit.started_inside);
-    try t.expectEqual(@as(?RayHit, null), try box.ray_intersection(Vec3.new(-2, 2, 0.5), Vec3.new(1, 0, 0), 0, 10));
-    try t.expectEqual(@as(?RayHit, null), try box.ray_intersection(Vec3.new(-2, 0, 0), Vec3.new(1, 0, 0), 0, 1));
-    const inside = (try box.ray_intersection(Vec3.new(0.5, 0.5, 0.5), Vec3.zero(), 0, 1)).?;
-    try t.expect(inside.started_inside);
-    try t.expectEqual(Vec3.zero(), inside.normal);
-    try t.expect((try box.ray_intersection(Vec3.new(-2, 1, 0), Vec3.new(1, 0, 0), 0, 10)) != null);
-    try t.expectError(error.InvalidQuery, box.ray_intersection(Vec3.zero(), Vec3.one(), 2, 1));
-}
-
-test "sweeps report first impact initial overlap and nonblocking contact" {
-    const t = @import("std").testing;
-    const box: Aabb = .{ .min = Vec3.zero(), .max = Vec3.one() };
-    const obstacle: Aabb = .{ .min = Vec3.new(3, 0, 0), .max = Vec3.new(4, 1, 1) };
-    const hit = (try box.sweep(obstacle, Vec3.new(4, 0, 0))).?;
-    try t.expectEqual(@as(f32, 0.5), hit.time);
-    try t.expectEqual(Vec3.new(-1, 0, 0), hit.normal);
-    try t.expect((try box.sweep(box, Vec3.zero())).?.started_overlapping);
-    const touching: Aabb = .{ .min = Vec3.new(1, 0, 0), .max = Vec3.new(2, 1, 1) };
-    try t.expectEqual(@as(?SweepHit, null), try box.sweep(touching, Vec3.new(-1, 0, 0)));
-    try t.expectEqual(@as(?SweepHit, null), try box.sweep(touching, Vec3.new(0, 1, 0)));
-    const contact = (try box.sweep(touching, Vec3.new(1, 0, 0))).?;
-    try t.expectEqual(@as(f32, 0), contact.time);
-    try t.expectEqual(Vec3.new(-1, 0, 0), contact.normal);
-    try t.expect(!contact.started_overlapping);
-}

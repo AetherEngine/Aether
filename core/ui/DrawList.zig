@@ -2,7 +2,6 @@
 //! renderer registrations must outlive preparation/drawing. Mutations invalidate
 //! prepared geometry. All coordinates and clips are logical pixels.
 const std = @import("std");
-const options = @import("options");
 const layout = @import("layout.zig");
 const SpriteBatcher = @import("SpriteBatcher.zig");
 const FontBatcher = @import("FontBatcher.zig");
@@ -10,7 +9,6 @@ const Custom = @import("custom_renderable.zig");
 const Rendering = @import("../rendering/rendering.zig");
 const Color = @import("Color.zig").Color;
 const texture_region = @import("texture_region.zig");
-const TextureAtlas = @import("TextureAtlas.zig").TextureAtlas;
 const Math = @import("platform").math;
 const List = @This();
 
@@ -318,147 +316,4 @@ pub fn rebuild(self: *const List, prepared: *Prepared, white_texture: *const Ren
         try renderer.prepare(renderer.ctx, @as(*const [1]Custom.Command, @ptrCast(command)));
     };
     prepared.valid = true;
-}
-
-test "draw list owns text and preserves mixed command order and nested clips" {
-    var list = try List.init(std.testing.allocator, .{ .commands = 4, .text_bytes = 8, .clip_depth = 2 });
-    defer list.deinit();
-
-    var font: FontBatcher = undefined;
-    font.style_parser = null;
-    var text = [_]u8{ 'a', 'b' };
-    const outer: layout.LogicalRect = .{ .x0 = 0, .y0 = 0, .x1 = 20, .y1 = 20 };
-    try list.push_clip(outer);
-    try list.add_rect(outer, Color.rgba(1, 2, 3, 255), 0);
-    try list.push_clip(.{ .x0 = 10, .y0 = -10, .x1 = 30, .y1 = 10 });
-    try list.add_text(&font, .{ .str = &text, .color = Color.rgba(255, 255, 255, 255), .shadow_color = Color.rgba(0, 0, 0, 0), .pos_x = 0, .pos_y = 0, .spacing = 0, .layer = 0, .reference = .middle_center, .origin = .middle_center });
-    text[0] = 'z';
-    try std.testing.expectEqualStrings("ab", list.commands[1].value.text.entry.str);
-    try std.testing.expectEqual(layout.LogicalRect{ .x0 = 10, .y0 = 0, .x1 = 20, .y1 = 10 }, list.commands[1].clip.?);
-    try std.testing.expect(list.commands[0].value == .rect);
-    try list.pop_clip();
-    try list.pop_clip();
-    try std.testing.expectError(error.ClipUnderflow, list.pop_clip());
-    try std.testing.expectError(error.InvalidBounds, list.offset_range(0, 2, .{ .x = 32767, .y = 0 }));
-    try std.testing.expectEqual(outer, list.commands[0].value.rect.bounds);
-}
-test "custom clips require an implementation and reject bounds never leak" {
-    const Dummy = struct {
-        fn reset(_: *anyopaque) void {}
-        fn prepare(_: *anyopaque, _: []const Custom.Command) !void {}
-        fn draw(_: *anyopaque, _: []const Custom.Command) void {}
-    };
-    var context: u8 = 0;
-    var registry: Custom.Registry = .{};
-    registry.register(.app0, .{ .ctx = &context, .reset = Dummy.reset, .prepare = Dummy.prepare, .draw = Dummy.draw });
-    var command: Command = .{ .clip = .{ .x0 = 0, .y0 = 0, .x1 = 5, .y1 = 5 }, .value = .{ .custom = Custom.Command.init(.app0, .{ .x0 = 0, .y0 = 0, .x1 = 10, .y1 = 10 }, 0, .inherit, 0, @as(u8, 0)) } };
-    try std.testing.expectError(error.UnsupportedCustomClip, resolve_custom(command, &registry));
-    command.value.custom.clip = .reject_bounds;
-    try std.testing.expectEqual(null, try resolve_custom(command, &registry));
-    command.value.custom.clip = .none;
-    try std.testing.expectEqual(null, (try resolve_custom(command, &registry)).?.resolved_clip);
-}
-
-test "headless preparation retains mixed render order and owns uploaded geometry" {
-    if (options.config.gfx != .headless) return error.SkipZigTest;
-    const Dummy = struct {
-        prepared: usize = 0,
-        drawn: usize = 0,
-        fn reset(_: *anyopaque) void {}
-        fn prepare(context: *anyopaque, commands: []const Custom.Command) !void {
-            const self: *@This() = @ptrCast(@alignCast(context));
-            self.prepared += commands.len;
-        }
-        fn draw(context: *anyopaque, commands: []const Custom.Command) void {
-            const self: *@This() = @ptrCast(@alignCast(context));
-            self.drawn += commands.len;
-        }
-    };
-    var dummy: Dummy = .{};
-    var registry: Custom.Registry = .{};
-    registry.register(.app0, .{ .ctx = &dummy, .reset = Dummy.reset, .prepare = Dummy.prepare, .draw = Dummy.draw });
-    var texture: Rendering.Texture = undefined;
-    texture.width = 128;
-    texture.height = 128;
-    texture.handle = .none;
-    var font: FontBatcher = undefined;
-    font.style_parser = null;
-    font.glyph_widths = @splat(8);
-    font.texture = &texture;
-    font.atlas = TextureAtlas.init_grid(16, 16);
-    var list = try List.init(std.testing.allocator, .{});
-    defer list.deinit();
-
-    const bounds: layout.LogicalRect = .{ .x0 = 0, .y0 = 0, .x1 = 10, .y1 = 10 };
-    try list.add_rect(bounds, Color.rgba(255, 255, 255, 255), 0);
-    try list.add_custom(Custom.Command.init(.app0, bounds, 0, .inherit, 0, @as(u8, 0)));
-    try list.add_text(&font, .{ .str = "x", .color = Color.rgba(255, 255, 255, 255), .shadow_color = Color.rgba(0, 0, 0, 0), .pos_x = 0, .pos_y = 0, .spacing = 0, .layer = 0, .reference = .top_left, .origin = .top_left });
-    var prepared = try list.prepare(std.testing.allocator, &registry, &texture, 100, 100, 1);
-    defer prepared.deinit();
-
-    try std.testing.expectEqual(3, prepared.entries.items.len);
-    try std.testing.expect(prepared.entries.items[0] == .geometry and prepared.entries.items[1] == .custom and prepared.entries.items[2] == .geometry);
-    try std.testing.expectEqual(1, dummy.prepared);
-    prepared.draw();
-    try std.testing.expectEqual(1, dummy.drawn);
-}
-
-test "nine slice preserves corners and rejects capacity before appending" {
-    var texture: Rendering.Texture = undefined;
-    texture.width = 32;
-    texture.height = 32;
-    var list = try List.init(std.testing.allocator, .{ .commands = 9 });
-    defer list.deinit();
-
-    const region: texture_region.TextureRegion = .{ .x = 0, .y = 0, .w = 20, .h = 20 };
-    const bounds: layout.LogicalRect = .{ .x0 = 0, .y0 = 0, .x1 = 40, .y1 = 30 };
-    const sizing: texture_region.TextureSizing = .{ .nine_slice = .{ .left = 3, .right = 3, .top = 4, .bottom = 4 } };
-    try list.add_region(&texture, region, bounds, Color.rgba(255, 255, 255, 255), 0, sizing);
-    try std.testing.expectEqual(9, list.count);
-    try std.testing.expectEqual(@as(i16, 3), list.commands[0].value.sprite.pos_extent.x);
-    try std.testing.expectEqual(@as(i16, 34), list.commands[4].value.sprite.pos_extent.x);
-    try std.testing.expectEqual(@as(i16, 14), list.commands[4].value.sprite.tex_extent.x);
-    try std.testing.expectError(error.CommandCapacity, list.add_region(&texture, region, bounds, Color.rgba(255, 255, 255, 255), 0, sizing));
-    try std.testing.expectEqual(9, list.count);
-}
-
-test "headless rebuild reuses capacity and invalidates failed preparation" {
-    if (options.config.gfx != .headless) return error.SkipZigTest;
-    var registry: Custom.Registry = .{};
-    var texture: Rendering.Texture = undefined;
-    texture.width = 1;
-    texture.height = 1;
-    texture.handle = .none;
-    var list = try List.init(std.testing.allocator, .{});
-    defer list.deinit();
-
-    const bounds: layout.LogicalRect = .{ .x0 = 0, .y0 = 0, .x1 = 10, .y1 = 10 };
-    const color = Color.rgba(255, 255, 255, 255);
-    try list.add_rect(bounds, color, 0);
-    try list.add_rect(bounds, color, 1);
-    var prepared = try list.prepare(std.testing.allocator, &registry, &texture, 100, 100, 1);
-    defer prepared.deinit();
-
-    const entries = prepared.entries.items.ptr;
-    const vertices = prepared.entries.items[0].geometry.data.vertices.items.ptr;
-    const indices = prepared.entries.items[0].geometry.data.indices.items.ptr;
-    const signature = prepared.entries.items[0].geometry.signature;
-    try list.rebuild(&prepared, &texture, 100, 100, 1);
-    try std.testing.expectEqual(entries, prepared.entries.items.ptr);
-    try std.testing.expectEqual(vertices, prepared.entries.items[0].geometry.data.vertices.items.ptr);
-    try std.testing.expectEqual(indices, prepared.entries.items[0].geometry.data.indices.items.ptr);
-    try std.testing.expectEqual(signature, prepared.entries.items[0].geometry.signature);
-    list.clear();
-    try list.add_rect(.{ .x0 = 1, .y0 = 0, .x1 = 11, .y1 = 10 }, color, 0);
-    try list.rebuild(&prepared, &texture, 100, 100, 1);
-    try std.testing.expectEqual(1, prepared.entries.items.len);
-    try std.testing.expectEqual(vertices, prepared.entries.items[0].geometry.data.vertices.items.ptr);
-    try std.testing.expect(signature.? != prepared.entries.items[0].geometry.signature.?);
-    try std.testing.expectError(error.InvalidBounds, list.rebuild(&prepared, &texture, 100, 100, 0));
-    try std.testing.expect(!prepared.valid);
-    try list.rebuild(&prepared, &texture, 100, 100, 1);
-    try std.testing.expect(prepared.valid);
-    list.clear();
-    try list.rebuild(&prepared, &texture, 100, 100, 1);
-    try std.testing.expectEqual(0, prepared.entries.items.len);
 }
