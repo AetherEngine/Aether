@@ -1,6 +1,6 @@
 .{
     .name = .Aether,
-    .version = "0.0.0",
+    .version = "0.1.0",
     .fingerprint = 0x200ca2f6f2b63172, // Changing this has security and trust implications.
     .minimum_zig_version = "0.18.0-dev.146+35accc06e",
     .dependencies = .{
