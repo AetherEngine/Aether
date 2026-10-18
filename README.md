@@ -3,63 +3,41 @@
 
 ## What is Aether?
 
-Aether is a game engine written in [Zig](https://ziglang.org/). It is platform-agnostic -- there should be no difference running between Windows, Linux, macOS, and consoles like the PSP or Switch.
+Aether is a crossplatform game engine written in [Zig](https://ziglang.org/). The same game code runs on desktop (Windows, Linux, macOS), in the browser, and on the PSP, Nintendo 3DS, and Nintendo Switch.
 
-User code is structured as hooks into the engine via a `State` interface. You implement the game logic; the engine handles the platform details.
-
-The public API starts in `core/root.zig`. All high-level engine code lives in
-`core`: the engine loop, states, input actions, audio mixing, rendering
-resources, UI, asset loading, and memory budgets. `platform` owns backend
-contracts, device access, native resource layouts, logging, threads, directories,
-and shared low-level math and storage primitives.
-
-The build creates separate Core and Platform Zig modules. Core accesses shared
-services through `@import("platform")`. Backend SDK imports and generated shaders
-belong to the Platform module. Platform backends have no dependency on Core.
-See [the architecture guide](ARCHITECTURE.md) for ownership and extension rules.
-
-The existing `aether.Engine`, `Audio`, `Rendering`, `Ui`, `Util`, and `Math`
-exports remain available; these are also grouped under `aether.Core`.
-
-`Math` is also its own module, `dependency("engine", ...).module("math")`, for
-code that never links the engine, such as shared server logic or host tools.
-Besides vectors and matrices it has `min`, `max`, `clamp`, `floor`, `ceil`,
-`trunc`, `round`, `sin`, `cos` and `tan`, which tiger_lint requires over the
-builtins: on the PSP those are library calls or software f64, while these stay
-in compares, native conversions and single-precision polynomials.
-Text markup and resource-pack formats belong to applications. The engine provides
-content-neutral text, resource loading, streaming audio, and native services.
+User code is structured as hooks into the engine via a `State` interface. You implement the game logic, the engine handles the rest for you.
 
 ## Features
 
-- **Cross-platform**: Windows, Linux, macOS (PSP/Switch planned)
-- **Multiple graphics backends**: OpenGL 4.5, Vulkan -- selected at compile time, overridable with `-Dgfx=opengl`
-- **Fixed-step game loop**: 144 Hz updates, 20 Hz ticks, uncapped rendering
-- **Action-based input system**: keyboard, mouse, and gamepad with callback bindings
-- **Generic mesh & pipeline API**: define vertex layouts from structs using comptime reflection
-- **Budgeted memory pools**: render, audio, game, user, and scratch -- no hidden heap allocations
-- **Reusable application helpers**: bounded UI widgets and draw lists, ZIP asset
-  sources and staged reloads, owned WAV streams, replacement writes, and serial jobs
+- **Cross-platform**: Windows, Linux, macOS, browser (WASM), PSP, Nintendo 3DS, Nintendo Switch
+- **Graphics backends**: Vulkan (desktop default) and OpenGL 4.5 on desktop. WebGL in the browser, native GPU backends on consoles. Headless mode for servers.
+- **Fixed-step game loop**: 144 Hz updates on desktop (60 Hz on consoles and web), 20 Hz ticks, uncapped rendering
+- **Action-based input**: keyboard, mouse, and gamepad bindings, context stacks, text input sessions, and rebinding
+- **2D and 3D helpers**: cameras, transforms, sprite sheets, flipbooks, billboard batching, and a float `Color` type
+- **Audio**: a mixer with 3D positional playback, resident WAV buffers, streaming sounds, and a tiny chiptune-style synth
+- **Immediate-mode UI**: bounded draw lists, widgets, text wrapping, sprite and font batching, and scaling
+- **Static budgeted memory pools**: `render`, `audio`, `frame`, and `user` -- carved from one block you hand the engine. No hidden allocations.
 
 ## Requirements
 
-- Zig **0.17.0** or later (see `build.zig.zon` for exact minimum)
-- Vulkan SDK (for Vulkan headers; on macOS, MoltenVK is used)
+- Zig **0.18.0-dev.146+35accc06e** or later (see `build.zig.zon`)
 
-Desktop windowing, input, and audio use SDL3, which the build compiles from
-vendored source and statically links -- no system windowing library is needed.
+Everything is fetched by the Zig package manager: SDL3 is built from source and linked statically, Vulkan headers and the Slang shader compiler are downloaded at build time.
+
+Per-target extras:
+
+| Target | Needs |
+|--------|-------|
+| macOS | MoltenVK (`brew install molten-vk`, or point `-Dmolten-vk-path` at it). Must be build on a mac. |
+| Browser | `spirv-cross` on `PATH` (or `-Dspirv-cross-path`) |
+| Switch | [devkitPro](https://devkitpro.org/) with devkitA64 and libnx (`$DEVKITPRO` or `-Ddevkitpro-path`) |
 
 ## Getting Started
 
-Add Aether as a dependency in your `build.zig.zon`:
+Add Aether as a dependency:
 
-```zon
-.dependencies = .{
-    .engine = .{
-        .url = "https://github.com/user/aether/archive/<commit>.tar.gz",
-        .hash = "...",
-    },
-},
+```sh
+zig fetch --save=engine git+https://github.com/AetherEngine/Aether
 ```
 
 Then set up your `build.zig`:
@@ -84,8 +62,6 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    // Create a game executable -- this wires up the engine module
-    // and all platform-specific dependencies (SDL3/Vulkan/OpenGL/pspsdk)
     const exe = Aether.modules.add_game(ae_dep.builder, b, .{
         .name = "my_game",
         .root_source_file = b.path("src/main.zig"),
@@ -94,31 +70,29 @@ pub fn build(b: *std.Build) void {
         .overrides = overrides,
     });
 
-    // Export the artifact (produces EBOOT.PBP for PSP, install artifact otherwise)
+    // Produces EBOOT.PBP on PSP, .3dsx on 3DS, .nro on Switch, a .app on
+    // macOS, a web bundle for WASM, and a plain install elsewhere.
     Aether.packaging.export_artifact(ae_dep.builder, b, exe, config, .{
         .title = "My Game",
+        .resources = &.{
+            .{ .path = b.path("assets/player.png"), .name = "player.png" },
+        },
     });
 
     const run_step = b.step("run", "Run the game");
-    const run_cmd = b.addRunArtifact(exe);
-    run_step.dependOn(&run_cmd.step);
+    run_step.dependOn(&Aether.packaging.add_run_step(exe, config).step);
 }
 ```
 
-The first argument to `modules.add_game` and `packaging.export_artifact` is the
-dependency's builder (`ae_dep.builder`), and the second is your project's
-builder (`b`). This lets Aether resolve its own internal dependencies (SDL3,
-Vulkan, Slang, pspsdk) from its `build.zig.zon` while building artifacts that
-belong to your project.
+The first argument to `modules.add_game` and `packaging.export_artifact` is the dependency's builder (`ae_dep.builder`), and the second is your project's builder (`b`). This lets Aether resolve its own dependencies from its `build.zig.zon` while building artifacts that belong to your project.
 
-The returned executable root is Aether's platform entry (`platform/root/`). Add imports for
-your game root through `user_root_module`:
+The returned executable's root is Aether's platform entry (`platform/root/`). Add imports for your game code through `user_root_module`:
 
 ```zig
 Aether.modules.user_root_module(exe).addImport("my_module", my_module);
 ```
 
-Then write your game code:
+Then write your game:
 
 ```zig
 const std = @import("std");
@@ -129,12 +103,16 @@ pub const aether_options: ae.Options = .{
     .app_name = "my_game",
     .psp = .{
         .module_name = "MyGame",
-        .stack_size = 512 * 1024,
+        .stack_size = 256 * 1024,
     },
 };
 
 const MyState = struct {
-    fn init(ctx: *anyopaque, engine: *ae.Engine) anyerror!void { _ = ctx; _ = engine; }
+    fn init(ctx: *anyopaque, engine: *ae.Engine) anyerror!void {
+        const self = ae.ctx_to_self(MyState, ctx);
+        _ = self;
+        _ = engine;
+    }
     fn deinit(ctx: *anyopaque, engine: *ae.Engine) void { _ = ctx; _ = engine; }
     fn tick(ctx: *anyopaque, engine: *ae.Engine) anyerror!void { _ = ctx; _ = engine; }
     fn update(ctx: *anyopaque, engine: *ae.Engine, dt: f32, _: *const ae.Util.BudgetContext) anyerror!void { _ = ctx; _ = engine; _ = dt; }
@@ -144,28 +122,30 @@ const MyState = struct {
         return .{ .ptr = self, .tab = &.{
             .init = init, .deinit = deinit,
             .tick = tick, .update = update, .draw = draw,
-        }};
+        } };
     }
 };
 
 pub fn main(init: std.process.Init) !void {
-    const memory = try init.gpa.alignedAlloc(u8, .fromByteUnits(16), 32 * 1024 * 1024);
+    const memory_config: ae.Util.MemoryConfig = .{
+        .render = 8 * 1024 * 1024,
+        .audio = 2 * 1024 * 1024,
+        .frame = 2 * 1024 * 1024,
+        .user = 16 * 1024 * 1024,
+    };
+    const memory = try init.gpa.alignedAlloc(u8, .fromByteUnits(16), memory_config.total());
     defer init.gpa.free(memory);
 
     var my_state: MyState = undefined;
     var engine: ae.Engine = undefined;
     try engine.init(init.io, init.environ_map, memory, &.{
-        .memory = .{
-            .render = 8 * 1024 * 1024,
-            .audio = 2 * 1024 * 1024,
-            .game = 2 * 1024 * 1024,
-            .frame = 4 * 1024 * 1024,
-            .user = 16 * 1024 * 1024,
-        },
-        .title = "My Game",
+        .memory = memory_config,
+        .title = aether_options.title,
         .app_name = ae.AppOptions.resolve_app_name(aether_options),
+        .resizable = true,
     }, &my_state.state());
     defer engine.deinit();
+
     engine.run() catch |err| switch (err) {
         error.StateTransitionFailed => {
             if (engine.last_transition_failure()) |state_err| {
@@ -178,115 +158,76 @@ pub fn main(init: std.process.Init) !void {
 }
 ```
 
-Aether owns every target's entry point, so `main` always receives
-`std.process.Init`. `init.io` is the target's Io, completed by Aether where it
-lacks concurrency: `io.async`, `io.concurrent`, and `std.Io.Group` run on std's
-thread pool (desktop), PSP kernel threads, or libnx threads (Switch). The
-browser and 3DS run `async` inline and report `concurrent` unavailable.
+`tick` runs at a fixed 20 Hz for game logic, `update` at a fixed 144 Hz on desktop (60 Hz on consoles and web) for simulation and animation, and `draw` once per rendered frame. An optional `ui_update` hook runs between update and draw. Switch states with `engine.transition(&next.state())` and stop with `engine.quit()`.
 
-For threads with a specific name, stack size, or priority, or on any target
-with native threads (`ae.System.info().background_workers`, which includes 3DS),
-use `ae.Util.Thread`; scope the calling thread's priority with
-`ae.Util.PriorityScope`.
+Each pool is a separate budget: get its allocator with `engine.allocator(.render)` and so on, and use `engine.frame_allocator()` for scratch memory that is reset every frame. Set `.frame = 0` to disable the frame allocator. 
 
-In the browser, `engine.run()` hands
-the loop to the page and returns immediately, so keep the engine and its memory
-in static storage there instead of deinitializing after `run` (see
-`test/web_main.zig`).
+`engine.report()` logs per-pool usage and high-water marks.
 
-Platform and graphics backend are available as comptime constants for per-platform configuration:
+Platform and graphics backend are comptime constants, so budgets and features can be configured per target:
 
 ```zig
 const memory_config: ae.Util.MemoryConfig = switch (ae.platform) {
     .psp => .{ .render = 512 * 1024, .audio = 256 * 1024, .frame = 128 * 1024, ... },
-    else => .{ .render = 8 * 1024 * 1024, .audio = 2 * 1024 * 1024, .frame = 4 * 1024 * 1024, ... },
+    else => .{ .render = 8 * 1024 * 1024, .audio = 2 * 1024 * 1024, .frame = 2 * 1024 * 1024, ... },
 };
 ```
 
-Set `.frame = 0` if you want to disable the per-frame scratch allocator.
+Target-specific services are exposed as `ae.Psp` (system dialogs), `ae.N3ds` (New-model detection), and `ae.Web` (file downloads); each is `void` on other targets.
 
-### Nintendo 3DS streaming audio
+### I/O and threads
 
-The 3DS backend reserves a bounded PCM prefetch cache from the engine's
-`.audio` pool so filesystem latency never runs on the real-time mixer thread.
-It defaults to 512 KiB, split across the 16 software-mix slots; this is staging
-memory, not complete-file loading. Account for it in your audio budget and
-adjust it through application options when needed. The value must be at least
-64 KiB and divisible by 16:
+Aether owns every target's entry point, so `main` always receives `std.process.Init`. `init.io` is the target's Io, completed by Aether where it lacks concurrency: `io.async`, `io.concurrent`, and `std.Io.Group` run on std's thread pool (desktop), PSP kernel threads, or libnx threads (Switch). The browser and 3DS run `async` inline and report `concurrent` unavailable.
 
-```zig
-pub const aether_options: ae.Options = .{
-    .nintendo_3ds = .{
-        .audio_stream_cache_bytes = 512 * 1024,
-    },
-};
-```
+For threads with a specific name, stack size, or priority, or on any target with native threads (`ae.System.info().background_workers`, which includes 3DS), use `ae.Util.Thread`; scope the calling thread's priority with `ae.Util.PriorityScope`.
 
-Use resident sound buffers for short, latency-sensitive effects. Long music
-and ambient assets can use `StreamingSoundDesc`; cold streams still wait for
-their first filesystem read, but cannot stall other audio playback.
+### Browser
 
-## Building
-
-```sh
-# Build and run
-zig build run
-
-# Run tests
-zig build test
-
-# Check source ownership and dependency direction (also runs with tests)
-zig build check-architecture
-
-# Override graphics backend
-zig build run -Dgfx=opengl
-
-# Build for PSP
-zig build -Dtarget=mipsel-psp
-
-# Build in release mode
-zig build -Doptimize=fast
-```
+In the browser, `engine.run()` hands the loop to the page and returns immediately, so keep the engine and its memory in static storage instead of deinitializing after `run` (see `test/web_main.zig`).
 
 ## Input System
 
-Actions are registered by name and bound to one or more input sources:
+Actions are registered by name on `engine.input` and bound to one or more
+sources:
 
 ```zig
-const actions = try ae.Core.input.register_action_set("gameplay");
-const jump = try ae.Core.input.add_action(actions, "jump", .button);
-try ae.Core.input.bind_action(jump, &.{ .source = .{ .key = .Space } });
-try ae.Core.input.install_action_set(actions);
+const actions = try engine.input.register_action_set("gameplay");
+const jump = try engine.input.add_action(actions, "jump", .button);
+try engine.input.bind_action(jump, &.{ .source = .{ .key = .Space } });
+try engine.input.bind_action(jump, &.{ .source = .{ .gamepad_button = .A } });
+try engine.input.install_action_set(actions);
 
-if (ae.Core.input.button(jump).pressed()) {
+if (engine.input.button(jump).pressed()) {
     // jump this frame
 }
 ```
 
-Supported sources: keyboard keys, mouse buttons, mouse scroll, mouse relative movement, and gamepad buttons/axes.
+Action kinds are `.button`, `.axis`, and `.vector2`. Sources are keyboard keys, mouse buttons, mouse wheel, mouse delta, and gamepad buttons and axes;
+axis bindings take a multiplier and deadzone. Context stacks (`push_context`/`pop_context`) switch cursor mode and active actions for menus, `begin_text_input` runs a text entry session, and `begin_capture_next_input` captures the next input for rebinding screens. `Core.input.serialization` converts bindings to and from versioned records for settings files.
 
-On desktop, keyboard keys are physical-position based (SDL scancodes): `Key.W`
-is always the key above `Key.A` on a QWERTY layout, regardless of the OS
-keyboard layout.
+On desktop, keyboard keys are physical-position based (SDL scancodes): `Key.W` is always the key above `Key.A` on a QWERTY layout, regardless of the OS keyboard layout.
 
 ## Rendering
 
-Build editable CPU geometry in `MeshData`, upload or bind it through `Mesh`,
-and draw with an explicit render state:
+Build editable CPU geometry in mesh data, upload it through a mesh, and draw with an explicit render state:
 
 ```zig
 const Vertex = ae.Rendering.Vertex;
-const MeshData = ae.Rendering.MeshData(Vertex);
-const Mesh = ae.Rendering.Mesh(Vertex);
+const MeshData = ae.Rendering.MeshDataType(Vertex);
+const Mesh = ae.Rendering.MeshType(Vertex);
 
-var data = try MeshData.init(render_alloc);
-defer data.deinit(render_alloc);
+const render = engine.allocator(.render);
+
+var data = try MeshData.init(render);
+defer data.deinit(render);
 
 var mesh = try Mesh.init(&.{});
 defer mesh.deinit();
 
-try data.add_tri(render_alloc, a, b, c);
+try data.add_tri(render, a, b, c);
 mesh.update(&data);
+
+const texture = try ae.Rendering.Texture.load(engine.io, engine.dirs.resources, render, "player.png", &.{});
 
 ae.Rendering.set_state(&.{
     .texture = texture.handle,
@@ -294,13 +235,22 @@ ae.Rendering.set_state(&.{
     .view = view,
     .depth_write = false,
 });
-mesh.draw(&model);
+mesh.draw(&transform.get_matrix());
 ```
 
-On PSP and 3DS, mesh data is borrowed directly by the backend, so keep the
-`MeshData` alive and call `mesh.update(&data)` after edits that may reallocate.
-Static textures can use the default `.cpu_access = .none`; request
-`.read_write` when you need `set_pixel` or direct CPU buffer access.
+On PSP and 3DS, mesh data is borrowed directly by the backend, so keep the mesh data alive and call `mesh.update(&data)` after edits that may reallocate. Static textures can use the default `.cpu_access = .none`; request `.read_write` when you need `set_pixel` or direct CPU buffer access.
+
+## Audio
+
+```zig
+const music = try ae.Audio.load_wav(engine.io, engine.dirs.resources, engine.allocator(.audio), "music.wav");
+_ = try ae.Audio.play_buffer(music, &.{ .priority = .critical });
+
+ae.Audio.set_listener(listener_pos, forward, up);
+_ = try ae.Audio.play_buffer_at(step_sound, pos, &.{ .ref_distance = 1.0, .max_distance = 25.0 });
+```
+
+Use resident buffers for short, latency-sensitive effects and streams (`create_wav_stream`, `StreamingSoundDesc`) for music and ambience.
 
 ## Build API Reference
 
@@ -313,32 +263,72 @@ Creates a game executable with the engine module and platform dependencies wired
 | `name` | `[]const u8` | Executable name |
 | `root_source_file` | `LazyPath` | Path to your main source file |
 | `target` | `ResolvedTarget` | Build target |
-| `optimize` | `OptimizeMode` | Optimization level (default: `.Debug`) |
-| `overrides` | `config.Config.Overrides` | Graphics/display mode overrides (default: `.{}`) |
+| `optimize` | `std.lang.Optimize` | Optimization level (default: `.debug`) |
+| `overrides` | `config.Config.Overrides` | Backend and feature overrides (default: `.{}`) |
+
+### `Aether.modules.add_headless(owner, b, opts) -> *Compile`
+
+Same options as `add_game`, but always builds with no graphics, windowing, or
+audio -- for servers, tools, and tests that only need engine logic.
+
+### `Aether.modules.user_root_module(exe) -> *Module`
+
+Your game's root module inside the executable, for adding imports.
+
+### `Aether.modules.math_module(owner) -> *Module`
+
+The standalone math module, with no platform dependencies.
 
 ### `Aether.packaging.export_artifact(owner, b, exe, config, opts)`
 
-Exports the build artifact. For PSP targets, produces an `EBOOT.PBP`. For desktop, installs the artifact normally.
+Packages and installs the executable for its platform. Use
+`export_artifact_with_outputs` to also get generated outputs such as the 3DSX.
 
 | Option | Type | Description |
 |--------|------|-------------|
-| `title` | `[]const u8` | Application title (used in PSP `EBOOT.PBP`) |
-| `output_dir` | `?[]const u8` | Output directory name (optional) |
-| `icon0` | `?LazyPath` | PSP icon (optional) |
-| `pic0`, `pic1` | `?LazyPath` | PSP background images (optional) |
-| `snd0` | `?LazyPath` | PSP startup sound (optional) |
-| `windows_icon` | `?LazyPath` | Windows ICO embedded in the executable (optional) |
+| `title` | `[]const u8` | Name shown by the OS (PSP XMB, macOS bundle, consoles) |
+| `output_dir` | `?[]const u8` | PSP/3DS/Switch: subdirectory under `zig-out/bin/` |
+| `resources` | `[]const Resource` | Files installed beside the executable, or into the macOS bundle / next to `EBOOT.PBP` |
+| `icon0`, `icon1`, `pic0`, `pic1`, `snd0` | `?LazyPath` | PSP: PBP assets |
+| `bundle_id` | `?[]const u8` | macOS: `CFBundleIdentifier` (default: `com.aether.<name>`) |
+| `icon_png` | `?LazyPath` | macOS: bundle icon |
+| `windows_icon` | `?LazyPath` | Windows: ICO embedded in the executable |
+| `web_resources` | `?LazyPath` | Browser: directory copied into the site and preloaded |
+| `web_resource_files` | `[]const Resource` | Browser: individual files copied into the site |
+| `web_resource_manifest` | `[]const u8` | Browser: newline-separated paths under `web_resources` to preload |
+| `web_wasm_name` | `[]const u8` | Browser: wasm filename (default: `Aether.wasm`) |
+| `web_app_module` | `?LazyPath` | Browser: ES module exporting `hostImports(ctx)` for app-specific imports |
+| `switch_author`, `switch_version` | `[]const u8` | Switch: NACP metadata |
+| `switch_icon` | `?LazyPath` | Switch: 256x256 JPEG icon |
+| `switch_romfs` | `?LazyPath` | Switch: directory embedded as RomFS |
+| `nintendo_3ds_publisher`, `nintendo_3ds_description` | `[]const u8` | 3DS: SMDH metadata |
+| `nintendo_3ds_icon` | `?LazyPath` | 3DS: 48x48 icon |
+| `nintendo_3ds_romfs` | `?LazyPath` | 3DS: directory embedded as RomFS |
+
+### `Aether.packaging.add_run_step(exe, config) -> *Run`
+
+Runs the installed executable on desktop (inside the `.app` on macOS). On
+console and browser targets the step fails with an explanation; use
+`add_link3dsx` for 3DS, nxlink for Switch, or `add_web_bundle` and
+`add_serve_web_step` for the browser.
 
 ### `Aether.config.Config.resolve(target, overrides) -> Config`
 
-Resolves the full engine configuration (platform, graphics backend, audio, input) from the build target and any user overrides. Pass the result to `packaging.export_artifact`.
+Resolves the engine configuration (platform, graphics and audio backends,
+feature flags) from the build target and any overrides. Pass the result to
+`packaging.export_artifact`.
 
 ### `Aether.config.Config.Overrides`
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `gfx` | `?config.Gfx` | Graphics backend override (`null` = auto-detect) |
-| `psp_display_mode` | `?config.PspDisplayMode` | PSP display mode (`null` = `rgba8888`) |
+| `gfx` | `?config.Gfx` | Graphics backend: `opengl`, `vulkan`, `webgl`, `headless` (`null` = target default) |
+| `audio` | `?config.Audio` | `none` disables audio (`null` = platform default) |
+| `psp_display_mode` | `?config.PspDisplayMode` | PSP: `rgba8888` (default) or `rgb565` |
+| `psp_mipmaps` | `?bool` | PSP: generate mips for VRAM-resident textures (default: `false`) |
+| `use_cwd` | `?bool` | Use the working directory for resources and data (default: `false`) |
+| `flush_logs` | `?bool` | Flush the log after every message, for diagnosing hangs (default: `false`) |
+| `mesh_indexing` | `?bool` | Enable index buffers (default: on except PSP and headless) |
 
 ## License
 
