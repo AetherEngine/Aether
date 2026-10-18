@@ -10,6 +10,7 @@ pub const Transform = @import("transform.zig");
 pub const Camera = @import("camera.zig");
 pub const Flipbook = @import("flipbook.zig");
 pub const BillboardBatcher = @import("billboard_batcher.zig");
+pub const SpriteSheet = @import("sprite_sheet.zig");
 pub const Texture = @import("texture.zig");
 const render_state = @import("platform").graphics;
 pub const RenderState = render_state.RenderState;
@@ -48,4 +49,5 @@ test {
     std.testing.refAllDecls(Camera);
     std.testing.refAllDecls(Flipbook);
     std.testing.refAllDecls(BillboardBatcher);
+    std.testing.refAllDecls(SpriteSheet);
 }

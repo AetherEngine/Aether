@@ -75,6 +75,8 @@ fn exercise(init: std.process.Init) !void {
     try batch.begin(position, try Rendering.BillboardBatcher.Basis.from_view(matrices.view));
     try batch.add(.{ .position = Vec3.new(0, 0, -4), .size = .{ 1, 1 } });
     try batch.add(.{ .position = Vec3.new(2, 0, -4), .size = .{ 1, 2 }, .facing = .{ .axis_y = position } });
+    const sheet: Rendering.SpriteSheet = .{ .width = 256, .height = 256, .cell_width = 32, .cell_height = 48 };
+    try batch.add(.{ .position = Vec3.new(-2, 0, -4), .size = sheet.cell_world_size(32), .uv = sheet.cell(1, 4).mirrored() });
     std.mem.doNotOptimizeAway(batch.model_matrix());
     std.mem.doNotOptimizeAway(batch.encoding.decode(batch.data.vertices.items[0].pos));
 

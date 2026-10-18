@@ -43,9 +43,14 @@ pub const Facing = union(enum) {
     fixed: Basis,
 };
 pub const UvRegion = struct {
-    /// Packed UVs match Rendering.Vertex and Ui.TextureAtlas tile regions.
+    /// Packed UVs match Rendering.Vertex, Rendering.SpriteSheet cells and Ui.TextureAtlas tile regions.
     min: [2]i16 = .{ 0, 0 },
     max: [2]i16 = .{ 32767, 32767 },
+
+    /// Flip left to right
+    pub fn mirrored(self: UvRegion) UvRegion {
+        return .{ .min = .{ self.max[0], self.min[1] }, .max = .{ self.min[0], self.max[1] } };
+    }
 };
 pub const Billboard = struct {
     position: Vec3,

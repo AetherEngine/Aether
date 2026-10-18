@@ -27,7 +27,7 @@ the named Platform dependency remain covered.
 | `core/engine.zig`, `core/State.zig`, `core/state_machine.zig` | Subsystem lifetime, frame scheduling, state transitions, memory accounting |
 | `core/app_options.zig` | Application configuration |
 | `core/input/` | Actions, bindings, contexts, capture, text editing sessions, event evaluation, display labels, and versioned binding records |
-| `core/rendering/` | Mesh/texture ownership, CPU mesh editing, texture loading, cameras/frustums, flipbooks, and billboard batches |
+| `core/rendering/` | Mesh/texture ownership, CPU mesh editing, texture loading, cameras/frustums, flipbooks, sprite sheets, and billboard batches |
 | `core/audio/` | Borrowed/owned streams, buffer and streaming WAV parsing, voices, software mixing, spatial audio |
 | `core/ui/` | Widget state/layout, input adaptation, ordered draw lists, clipping, prompts, text wrapping, sprite/font batching, and atlases |
 | `core/resources/` | Borrowed asset-source contracts, independent reader owners, and staged decoded asset stores |
