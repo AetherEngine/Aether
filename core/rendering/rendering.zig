@@ -12,6 +12,7 @@ pub const Flipbook = @import("flipbook.zig");
 pub const BillboardBatcher = @import("billboard_batcher.zig");
 pub const SpriteSheet = @import("sprite_sheet.zig");
 pub const Texture = @import("texture.zig");
+pub const Color = @import("color.zig").Color;
 const render_state = @import("platform").graphics;
 pub const RenderState = render_state.RenderState;
 pub const BlendMode = render_state.BlendMode;
@@ -50,4 +51,5 @@ test {
     std.testing.refAllDecls(Flipbook);
     std.testing.refAllDecls(BillboardBatcher);
     std.testing.refAllDecls(SpriteSheet);
+    std.testing.refAllDecls(Color);
 }
