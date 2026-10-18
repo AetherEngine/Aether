@@ -11,6 +11,7 @@ pub const SoundBufferDesc = stream_mod.SoundBufferDesc;
 pub const StreamingSoundDesc = stream_mod.StreamingSoundDesc;
 pub const SlotSource = stream_mod.SlotSource;
 pub const wav = @import("wav.zig");
+pub const synth = @import("synth.zig");
 
 pub const mixer_mod = @import("mixer.zig");
 pub const SoundHandle = mixer_mod.SoundHandle;

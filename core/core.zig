@@ -29,4 +29,5 @@ test {
     testing.refAllDecls(Storage);
     testing.refAllDecls(Jobs);
     testing.refAllDecls(Resources);
+    testing.refAllDecls(Audio.synth);
 }
