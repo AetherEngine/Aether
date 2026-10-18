@@ -21,7 +21,7 @@ pub const ExportOptions = struct {
     windows_icon: ?std.Build.LazyPath = null,
     /// Files to install into the app bundle. On macOS they land under
     /// `Contents/Resources/<name>`. On desktop non-macOS they are copied
-    /// alongside the exe in `zig-out/bin/`. Ignored on PSP.
+    /// alongside the exe in `zig-out/bin/`. On PSP they are copied beside EBOOT.PBP in `zig-out/bin/<output_dir>/`.
     resources: []const Resource = &.{},
     /// WASM/browser: directory copied into the web artifact root and exposed
     /// through `resources.manifest` for the JavaScript WASI preloader.

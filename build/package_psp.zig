@@ -50,6 +50,13 @@ pub fn eboot_pipeline(b: *std.Build, exe: *std.Build.Step.Compile, psp_dep: *std
             .dest_dir = .{ .override = .{ .custom = std.mem.concat(alloc, u8, &.{ "bin/", dir }) catch @panic("OOM") } },
             .dest_sub_path = "app.elf",
         }).step);
+        // The PSP reads resources from beside EBOOT.PBP.
+        for (opts.resources) |res| {
+            b.getInstallStep().dependOn(&b.addInstallBinFile(
+                res.path,
+                std.mem.concat(alloc, u8, &.{ dir, "/", res.name }) catch @panic("OOM"),
+            ).step);
+        }
     }
 
     return result;

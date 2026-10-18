@@ -33,7 +33,7 @@ pub fn export_artifact(
 
 /// Installs the game executable with platform-appropriate packaging and
 /// returns generated outputs that subsequent build steps can consume.
-/// - PSP: ELF -> PRX -> SFO -> EBOOT.PBP pipeline.
+/// - PSP: ELF -> PRX -> SFO -> EBOOT.PBP pipeline, plus any `opts.resources` copied beside EBOOT.PBP.
 /// - macOS: produces a `<name>.app` bundle under `zig-out/bin/`.
 /// - Other desktop: plain `b.installArtifact`, plus any `opts.resources`
 ///   copied alongside the exe.
@@ -68,6 +68,24 @@ pub fn export_artifact_with_outputs(
     }
 
     return .{};
+}
+
+pub fn add_run_step(exe: *std.Build.Step.Compile, config: config_mod.Config) *std.Build.Step.Run {
+    const b = exe.step.owner;
+    const run_cmd = std.Build.Step.Run.create(b, b.fmt("run {s}", .{exe.name}));
+    const installed_exe = switch (config.platform) {
+        .macos => b.fmt("{s}.app/Contents/MacOS/{s}", .{ exe.name, exe.name }),
+        .linux, .windows => exe.out_filename,
+        .psp, .nintendo_3ds, .nintendo_switch, .wasm => {
+            const fail = b.addFail(b.fmt("{s} cannot run on the host for target {t}", .{ exe.name, config.platform }));
+            run_cmd.step.dependOn(&fail.step);
+            return run_cmd;
+        },
+    };
+    run_cmd.addFileArg(b.graph.path(.install_bin, installed_exe));
+    run_cmd.addPassthruArgs();
+    run_cmd.step.dependOn(b.getInstallStep());
+    return run_cmd;
 }
 
 pub const add_web_bundle = web.add_web_bundle;

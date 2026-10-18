@@ -256,6 +256,15 @@ fn add_executable(
     return exe;
 }
 
+/// MinGW's intrin.h pulls in Zig's AVX512-BMM clang headers, whose builtins
+/// translate-c doesn't know yet; pre-define their guards to skip them.
+fn skip_avx512_bmm(b: *std.Build, sdl3: *std.Build.Module) void {
+    const sdl_c = sdl3.import_table.get("c").?.root_source_file.?.generated.index;
+    const translate_c = b.graph.generated_files.items[@backingInt(sdl_c)].cast(std.Build.Step.TranslateC).?;
+    translate_c.defineCMacro("_AVX512BMMINTRIN_H", null);
+    translate_c.defineCMacro("__BMMVLINTRIN_H", null);
+}
+
 /// SDL3 windowing/input/audio, OpenGL bindings, and Vulkan for desktop targets.
 fn add_desktop_dependencies(
     owner: *std.Build,
@@ -285,7 +294,9 @@ fn add_desktop_dependencies(
         .ext_ttf = false,
         .c_sdl_preferred_linkage = .static,
     })) |sdl3_dep| {
-        platform_mod.addImport("sdl3", sdl3_dep.module("sdl3"));
+        const sdl3 = sdl3_dep.module("sdl3");
+        if (target.result.os.tag == .windows) skip_avx512_bmm(b, sdl3);
+        platform_mod.addImport("sdl3", sdl3);
     }
 
     platform_mod.addImport("gl", gl_bindings);
