@@ -41,7 +41,8 @@ fn write_replace_using(io: std.Io, dir: std.Io.Dir, path: []const u8, body: anyt
     if (!replace and try exists(io, dir, previous)) return error.BackupExists;
     _ = try valid_destination(io, dir, path);
 
-    const file = try dir.createFile(io, temp, .{ .exclusive = true });
+    // Windows weirdness: file.stat() requires read access on the handle.
+    const file = try dir.createFile(io, temp, .{ .exclusive = true, .read = true });
     var keep_temp = false;
     errdefer if (!keep_temp) dir.deleteFile(io, temp) catch {};
     const bytes = blk: {
