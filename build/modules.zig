@@ -252,7 +252,7 @@ fn add_executable(
             exe.wasi_exec_model = .reactor;
             exe.shared_memory = true;
             exe.initial_memory = 64 * 1024 * 1024;
-            exe.max_memory = 256 * 1024 * 1024;
+            exe.max_memory = 1024 * 1024 * 1024;
         },
         .windows => if (config.gfx != .headless and optimize != .debug) {
             exe.subsystem = .windows;

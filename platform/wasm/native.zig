@@ -1,5 +1,8 @@
 //! Browser services exposed to applications as `aether.Web`.
 
+/// Same heap as `std.process.Init.gpa`, for allocations made away from main.
+pub const allocator = @import("heap.zig").allocator;
+
 extern "aether_host" fn aether_download_file(
     path: [*]const u8,
     path_len: usize,

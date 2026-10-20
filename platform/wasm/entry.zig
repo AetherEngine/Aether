@@ -10,7 +10,7 @@ const AetherIo = @import("../io.zig").AetherIo;
 const io = @import("io.zig");
 
 const log = std.log.scoped(.aether_wasm_entry);
-const gpa = std.heap.wasm_allocator;
+const gpa = @import("heap.zig").allocator;
 
 pub const hosts_frame_loop = true;
 

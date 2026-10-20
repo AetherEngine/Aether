@@ -1,6 +1,7 @@
 const std = @import("std");
 const audio = @import("../audio.zig");
 const SlotSource = audio.SlotSource;
+const heap = @import("heap.zig");
 
 const max_slots = 32;
 
@@ -42,8 +43,8 @@ pub fn play_slot(slot: u8, source: SlotSource) audio.PlaySlotError!void {
         },
         .stream => |stream| {
             const len = stream.byte_length orelse return error.AudioHostRejectedStream;
-            const data = std.heap.wasm_allocator.alloc(u8, @intCast(len)) catch return error.OutOfMemory;
-            defer std.heap.wasm_allocator.free(data);
+            const data = heap.allocator.alloc(u8, @intCast(len)) catch return error.OutOfMemory;
+            defer heap.allocator.free(data);
 
             stream.reader.readSliceAll(data) catch return error.AudioHostRejectedStream;
 
