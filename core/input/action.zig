@@ -154,7 +154,24 @@ pub fn binding_contribution(b: binding_mod.Binding, dev: *const DeviceState) f32
         .gamepad_button => |gb| raw = if (dev.gamepad_buttons.contains(gb)) 1.0 else 0.0,
         .gamepad_axis => |ga| {
             raw = dev.axis(ga);
-            if (raw > b.deadzone) {
+            // Per-axis deadzones crush diagonals on circular-gated sticks, so
+            // vector bindings on a stick axis use the stick's radial magnitude.
+            const paired: ?data.Axis = switch (ga) {
+                .LeftX => .LeftY,
+                .LeftY => .LeftX,
+                .RightX => .RightY,
+                .RightY => .RightX,
+                .LeftTrigger, .RightTrigger => null,
+            };
+            if (b.component != .none and paired != null) {
+                const other = dev.axis(paired.?);
+                const mag = @sqrt(raw * raw + other * other);
+                if (mag <= b.deadzone) {
+                    raw = 0.0;
+                } else {
+                    raw *= (@min(mag, 1.0) - b.deadzone) / (1.0 - b.deadzone) / mag;
+                }
+            } else if (raw > b.deadzone) {
                 raw = (raw - b.deadzone) / (1.0 - b.deadzone);
             } else if (raw < -b.deadzone) {
                 raw = (raw + b.deadzone) / (1.0 - b.deadzone);
@@ -244,4 +261,20 @@ fn accumulate(value: *ActionValue, b: binding_mod.Binding, dev: *const DeviceSta
             .none => {},
         },
     }
+}
+
+test "bugfix: stick vector bindings use a radial deadzone so diagonals reach full magnitude" {
+    var dev: DeviceState = .{};
+    const bx: binding_mod.Binding = .{ .source = .{ .gamepad_axis = .LeftX }, .component = .x };
+    const by: binding_mod.Binding = .{ .source = .{ .gamepad_axis = .LeftY }, .component = .y };
+
+    dev.gamepad_axes[@backingInt(data.Axis.LeftX)] = 0.7071;
+    dev.gamepad_axes[@backingInt(data.Axis.LeftY)] = 0.7071;
+    const x = binding_contribution(bx, &dev);
+    const y = binding_contribution(by, &dev);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), @sqrt(x * x + y * y), 1e-3);
+
+    dev.gamepad_axes[@backingInt(data.Axis.LeftX)] = 0.35;
+    dev.gamepad_axes[@backingInt(data.Axis.LeftY)] = 0.35;
+    try std.testing.expect(binding_contribution(bx, &dev) > 0.0);
 }
