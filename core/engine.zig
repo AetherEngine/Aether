@@ -499,8 +499,8 @@ pub const Engine = struct {
         const ns_per_us: i64 = 1000;
 
         const updates_hz: u32 = switch (options.config.platform) {
-            .windows, .linux, .macos => 144,
-            .wasm, .psp, .nintendo_3ds, .nintendo_switch => 60,
+            .windows, .linux, .macos, .wasm => 240,
+            .psp, .nintendo_3ds, .nintendo_switch => 60,
         };
         const ticks_hz: u32 = 20;
         const update_us: u64 = us_per_s / updates_hz;
