@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const assert = std.debug.assert;
 
 const Util = @import("util/util.zig");
@@ -401,6 +402,7 @@ pub const Engine = struct {
     }
 
     pub fn report(self: *const Engine) void {
+        if (builtin.mode != .debug) return;
         const diagnostics = self.memory_diagnostics();
         Util.engine_logger.info("--- memory pools ---", .{});
         if (diagnostics.profile_name) |name| {
@@ -506,9 +508,8 @@ pub const Engine = struct {
         const update_budget_ns: i64 = @as(i64, @intCast(update_us)) * ns_per_us;
 
         var clock = std.Io.Clock.boot;
-        const fps_window_us: i64 = @intCast(us_per_s);
 
-        const report_fps = options.config.gfx != .headless;
+        const report_fps = builtin.mode == .debug and options.config.gfx != .headless;
 
         const trace_loop = self.debug_trace_loops > 0;
         const trace_loop_index = self.debug_trace_loop_index + 1;
@@ -739,6 +740,7 @@ pub const Engine = struct {
         }
 
         if (report_fps) {
+            const fps_window_us: i64 = @intCast(us_per_s);
             if (drew_frame) self.run_loop.fps_count += 1;
             const end_us = elapsed_us_since(self.run_loop.run_start_ns, clock.now(self.io).toNanoseconds());
             if (end_us >= self.run_loop.fps_window_end) {
