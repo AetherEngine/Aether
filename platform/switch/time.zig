@@ -21,7 +21,7 @@ pub fn sleep(timeout: std.Io.Timeout) std.Io.Cancelable!void {
     c.svcSleepThread(clamp_ns(ns));
 }
 
-fn timeout_nanoseconds(timeout: std.Io.Timeout) i96 {
+pub fn timeout_nanoseconds(timeout: std.Io.Timeout) i96 {
     return switch (timeout) {
         .none => 0,
         .duration => |duration| duration.raw.nanoseconds,

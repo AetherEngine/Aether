@@ -7,7 +7,8 @@ const Tasks = @import("../io.zig").Tasks;
 
 /// libnx uses 1024-byte path buffers, including the terminator.
 pub const max_path_bytes: usize = 1024;
-pub const rename_replaces_destination = true;
+// fsdev rename fails with EEXIST instead of replacing.
+pub const rename_replaces_destination = false;
 pub const tasks: Tasks = .{ .native_threads = .{ .stack_size = 2 * 1024 * 1024 } };
 
 pub fn base() std.Io {

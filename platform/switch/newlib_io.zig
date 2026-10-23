@@ -65,6 +65,7 @@ const vtable: Io.VTable = blk: {
     v.dirCreateDirPath = dirCreateDirPath;
     v.dirCreateDirPathOpen = dirCreateDirPathOpen;
     v.dirOpenDir = dirOpenDir;
+    v.dirStatFile = dirStatFile;
     v.dirAccess = dirAccess;
     v.dirCreateFile = dirCreateFile;
     v.dirCreateFileAtomic = dirCreateFileAtomic;
@@ -95,6 +96,9 @@ const vtable: Io.VTable = blk: {
     v.now = now;
     v.clockResolution = clockResolution;
     v.sleep = sleep;
+    v.futexWait = futexWait;
+    v.futexWaitUncancelable = futexWaitUncancelable;
+    v.futexWake = futexWake;
     v.random = random;
     v.netListenIp = netListenIp;
     v.netAccept = netAccept;
@@ -449,6 +453,26 @@ fn dirOpenDir(_: ?*anyopaque, dir: Dir, sub_path: []const u8, options_arg: Dir.O
     _ = c.closedir(stream);
 
     return registerDir(path);
+}
+
+// sdmc has no symlinks, so follow_symlinks needs no handling.
+fn dirStatFile(_: ?*anyopaque, dir: Dir, sub_path: []const u8, _: Dir.StatFileOptions) Dir.StatFileError!File.Stat {
+    var path_buffer: [max_path_bytes:0]u8 = undefined;
+    const path = try rootedPathForDir(&path_buffer, dir, sub_path);
+    var st: c.struct_stat = undefined;
+    if (c.stat(path.ptr, &st) != 0) return openError(errno());
+    const mtime: Io.Timestamp = .fromNanoseconds(@as(i96, st.st_mtim.tv_sec) * std.time.ns_per_s);
+    return .{
+        .inode = zero(File.INode),
+        .nlink = zero(File.NLink),
+        .size = @intCast(st.st_size),
+        .permissions = .default_file,
+        .kind = statKind(st.st_mode),
+        .atime = null,
+        .mtime = mtime,
+        .ctime = mtime,
+        .block_size = 1,
+    };
 }
 
 fn dirAccess(_: ?*anyopaque, dir: Dir, sub_path: []const u8, opts: Dir.AccessOptions) Dir.AccessError!void {
@@ -879,6 +903,30 @@ fn clockResolution(_: ?*anyopaque, clock: Io.Clock) Io.Clock.ResolutionError!Io.
 
 fn sleep(_: ?*anyopaque, timeout: Io.Timeout) Io.Cancelable!void {
     return time.sleep(timeout);
+}
+
+// Without these, std.Io falls back to no-op futexes and every lock,
+// condition and join busy-waits.
+const arbitration_wait_if_equal = 2;
+const signal_type_signal = 0;
+
+fn futexWait(_: ?*anyopaque, ptr: *const u32, expected: u32, timeout: Io.Timeout) Io.Cancelable!void {
+    const ns: i64 = switch (timeout) {
+        .none => -1,
+        else => @intCast(std.math.clamp(time.timeout_nanoseconds(timeout), 0, std.math.maxInt(i64))),
+    };
+    if (ns == 0) return;
+    _ = switch_c.svcWaitForAddress(ptr, arbitration_wait_if_equal, @as(i32, @bitCast(expected)), ns);
+}
+
+fn futexWaitUncancelable(_: ?*anyopaque, ptr: *const u32, expected: u32) void {
+    _ = switch_c.svcWaitForAddress(ptr, arbitration_wait_if_equal, @as(i32, @bitCast(expected)), -1);
+}
+
+fn futexWake(_: ?*anyopaque, ptr: *const u32, max_waiters: u32) void {
+    if (max_waiters == 0) return;
+    const count: i32 = if (max_waiters > std.math.maxInt(i32)) -1 else @intCast(max_waiters);
+    _ = switch_c.svcSignalToAddress(ptr, signal_type_signal, 0, count);
 }
 
 fn random(_: ?*anyopaque, buffer: []u8) void {

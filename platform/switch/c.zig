@@ -157,7 +157,11 @@ const SwitchC = struct {
     pub extern fn socketExit() void;
 
     pub extern fn svcGetSystemTick() imported.u64;
+    pub extern fn svcGetInfo(out: *imported.u64, id0: imported.u32, handle: imported.Handle, id1: imported.u64) imported.Result;
+    pub extern fn svcGetCurrentProcessorNumber() imported.u32;
     pub extern fn svcSleepThread(nano: imported.s64) void;
+    pub extern fn svcWaitForAddress(address: *const anyopaque, arb_type: imported.u32, value: imported.s64, timeout: imported.s64) imported.Result;
+    pub extern fn svcSignalToAddress(address: *const anyopaque, signal_type: imported.u32, value: imported.s32, count: imported.s32) imported.Result;
     pub extern fn svcGetThreadPriority(priority: *imported.s32, handle: imported.Handle) imported.Result;
     pub extern fn svcSetThreadPriority(handle: imported.Handle, priority: imported.u32) imported.Result;
 

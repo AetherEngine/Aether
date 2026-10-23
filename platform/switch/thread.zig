@@ -30,6 +30,22 @@ fn priority_from_switch(v: c_int) api.Priority {
     return .lowest;
 }
 
+// Horizon never time-slices equal or lower priorities on cores 0-2, so a
+// worker on its spawner's core runs only while that thread blocks.
+var next_core: std.atomic.Value(u32) = .init(0);
+
+fn worker_core() c_int {
+    const info_type_core_mask = 0;
+    const current_process = 0xFFFF8001;
+    var mask: u64 = 0;
+    if (c.svcGetInfo(&mask, info_type_core_mask, current_process, 0) != 0) return -2;
+    mask &= ~(@as(u64, 1) << @intCast(c.svcGetCurrentProcessorNumber()));
+    if (mask == 0) return -2;
+    var skip = next_core.fetchAdd(1, .monotonic) % @popCount(mask);
+    while (skip > 0) : (skip -= 1) mask &= mask - 1;
+    return @ctz(mask);
+}
+
 pub fn spawn(cfg: api.Config, comptime func: anytype, args: anytype) !Handle {
     const alloc = cfg.allocator orelse return error.AllocatorRequired;
 
@@ -63,7 +79,7 @@ pub fn spawn(cfg: api.Config, comptime func: anytype, args: anytype) !Handle {
         null,
         cfg.stack_size,
         priority_to_switch(cfg.priority),
-        -2,
+        worker_core(),
     ) != 0) return error.SystemResources;
     errdefer _ = c.threadClose(&inst.header.thread);
 
