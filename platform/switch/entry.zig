@@ -31,6 +31,11 @@ pub fn run(argc: c_int, argv: [*c][*c]u8, app_main: entry.AppMain) c_int {
     const args: [*]const [*:0]const u8 = @ptrCast(argv);
     const init = make_init(.{ .vector = args[0..@intCast(argc)] });
     defer io.deinit_networking();
+    // DEBUG(nxlink): relay stderr to `nxlink -s`.
+    if (__nxlink_host.s_addr != 0) {
+        io.ensure_networking() catch {};
+        _ = nxlinkConnectToHost(true, true);
+    }
 
     entry.run_app(init, app_main) catch |err| {
         fatal_main_error(err, @errorReturnTrace(), @returnAddress());
@@ -167,6 +172,8 @@ extern fn appletMainLoop() bool;
 extern fn consoleInit(console: ?*anyopaque) ?*anyopaque;
 extern fn consoleUpdate(console: ?*anyopaque) void;
 extern fn consoleClear() void;
+extern fn nxlinkConnectToHost(redir_stdout: bool, redir_stderr: bool) c_int;
+extern var __nxlink_host: extern struct { s_addr: u32 };
 
 // .text bounds provided by the Switch link step. The Zig C backend references
 // these as externs, so build.zig provides both raw and zig_e_ names.
