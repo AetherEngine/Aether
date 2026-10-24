@@ -4,6 +4,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const data = @import("platform").input.data;
+const Math = @import("platform").math;
 const binding_mod = @import("binding.zig");
 
 pub const ActionKind = enum(u8) {
@@ -169,7 +170,7 @@ pub fn binding_contribution(b: binding_mod.Binding, dev: *const DeviceState) f32
                 if (mag <= b.deadzone) {
                     raw = 0.0;
                 } else {
-                    raw *= (@min(mag, 1.0) - b.deadzone) / (1.0 - b.deadzone) / mag;
+                    raw *= (Math.min(mag, 1.0) - b.deadzone) / (1.0 - b.deadzone) / mag;
                 }
             } else if (raw > b.deadzone) {
                 raw = (raw - b.deadzone) / (1.0 - b.deadzone);
