@@ -283,7 +283,12 @@ const Swapchain = struct {
         // The GE runs lists in order, which also serializes their use of the shared depth buffer.
         if (self.submitted_count > 1) return false;
         if (buffer_count == 2) {
-            self.draw_idx ^= 1;
+            // Fix VSYNC first frame issue
+            const newest = if (self.submitted_count > 0)
+                self.submitted_queue[(self.submitted_head + self.submitted_count - 1) % buffer_count]
+            else
+                self.pending_idx orelse self.front_idx;
+            self.draw_idx = newest ^ 1;
             return true;
         }
 
