@@ -61,6 +61,27 @@ pub fn MeshDataType(comptime V: type) type {
             self.indices.clearAndFree(alloc);
         }
 
+        /// Bypass allocator methods using `raw` in order to transfer reservations without generic safety checks
+        fn reserve_empty(self: *MeshData, alloc: std.mem.Allocator, quads: usize) DataError!void {
+            const verts = quads * (if (indexing_enabled) @as(usize, 4) else 6);
+            if (self.vertices.items.len == 0 and self.vertices.capacity < verts) {
+                if (self.vertices.capacity > 0) alloc.rawFree(std.mem.sliceAsBytes(self.vertices.allocatedSlice()), .of(V), @returnAddress());
+                self.vertices = .empty;
+                const raw = alloc.rawAlloc(verts * @sizeOf(V), .of(V), @returnAddress()) orelse return error.OutOfMemory;
+                const ptr: [*]V = @ptrCast(@alignCast(raw));
+                self.vertices.items = ptr[0..0];
+                self.vertices.capacity = verts;
+            }
+            if (indexing_enabled and self.indices.items.len == 0 and self.indices.capacity < quads * 6) {
+                if (self.indices.capacity > 0) alloc.rawFree(std.mem.sliceAsBytes(self.indices.allocatedSlice()), .of(Index), @returnAddress());
+                self.indices = .empty;
+                const raw = alloc.rawAlloc(quads * 6 * @sizeOf(Index), .of(Index), @returnAddress()) orelse return error.OutOfMemory;
+                const ptr: [*]Index = @ptrCast(@alignCast(raw));
+                self.indices.items = ptr[0..0];
+                self.indices.capacity = quads * 6;
+            }
+        }
+
         pub fn ensure_tri_capacity(self: *MeshData, alloc: std.mem.Allocator, count: usize) DataError!void {
             const add_verts = count * 3;
             if (indexing_enabled) {
@@ -71,10 +92,10 @@ pub fn MeshDataType(comptime V: type) type {
         }
 
         pub fn ensure_quad_capacity(self: *MeshData, alloc: std.mem.Allocator, count: usize) DataError!void {
+            if (indexing_enabled and self.vertices.items.len + count * 4 > @as(usize, std.math.maxInt(Index)) + 1) return error.IndexOverflow;
+            try self.reserve_empty(alloc, count);
             if (indexing_enabled) {
-                const add_verts = count * 4;
-                if (self.vertices.items.len + add_verts > @as(usize, std.math.maxInt(Index)) + 1) return error.IndexOverflow;
-                try self.vertices.ensureTotalCapacity(alloc, self.vertices.items.len + add_verts);
+                try self.vertices.ensureTotalCapacity(alloc, self.vertices.items.len + count * 4);
                 try self.indices.ensureTotalCapacity(alloc, self.indices.items.len + count * 6);
             } else {
                 try self.vertices.ensureTotalCapacity(alloc, self.vertices.items.len + count * 6);
