@@ -720,6 +720,21 @@ pub fn start_frame() bool {
     return true;
 }
 
+/// Mesh data is copied at update, so no frame borrows it.
+pub fn wait_before_update() void {}
+
+pub fn gpu_fence() u32 {
+    return 0;
+}
+
+pub fn gpu_fence_passed(_: u32) bool {
+    return true;
+}
+
+pub fn drain_gpu() void {
+    context.logical_device.deviceWaitIdle() catch {};
+}
+
 pub fn clear_depth() void {
     const attachment = vk.ClearAttachment{
         .aspect_mask = .{ .depth = true },

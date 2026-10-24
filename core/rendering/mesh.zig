@@ -12,6 +12,7 @@ pub const Index = mesh_contract.Index;
 pub const indexing_enabled = mesh_contract.indexing_enabled;
 pub const SourceMode = mesh_contract.SourceMode;
 pub const Desc = mesh_contract.Desc;
+pub const Retention = mesh_contract.Retention;
 pub const UpdateDesc = mesh_contract.UpdateDesc;
 
 pub const DataError = error{

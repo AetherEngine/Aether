@@ -21,6 +21,14 @@ pub fn start_frame() bool {
 
 pub fn end_frame() void {}
 pub fn clear_depth() void {}
+pub fn wait_before_update() void {}
+pub fn drain_gpu() void {}
+pub fn gpu_fence() u32 {
+    return 0;
+}
+pub fn gpu_fence_passed(_: u32) bool {
+    return true;
+}
 pub fn has_second_screen() bool {
     return false;
 }

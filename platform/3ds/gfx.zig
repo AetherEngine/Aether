@@ -537,11 +537,24 @@ pub fn set_vsync(v: bool) void {
     bottom_presented = false;
 }
 
-pub fn wait_for_borrowed_meshes() void {
+/// Frames do not overlap yet: drain before every update, after which no earlier frame reads borrowed data.
+pub fn wait_before_update() void {
+    drain_gpu();
+}
+
+pub fn gpu_fence() u32 {
+    return 0;
+}
+
+pub fn gpu_fence_passed(_: u32) bool {
+    return true;
+}
+
+pub fn drain_gpu() void {
     if (!initialized or gfx.surface.device == .null) return;
 
     wait_for_frame_sync() catch |err| {
-        std.log.err("3DS Mango borrowed mesh wait failed: {s}; falling back to device idle", .{@errorName(err)});
+        std.log.err("3DS Mango GPU drain failed: {s}; falling back to device idle", .{@errorName(err)});
         gfx.surface.device.waitIdle();
     };
 }

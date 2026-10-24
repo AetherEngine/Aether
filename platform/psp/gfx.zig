@@ -950,9 +950,20 @@ pub fn set_vsync(v: bool) void {
     gfx.surface.sync = v;
 }
 
-/// Meshes on PSP borrow their caller-owned CPU storage. Drain the previous
-/// GE list before the engine lets game code rewrite or release that storage.
-pub fn wait_for_borrowed_meshes() void {
+/// Frames do not overlap yet: drain before every update, after which no earlier frame reads borrowed data.
+pub fn wait_before_update() void {
+    drain_gpu();
+}
+
+pub fn gpu_fence() u32 {
+    return 0;
+}
+
+pub fn gpu_fence_passed(_: u32) bool {
+    return true;
+}
+
+pub fn drain_gpu() void {
     _ = ge_list.draw_sync(.wait);
 }
 

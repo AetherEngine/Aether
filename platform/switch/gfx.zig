@@ -318,6 +318,22 @@ pub fn end_frame() void {
     _ = swapchain.end_frame();
 }
 
+/// Mesh data is copied at update, so no frame borrows it.
+pub fn wait_before_update() void {}
+
+pub fn gpu_fence() u32 {
+    return 0;
+}
+
+pub fn gpu_fence_passed(_: u32) bool {
+    return true;
+}
+
+pub fn drain_gpu() void {
+    if (!initialized) return;
+    context.wait_idle("drain_gpu");
+}
+
 pub fn clear_depth() void {
     if (!initialized or !swapchain.recording) return;
     dk.dkCmdBufClearDepthStencil(swapchain.command_buffer, true, 1.0, 0xFF, 0);

@@ -642,6 +642,9 @@ const host = {
   aether_webgl_clear_depth() {
     clearBuffers(gl.DEPTH_BUFFER_BIT);
   },
+  aether_webgl_finish() {
+    gl.finish();
+  },
   aether_webgl_create_mesh() {
     const handle = nextMeshHandle++;
     const buffer = gl.createBuffer();

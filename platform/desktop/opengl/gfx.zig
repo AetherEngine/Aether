@@ -190,6 +190,21 @@ pub fn end_frame() void {
     gfx.surface.draw();
 }
 
+/// Mesh data is copied at update, so no frame borrows it.
+pub fn wait_before_update() void {}
+
+pub fn gpu_fence() u32 {
+    return 0;
+}
+
+pub fn gpu_fence_passed(_: u32) bool {
+    return true;
+}
+
+pub fn drain_gpu() void {
+    gl.Finish();
+}
+
 pub fn clear_depth() void {
     // See start_frame: the depth clear must ignore the game's write mask.
     if (!depth_write_enabled) gl.DepthMask(gl_constants.true_value);

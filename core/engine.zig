@@ -566,7 +566,7 @@ pub const Engine = struct {
         if (!self.running) return;
 
         // State callbacks may mutate storage still borrowed by the previous frame.
-        Platform.gfx.wait_for_borrowed_meshes();
+        Platform.gfx.api.wait_before_update();
 
         var is_tick_frame = false;
         var tick_cost_ns: i64 = 0;
@@ -705,7 +705,7 @@ pub const Engine = struct {
             Platform.gfx.frame_active = false;
             // Transition cleanup may free meshes borrowed by the submitted frame.
             if (self.states.has_pending_transition()) {
-                Platform.gfx.wait_for_borrowed_meshes();
+                Platform.gfx.api.drain_gpu();
             }
             try self.states.commit_pending(self);
             if (!self.running) return;

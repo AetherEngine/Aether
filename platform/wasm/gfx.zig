@@ -26,6 +26,7 @@ extern "aether_host" fn aether_webgl_set_view_matrix(ptr: *const f32) void;
 extern "aether_host" fn aether_webgl_start_frame(width: u32, height: u32) bool;
 extern "aether_host" fn aether_webgl_end_frame() void;
 extern "aether_host" fn aether_webgl_clear_depth() void;
+extern "aether_host" fn aether_webgl_finish() void;
 extern "aether_host" fn aether_webgl_create_mesh() u32;
 extern "aether_host" fn aether_webgl_destroy_mesh(handle: u32) void;
 extern "aether_host" fn aether_webgl_update_mesh(handle: u32, vertex_ptr: [*]const u8, vertex_len: usize, index_ptr: [*]const u8, index_len: usize) void;
@@ -145,6 +146,21 @@ pub fn start_frame() bool {
 
 pub fn end_frame() void {
     aether_webgl_end_frame();
+}
+
+/// Mesh data is copied at update, so no frame borrows it.
+pub fn wait_before_update() void {}
+
+pub fn gpu_fence() u32 {
+    return 0;
+}
+
+pub fn gpu_fence_passed(_: u32) bool {
+    return true;
+}
+
+pub fn drain_gpu() void {
+    aether_webgl_finish();
 }
 
 pub fn clear_depth() void {
