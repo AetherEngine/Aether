@@ -51,8 +51,8 @@
             .lazy = true,
         },
         .zitrus = .{
-            .url = "git+https://codeberg.org/GasInfinity/zitrus#35cb3ecddb5a7abf4051d731757e73a16da3e64c",
-            .hash = "zitrus-0.0.0-Ewix9KcGIADBrToWj8CSU_t7ew_VgLRk4s7DsLi4fpsT",
+            .url = "git+https://codeberg.org/GasInfinity/zitrus#afcac03c912a28b488e44c2c9c9be2914f84e45e",
+            .hash = "zitrus-0.0.0-Ewix9B8QIACIyOw26PyH_B9V30sBgyVWieDdRr-8dCKj",
         },
         .lint = .{
             .url = "git+https://gitlab.com/hanabi_dev/tiger_lint#3131804b31bd1898865415a507a502ef1118bf08",
