@@ -446,6 +446,20 @@ function bindTexture(texture) {
   boundTexture = texture;
 }
 
+function drawMesh(mesh, modelPtr, first, count) {
+  if (mesh.vertexCount === 0 || count === 0) return;
+  gl.useProgram(program);
+  uploadCameraUbo();
+  uploadPerObjectUbo(modelPtr);
+  gl.bindVertexArray(mesh.vao);
+  bindTexture(currentTexture);
+  if (mesh.indexCount > 0) {
+    gl.drawElements(gl.TRIANGLES, count, gl.UNSIGNED_SHORT, first * 2);
+  } else {
+    gl.drawArrays(gl.TRIANGLES, first, count);
+  }
+}
+
 function clearBuffers(mask) {
   if (!depthWriteEnabled) gl.depthMask(true);
   gl.clear(mask);
@@ -591,6 +605,9 @@ const host = {
     depthWriteEnabled = !!enabled;
     gl.depthMask(depthWriteEnabled);
   },
+  aether_webgl_set_depth_test(enabled) {
+    enabled ? gl.enable(gl.DEPTH_TEST) : gl.disable(gl.DEPTH_TEST);
+  },
   aether_webgl_set_culling(enabled) {
     enabled ? gl.enable(gl.CULL_FACE) : gl.disable(gl.CULL_FACE);
   },
@@ -624,6 +641,9 @@ const host = {
   aether_webgl_end_frame() {},
   aether_webgl_clear_depth() {
     clearBuffers(gl.DEPTH_BUFFER_BIT);
+  },
+  aether_webgl_finish() {
+    gl.finish();
   },
   aether_webgl_create_mesh() {
     const handle = nextMeshHandle++;
@@ -666,17 +686,12 @@ const host = {
   aether_webgl_draw_mesh(handle, modelPtr) {
     const mesh = meshes.get(handle);
     if (!mesh) return;
-    if (mesh.vertexCount === 0) return;
-    gl.useProgram(program);
-    uploadCameraUbo();
-    uploadPerObjectUbo(modelPtr);
-    gl.bindVertexArray(mesh.vao);
-    bindTexture(currentTexture);
-    if (mesh.indexCount > 0) {
-      gl.drawElements(gl.TRIANGLES, mesh.indexCount, gl.UNSIGNED_SHORT, 0);
-    } else {
-      gl.drawArrays(gl.TRIANGLES, 0, mesh.vertexCount);
-    }
+    drawMesh(mesh, modelPtr, 0, mesh.indexCount > 0 ? mesh.indexCount : mesh.vertexCount);
+  },
+  aether_webgl_draw_mesh_range(handle, modelPtr, first, count) {
+    const mesh = meshes.get(handle);
+    if (!mesh) return;
+    drawMesh(mesh, modelPtr, first, count);
   },
   aether_webgl_create_texture(width, height, ptr, len) {
     const handle = nextTextureHandle++;
@@ -715,6 +730,15 @@ const host = {
       gl.UNSIGNED_BYTE,
       copyBytes(ptr, len),
     );
+  },
+  aether_webgl_update_texture_region(handle, ptr, x, y, width, height) {
+    const texture = textures.get(handle);
+    if (!texture) return;
+    bindTexture(texture.tex);
+    // WebGL reads the source synchronously, so a view of WASM memory needs no copy.
+    gl.pixelStorei(gl.UNPACK_ROW_LENGTH, texture.width);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, width, height, gl.RGBA, gl.UNSIGNED_BYTE, bytes(), ptr + (y * texture.width + x) * 4);
+    gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0);
   },
   aether_webgl_bind_texture(handle) {
     const texture = textures.get(handle);

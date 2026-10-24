@@ -24,6 +24,7 @@ pub const RenderState = struct {
     view: Mat4 = Mat4.identity(),
     blend: BlendMode = .alpha,
     depth_write: bool = true,
+    depth_test: bool = true,
     cull: bool = true,
     clip_planes: bool = false,
     fog: FogState = .{},

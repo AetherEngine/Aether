@@ -31,6 +31,7 @@ pub fn run(argc: c_int, argv: [*c][*c]u8, app_main: entry.AppMain) c_int {
     const args: [*]const [*:0]const u8 = @ptrCast(argv);
     const init = make_init(.{ .vector = args[0..@intCast(argc)] });
     defer io.deinit_networking();
+
     // DEBUG(nxlink): relay stderr to `nxlink -s`.
     if (__nxlink_host.s_addr != 0) {
         io.ensure_networking() catch {};

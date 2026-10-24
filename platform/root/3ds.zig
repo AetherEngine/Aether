@@ -5,6 +5,7 @@
 //! application to the 3DS entry.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const platform = @import("platform");
 const app = @import("aether_app");
 const zitrus = @import("zitrus");
@@ -13,6 +14,7 @@ const min_stack_size: u32 = 768 * 1024;
 
 pub const zitrus_options: zitrus.Options = .{
     .stack_size = platform.math.max(min_stack_size, app.options.nintendo_3ds.stack_size),
+    .mango = .{ .validate_usage = builtin.mode == .debug },
 };
 
 pub const std_options = app.options.std_options;

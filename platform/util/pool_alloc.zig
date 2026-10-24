@@ -1,11 +1,13 @@
 //! Fixed-buffer pool allocator backed by a two-level bitmap of free blocks.
 //!
 //! Buffer layout:
-//!   [L0 bitmap (u32[])] [L1 summary (u32[])] [padding] [data blocks...]
+//!   [L0 bitmap (u32[])] [L1 summary (u32[])] [full summary (u32[])] [padding] [data blocks...]
 //!
 //! Every data block is block_size-aligned (and therefore block_align-aligned).
 //! L0 has one bit per block (1 = free, 0 = allocated).
 //! L1 has one bit per L0 word (1 = at least one free block in that group).
+//! The full summary has one bit per L0 word (1 = every block in it is free),
+//! so large requests skip 32 words per summary word instead of walking L0.
 //!
 //! Over-aligned requests (alignment > block_size) are handled by aligning the
 //! actual data pointer for each candidate run, since the pool's data base is
@@ -46,6 +48,7 @@ pub const PoolAlloc = struct {
     buf: []u8,
     l0: [*]u32,
     l1: [*]u32,
+    full: [*]u32,
     data: [*]u8,
     total_blocks: u32,
     l0_words: u32,
@@ -75,7 +78,7 @@ pub const PoolAlloc = struct {
         while (total_blocks > 0) {
             const l0w = div_ceil(total_blocks, word_bits);
             const l1w = div_ceil(l0w, word_bits);
-            const meta_bytes = (l0w + l1w) * @sizeOf(u32);
+            const meta_bytes = (l0w + 2 * l1w) * @sizeOf(u32);
             const data_start = std.mem.alignForward(usize, aligned_start + meta_bytes, block_size);
             const data_bytes = if (buf_end >= data_start) buf_end - data_start else 0;
             const fits: u32 = @intCast(data_bytes / block_size);
@@ -86,13 +89,14 @@ pub const PoolAlloc = struct {
 
         const l0_words: u32 = @intCast(div_ceil(total_blocks, word_bits));
         const l1_words: u32 = @intCast(div_ceil(l0_words, word_bits));
-        const meta_bytes = (l0_words + l1_words) * @sizeOf(u32);
+        const meta_bytes = (l0_words + 2 * l1_words) * @sizeOf(u32);
         const data_start = std.mem.alignForward(usize, aligned_start + meta_bytes, block_size);
 
         var self = PoolAlloc{
             .buf = buf,
             .l0 = @ptrFromInt(aligned_start),
             .l1 = @ptrFromInt(aligned_start + l0_words * @sizeOf(u32)),
+            .full = @ptrFromInt(aligned_start + (l0_words + l1_words) * @sizeOf(u32)),
             .data = @ptrFromInt(data_start),
             .total_blocks = total_blocks,
             .l0_words = l0_words,
@@ -121,6 +125,9 @@ pub const PoolAlloc = struct {
         if (summary_tail > 0) {
             self.l1[self.l1_words - 1] = (@as(u32, 1) << summary_tail) - 1;
         }
+        // Every word is fully free except a partial last one.
+        @memcpy(self.full[0..self.l1_words], self.l1[0..self.l1_words]);
+        if (tail_bits > 0) self.set_full_bit(self.l0_words - 1, false);
     }
 
     pub fn allocator(self: *PoolAlloc) std.mem.Allocator {
@@ -155,6 +162,33 @@ pub const PoolAlloc = struct {
         return @as(usize, largest) * block_size;
     }
 
+    fn set_full_bit(self: *PoolAlloc, wi: u32, is_full: bool) void {
+        const bit = @as(u32, 1) << @as(u5, @intCast(wi & word_mask));
+        if (is_full) self.full[wi / word_bits] |= bit else self.full[wi / word_bits] &= ~bit;
+    }
+
+    fn find_large_run(self: *const PoolAlloc, blocks_needed: u32) ?u32 {
+        assert(blocks_needed >= 2 * word_bits);
+        var wi: u32 = 0;
+        while (wi < self.l0_words) {
+            const summary = self.full[wi / word_bits] >> @as(u5, @intCast(wi & word_mask));
+            if (summary & 1 == 0) {
+                // Skip to the next full word within this summary word, or past it.
+                const skip: u32 = if (summary == 0) word_bits - (wi & word_mask) else @ctz(summary);
+                wi += skip;
+                continue;
+            }
+            const first = wi;
+            while (wi < self.l0_words and self.full[wi / word_bits] & (@as(u32, 1) << @as(u5, @intCast(wi & word_mask))) != 0) wi += 1;
+            const before: u32 = if (first > 0) @clz(~self.l0[first - 1]) else 0;
+            const after: u32 = if (wi < self.l0_words) @ctz(~self.l0[wi]) else 0;
+            const start = first * word_bits - before;
+            const available = before + (wi - first) * word_bits + after;
+            if (available >= blocks_needed and start + blocks_needed <= self.total_blocks) return start;
+        }
+        return null;
+    }
+
     /// Clear a contiguous range of blocks [start, start+count) in L0/L1.
     fn clear_range(self: *PoolAlloc, start: u32, count: u32) void {
         var blk = start;
@@ -170,6 +204,7 @@ pub const PoolAlloc = struct {
                 ((@as(u32, 1) << @as(u5, @intCast(bits_in_word))) - 1) << bit;
 
             self.l0[wi] &= ~mask;
+            self.set_full_bit(wi, false);
             if (self.l0[wi] == 0) {
                 const l1i = wi / word_bits;
                 const l1b: u5 = @intCast(wi & word_mask);
@@ -195,7 +230,10 @@ pub const PoolAlloc = struct {
             else
                 ((@as(u32, 1) << @as(u5, @intCast(bits_in_word))) - 1) << bit;
 
+            // A block already free here means a double free or a wrong length.
+            assert(self.l0[wi] & mask == 0);
             self.l0[wi] |= mask;
+            self.set_full_bit(wi, self.l0[wi] == 0xFFFF_FFFF);
             const l1i = wi / word_bits;
             const l1b: u5 = @intCast(wi & word_mask);
             self.l1[l1i] |= @as(u32, 1) << l1b;
@@ -279,6 +317,11 @@ pub const PoolAlloc = struct {
     fn find_run(self: *PoolAlloc, blocks_needed: u32, alignment: usize) ?u32 {
         if (blocks_needed == 1 and alignment <= block_size) {
             return self.find_single();
+        }
+
+        // Faster scan
+        if (blocks_needed >= 2 * word_bits and alignment <= block_size) {
+            return self.find_large_run(blocks_needed);
         }
 
         // Scan L0 from hint, then wrap around if needed.

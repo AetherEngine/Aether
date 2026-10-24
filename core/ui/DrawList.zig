@@ -214,15 +214,19 @@ pub const Prepared = struct {
     /// writes, so later commands composite over earlier commands independent of
     /// their legacy layer field. Custom renderers must also disable depth writes,
     /// honor resolved_clip when present, and leave no out-of-bounds geometry.
-    pub fn draw(self: *Prepared) void {
+    pub fn draw(self: *Prepared, base: *const Rendering.RenderState) void {
         if (!self.valid) return;
+        var state = base.*;
+        state.depth_write = false;
+        state.cull = false;
         for (self.entries.items) |*entry| switch (entry.*) {
             .geometry => |*geometry| {
-                Rendering.set_state(&.{ .texture = geometry.texture.handle, .depth_write = false, .cull = false });
+                state.texture = geometry.texture.handle;
+                Rendering.set_state(&state);
                 geometry.mesh.draw(&Math.Mat4.identity());
             },
             .empty => {},
-            .custom => |*custom| self.registry.draw_group(@as(*const [1]Custom.Command, @ptrCast(custom))),
+            .custom => |*custom| self.registry.draw_group(@as(*const [1]Custom.Command, @ptrCast(custom)), base),
         };
     }
 };

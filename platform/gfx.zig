@@ -55,19 +55,31 @@ pub const Interface = struct {
 
     start_frame: fn () bool,
     end_frame: fn () void,
+    /// Before game update: afterwards the CPU may rewrite mesh data that submitted frames borrow, according to each mesh's retention.
+    wait_before_update: fn () void,
+    /// Wait until the GPU has finished every submitted frame.
+    drain_gpu: fn () void,
+    /// Fence for data drawn in the frame being recorded.
+    gpu_fence: fn () u32,
+    /// The GPU no longer reads data drawn before `fence` was taken.
+    gpu_fence_passed: fn (u32) bool,
     clear_depth: fn () void,
     has_second_screen: fn () bool,
     switch_second_screen: fn () void,
 
     set_vsync: fn (bool) void,
+    set_clear_color: fn (f32, f32, f32, f32) void,
 
     create_mesh: fn (*const Mesh.Desc) CreateMeshError!Mesh.Handle,
     destroy_mesh: fn (Mesh.Handle) void,
     update_mesh: fn (Mesh.Handle, *const Mesh.UpdateDesc) void,
     draw_mesh: fn (Mesh.Handle, *const Mat4) void,
+    draw_mesh_range: fn (Mesh.Handle, *const Mat4, u32, u32) void,
 
     create_texture: fn (*const Texture.UploadDesc) CreateTextureError!Texture.Handle,
     update_texture: fn (Texture.Handle, []align(16) u8) void,
+    /// Re-upload the (x, y, width, height) rectangle of the full CPU pixels.
+    update_texture_region: fn (Texture.Handle, []align(16) u8, u32, u32, u32, u32) void,
     destroy_texture: fn (Texture.Handle) void,
     force_texture_resident: fn (Texture.Handle) void,
 };
@@ -118,14 +130,6 @@ pub fn deinit() void {
 pub fn set_vsync(v: bool) void {
     sync = v;
     Api.set_vsync(v);
-}
-
-/// Ensure a backend that borrows CPU mesh memory has finished consuming the
-/// previous frame before game code mutates or frees that memory.
-pub inline fn wait_for_borrowed_meshes() void {
-    if (comptime @hasDecl(Api, "wait_for_borrowed_meshes")) {
-        Api.wait_for_borrowed_meshes();
-    }
 }
 
 pub const has_second_screen = Api.has_second_screen;

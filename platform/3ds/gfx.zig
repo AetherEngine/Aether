@@ -30,7 +30,8 @@ const framebuffer_top_width = 480;
 const framebuffer_top_height = 400;
 const framebuffer_bottom_width = 240;
 const framebuffer_bottom_height = 320;
-const command_buffer_count = 2;
+/// Two command buffers per screen, alternating by frame, so recording a frame waits only for the frame before the one the GPU is drawing.
+const command_buffer_count = 4;
 const frame_sync_timeout_ns = 2 * std.time.ns_per_s;
 const tex_bpp = 4;
 const alpha_test_reference: u8 = 25;
@@ -39,6 +40,7 @@ const uv_scale: [4]f32 = .{ snorm16_scale(), snorm16_scale(), 0.0, 0.0 };
 const color_scale: [4]f32 = .{ unorm8_scale(), unorm8_scale(), unorm8_scale(), unorm8_scale() };
 
 const MeshData = struct {
+    retention: Mesh.Retention = .dynamic,
     vertex: MeshBufferData = .{},
     index: MeshBufferData = .{},
     vertex_count: usize = 0,
@@ -146,6 +148,7 @@ var bottom_touched = false;
 var bottom_presented = false;
 var vsync_enabled = true;
 var depth_write_enabled = true;
+var depth_test_enabled = true;
 var culling_enabled = true;
 var current_texture: Texture.Handle = .none;
 var command_pool: mango.CommandPool = .null;
@@ -167,6 +170,61 @@ var bottom_target = RenderTarget{};
 var basic_shader: mango.Shader = .null;
 var vertex_input: mango.VertexInputLayout = .null;
 var texture_sampler: mango.Sampler = .null;
+
+/// Frames overlap: the CPU updates and records frame N+1 while the GPU draws frame N.
+/// `frame_3d_done[f % 2]` holds the semaphore values that mark frame f's 3D work complete on each screen (0 when it drew nothing there).
+var frames_submitted: u32 = 0;
+var frames_completed: u32 = 0;
+var frame_3d_done: [2][2]u64 = @splat(@splat(0));
+/// Dynamic meshes are copied into the recording frame's arena when drawn, so game code may rewrite them while the GPU reads the previous frame.
+const dynamic_arena_bytes = 128 * 1024;
+var dynamic_arenas: [2][]align(16) u8 = .{ &.{}, &.{} };
+var dynamic_arenas_gpu: [2]mango.DeviceSlice = .{ .empty, .empty };
+var dynamic_used: usize = 0;
+/// An arena overflow borrowed a dynamic source; drain before the next update.
+var drain_before_update = false;
+/// A texture was retired or a full upload queued; the next frame start waits for every submitted frame.
+var sync_before_frame = false;
+
+fn frame_parity() u1 {
+    return @truncate(frames_submitted +% 1);
+}
+
+fn frame_3d_complete(frame: u32, timeout_ns: u64) bool {
+    const done = frame_3d_done[@as(u1, @truncate(frame))];
+    for ([_]gfx.Surface.Screen{ .top, .bottom }, done) |screen, value| {
+        if (value == 0) continue;
+        gfx.surface.device.waitSemaphores(.init(&.{screen_semaphore(screen)}, &.{value}), timeout_ns) catch return false;
+    }
+    return true;
+}
+
+fn create_dynamic_arenas() !void {
+    const linear = gfx.surface.device.hostAllocator();
+    for (&dynamic_arenas, &dynamic_arenas_gpu) |*arena, *gpu| {
+        arena.* = try linear.alignedAlloc(u8, .fromByteUnits(16), dynamic_arena_bytes);
+        gpu.* = try gfx.surface.device.hostToDevice(arena.*);
+    }
+}
+
+fn destroy_dynamic_arenas() void {
+    for (&dynamic_arenas, &dynamic_arenas_gpu) |*arena, *gpu| {
+        if (arena.len != 0) gfx.surface.device.hostAllocator().free(arena.*);
+        arena.* = &.{};
+        gpu.* = .empty;
+    }
+}
+
+/// Copy a dynamic mesh buffer into the recording frame's arena, or null if it does not fit.
+fn copy_dynamic(bytes: []const u8) ?mango.DeviceSlice {
+    const parity = frame_parity();
+    const arena = dynamic_arenas[parity];
+    const start = std.mem.alignForward(usize, dynamic_used, 16);
+    if (start + bytes.len > arena.len) return null;
+    @memcpy(arena[start..][0..bytes.len], bytes);
+    dynamic_used = start + bytes.len;
+    return dynamic_arenas_gpu[parity].slice(@intCast(start), @intCast(bytes.len));
+}
 
 pub fn setup(alloc: std.mem.Allocator, io: std.Io) void {
     render_alloc = alloc;
@@ -191,7 +249,7 @@ pub fn init() gfx.InitError!void {
         else => return error.GfxInitFailed,
     };
     top_state.command_buffer = command_buffers[0];
-    bottom_state.command_buffer = command_buffers[1];
+    bottom_state.command_buffer = command_buffers[2];
 
     top_state.fog_lut = gfx.surface.device.createFogLookupTable(.{}) catch return error.GfxInitFailed;
     bottom_state.fog_lut = gfx.surface.device.createFogLookupTable(.{}) catch return error.GfxInitFailed;
@@ -243,6 +301,11 @@ pub fn init() gfx.InitError!void {
         else => return error.GfxInitFailed,
     };
     errdefer destroy_render_target(&bottom_target);
+    create_dynamic_arenas() catch return error.GfxInitFailed;
+    errdefer destroy_dynamic_arenas();
+    frames_submitted = 0;
+    frames_completed = 0;
+    frame_3d_done = @splat(@splat(0));
 
     update_projection_uniform_rows();
 
@@ -257,6 +320,7 @@ pub fn deinit() void {
     destroy_all_meshes();
     destroy_all_textures();
     destroy_pending_texture_uploads();
+    destroy_region_staging();
     collect_retired_resources();
     retired_texture_overflow.deinit(render_alloc);
     retired_texture_overflow = .empty;
@@ -275,7 +339,7 @@ pub fn set_clear_color(r: f32, g: f32, b: f32, a: f32) void {
     clear_color = .{ float_to_u8(r), float_to_u8(g), float_to_u8(b), float_to_u8(a) };
 }
 
-pub fn set_alpha_blend(enabled: bool) void {
+fn set_alpha_blend(enabled: bool) void {
     if (draw_state.alpha_blend_enabled == @intFromBool(enabled)) return;
     draw_state.alpha_blend_enabled = @intFromBool(enabled);
     const state = screen_state(current_screen);
@@ -285,7 +349,16 @@ pub fn set_alpha_blend(enabled: bool) void {
     }
 }
 
-pub fn set_depth_write(enabled: bool) void {
+fn set_depth_test(enabled: bool) void {
+    if (depth_test_enabled == enabled) return;
+    depth_test_enabled = enabled;
+    const state = screen_state(current_screen);
+    if (initialized and state.recording) {
+        state.command_buffer.setDepthTestEnable(depth_test_enabled);
+    }
+}
+
+fn set_depth_write(enabled: bool) void {
     if (depth_write_enabled == enabled) return;
     depth_write_enabled = enabled;
     const state = screen_state(current_screen);
@@ -294,7 +367,7 @@ pub fn set_depth_write(enabled: bool) void {
     }
 }
 
-pub fn set_fog(enabled: bool, near: f32, far: f32, start: f32, end: f32, r: f32, g: f32, b: f32) void {
+fn set_fog(enabled: bool, near: f32, far: f32, start: f32, end: f32, r: f32, g: f32, b: f32) void {
     const linear_depth = far > near and far > 0.0;
     assert(!enabled or linear_depth);
     draw_state.fog_enabled = @intFromBool(enabled);
@@ -354,9 +427,9 @@ const FogTableContext = struct {
     }
 };
 
-pub fn set_clip_planes(_: bool) void {}
+fn set_clip_planes(_: bool) void {}
 
-pub fn set_culling(enabled: bool) void {
+fn set_culling(enabled: bool) void {
     if (culling_enabled == enabled) return;
     culling_enabled = enabled;
     const state = screen_state(current_screen);
@@ -366,7 +439,7 @@ pub fn set_culling(enabled: bool) void {
     }
 }
 
-pub fn set_uv_offset(u: f32, v: f32) void {
+fn set_uv_offset(u: f32, v: f32) void {
     if (draw_state.uv_offset[0] == u and draw_state.uv_offset[1] == v) return;
     draw_state.uv_offset = .{ u, v };
     const state = screen_state(current_screen);
@@ -375,7 +448,7 @@ pub fn set_uv_offset(u: f32, v: f32) void {
     }
 }
 
-pub fn set_proj_matrix(m: *const Mat4) void {
+fn set_proj_matrix(m: *const Mat4) void {
     if (std.meta.eql(pending_state.proj, m.*)) return;
     pending_state.proj = m.*;
     update_projection_uniform_rows();
@@ -385,13 +458,14 @@ pub fn set_proj_matrix(m: *const Mat4) void {
     }
 }
 
-pub fn set_view_matrix(m: *const Mat4) void {
+fn set_view_matrix(m: *const Mat4) void {
     pending_state.view = m.*;
 }
 
 pub fn set_render_state(state: *const Graphics.RenderState) void {
     set_alpha_blend(state.blend == .alpha);
     set_depth_write(state.depth_write);
+    set_depth_test(state.depth_test);
     set_culling(state.cull);
     set_clip_planes(state.clip_planes);
     set_uv_offset(state.uv_offset[0], state.uv_offset[1]);
@@ -404,16 +478,35 @@ pub fn set_render_state(state: *const Graphics.RenderState) void {
 pub fn start_frame() bool {
     if (!initialized or gfx.surface.device == .null) return false;
 
-    wait_for_frame_sync() catch |err| {
-        std.log.err("3DS Mango frame wait failed: {s}", .{@errorName(err)});
-        return false;
-    };
-    collect_retired_resources();
-    drain_pending_texture_uploads();
+    // The frame two back used this parity's command buffers and arena; the GPU may still be drawing the previous frame.
+    const recording = frames_submitted + 1;
+    if (recording > 2) {
+        if (!frame_3d_complete(recording - 2, frame_sync_timeout_ns)) {
+            std.log.err("3DS Mango frame wait stalled: frame={}", .{recording - 2});
+            return false;
+        }
+        frames_completed = math.max(frames_completed, recording - 2);
+    }
+    frame_3d_done[frame_parity()] = @splat(0);
+    // Freeing textures and full uploads still need every submitted frame done.
+    if (sync_before_frame) {
+        wait_for_frame_sync() catch |err| {
+            std.log.err("3DS Mango frame wait failed: {s}", .{@errorName(err)});
+            return false;
+        };
+        frames_completed = frames_submitted;
+        collect_retired_resources();
+        drain_pending_texture_uploads();
+        sync_before_frame = false;
+    }
     submit_state_reset();
+    top_state.command_buffer = command_buffers[@as(usize, frame_parity())];
+    bottom_state.command_buffer = command_buffers[2 + @as(usize, frame_parity())];
+    dynamic_used = 0;
     current_screen = .top;
     bottom_touched = false;
-    top_wait = queue_clear_screen_color(.top, 0) catch |err| {
+    // The previous frame's blit must read the target before it is cleared.
+    top_wait = queue_clear_screen_color(.top, top_frame_wait) catch |err| {
         std.log.err("3DS Mango top clear color failed: {s}", .{@errorName(err)});
         return false;
     };
@@ -426,6 +519,11 @@ pub fn start_frame() bool {
 
 pub fn end_frame() void {
     if (!initialized or gfx.surface.device == .null) return;
+    if (dynamic_used > 0) {
+        gfx.surface.device.flushCachedMemoryRanges(&.{dynamic_arenas[frame_parity()][0..dynamic_used]}) catch |err| {
+            std.log.err("3DS Mango dynamic arena flush failed: {s}", .{@errorName(err)});
+        };
+    }
 
     top_wait = queue_submit_screen(.top, top_wait) catch |err| blk: {
         std.log.err("3DS Mango top submit failed: {s}", .{@errorName(err)});
@@ -434,7 +532,7 @@ pub fn end_frame() void {
 
     const update_bottom = bottom_touched or !bottom_presented;
     if (update_bottom and !bottom_touched) {
-        bottom_wait = queue_clear_screen_color(.bottom, 0) catch |err| {
+        bottom_wait = queue_clear_screen_color(.bottom, bottom_frame_wait) catch |err| {
             std.log.err("3DS Mango bottom clear failed: {s}", .{@errorName(err)});
             return;
         };
@@ -469,6 +567,7 @@ pub fn end_frame() void {
     }
     top_frame_wait = math.max(top_frame_wait, top_wait);
     if (update_bottom) bottom_frame_wait = math.max(bottom_frame_wait, bottom_wait);
+    frames_submitted += 1;
 }
 
 pub fn clear_depth() void {
@@ -495,7 +594,7 @@ pub fn has_second_screen() bool {
 pub fn switch_second_screen() void {
     current_screen = .bottom;
     bottom_touched = true;
-    bottom_wait = queue_clear_screen_color(.bottom, 0) catch |err| blk: {
+    bottom_wait = queue_clear_screen_color(.bottom, bottom_frame_wait) catch |err| blk: {
         std.log.err("3DS Mango bottom clear failed: {s}", .{@errorName(err)});
         break :blk 0;
     };
@@ -525,17 +624,34 @@ pub fn set_vsync(v: bool) void {
     bottom_presented = false;
 }
 
-pub fn wait_for_borrowed_meshes() void {
+/// Frames do not overlap yet: drain before every update, after which no earlier frame reads borrowed data.
+pub fn wait_before_update() void {
+    if (drain_before_update) drain_gpu();
+    drain_before_update = false;
+}
+
+pub fn gpu_fence() u32 {
+    return frames_submitted + 1;
+}
+
+pub fn gpu_fence_passed(fence: u32) bool {
+    if (fence <= frames_completed) return true;
+    if (fence > frames_submitted) return false;
+    if (fence == frames_submitted and frame_3d_complete(fence, 0)) frames_completed = fence;
+    return fence <= frames_completed;
+}
+
+pub fn drain_gpu() void {
     if (!initialized or gfx.surface.device == .null) return;
 
     wait_for_frame_sync() catch |err| {
-        std.log.err("3DS Mango borrowed mesh wait failed: {s}; falling back to device idle", .{@errorName(err)});
+        std.log.err("3DS Mango GPU drain failed: {s}; falling back to device idle", .{@errorName(err)});
         gfx.surface.device.waitIdle();
     };
 }
 
-pub fn create_mesh(_: *const Mesh.Desc) gfx.CreateMeshError!Mesh.Handle {
-    return meshes.add(.{}) orelse error.OutOfMeshes;
+pub fn create_mesh(desc: *const Mesh.Desc) gfx.CreateMeshError!Mesh.Handle {
+    return meshes.add(.{ .retention = desc.retention }) orelse error.OutOfMeshes;
 }
 
 pub fn destroy_mesh(handle: Mesh.Handle) void {
@@ -556,6 +672,7 @@ pub fn update_mesh(handle: Mesh.Handle, desc: *const Mesh.UpdateDesc) void {
 
     retire_mesh_data(mesh);
     mesh.vertex = create_mesh_buffer_data(data, "vertex") orelse return;
+    assert(mesh.vertex.size == data.len);
     const index_bytes = std.mem.sliceAsBytes(indices);
     if (index_bytes.len > 0) {
         mesh.index = create_mesh_buffer_data(index_bytes, "index") orelse {
@@ -569,7 +686,13 @@ pub fn update_mesh(handle: Mesh.Handle, desc: *const Mesh.UpdateDesc) void {
 
 pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
     const mesh = meshes.get_ptr(handle) orelse Util.panic_invalid_handle("3ds gfx", "draw_mesh", handle);
-    if (mesh.vertex_count == 0) return;
+    draw_mesh_range(handle, model, 0, @intCast(if (mesh.index_count > 0) mesh.index_count else mesh.vertex_count));
+}
+
+pub fn draw_mesh_range(handle: Mesh.Handle, model: *const Mat4, first: u32, count: u32) void {
+    const mesh = meshes.get_ptr(handle) orelse Util.panic_invalid_handle("3ds gfx", "draw_mesh_range", handle);
+    if (mesh.vertex_count == 0 or count == 0) return;
+    assert(@as(usize, first) + count <= (if (mesh.index_count > 0) mesh.index_count else mesh.vertex_count));
     if (mesh.vertex_count > std.math.maxInt(usize) / vertex.Layout.stride) return;
     if (mesh.vertex_count * vertex.Layout.stride > mesh.vertex.size) return;
 
@@ -585,16 +708,26 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
     const state = screen_state(current_screen);
     bind_draw_texture_state(state, cmd);
 
-    if (state.bound_vertex_buffer != mesh.vertex.gpu_memory) {
-        const buffers = [_]mango.DeviceSlice{mesh.vertex.gpu_memory};
+    var vertex_gpu = mesh.vertex.gpu_memory;
+    var index_gpu = mesh.index.gpu_memory;
+    if (mesh.retention == .dynamic) {
+        const vertex_bytes = mesh.vertex.memory[0 .. mesh.vertex_count * vertex.Layout.stride];
+        const index_bytes = mesh.index.memory[0 .. mesh.index_count * @sizeOf(u16)];
+        if (copy_dynamic(vertex_bytes)) |copied| vertex_gpu = copied else drain_before_update = true;
+        if (index_bytes.len > 0) {
+            if (copy_dynamic(index_bytes)) |copied| index_gpu = copied else drain_before_update = true;
+        }
+    }
+    if (state.bound_vertex_buffer != vertex_gpu) {
+        const buffers = [_]mango.DeviceSlice{vertex_gpu};
         cmd.bindVertexBuffers(0, &buffers);
-        state.bound_vertex_buffer = mesh.vertex.gpu_memory;
+        state.bound_vertex_buffer = vertex_gpu;
     }
     if (mesh.index_count > 0) {
-        cmd.bindIndexBuffer(mesh.index.gpu_memory, .u16);
-        cmd.drawIndexed(@intCast(mesh.index_count), 0, 0);
+        cmd.bindIndexBuffer(index_gpu, .u16);
+        cmd.drawIndexed(count, first, 0);
     } else {
-        cmd.draw(@intCast(mesh.vertex_count), 0);
+        cmd.draw(count, first);
     }
 }
 
@@ -672,7 +805,99 @@ pub fn update_texture(handle: Texture.Handle, data: []align(16) u8) void {
     };
 }
 
-pub fn bind_texture(handle: Texture.Handle) void {
+/// Region uploads rotate through FCRAM staging slots, each tagged with the
+/// upload semaphore value of its last copy, so an update waits neither for
+/// frames nor for the GPU: only for the copy issued `region_slots` earlier.
+/// The full upload waits for frame sync, allocates and swizzles the whole
+/// texture, then waits for its copy.
+const region_slots = 4;
+const region_slot_bytes = 4096;
+const tile_bytes = 8 * 8 * tex_bpp;
+var region_staging: []align(16) u8 = &.{};
+var region_staging_gpu: mango.DeviceSlice = .empty;
+var region_slot_values: [region_slots]u64 = @splat(0);
+var region_next: u32 = 0;
+
+fn ensure_region_staging() !void {
+    if (region_staging.len != 0) return;
+    const device = gfx.surface.device;
+    const staging = try device.hostAllocator().alignedAlloc(u8, .fromByteUnits(16), region_slots * region_slot_bytes);
+    errdefer device.hostAllocator().free(staging);
+    region_staging_gpu = try device.hostToDevice(staging);
+    region_staging = staging;
+}
+
+/// The device must be idle.
+fn destroy_region_staging() void {
+    if (region_staging.len == 0) return;
+    gfx.surface.device.hostAllocator().free(region_staging);
+    region_staging = &.{};
+    region_staging_gpu = .empty;
+    region_slot_values = @splat(0);
+}
+
+/// Upload one 8-aligned rectangle of `data` (linear RGBA8, full texture).
+pub fn update_texture_region(handle: Texture.Handle, data: []align(16) u8, x: u32, y: u32, width: u32, height: u32) void {
+    const texture = texture_slots.get_ptr(handle) orelse Util.panic_invalid_handle("3ds gfx", "update_texture_region", handle);
+    if (!texture.alive) return;
+    assert(x + width <= texture.width and y + height <= texture.height);
+    const tile_aligned = (x | y | width | height) & 7 == 0;
+    if (!tile_aligned or width * height * tex_bpp > region_slot_bytes) return update_texture(handle, data);
+    ensure_region_staging() catch return update_texture(handle, data);
+    const device = gfx.surface.device;
+
+    const slot = region_next;
+    region_next = (region_next + 1) % region_slots;
+    if (region_slot_values[slot] != 0) {
+        device.waitSemaphores(.init(&.{texture_upload_semaphore}, &.{region_slot_values[slot]}), frame_sync_timeout_ns) catch |err| {
+            std.log.err("3DS Mango region upload wait failed: {s}", .{@errorName(err)});
+            return;
+        };
+    }
+
+    // Rows are stored bottom-up, so the region's tile rows start at the
+    // flipped bottom edge; within a tile row its tiles are contiguous.
+    const slot_base = slot * region_slot_bytes;
+    const staging: []u32 = @ptrCast(@alignCast(region_staging[slot_base..][0 .. width * height * tex_bpp]));
+    const src_words: []const u32 = @ptrCast(@alignCast(data));
+    const tiles_wide = width / 8;
+    const dst_y0 = texture.height - y - height;
+    for (0..height) |row| {
+        const ry: u32 = @intCast(row);
+        const dst_y = texture.height - 1 - (y + ry);
+        const local_y = dst_y - dst_y0;
+        for (0..width) |col| {
+            const rx: u32 = @intCast(col);
+            const subtile = pica.morton.toIndex(u3, 2, .{ @as(u3, @intCast(rx & 7)), @as(u3, @intCast(local_y & 7)) });
+            const tile = (local_y / 8) * tiles_wide + rx / 8;
+            write_abgr8888(&staging[tile * 64 + subtile], &src_words[(y + ry) * texture.width + x + rx]);
+        }
+    }
+    device.flushCachedMemoryRanges(&.{std.mem.sliceAsBytes(staging)}) catch |err| {
+        std.log.err("3DS Mango region upload flush failed: {s}", .{@errorName(err)});
+        return;
+    };
+
+    const run_bytes = tiles_wide * tile_bytes;
+    const tile_rows = height / 8;
+    const tiles_per_row = texture.width / 8;
+    texture_upload_next_sync_value += 1;
+    const signal_op = mango.SemaphoreOperation.init(texture_upload_semaphore, texture_upload_next_sync_value);
+    for (0..tile_rows) |r| {
+        const ru: u32 = @intCast(r);
+        const dst_off = ((dst_y0 / 8 + ru) * tiles_per_row + x / 8) * tile_bytes;
+        device.copyBuffer(null, if (ru + 1 == tile_rows) &signal_op else null, &.{
+            .src_buffer = region_staging_gpu.slice(slot_base + ru * run_bytes, run_bytes),
+            .dst_buffer = texture.gpu_memory.slice(dst_off, run_bytes),
+        }) catch |err| {
+            std.log.err("3DS Mango region upload copy failed: {s}", .{@errorName(err)});
+            return;
+        };
+    }
+    region_slot_values[slot] = texture_upload_next_sync_value;
+}
+
+fn bind_texture(handle: Texture.Handle) void {
     if (!handle.is_null()) {
         const texture = texture_slots.get(handle) orelse Util.panic_invalid_handle("3ds gfx", "bind_texture", handle);
         if (!texture.alive) return;
@@ -845,6 +1070,7 @@ fn queue_submit_screen(screen: gfx.Surface.Screen, wait_value: u64) !u64 {
     try gfx.surface.device.submit(if (wait_op) |*op| op else null, &signal_op, &.{
         .command_buffer = cmd,
     });
+    frame_3d_done[frame_parity()][@intFromBool(screen == .bottom)] = signal_value;
     state.recording = false;
     return signal_value;
 }
@@ -881,7 +1107,7 @@ fn set_default_graphics_state(cmd: mango.CommandBuffer, screen: gfx.Surface.Scre
     bind_primary_color_state(state, cmd);
     cmd.setBlendEquation(normal_blend_equation());
     cmd.setColorWriteMask(.rgba);
-    cmd.setDepthTestEnable(true);
+    cmd.setDepthTestEnable(depth_test_enabled);
     cmd.setDepthCompareOp(.lt);
     cmd.setDepthWriteEnable(depth_write_enabled);
     cmd.setLogicOpEnable(false);
@@ -1075,6 +1301,7 @@ fn reset_screen_state(state: *ScreenState) void {
 fn queue_pending_texture_upload(handle: Texture.Handle, data: []align(16) u8) !void {
     const texture = texture_slots.get(handle) orelse return;
     if (!texture.alive) return;
+    sync_before_frame = true;
 
     const byte_count = texture_byte_count(texture.width, texture.height);
     const copy = try render_alloc.alignedAlloc(u8, .fromByteUnits(16), byte_count);
@@ -1127,7 +1354,7 @@ fn destroy_pending_texture_uploads() void {
 }
 
 fn retire_mesh_data(mesh: *MeshData) void {
-    mesh.* = .{};
+    mesh.* = .{ .retention = mesh.retention };
     if (gfx.surface.device == .null) return;
 }
 
@@ -1136,6 +1363,7 @@ fn retire_texture_data(texture: *TextureData) void {
     texture.* = .{};
     if (retired.memory.len == 0 and retired.image == .null and retired.view == .null) return;
     if (gfx.surface.device == .null) return;
+    sync_before_frame = true;
 
     if (retired_textures.add_element(retired) == null) {
         if (gfx.frame_active) {
@@ -1185,6 +1413,7 @@ fn collect_retired_resources() void {
 
 fn cleanup_renderer_resources() void {
     if (gfx.surface.device == .null) return;
+    destroy_dynamic_arenas();
 
     destroy_render_target(&bottom_target);
     destroy_render_target(&top_target);

@@ -164,7 +164,13 @@ fn add_executable(
 
     switch (config.platform) {
         .psp => platform_mod.addImport("pspsdk", psp_dep.?.module("pspsdk")),
-        .nintendo_3ds => platform_mod.addImport("zitrus", zitrus_dep.?.module("zitrus")),
+        .nintendo_3ds => {
+            // Mango validates and asserts on every draw; with the ReleaseSafe that driver overhead can become substantial
+            // CrossCraft 12.8ms -> 6.6ms CPU time per frame from this change alone
+            const zitrus_mod = zitrus_dep.?.module("zitrus");
+            if (optimize != .debug) zitrus_mod.optimize = .fast;
+            platform_mod.addImport("zitrus", zitrus_mod);
+        },
         // Console SDK symbols come from translated libnx headers and are
         // resolved by the export pipeline's devkitPro link step.
         .nintendo_switch => add_nintendo_c_imports(owner, platform_mod, config, tools.devkit_pro_path(b), &switch_platform_c_imports),

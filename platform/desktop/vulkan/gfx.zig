@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const builtin = @import("builtin");
 const Util = @import("../../util/util.zig");
 
@@ -125,6 +126,7 @@ var swap_state: Swapchain.PresentState = .optimal;
 var last_recreate_error: ?anyerror = null;
 var alpha_blend_enabled: bool = true;
 var depth_write_enabled: bool = true;
+var depth_test_enabled: bool = true;
 var cull_enabled: bool = true;
 
 const depth_format: vk.Format = .d32_sfloat;
@@ -484,6 +486,7 @@ pub fn deinit() void {
     destroy_descriptor_set_layout();
     destroy_uniform_buffers();
     destroy_depth_image();
+    destroy_region_ring();
     destroy_command_pool();
     swapchain.deinit();
     gc.deinit();
@@ -500,7 +503,7 @@ pub fn set_clear_color(r: f32, g: f32, b: f32, a: f32) void {
     clear_color[3] = a;
 }
 
-pub fn set_alpha_blend(enabled: bool) void {
+fn set_alpha_blend(enabled: bool) void {
     draw_state.alpha_blend_enabled = @intFromBool(enabled);
     if (enabled == alpha_blend_enabled) return;
     alpha_blend_enabled = enabled;
@@ -514,25 +517,31 @@ pub fn set_alpha_blend(enabled: bool) void {
     command_buffer.setColorBlendEnableEXT(0, @ptrCast(&[1]vk.Bool32{enable}));
 }
 
-pub fn set_depth_write(enabled: bool) void {
+fn set_depth_write(enabled: bool) void {
     if (enabled == depth_write_enabled) return;
     depth_write_enabled = enabled;
     command_buffer.setDepthWriteEnable(if (enabled) .true else .false);
 }
 
-pub fn set_clip_planes(_: bool) void {}
+fn set_depth_test(enabled: bool) void {
+    if (enabled == depth_test_enabled) return;
+    depth_test_enabled = enabled;
+    command_buffer.setDepthTestEnable(if (enabled) .true else .false);
+}
 
-pub fn set_culling(enabled: bool) void {
+fn set_clip_planes(_: bool) void {}
+
+fn set_culling(enabled: bool) void {
     if (enabled == cull_enabled) return;
     cull_enabled = enabled;
     command_buffer.setCullMode(if (enabled) .{ .back = true } else .{});
 }
 
-pub fn set_uv_offset(u: f32, v: f32) void {
+fn set_uv_offset(u: f32, v: f32) void {
     draw_state.uv_offset = .{ u, v };
 }
 
-pub fn set_fog(enabled: bool, _: f32, _: f32, start: f32, end: f32, r: f32, g: f32, b: f32) void {
+fn set_fog(enabled: bool, _: f32, _: f32, start: f32, end: f32, r: f32, g: f32, b: f32) void {
     draw_state.fog_enabled = @intFromBool(enabled);
     draw_state.fog_start = start;
     draw_state.fog_end = end;
@@ -625,6 +634,7 @@ pub fn start_frame() bool {
     // leaves these states undefined otherwise, which manifests as broken depth
     // writes or unexpected blend state on macOS.
     command_buffer.setDepthWriteEnable(if (depth_write_enabled) .true else .false);
+    command_buffer.setDepthTestEnable(if (depth_test_enabled) .true else .false);
     command_buffer.setCullMode(if (cull_enabled) .{ .back = true } else .{});
     if (!is_macos) {
         const enable: vk.Bool32 = if (alpha_blend_enabled) .true else .false;
@@ -710,6 +720,21 @@ pub fn start_frame() bool {
     return true;
 }
 
+/// Mesh data is copied at update, so no frame borrows it.
+pub fn wait_before_update() void {}
+
+pub fn gpu_fence() u32 {
+    return 0;
+}
+
+pub fn gpu_fence_passed(_: u32) bool {
+    return true;
+}
+
+pub fn drain_gpu() void {
+    context.logical_device.deviceWaitIdle() catch {};
+}
+
 pub fn clear_depth() void {
     const attachment = vk.ClearAttachment{
         .aspect_mask = .{ .depth = true },
@@ -779,13 +804,13 @@ pub fn set_vsync(v: bool) void {
     swap_state = .suboptimal;
 }
 
-pub fn set_proj_matrix(mat: *const Mat4) void {
+fn set_proj_matrix(mat: *const Mat4) void {
     if (std.meta.eql(pending_state.proj, mat.*)) return;
     pending_state.proj = mat.*;
     camera_dirty = true;
 }
 
-pub fn set_view_matrix(mat: *const Mat4) void {
+fn set_view_matrix(mat: *const Mat4) void {
     if (std.meta.eql(pending_state.view, mat.*)) return;
     pending_state.view = mat.*;
     camera_dirty = true;
@@ -794,6 +819,7 @@ pub fn set_view_matrix(mat: *const Mat4) void {
 pub fn set_render_state(state: *const Graphics.RenderState) void {
     set_alpha_blend(state.blend == .alpha);
     set_depth_write(state.depth_write);
+    set_depth_test(state.depth_test);
     set_culling(state.cull);
     set_clip_planes(state.clip_planes);
     set_uv_offset(state.uv_offset[0], state.uv_offset[1]);
@@ -964,8 +990,8 @@ fn init_pipeline(layout: vertex.VertexLayout) !PipelineData {
 
     // On macOS drop color_blend_enable_ext -- MoltenVK cannot back it. The
     // pipeline bakes blend_enable=true and set_alpha_blend is a no-op there.
-    const dynstate_mac = [_]vk.DynamicState{ .viewport, .scissor, .primitive_topology, .depth_write_enable, .cull_mode };
-    const dynstate_full = [_]vk.DynamicState{ .viewport, .scissor, .color_blend_enable_ext, .primitive_topology, .depth_write_enable, .cull_mode };
+    const dynstate_mac = [_]vk.DynamicState{ .viewport, .scissor, .primitive_topology, .depth_write_enable, .depth_test_enable, .cull_mode };
+    const dynstate_full = [_]vk.DynamicState{ .viewport, .scissor, .color_blend_enable_ext, .primitive_topology, .depth_write_enable, .depth_test_enable, .cull_mode };
     const dynstate: []const vk.DynamicState = if (is_macos) &dynstate_mac else &dynstate_full;
 
     const pipeline_dynamic_state_create_info = vk.PipelineDynamicStateCreateInfo{
@@ -1070,10 +1096,16 @@ pub fn update_mesh(handle: Mesh.Handle, desc: *const Mesh.UpdateDesc) void {
 }
 
 pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
+    const m_data = meshes.get_ptr(handle) orelse Util.panic_invalid_handle("vulkan gfx", "draw_mesh", handle);
+    draw_mesh_range(handle, model, 0, @intCast(if (m_data.index_count > 0) m_data.index_count else m_data.vertex_count));
+}
+
+pub fn draw_mesh_range(handle: Mesh.Handle, model: *const Mat4, first: u32, count: u32) void {
     draw_state.mat = model.*;
 
-    const m_data = meshes.get_ptr(handle) orelse Util.panic_invalid_handle("vulkan gfx", "draw_mesh", handle);
-    if (m_data.vertex_count == 0) return;
+    const m_data = meshes.get_ptr(handle) orelse Util.panic_invalid_handle("vulkan gfx", "draw_mesh_range", handle);
+    if (m_data.vertex_count == 0 or count == 0) return;
+    assert(@as(usize, first) + count <= (if (m_data.index_count > 0) m_data.index_count else m_data.vertex_count));
     if (render_pipeline.pipeline == .null_handle) return;
     const p_data = &render_pipeline;
 
@@ -1099,9 +1131,9 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
     command_buffer.pushConstants(p_data.layout, .{ .vertex = true, .fragment = true }, 0, @sizeOf(DrawState), &draw_state);
     if (m_data.index_count > 0) {
         command_buffer.bindIndexBuffer(buffer, region.offset + m_data.storage.index_offset, .uint16);
-        command_buffer.drawIndexed(@intCast(m_data.index_count), 1, 0, 0, 0);
+        command_buffer.drawIndexed(count, 1, first, 0, 0);
     } else {
-        command_buffer.draw(@intCast(m_data.vertex_count), 1, 0, 0);
+        command_buffer.draw(count, 1, first, 0);
     }
 }
 
@@ -1428,7 +1460,145 @@ pub fn update_texture(handle: Texture.Handle, data: []align(16) u8) void {
     context.logical_device.freeMemory(staging_mem, null);
 }
 
-pub fn bind_texture(handle: Texture.Handle) void {
+/// Region uploads rotate through slots, each with its own staging space,
+/// command buffer, and fence, so an upload only waits on the one issued
+/// `region_slots` uploads earlier. The full upload creates a staging buffer
+/// and waits for the queue to go idle every call.
+const region_slots = 4;
+const region_slot_bytes: u32 = 16 * 1024;
+var region_buffer: vk.Buffer = .null_handle;
+var region_memory: vk.DeviceMemory = .null_handle;
+var region_mapped: ?[*]u8 = null;
+var region_cmdbufs: [region_slots]vk.CommandBuffer = undefined;
+var region_cmdbufs_allocated = false;
+var region_fences: [region_slots]vk.Fence = @splat(.null_handle);
+var region_next: u32 = 0;
+
+fn ensure_region_ring() !void {
+    if (region_mapped != null) return;
+    const dev = context.logical_device;
+    region_buffer = try dev.createBuffer(&.{
+        .size = region_slots * region_slot_bytes,
+        .usage = .{ .transfer_src = true },
+        .sharing_mode = .exclusive,
+    }, null);
+    errdefer destroy_region_ring();
+    region_memory = try context.allocate_gpu_buffer(dev.getBufferMemoryRequirements(region_buffer), .{ .host_visible = true, .host_coherent = true });
+    try dev.bindBufferMemory(region_buffer, region_memory, 0);
+    try dev.allocateCommandBuffers(&.{
+        .command_pool = command_pool,
+        .level = .primary,
+        .command_buffer_count = region_slots,
+    }, &region_cmdbufs);
+    region_cmdbufs_allocated = true;
+    for (&region_fences) |*fence| fence.* = try dev.createFence(&.{ .flags = .{ .signaled = true } }, null);
+    region_mapped = @ptrCast(@alignCast(try dev.mapMemory(region_memory, 0, vk_constants.whole_size, .{})));
+}
+
+/// The device must be idle.
+fn destroy_region_ring() void {
+    const dev = context.logical_device;
+    if (region_mapped != null) dev.unmapMemory(region_memory);
+    region_mapped = null;
+    for (&region_fences) |*fence| {
+        if (fence.* != .null_handle) dev.destroyFence(fence.*, null);
+        fence.* = .null_handle;
+    }
+    if (region_cmdbufs_allocated) dev.freeCommandBuffers(command_pool, &region_cmdbufs);
+    region_cmdbufs_allocated = false;
+    if (region_buffer != .null_handle) dev.destroyBuffer(region_buffer, null);
+    region_buffer = .null_handle;
+    if (region_memory != .null_handle) dev.freeMemory(region_memory, null);
+    region_memory = .null_handle;
+}
+
+/// Upload one rectangle of `data` (linear RGBA8, full texture). The barriers
+/// order the copy after frames already submitted, so nothing waits for idle.
+pub fn update_texture_region(handle: Texture.Handle, data: []align(16) u8, x: u32, y: u32, width: u32, height: u32) void {
+    const rec = textures.get(handle) orelse Util.panic_invalid_handle("vulkan gfx", "update_texture_region", handle);
+    assert(x + width <= rec.width and y + height <= rec.height);
+    const bytes = width * height * 4;
+    if (bytes > region_slot_bytes) return update_texture(handle, data);
+    ensure_region_ring() catch return update_texture(handle, data);
+    const dev = context.logical_device;
+
+    const slot = region_next;
+    region_next = (region_next + 1) % region_slots;
+    _ = dev.waitForFences(@ptrCast(&region_fences[slot]), .true, std.math.maxInt(u64)) catch return;
+    dev.resetFences(@ptrCast(&region_fences[slot])) catch return;
+
+    const base = slot * region_slot_bytes;
+    const staging = region_mapped.? + base;
+    for (0..height) |row| {
+        const src = ((y + row) * rec.width + x) * 4;
+        @memcpy(staging[row * width * 4 ..][0 .. width * 4], data[src..][0 .. width * 4]);
+    }
+
+    const cmdbuf = vk.CommandBufferProxy.init(region_cmdbufs[slot], dev.wrapper);
+    cmdbuf.beginCommandBuffer(&.{ .flags = .{ .one_time_submit = true } }) catch return;
+    const subrange = vk.ImageSubresourceRange{
+        .aspect_mask = .{ .color = true },
+        .base_mip_level = 0,
+        .level_count = 1,
+        .base_array_layer = 0,
+        .layer_count = 1,
+    };
+    const pre_barrier = vk.ImageMemoryBarrier2{
+        .src_stage_mask = .{ .fragment_shader = true },
+        .src_access_mask = .{ .shader_read = true },
+        .dst_stage_mask = .{ .copy = true },
+        .dst_access_mask = .{ .transfer_write = true },
+        .old_layout = .shader_read_only_optimal,
+        .new_layout = .transfer_dst_optimal,
+        .src_queue_family_index = vk_constants.queue_family_ignored,
+        .dst_queue_family_index = vk_constants.queue_family_ignored,
+        .image = rec.image,
+        .subresource_range = subrange,
+    };
+    cmdbuf.pipelineBarrier2(&.{
+        .image_memory_barrier_count = 1,
+        .p_image_memory_barriers = @ptrCast(&pre_barrier),
+    });
+    const copy = vk.BufferImageCopy{
+        .buffer_offset = base,
+        .buffer_row_length = 0,
+        .buffer_image_height = 0,
+        .image_subresource = .{
+            .aspect_mask = .{ .color = true },
+            .mip_level = 0,
+            .base_array_layer = 0,
+            .layer_count = 1,
+        },
+        .image_offset = .{ .x = @intCast(x), .y = @intCast(y), .z = 0 },
+        .image_extent = .{ .width = width, .height = height, .depth = 1 },
+    };
+    cmdbuf.copyBufferToImage(region_buffer, rec.image, .transfer_dst_optimal, @ptrCast(&copy));
+    const post_barrier = vk.ImageMemoryBarrier2{
+        .src_stage_mask = .{ .copy = true },
+        .src_access_mask = .{ .transfer_write = true },
+        .dst_stage_mask = .{ .fragment_shader = true },
+        .dst_access_mask = .{ .shader_read = true },
+        .old_layout = .transfer_dst_optimal,
+        .new_layout = .shader_read_only_optimal,
+        .src_queue_family_index = vk_constants.queue_family_ignored,
+        .dst_queue_family_index = vk_constants.queue_family_ignored,
+        .image = rec.image,
+        .subresource_range = subrange,
+    };
+    cmdbuf.pipelineBarrier2(&.{
+        .image_memory_barrier_count = 1,
+        .p_image_memory_barriers = @ptrCast(&post_barrier),
+    });
+    cmdbuf.endCommandBuffer() catch return;
+
+    const submit = vk.SubmitInfo{
+        .command_buffer_count = 1,
+        .p_command_buffers = @ptrCast(&region_cmdbufs[slot]),
+    };
+    dev.queueSubmit(context.graphics_queue.handle, @ptrCast(&submit), region_fences[slot]) catch return;
+}
+
+fn bind_texture(handle: Texture.Handle) void {
     if (handle.is_null()) return;
     draw_state.tex_id = @intCast(textures.raw_index(handle) orelse Util.panic_invalid_handle("vulkan gfx", "bind_texture", handle));
 }

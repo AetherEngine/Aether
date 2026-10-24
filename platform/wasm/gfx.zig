@@ -17,6 +17,7 @@ extern "aether_host" fn aether_webgl_deinit() void;
 extern "aether_host" fn aether_webgl_set_clear_color(r: f32, g: f32, b: f32, a: f32) void;
 extern "aether_host" fn aether_webgl_set_alpha_blend(enabled: bool) void;
 extern "aether_host" fn aether_webgl_set_depth_write(enabled: bool) void;
+extern "aether_host" fn aether_webgl_set_depth_test(enabled: bool) void;
 extern "aether_host" fn aether_webgl_set_culling(enabled: bool) void;
 extern "aether_host" fn aether_webgl_set_uv_offset(u: f32, v: f32) void;
 extern "aether_host" fn aether_webgl_set_fog(enabled: bool, start: f32, end: f32, r: f32, g: f32, b: f32) void;
@@ -25,12 +26,15 @@ extern "aether_host" fn aether_webgl_set_view_matrix(ptr: *const f32) void;
 extern "aether_host" fn aether_webgl_start_frame(width: u32, height: u32) bool;
 extern "aether_host" fn aether_webgl_end_frame() void;
 extern "aether_host" fn aether_webgl_clear_depth() void;
+extern "aether_host" fn aether_webgl_finish() void;
 extern "aether_host" fn aether_webgl_create_mesh() u32;
 extern "aether_host" fn aether_webgl_destroy_mesh(handle: u32) void;
 extern "aether_host" fn aether_webgl_update_mesh(handle: u32, vertex_ptr: [*]const u8, vertex_len: usize, index_ptr: [*]const u8, index_len: usize) void;
 extern "aether_host" fn aether_webgl_draw_mesh(handle: u32, model_ptr: *const f32) void;
+extern "aether_host" fn aether_webgl_draw_mesh_range(handle: u32, model_ptr: *const f32, first: u32, count: u32) void;
 extern "aether_host" fn aether_webgl_create_texture(width: u32, height: u32, ptr: [*]const u8, len: usize) u32;
 extern "aether_host" fn aether_webgl_update_texture(handle: u32, ptr: [*]const u8, len: usize) void;
+extern "aether_host" fn aether_webgl_update_texture_region(handle: u32, ptr: [*]const u8, x: u32, y: u32, width: u32, height: u32) void;
 extern "aether_host" fn aether_webgl_bind_texture(handle: u32) void;
 extern "aether_host" fn aether_webgl_destroy_texture(handle: u32) void;
 extern "aether_host" fn aether_canvas_width() u32;
@@ -66,20 +70,26 @@ pub fn set_clear_color(r: f32, g: f32, b: f32, a: f32) void {
     aether_webgl_set_clear_color(r, g, b, a);
 }
 
-pub fn set_alpha_blend(enabled: bool) void {
+fn set_alpha_blend(enabled: bool) void {
     const blend: Graphics.BlendMode = if (enabled) .alpha else .solid;
     if (state_cache.blend == blend) return;
     state_cache.blend = blend;
     aether_webgl_set_alpha_blend(enabled);
 }
 
-pub fn set_depth_write(enabled: bool) void {
+fn set_depth_write(enabled: bool) void {
     if (state_cache.depth_write == enabled) return;
     state_cache.depth_write = enabled;
     aether_webgl_set_depth_write(enabled);
 }
 
-pub fn set_fog(enabled: bool, _: f32, _: f32, start: f32, end: f32, r: f32, g: f32, b: f32) void {
+fn set_depth_test(enabled: bool) void {
+    if (state_cache.depth_test == enabled) return;
+    state_cache.depth_test = enabled;
+    aether_webgl_set_depth_test(enabled);
+}
+
+fn set_fog(enabled: bool, _: f32, _: f32, start: f32, end: f32, r: f32, g: f32, b: f32) void {
     const fog: Graphics.FogState = .{ .enabled = enabled, .start = start, .end = end, .color = .{ r, g, b } };
     if (std.meta.eql(state_cache.fog, fog)) return;
     const changed = state_cache.fog.enabled != enabled or enabled;
@@ -88,27 +98,27 @@ pub fn set_fog(enabled: bool, _: f32, _: f32, start: f32, end: f32, r: f32, g: f
     aether_webgl_set_fog(enabled, start, end, r, g, b);
 }
 
-pub fn set_clip_planes(_: bool) void {}
+fn set_clip_planes(_: bool) void {}
 
-pub fn set_culling(enabled: bool) void {
+fn set_culling(enabled: bool) void {
     if (state_cache.cull == enabled) return;
     state_cache.cull = enabled;
     aether_webgl_set_culling(enabled);
 }
 
-pub fn set_uv_offset(u: f32, v: f32) void {
+fn set_uv_offset(u: f32, v: f32) void {
     if (state_cache.uv_offset[0] == u and state_cache.uv_offset[1] == v) return;
     state_cache.uv_offset = .{ u, v };
     aether_webgl_set_uv_offset(u, v);
 }
 
-pub fn set_proj_matrix(mat: *const Mat4) void {
+fn set_proj_matrix(mat: *const Mat4) void {
     if (std.meta.eql(state_cache.proj, mat.*)) return;
     state_cache.proj = mat.*;
     aether_webgl_set_proj_matrix(mat.ptr());
 }
 
-pub fn set_view_matrix(mat: *const Mat4) void {
+fn set_view_matrix(mat: *const Mat4) void {
     if (std.meta.eql(state_cache.view, mat.*)) return;
     state_cache.view = mat.*;
     aether_webgl_set_view_matrix(mat.ptr());
@@ -117,6 +127,7 @@ pub fn set_view_matrix(mat: *const Mat4) void {
 pub fn set_render_state(state: *const Graphics.RenderState) void {
     set_alpha_blend(state.blend == .alpha);
     set_depth_write(state.depth_write);
+    set_depth_test(state.depth_test);
     set_culling(state.cull);
     set_clip_planes(state.clip_planes);
     set_uv_offset(state.uv_offset[0], state.uv_offset[1]);
@@ -135,6 +146,21 @@ pub fn start_frame() bool {
 
 pub fn end_frame() void {
     aether_webgl_end_frame();
+}
+
+/// Mesh data is copied at update, so no frame borrows it.
+pub fn wait_before_update() void {}
+
+pub fn gpu_fence() u32 {
+    return 0;
+}
+
+pub fn gpu_fence_passed(_: u32) bool {
+    return true;
+}
+
+pub fn drain_gpu() void {
+    aether_webgl_finish();
 }
 
 pub fn clear_depth() void {
@@ -177,6 +203,11 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
     aether_webgl_draw_mesh(host_handle, model.ptr());
 }
 
+pub fn draw_mesh_range(handle: Mesh.Handle, model: *const Mat4, first: u32, count: u32) void {
+    const host_handle = meshes.get(handle) orelse Util.panic_invalid_handle("webgl gfx", "draw_mesh_range", handle);
+    aether_webgl_draw_mesh_range(host_handle, model.ptr(), first, count);
+}
+
 pub fn create_texture(desc: *const Texture.UploadDesc) gfx_api.CreateTextureError!Texture.Handle {
     const width = desc.width;
     const height = desc.height;
@@ -194,7 +225,12 @@ pub fn update_texture(handle: Texture.Handle, data: []align(16) u8) void {
     aether_webgl_update_texture(host_handle, data.ptr, data.len);
 }
 
-pub fn bind_texture(handle: Texture.Handle) void {
+pub fn update_texture_region(handle: Texture.Handle, data: []align(16) u8, x: u32, y: u32, width: u32, height: u32) void {
+    const host_handle = textures.get(handle) orelse Util.panic_invalid_handle("webgl gfx", "update_texture_region", handle);
+    aether_webgl_update_texture_region(host_handle, data.ptr, x, y, width, height);
+}
+
+fn bind_texture(handle: Texture.Handle) void {
     if (handle.is_null() or state_cache.texture == handle) return;
     const host_handle = textures.get(handle) orelse Util.panic_invalid_handle("webgl gfx", "bind_texture", handle);
     state_cache.texture = handle;

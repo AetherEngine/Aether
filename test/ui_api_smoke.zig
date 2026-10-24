@@ -24,7 +24,7 @@ pub export fn aether_api_smoke_ui_prepare(
 
 /// Requires a prepared list and an active UI rendering pass with cleared depth.
 pub export fn aether_api_smoke_ui_draw(prepared: *Ui.DrawList.Prepared) void {
-    prepared.draw();
+    prepared.draw(&.{});
 }
 
 fn prepare(

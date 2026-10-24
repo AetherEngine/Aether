@@ -291,8 +291,8 @@ pub fn makeTextureHandle(image_id: u32, sampler_id: u32) DkResHandle {
     return c.dkMakeTextureHandle(image_id, sampler_id);
 }
 
-pub fn depthStencilBits(depth_write_enabled: bool) DkDepthStencilState {
-    const bits0: u32 = 1 |
+pub fn depthStencilBits(depth_test_enabled: bool, depth_write_enabled: bool) DkDepthStencilState {
+    const bits0: u32 = @as(u32, @intFromBool(depth_test_enabled)) |
         (@as(u32, @intFromBool(depth_write_enabled)) << 1) |
         (@as(u32, @intCast(CompareLess)) << 4);
     const bits1: u32 = 1 |

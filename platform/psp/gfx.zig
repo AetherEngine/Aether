@@ -6,6 +6,7 @@
 // gu's hidden globals.
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Util = @import("../util/util.zig");
 const Mat4 = @import("math").Mat4;
 const Graphics = @import("../graphics/graphics.zig");
@@ -138,6 +139,7 @@ var clip_planes_enabled: bool = false;
 var fog_enabled: bool = false;
 var cull_face_enabled: bool = true;
 var depth_write_enabled: bool = true;
+var depth_test_enabled: bool = true;
 var proj_matrix = Mat4.identity();
 var view_matrix = Mat4.identity();
 var fog_range: ?[2]f32 = null;
@@ -159,13 +161,9 @@ const Swapchain = struct {
     const display_list_words = 0x4000;
     const BufferIndex = u2;
 
-    /// Backing storage for the GE display list. Always accessed through
-    /// `list_uncached` so the GE sees writes immediately and we never need
-    /// to dcache-flush the list itself. This is shared across color buffers;
-    /// `acquire_draw_buffer` waits for the previous GE submission to finish
-    /// before allowing the list to be reused.
-    display_list: [display_list_words]u32 align(16) = @splat(0),
-    list_uncached: []u32 = &.{},
+    /// Backing storage for the stall-driven GE display list, written cached and written back before each stall advance.
+    /// This is shared across color buffers; `acquire_draw_buffer` waits for the previous GE submission to finish before allowing the list to be reused.
+    display_list: [display_list_words]u32 align(64) = @splat(0),
 
     buffers_rel: [buffer_count]?*anyopaque = @splat(null),
     buffers_abs: [buffer_count]?[]align(16) u8 = @splat(null),
@@ -182,9 +180,6 @@ const Swapchain = struct {
         const vram_base = @intFromPtr(ge.edram_get_addr());
         const edram_size: usize = ge.edram_get_size();
         const uncached: usize = 0x40000000;
-
-        const uncached_ptr: [*]u32 = @ptrFromInt(@intFromPtr(&self.display_list) | uncached);
-        self.list_uncached = uncached_ptr[0..display_list_words];
 
         self.front_idx = 0;
         self.draw_idx = 1;
@@ -280,15 +275,22 @@ const Swapchain = struct {
         sdk.kernel.cpu_resume_intr(flags);
     }
 
-    fn acquire_draw_buffer(self: *Swapchain, allow_tear: bool) bool {
+    fn acquire_draw_buffer(self: *Swapchain) bool {
         const flags = sdk.kernel.cpu_suspend_intr();
         defer sdk.kernel.cpu_resume_intr(flags);
 
-        // The display list and depth buffer are shared, so only color
-        // buffers are allowed to overlap display/pending ownership. Do not
-        // start recording another frame until the GE has finished the last
-        // submitted one.
-        if (self.submitted_count > 0) return false;
+        // Frame lists alternate, so at most one frame may wait behind the one the GE is drawing.
+        // The GE runs lists in order, which also serializes their use of the shared depth buffer.
+        if (self.submitted_count > 1) return false;
+        if (buffer_count == 2) {
+            // Fix VSYNC first frame issue
+            const newest = if (self.submitted_count > 0)
+                self.submitted_queue[(self.submitted_head + self.submitted_count - 1) % buffer_count]
+            else
+                self.pending_idx orelse self.front_idx;
+            self.draw_idx = newest ^ 1;
+            return true;
+        }
 
         const start = (@as(usize, self.draw_idx) + 1) % buffer_count;
         var offset: usize = 0;
@@ -302,23 +304,18 @@ const Swapchain = struct {
             self.draw_idx = idx;
             return true;
         }
-
-        if (buffer_count == 2 and allow_tear) {
-            const pending = self.pending_idx orelse return false;
-            const old_front = self.front_idx;
-            display.set_frame_buf(
-                @ptrCast(self.buffers_abs[@intCast(pending)].?.ptr),
-                scr_buf_width,
-                display_pixel_format,
-                .immediate,
-            ) catch {};
-            self.front_idx = pending;
-            self.pending_idx = null;
-            self.draw_idx = old_front;
-            return true;
-        }
-
         return false;
+    }
+
+    /// Block until `idx` is neither on screen nor waiting for the vblank flip.
+    fn wait_until_hidden(self: *Swapchain, idx: BufferIndex) void {
+        while (true) {
+            const flags = sdk.kernel.cpu_suspend_intr();
+            const visible = idx == self.front_idx or self.pending_idx == idx;
+            sdk.kernel.cpu_resume_intr(flags);
+            if (!visible) return;
+            display.wait_vblank_start_cb() catch {};
+        }
     }
 
     fn is_submitted_locked(self: *const Swapchain, idx: BufferIndex) bool {
@@ -364,9 +361,13 @@ fn vblank_handler(_: c_int, arg: ?*anyopaque) callconv(.c) void {
     sc.apply_pending_display();
 }
 
-fn ge_finish_callback(_: c_int, arg: ?*anyopaque) callconv(.c) void {
+fn ge_finish_callback(finish_arg: c_int, arg: ?*anyopaque) callconv(.c) void {
     const sc: *Swapchain = @ptrCast(@alignCast(arg orelse return));
+    if (finish_arg == frame_finish_arg) _ = frames_finished.fetchAdd(1, .release);
     sc.publish_finished_ge_buffer();
+    // The next queued frame list targets the buffer still on screen, so show
+    // this one before it starts drawing. Vsync keeps the vblank flip.
+    if (!gfx.surface.sync) sc.apply_pending_display();
 }
 
 // ---- ge_list display list ownership ----------------------------------------
@@ -387,16 +388,65 @@ fn nop_ge_callback(_: c_int, _: ?*anyopaque) callconv(.c) void {}
 var current_qid: i32 = 0;
 var batching_render_state = false;
 
+/// Frames record into one of two cached lists while the GE runs the other, so the CPU does not wait for the previous frame before updating.
+/// Init and dialog lists keep the stall-driven shared list.
+var frame_lists: [2][Swapchain.display_list_words]u32 align(64) = undefined;
+var frame_list_idx: u1 = 0;
+
+/// Submission ticket per frame list; the list is free once the finish callback has counted that many completed frames.
+var frame_list_ticket: [2]u32 = .{ 0, 0 };
+var frames_submitted: u32 = 0;
+var frames_finished = std.atomic.Value(u32).init(0);
+
+/// Frame-list FINISH argument, distinguishing frames from init and dialogs.
+const frame_finish_arg: u32 = 1;
+
+/// Only the shared list is released to the GE while it is recorded.
+var stall_mode = true;
+
+/// Dynamic meshes drawn into a frame list are copied here so the CPU can rewrite their sources while the GE draws the previous frame.
+/// Each arena lives exactly as long as its frame list.
+const dynamic_arena_bytes: usize = 32 * 1024;
+var dynamic_arenas: [2][dynamic_arena_bytes]u8 align(64) = undefined;
+var dynamic_used: [2]usize = .{ 0, 0 };
+/// An arena overflow borrowed a dynamic source; drain before the next update.
+var drain_before_update = false;
+
+/// Copy a dynamic mesh's bytes into the recording frame's arena, or null if it does not fit.
+fn copy_dynamic(bytes: []const u8) ?[*]const u8 {
+    const arena = &dynamic_arenas[frame_list_idx];
+    const start = std.mem.alignForward(usize, dynamic_used[frame_list_idx], 16);
+    if (start + bytes.len > arena.len) return null;
+    @memcpy(arena[start..][0..bytes.len], bytes);
+    dynamic_used[frame_list_idx] = start + bytes.len;
+    return arena[start..].ptr;
+}
+
+/// The stall-driven list is written cached and released to the GE in batches: each sceGeListUpdateStallAddr is a kernel call, and uncached command writes stall the CPU.
+const stall_batch_bytes: usize = 1024;
+var stall_flushed: usize = 0;
+
 fn advance_stall() void {
-    if (batching_render_state) return;
+    if (batching_render_state or !stall_mode) return;
+    if (@intFromPtr(cmd.current()) - stall_flushed < stall_batch_bytes) return;
+    flush_stall();
+}
+
+fn flush_stall() void {
+    const current = @intFromPtr(cmd.current());
+    assert(current >= stall_flushed);
+    dcache_writeback(@ptrFromInt(stall_flushed), current - stall_flushed);
     ge_list.list_update_stall_addr(current_qid, cmd.current()) catch {};
+    stall_flushed = current;
 }
 
 /// Reset the command buffer to the start of the shared GE list and
 /// re-enqueue it with stall=start, mirroring `sceGuStart(.Direct, ...)`.
 /// The GE will not execute anything until `advance_stall` is called.
 fn begin_list() void {
-    const list = swapchain.list_uncached;
+    stall_mode = true;
+    const list: []u32 = &swapchain.display_list;
+    stall_flushed = @intFromPtr(list.ptr);
     cmd = ge_list.CommandBuffer.init(list);
     current_qid = ge_list.list_enqueue(
         list.ptr,
@@ -411,14 +461,34 @@ fn begin_list() void {
 fn finish_list() void {
     must(cmd.finish(0));
     must(cmd.end());
-    advance_stall();
+    flush_stall();
+}
+
+fn begin_frame_list() void {
+    frame_list_idx +%= 1;
+    const ticket = frame_list_ticket[frame_list_idx];
+    while (frames_finished.load(.acquire) < ticket) _ = ge_list.draw_sync(.wait);
+    stall_mode = false;
+    dynamic_used[frame_list_idx] = 0;
+    cmd = ge_list.CommandBuffer.init(frame_lists[frame_list_idx][0..]);
 }
 
 fn finish_frame_list() void {
-    must(cmd.finish(0));
+    must(cmd.finish(frame_finish_arg));
     must(cmd.end());
+    const list = &frame_lists[frame_list_idx];
+    dcache_writeback(list, cmd.used_words() * @sizeOf(u32));
+    dcache_writeback(&dynamic_arenas[frame_list_idx], dynamic_used[frame_list_idx]);
+
+    // With two buffers the target is the one on screen until the previous frame's vblank flip;
+    // the GE starts a list as soon as the one before it finishes, so enqueueing early would draw into the visible buffer.
+    if (gfx.surface.sync) swapchain.wait_until_hidden(swapchain.draw_idx);
+
+    frames_submitted += 1;
+    frame_list_ticket[frame_list_idx] = frames_submitted;
     swapchain.mark_submitted();
-    advance_stall();
+    _ = ge_list.list_enqueue(list, null, ge_callback_id, null) catch |err|
+        std.debug.panic("psp gfx: list_enqueue failed: {s}", .{@errorName(err)});
 }
 
 /// Bail out on a write error. The display list buffer is large enough to
@@ -487,7 +557,12 @@ const ClearVertex = extern struct {
     pad: u16 = 0,
 };
 
-const clear_count: usize = ((screen_width + 63) / 64) * 2;
+/// The GE clears fastest in vertical strips: 32 px wide for 32-bit color, 64 px for 16-bit formats (PPSSPP GE performance notes).
+const clear_strip: u16 = switch (options.config.psp_display_mode) {
+    .rgba8888 => 32,
+    .rgb565 => 64,
+};
+const clear_count: usize = ((screen_width + clear_strip - 1) / clear_strip) * 2;
 var clear_vertices: [Swapchain.buffer_count][clear_count]ClearVertex align(16) = undefined;
 var clear_filter_for_buffer: [Swapchain.buffer_count]u32 =
     @splat(0xFFFFFFFF); // sentinel forces an initial rebuild
@@ -507,7 +582,7 @@ fn build_clear_vertices(buffer_idx: Swapchain.BufferIndex, filter: u32) void {
         const k: u16 = idx & 1;
         clear_vertices[buffer][i] = .{
             .color = filter,
-            .x = (j + k) * 64,
+            .x = (j + k) * clear_strip,
             .y = k * @as(u16, @intCast(screen_height)),
             .z = 1, // matches gu.clear_depth(1) in the existing backend
         };
@@ -609,6 +684,7 @@ pub fn init() gfx.InitError!void {
     must(cmd.enable(.cull_face, true));
     cull_face_enabled = true;
     depth_write_enabled = true;
+    depth_test_enabled = true;
     fog_enabled = false;
     fog_range = null;
     fog_color = null;
@@ -786,7 +862,7 @@ pub fn resume_from_dialog() void {
     swapchain.prime_display() catch {};
 }
 
-pub fn set_alpha_blend(enabled: bool) void {
+fn set_alpha_blend(enabled: bool) void {
     if (enabled == alpha_blend_enabled) return;
     alpha_blend_enabled = enabled;
     must(cmd.enable(.alpha_blend, enabled));
@@ -794,7 +870,13 @@ pub fn set_alpha_blend(enabled: bool) void {
     advance_stall();
 }
 
-pub fn set_depth_write(enabled: bool) void {
+fn set_depth_test(enabled: bool) void {
+    if (enabled == depth_test_enabled) return;
+    depth_test_enabled = enabled;
+    must(cmd.enable(.depth_test, enabled));
+}
+
+fn set_depth_write(enabled: bool) void {
     if (enabled == depth_write_enabled) return;
     depth_write_enabled = enabled;
     // zmsk register uses mask semantics: 1 = block writes, 0 = allow writes.
@@ -802,21 +884,21 @@ pub fn set_depth_write(enabled: bool) void {
     advance_stall();
 }
 
-pub fn set_clip_planes(enabled: bool) void {
+fn set_clip_planes(enabled: bool) void {
     if (enabled == clip_planes_enabled) return;
     clip_planes_enabled = enabled;
     must(cmd.enable(.clip_planes, enabled));
     advance_stall();
 }
 
-pub fn set_culling(enabled: bool) void {
+fn set_culling(enabled: bool) void {
     if (enabled == cull_face_enabled) return;
     cull_face_enabled = enabled;
     must(cmd.enable(.cull_face, enabled));
     advance_stall();
 }
 
-pub fn set_uv_offset(u: f32, v: f32) void {
+fn set_uv_offset(u: f32, v: f32) void {
     if (uv_offset[0] == u and uv_offset[1] == v) return;
     uv_offset = .{ u, v };
     const bias: f32 = if (render_pipeline.uv_unorm8) 1.0 else 0.0;
@@ -824,7 +906,7 @@ pub fn set_uv_offset(u: f32, v: f32) void {
     advance_stall();
 }
 
-pub fn set_fog(enabled: bool, _: f32, _: f32, start: f32, end: f32, r: f32, g: f32, b: f32) void {
+fn set_fog(enabled: bool, _: f32, _: f32, start: f32, end: f32, r: f32, g: f32, b: f32) void {
     const before = cmd.current();
     if (enabled) {
         const ri: u32 = @intFromFloat(math.max(0.0, math.min(1.0, r)) * 255.0);
@@ -863,14 +945,14 @@ fn mat4_as_floats(mat: *const Mat4) *const [16]f32 {
     return @ptrCast(&mat.data);
 }
 
-pub fn set_proj_matrix(mat: *const Mat4) void {
+fn set_proj_matrix(mat: *const Mat4) void {
     if (std.meta.eql(proj_matrix, mat.*)) return;
     proj_matrix = mat.*;
     must(cmd.projection_matrix(mat4_as_floats(mat)));
     advance_stall();
 }
 
-pub fn set_view_matrix(mat: *const Mat4) void {
+fn set_view_matrix(mat: *const Mat4) void {
     if (std.meta.eql(view_matrix, mat.*)) return;
     view_matrix = mat.*;
     must(cmd.view_matrix(mat4_as_floats(mat)));
@@ -887,6 +969,7 @@ pub fn set_render_state(state: *const Graphics.RenderState) void {
 
     set_alpha_blend(state.blend == .alpha);
     set_depth_write(state.depth_write);
+    set_depth_test(state.depth_test);
     set_culling(state.cull);
     set_clip_planes(state.clip_planes);
     set_uv_offset(state.uv_offset[0], state.uv_offset[1]);
@@ -897,9 +980,8 @@ pub fn set_render_state(state: *const Graphics.RenderState) void {
 }
 
 pub fn start_frame() bool {
-    const allow_tear = !gfx.surface.sync;
     var attempts: u32 = 0;
-    while (!swapchain.acquire_draw_buffer(allow_tear)) {
+    while (!swapchain.acquire_draw_buffer()) {
         if (gfx.surface.sync) {
             display.wait_vblank_start_cb() catch {};
         } else {
@@ -909,7 +991,7 @@ pub fn start_frame() bool {
         if (attempts > 8) return false;
     }
 
-    begin_list();
+    begin_frame_list();
 
     must(cmd.pixel_format(ge_pixel_format));
     must(cmd.frame_buffer(swapchain.buffers_rel[swapchain.draw_idx], scr_buf_width));
@@ -940,9 +1022,21 @@ pub fn set_vsync(v: bool) void {
     gfx.surface.sync = v;
 }
 
-/// Meshes on PSP borrow their caller-owned CPU storage. Drain the previous
-/// GE list before the engine lets game code rewrite or release that storage.
-pub fn wait_for_borrowed_meshes() void {
+/// The GE keeps drawing the previous frame while the CPU updates; only an arena overflow, which left a dynamic mesh borrowed, needs a drain.
+pub fn wait_before_update() void {
+    if (drain_before_update) drain_gpu();
+    drain_before_update = false;
+}
+
+pub fn gpu_fence() u32 {
+    return frames_submitted + 1;
+}
+
+pub fn gpu_fence_passed(fence: u32) bool {
+    return frames_finished.load(.acquire) >= fence;
+}
+
+pub fn drain_gpu() void {
     _ = ge_list.draw_sync(.wait);
 }
 
@@ -994,6 +1088,7 @@ fn init_pipeline(layout: vertex.VertexLayout) PipelineData {
 }
 
 const MeshData = struct {
+    retention: Mesh.Retention,
     data: ?[*]const u8,
     len: usize,
     indices: ?[*]const u8,
@@ -1004,8 +1099,9 @@ const MeshData = struct {
 
 var meshes = Util.ResourceTableType(MeshData, 2048, Mesh.Handle).init();
 
-pub fn create_mesh(_: *const Mesh.Desc) gfx.CreateMeshError!Mesh.Handle {
+pub fn create_mesh(desc: *const Mesh.Desc) gfx.CreateMeshError!Mesh.Handle {
     return meshes.add(.{
+        .retention = desc.retention,
         .data = null,
         .len = 0,
         .indices = null,
@@ -1041,9 +1137,25 @@ pub fn update_mesh(handle: Mesh.Handle, desc: *const Mesh.UpdateDesc) void {
 
 pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
     const mesh = meshes.get(handle) orelse Util.panic_invalid_handle("psp gfx", "draw_mesh", handle);
+    draw_mesh_range(handle, model, 0, @intCast(if (mesh.index_count > 0) mesh.index_count else mesh.vertex_count));
+}
+
+pub fn draw_mesh_range(handle: Mesh.Handle, model: *const Mat4, first: u32, count: u32) void {
+    const mesh = meshes.get(handle) orelse Util.panic_invalid_handle("psp gfx", "draw_mesh_range", handle);
     var pl = render_pipeline;
-    const data = mesh.data orelse return;
-    if (mesh.vertex_count == 0) return;
+    var data = mesh.data orelse return;
+    var index_source = mesh.indices;
+    if (mesh.retention == .dynamic) {
+        if (copy_dynamic(data[0..mesh.len])) |copy| {
+            data = copy;
+            if (index_source) |idx| {
+                if (copy_dynamic(idx[0..mesh.index_len])) |idx_copy| index_source = idx_copy else drain_before_update = true;
+            }
+        } else drain_before_update = true;
+    }
+    if (mesh.vertex_count == 0 or count == 0) return;
+    const indexed = mesh.index_count > 0;
+    assert(@as(usize, first) + count <= (if (indexed) mesh.index_count else mesh.vertex_count));
 
     must(cmd.world_matrix(mat4_as_floats(model)));
 
@@ -1053,16 +1165,18 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
         texture_cache_dirty = false;
     }
 
-    if (mesh.index_count > 0) {
-        const index_data = mesh.indices orelse return;
+    if (indexed) {
+        const index_data = index_source orelse return;
         pl.vertex_type.index = .Index16Bit;
-        must(cmd.index_address(@intFromPtr(index_data)));
+        must(cmd.index_address(@intFromPtr(index_data) + @as(usize, first) * @sizeOf(u16)));
+        must(cmd.vertex_type(@as(u24, @bitCast(pl.vertex_type))));
+        must(cmd.vertex_address(@intFromPtr(data)));
     } else {
         pl.vertex_type.index = .None;
+        must(cmd.vertex_type(@as(u24, @bitCast(pl.vertex_type))));
+        must(cmd.vertex_address(@intFromPtr(data) + @as(usize, first) * vertex.Layout.stride));
     }
-    must(cmd.vertex_type(@as(u24, @bitCast(pl.vertex_type))));
-    must(cmd.vertex_address(@intFromPtr(data)));
-    must(cmd.primitive(.triangles, @intCast(if (mesh.index_count > 0) mesh.index_count else mesh.vertex_count)));
+    must(cmd.primitive(.triangles, @intCast(count)));
     advance_stall();
 }
 
@@ -1185,7 +1299,37 @@ pub fn update_texture(handle: Texture.Handle, data: []align(16) u8) void {
     }
 }
 
-pub fn bind_texture(handle: Texture.Handle) void {
+/// Re-upload one rectangle of the CPU backing. Swizzled textures copy the
+/// rectangle's 16-byte x 8-row blocks; the rectangle should be block aligned
+/// (32-bit pixels: x multiple of 4, y and height multiples of 8).
+pub fn update_texture_region(handle: Texture.Handle, _: []align(16) u8, x: u32, y: u32, width: u32, height: u32) void {
+    const tex = textures.get(handle) orelse Util.panic_invalid_handle("psp gfx", "update_texture_region", handle);
+    assert(x + width <= tex.width and y + height <= tex.height and width > 0 and height > 0);
+    if (bound_texture == handle) texture_cache_dirty = true;
+    const row_bytes = tex.width * tex_bpp;
+    const dst_base: [*]u8 = if (tex.in_vram) (tex.vram_data orelse @panic("psp gfx: VRAM texture missing backing slice")).ptr else tex.cpu_data;
+    if (tex.swizzled) {
+        const blocks_per_row = row_bytes / 16;
+        const bx0 = x * tex_bpp / 16;
+        const bx1 = ((x + width) * tex_bpp + 15) / 16;
+        var block_row = y / 8;
+        while (block_row * 8 < y + height) : (block_row += 1) {
+            const start = (block_row * blocks_per_row + bx0) * 128;
+            const len = (bx1 - bx0) * 128;
+            if (tex.in_vram) @memcpy(dst_base[start..][0..len], tex.cpu_data[start..][0..len]);
+            dcache_writeback(dst_base + start, len);
+        }
+    } else {
+        for (y..y + height) |row| {
+            const start = row * row_bytes + x * tex_bpp;
+            const len = width * tex_bpp;
+            if (tex.in_vram) @memcpy(dst_base[start..][0..len], tex.cpu_data[start..][0..len]);
+            dcache_writeback(dst_base + start, len);
+        }
+    }
+}
+
+fn bind_texture(handle: Texture.Handle) void {
     if (handle.is_null() or bound_texture == handle) return;
     bound_texture = handle;
     const tex = textures.get(handle) orelse Util.panic_invalid_handle("psp gfx", "bind_texture", handle);

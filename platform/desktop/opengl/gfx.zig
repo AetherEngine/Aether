@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const sdl3 = @import("sdl3");
 const gl = @import("gl");
 const gl_constants = @import("constants.zig");
@@ -33,6 +34,7 @@ var textures = Util.ResourceTableType(gl.uint, 1024, Texture.Handle).init();
 var alpha_blend_enabled: bool = true;
 var cull_face_enabled: bool = true;
 var depth_write_enabled: bool = true;
+var depth_test_enabled: bool = true;
 var bound_texture: Texture.Handle = .none;
 var pipeline: PipelineData = undefined;
 var pipeline_initialized: bool = false;
@@ -107,7 +109,7 @@ pub fn set_clear_color(r: f32, g: f32, b: f32, a: f32) void {
     gl.ClearColor(r, g, b, a);
 }
 
-pub fn set_alpha_blend(enabled: bool) void {
+fn set_alpha_blend(enabled: bool) void {
     const flag: u32 = @intFromBool(enabled);
     if (shader.state.alpha_blend_enabled != flag) {
         shader.state.alpha_blend_enabled = flag;
@@ -118,27 +120,33 @@ pub fn set_alpha_blend(enabled: bool) void {
     if (enabled) gl.Enable(gl_constants.blend) else gl.Disable(gl_constants.blend);
 }
 
-pub fn set_depth_write(enabled: bool) void {
+fn set_depth_write(enabled: bool) void {
     if (depth_write_enabled == enabled) return;
     depth_write_enabled = enabled;
     gl.DepthMask(@intFromBool(enabled));
 }
 
-pub fn set_clip_planes(_: bool) void {}
+fn set_depth_test(enabled: bool) void {
+    if (depth_test_enabled == enabled) return;
+    depth_test_enabled = enabled;
+    if (enabled) gl.Enable(gl_constants.depth_test) else gl.Disable(gl_constants.depth_test);
+}
 
-pub fn set_culling(enabled: bool) void {
+fn set_clip_planes(_: bool) void {}
+
+fn set_culling(enabled: bool) void {
     if (enabled == cull_face_enabled) return;
     cull_face_enabled = enabled;
     if (enabled) gl.Enable(gl_constants.cull_face) else gl.Disable(gl_constants.cull_face);
 }
 
-pub fn set_uv_offset(u: f32, v: f32) void {
+fn set_uv_offset(u: f32, v: f32) void {
     if (shader.state.uv_offset[0] == u and shader.state.uv_offset[1] == v) return;
     shader.state.uv_offset = .{ u, v };
     shader.mark_dirty();
 }
 
-pub fn set_fog(enabled: bool, _: f32, _: f32, start: f32, end: f32, r: f32, g: f32, b: f32) void {
+fn set_fog(enabled: bool, _: f32, _: f32, start: f32, end: f32, r: f32, g: f32, b: f32) void {
     const fog_en: u32 = @intFromBool(enabled);
     if (shader.state.fog_enabled == fog_en and
         shader.state.fog_start == start and
@@ -182,6 +190,21 @@ pub fn end_frame() void {
     gfx.surface.draw();
 }
 
+/// Mesh data is copied at update, so no frame borrows it.
+pub fn wait_before_update() void {}
+
+pub fn gpu_fence() u32 {
+    return 0;
+}
+
+pub fn gpu_fence_passed(_: u32) bool {
+    return true;
+}
+
+pub fn drain_gpu() void {
+    gl.Finish();
+}
+
 pub fn clear_depth() void {
     // See start_frame: the depth clear must ignore the game's write mask.
     if (!depth_write_enabled) gl.DepthMask(gl_constants.true_value);
@@ -201,13 +224,13 @@ pub fn set_vsync(v: bool) void {
     sdl3.video.gl.setSwapInterval(if (v) .synchronized else .immediate) catch {};
 }
 
-pub fn set_proj_matrix(mat: *const Mat4) void {
+fn set_proj_matrix(mat: *const Mat4) void {
     if (std.meta.eql(shader.state.proj, mat.*)) return;
     shader.state.proj = mat.*;
     shader.mark_dirty();
 }
 
-pub fn set_view_matrix(mat: *const Mat4) void {
+fn set_view_matrix(mat: *const Mat4) void {
     if (std.meta.eql(shader.state.view, mat.*)) return;
     shader.state.view = mat.*;
     shader.mark_dirty();
@@ -216,6 +239,7 @@ pub fn set_view_matrix(mat: *const Mat4) void {
 pub fn set_render_state(state: *const Graphics.RenderState) void {
     set_alpha_blend(state.blend == .alpha);
     set_depth_write(state.depth_write);
+    set_depth_test(state.depth_test);
     set_culling(state.cull);
     set_clip_planes(state.clip_planes);
     set_uv_offset(state.uv_offset[0], state.uv_offset[1]);
@@ -306,10 +330,16 @@ pub fn update_mesh(handle: Mesh.Handle, desc: *const Mesh.UpdateDesc) void {
 }
 
 pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
-    if (!pipeline_initialized) return;
     const mesh = meshes.get(handle) orelse Util.panic_invalid_handle("opengl gfx", "draw_mesh", handle);
+    draw_mesh_range(handle, model, 0, @intCast(if (mesh.index_count > 0) mesh.index_count else mesh.vertex_count));
+}
+
+pub fn draw_mesh_range(handle: Mesh.Handle, model: *const Mat4, first: u32, count: u32) void {
+    if (!pipeline_initialized) return;
+    const mesh = meshes.get(handle) orelse Util.panic_invalid_handle("opengl gfx", "draw_mesh_range", handle);
     const pl = &pipeline;
-    if (mesh.vertex_count == 0) return;
+    if (mesh.vertex_count == 0 or count == 0) return;
+    assert(@as(usize, first) + count <= (if (mesh.index_count > 0) mesh.index_count else mesh.vertex_count));
 
     shader.flush();
     shader.update_per_object(model);
@@ -318,9 +348,9 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
     gl.VertexArrayVertexBuffer(pl.vao, 0, mesh.vbo, 0, @intCast(pl.layout.stride));
     if (mesh.index_count > 0) {
         gl.VertexArrayElementBuffer(pl.vao, mesh.ebo);
-        gl.DrawElements(gl_constants.triangles, @intCast(mesh.index_count), gl_constants.unsigned_short, 0);
+        gl.DrawElements(gl_constants.triangles, @intCast(count), gl_constants.unsigned_short, @as(usize, first) * @sizeOf(u16));
     } else {
-        gl.DrawArrays(gl_constants.triangles, 0, @intCast(mesh.vertex_count));
+        gl.DrawArrays(gl_constants.triangles, @intCast(first), @intCast(count));
     }
 }
 
@@ -353,7 +383,20 @@ pub fn update_texture(handle: Texture.Handle, data: []align(16) u8) void {
     gl.TextureSubImage2D(tex, 0, 0, 0, w, h, gl_constants.rgba, gl_constants.unsigned_byte, data.ptr);
 }
 
-pub fn bind_texture(handle: Texture.Handle) void {
+/// Upload one rectangle of `data` (linear RGBA8, full texture).
+pub fn update_texture_region(handle: Texture.Handle, data: []align(16) u8, x: u32, y: u32, width: u32, height: u32) void {
+    const tex = textures.get(handle) orelse Util.panic_invalid_handle("opengl gfx", "update_texture_region", handle);
+    var w: gl.int = 0;
+    gl.GetTextureLevelParameteriv(tex, 0, gl_constants.texture_width, @ptrCast(&w));
+    assert(x + width <= w);
+    gl.PixelStorei(gl_constants.unpack_row_length, w);
+    defer gl.PixelStorei(gl_constants.unpack_row_length, 0);
+
+    const start = (@as(usize, y) * @as(usize, @intCast(w)) + x) * 4;
+    gl.TextureSubImage2D(tex, 0, @intCast(x), @intCast(y), @intCast(width), @intCast(height), gl_constants.rgba, gl_constants.unsigned_byte, data[start..].ptr);
+}
+
+fn bind_texture(handle: Texture.Handle) void {
     if (handle.is_null() or bound_texture == handle) return;
     const tex = textures.get(handle) orelse Util.panic_invalid_handle("opengl gfx", "bind_texture", handle);
     bound_texture = handle;

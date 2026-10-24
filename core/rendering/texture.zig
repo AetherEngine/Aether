@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const Image = @import("../util/image.zig");
 const Platform = @import("platform");
 const gfx = Platform.gfx;
@@ -150,6 +151,14 @@ pub fn update(self: *const Texture) Error!void {
     if (!self.cpu_access.can_write()) return error.CpuWriteAccessDenied;
     const data = self.backing orelse return error.NoCpuPixels;
     gfx.api.update_texture(self.handle, data);
+}
+
+/// Re-upload part of the CPU pixels.
+pub fn update_region(self: *const Texture, x: u32, y: u32, width: u32, height: u32) Error!void {
+    if (!self.cpu_access.can_write()) return error.CpuWriteAccessDenied;
+    assert(x + width <= self.width and y + height <= self.height);
+    const data = self.backing orelse return error.NoCpuPixels;
+    gfx.api.update_texture_region(self.handle, data, x, y, width, height);
 }
 
 /// Promotes backing storage to GPU memory where supported.
