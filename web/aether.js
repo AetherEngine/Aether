@@ -446,6 +446,20 @@ function bindTexture(texture) {
   boundTexture = texture;
 }
 
+function drawMesh(mesh, modelPtr, first, count) {
+  if (mesh.vertexCount === 0 || count === 0) return;
+  gl.useProgram(program);
+  uploadCameraUbo();
+  uploadPerObjectUbo(modelPtr);
+  gl.bindVertexArray(mesh.vao);
+  bindTexture(currentTexture);
+  if (mesh.indexCount > 0) {
+    gl.drawElements(gl.TRIANGLES, count, gl.UNSIGNED_SHORT, first * 2);
+  } else {
+    gl.drawArrays(gl.TRIANGLES, first, count);
+  }
+}
+
 function clearBuffers(mask) {
   if (!depthWriteEnabled) gl.depthMask(true);
   gl.clear(mask);
@@ -666,17 +680,12 @@ const host = {
   aether_webgl_draw_mesh(handle, modelPtr) {
     const mesh = meshes.get(handle);
     if (!mesh) return;
-    if (mesh.vertexCount === 0) return;
-    gl.useProgram(program);
-    uploadCameraUbo();
-    uploadPerObjectUbo(modelPtr);
-    gl.bindVertexArray(mesh.vao);
-    bindTexture(currentTexture);
-    if (mesh.indexCount > 0) {
-      gl.drawElements(gl.TRIANGLES, mesh.indexCount, gl.UNSIGNED_SHORT, 0);
-    } else {
-      gl.drawArrays(gl.TRIANGLES, 0, mesh.vertexCount);
-    }
+    drawMesh(mesh, modelPtr, 0, mesh.indexCount > 0 ? mesh.indexCount : mesh.vertexCount);
+  },
+  aether_webgl_draw_mesh_range(handle, modelPtr, first, count) {
+    const mesh = meshes.get(handle);
+    if (!mesh) return;
+    drawMesh(mesh, modelPtr, first, count);
   },
   aether_webgl_create_texture(width, height, ptr, len) {
     const handle = nextTextureHandle++;

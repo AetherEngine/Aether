@@ -355,8 +355,15 @@ pub fn update_mesh(handle: Mesh.Handle, desc: *const Mesh.UpdateDesc) void {
 }
 
 pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
-    if (!initialized or !render_pipeline_initialized or !swapchain.recording) return;
     const mesh = meshes.get_ptr(handle) orelse Util.panic_invalid_handle("switch gfx", "draw_mesh", handle);
+    draw_mesh_range(handle, model, 0, @intCast(if (mesh.index_count > 0) mesh.index_count else mesh.vertex_count));
+}
+
+pub fn draw_mesh_range(handle: Mesh.Handle, model: *const Mat4, first: u32, count: u32) void {
+    if (!initialized or !render_pipeline_initialized or !swapchain.recording) return;
+    const mesh = meshes.get_ptr(handle) orelse Util.panic_invalid_handle("switch gfx", "draw_mesh_range", handle);
+    if (count == 0) return;
+    assert(@as(usize, first) + count <= (if (mesh.index_count > 0) mesh.index_count else mesh.vertex_count));
     const mesh_id = handle.raw_index();
     const frame_index = swapchain.frame_index;
     if (mesh.dirty) {
@@ -381,7 +388,6 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
         return;
     }
     if (mesh.index_count > 0 and mesh.index.buffer.size < mesh.index_count * @sizeOf(Mesh.Index)) return;
-    const draw_count = if (mesh.index_count > 0) mesh.index_count else mesh.vertex_count;
 
     ensure_image_descriptors_current();
     const texture_id = resolve_texture_index(draw_state.tex_id);
@@ -393,7 +399,7 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
         @intCast(swapchain.image_index),
         frame_draw_calls,
         @intCast(mesh_id),
-        @intCast(draw_count),
+        count,
         texture_id,
         buffer.size,
         next_uniform_slot,
@@ -424,15 +430,15 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
         @intCast(swapchain.image_index),
         frame_draw_calls,
         @intCast(mesh_id),
-        @intCast(draw_count),
+        count,
         texture_id,
         buffer.size,
         next_uniform_slot - 1,
     );
     if (mesh.index_count > 0) {
-        dk.dkCmdBufDrawIndexed(swapchain.command_buffer, dk.PrimitiveTriangles, @intCast(mesh.index_count), 1, 0, 0, 0);
+        dk.dkCmdBufDrawIndexed(swapchain.command_buffer, dk.PrimitiveTriangles, count, 1, first, 0, 0);
     } else {
-        dk.dkCmdBufDraw(swapchain.command_buffer, dk.PrimitiveTriangles, @intCast(mesh.vertex_count), 1, 0, 0);
+        dk.dkCmdBufDraw(swapchain.command_buffer, dk.PrimitiveTriangles, count, 1, first, 0);
     }
     context.mark_gpu_draw(
         swapchain.command_buffer,
@@ -441,14 +447,14 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
         @intCast(swapchain.image_index),
         frame_draw_calls,
         @intCast(mesh_id),
-        @intCast(draw_count),
+        count,
         texture_id,
         buffer.size,
         next_uniform_slot - 1,
     );
 
     frame_draw_calls += 1;
-    frame_vertex_count += @intCast(draw_count);
+    frame_vertex_count += count;
 }
 
 pub fn create_texture(desc: *const Texture.UploadDesc) gfx.CreateTextureError!Texture.Handle {

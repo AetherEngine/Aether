@@ -178,5 +178,9 @@ pub fn MeshType(comptime V: type) type {
         pub fn draw(self: *Mesh, mat: *const Mat4) void {
             gfx.api.draw_mesh(self.handle, mat);
         }
+
+        pub fn draw_range(self: *Mesh, mat: *const Mat4, first: u32, count: u32) void {
+            gfx.api.draw_mesh_range(self.handle, mat, first, count);
+        }
     };
 }

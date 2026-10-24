@@ -1042,9 +1042,16 @@ pub fn update_mesh(handle: Mesh.Handle, desc: *const Mesh.UpdateDesc) void {
 
 pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
     const mesh = meshes.get(handle) orelse Util.panic_invalid_handle("psp gfx", "draw_mesh", handle);
+    draw_mesh_range(handle, model, 0, @intCast(if (mesh.index_count > 0) mesh.index_count else mesh.vertex_count));
+}
+
+pub fn draw_mesh_range(handle: Mesh.Handle, model: *const Mat4, first: u32, count: u32) void {
+    const mesh = meshes.get(handle) orelse Util.panic_invalid_handle("psp gfx", "draw_mesh_range", handle);
     var pl = render_pipeline;
     const data = mesh.data orelse return;
-    if (mesh.vertex_count == 0) return;
+    if (mesh.vertex_count == 0 or count == 0) return;
+    const indexed = mesh.index_count > 0;
+    assert(@as(usize, first) + count <= (if (indexed) mesh.index_count else mesh.vertex_count));
 
     must(cmd.world_matrix(mat4_as_floats(model)));
 
@@ -1054,16 +1061,18 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
         texture_cache_dirty = false;
     }
 
-    if (mesh.index_count > 0) {
+    if (indexed) {
         const index_data = mesh.indices orelse return;
         pl.vertex_type.index = .Index16Bit;
-        must(cmd.index_address(@intFromPtr(index_data)));
+        must(cmd.index_address(@intFromPtr(index_data) + @as(usize, first) * @sizeOf(u16)));
+        must(cmd.vertex_type(@as(u24, @bitCast(pl.vertex_type))));
+        must(cmd.vertex_address(@intFromPtr(data)));
     } else {
         pl.vertex_type.index = .None;
+        must(cmd.vertex_type(@as(u24, @bitCast(pl.vertex_type))));
+        must(cmd.vertex_address(@intFromPtr(data) + @as(usize, first) * vertex.Layout.stride));
     }
-    must(cmd.vertex_type(@as(u24, @bitCast(pl.vertex_type))));
-    must(cmd.vertex_address(@intFromPtr(data)));
-    must(cmd.primitive(.triangles, @intCast(if (mesh.index_count > 0) mesh.index_count else mesh.vertex_count)));
+    must(cmd.primitive(.triangles, @intCast(count)));
     advance_stall();
 }
 

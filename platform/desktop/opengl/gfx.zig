@@ -307,10 +307,16 @@ pub fn update_mesh(handle: Mesh.Handle, desc: *const Mesh.UpdateDesc) void {
 }
 
 pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
-    if (!pipeline_initialized) return;
     const mesh = meshes.get(handle) orelse Util.panic_invalid_handle("opengl gfx", "draw_mesh", handle);
+    draw_mesh_range(handle, model, 0, @intCast(if (mesh.index_count > 0) mesh.index_count else mesh.vertex_count));
+}
+
+pub fn draw_mesh_range(handle: Mesh.Handle, model: *const Mat4, first: u32, count: u32) void {
+    if (!pipeline_initialized) return;
+    const mesh = meshes.get(handle) orelse Util.panic_invalid_handle("opengl gfx", "draw_mesh_range", handle);
     const pl = &pipeline;
-    if (mesh.vertex_count == 0) return;
+    if (mesh.vertex_count == 0 or count == 0) return;
+    assert(@as(usize, first) + count <= (if (mesh.index_count > 0) mesh.index_count else mesh.vertex_count));
 
     shader.flush();
     shader.update_per_object(model);
@@ -319,9 +325,9 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
     gl.VertexArrayVertexBuffer(pl.vao, 0, mesh.vbo, 0, @intCast(pl.layout.stride));
     if (mesh.index_count > 0) {
         gl.VertexArrayElementBuffer(pl.vao, mesh.ebo);
-        gl.DrawElements(gl_constants.triangles, @intCast(mesh.index_count), gl_constants.unsigned_short, 0);
+        gl.DrawElements(gl_constants.triangles, @intCast(count), gl_constants.unsigned_short, @as(usize, first) * @sizeOf(u16));
     } else {
-        gl.DrawArrays(gl_constants.triangles, 0, @intCast(mesh.vertex_count));
+        gl.DrawArrays(gl_constants.triangles, @intCast(first), @intCast(count));
     }
 }
 

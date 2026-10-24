@@ -1072,10 +1072,16 @@ pub fn update_mesh(handle: Mesh.Handle, desc: *const Mesh.UpdateDesc) void {
 }
 
 pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
+    const m_data = meshes.get_ptr(handle) orelse Util.panic_invalid_handle("vulkan gfx", "draw_mesh", handle);
+    draw_mesh_range(handle, model, 0, @intCast(if (m_data.index_count > 0) m_data.index_count else m_data.vertex_count));
+}
+
+pub fn draw_mesh_range(handle: Mesh.Handle, model: *const Mat4, first: u32, count: u32) void {
     draw_state.mat = model.*;
 
-    const m_data = meshes.get_ptr(handle) orelse Util.panic_invalid_handle("vulkan gfx", "draw_mesh", handle);
-    if (m_data.vertex_count == 0) return;
+    const m_data = meshes.get_ptr(handle) orelse Util.panic_invalid_handle("vulkan gfx", "draw_mesh_range", handle);
+    if (m_data.vertex_count == 0 or count == 0) return;
+    assert(@as(usize, first) + count <= (if (m_data.index_count > 0) m_data.index_count else m_data.vertex_count));
     if (render_pipeline.pipeline == .null_handle) return;
     const p_data = &render_pipeline;
 
@@ -1101,9 +1107,9 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
     command_buffer.pushConstants(p_data.layout, .{ .vertex = true, .fragment = true }, 0, @sizeOf(DrawState), &draw_state);
     if (m_data.index_count > 0) {
         command_buffer.bindIndexBuffer(buffer, region.offset + m_data.storage.index_offset, .uint16);
-        command_buffer.drawIndexed(@intCast(m_data.index_count), 1, 0, 0, 0);
+        command_buffer.drawIndexed(count, 1, first, 0, 0);
     } else {
-        command_buffer.draw(@intCast(m_data.vertex_count), 1, 0, 0);
+        command_buffer.draw(count, 1, first, 0);
     }
 }
 

@@ -29,6 +29,7 @@ extern "aether_host" fn aether_webgl_create_mesh() u32;
 extern "aether_host" fn aether_webgl_destroy_mesh(handle: u32) void;
 extern "aether_host" fn aether_webgl_update_mesh(handle: u32, vertex_ptr: [*]const u8, vertex_len: usize, index_ptr: [*]const u8, index_len: usize) void;
 extern "aether_host" fn aether_webgl_draw_mesh(handle: u32, model_ptr: *const f32) void;
+extern "aether_host" fn aether_webgl_draw_mesh_range(handle: u32, model_ptr: *const f32, first: u32, count: u32) void;
 extern "aether_host" fn aether_webgl_create_texture(width: u32, height: u32, ptr: [*]const u8, len: usize) u32;
 extern "aether_host" fn aether_webgl_update_texture(handle: u32, ptr: [*]const u8, len: usize) void;
 extern "aether_host" fn aether_webgl_update_texture_region(handle: u32, ptr: [*]const u8, x: u32, y: u32, width: u32, height: u32) void;
@@ -176,6 +177,11 @@ pub fn update_mesh(handle: Mesh.Handle, desc: *const Mesh.UpdateDesc) void {
 pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
     const host_handle = meshes.get(handle) orelse Util.panic_invalid_handle("webgl gfx", "draw_mesh", handle);
     aether_webgl_draw_mesh(host_handle, model.ptr());
+}
+
+pub fn draw_mesh_range(handle: Mesh.Handle, model: *const Mat4, first: u32, count: u32) void {
+    const host_handle = meshes.get(handle) orelse Util.panic_invalid_handle("webgl gfx", "draw_mesh_range", handle);
+    aether_webgl_draw_mesh_range(host_handle, model.ptr(), first, count);
 }
 
 pub fn create_texture(desc: *const Texture.UploadDesc) gfx_api.CreateTextureError!Texture.Handle {

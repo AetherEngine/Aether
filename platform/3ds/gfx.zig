@@ -570,7 +570,13 @@ pub fn update_mesh(handle: Mesh.Handle, desc: *const Mesh.UpdateDesc) void {
 
 pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
     const mesh = meshes.get_ptr(handle) orelse Util.panic_invalid_handle("3ds gfx", "draw_mesh", handle);
-    if (mesh.vertex_count == 0) return;
+    draw_mesh_range(handle, model, 0, @intCast(if (mesh.index_count > 0) mesh.index_count else mesh.vertex_count));
+}
+
+pub fn draw_mesh_range(handle: Mesh.Handle, model: *const Mat4, first: u32, count: u32) void {
+    const mesh = meshes.get_ptr(handle) orelse Util.panic_invalid_handle("3ds gfx", "draw_mesh_range", handle);
+    if (mesh.vertex_count == 0 or count == 0) return;
+    assert(@as(usize, first) + count <= (if (mesh.index_count > 0) mesh.index_count else mesh.vertex_count));
     if (mesh.vertex_count > std.math.maxInt(usize) / vertex.Layout.stride) return;
     if (mesh.vertex_count * vertex.Layout.stride > mesh.vertex.size) return;
 
@@ -592,10 +598,12 @@ pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
         state.bound_vertex_buffer = mesh.vertex.gpu_memory;
     }
     if (mesh.index_count > 0) {
-        cmd.bindIndexBuffer(mesh.index.gpu_memory, .u16);
-        cmd.drawIndexed(@intCast(mesh.index_count), 0, 0);
+
+        // Zitrus bug workaround
+        cmd.bindIndexBuffer(mesh.index.gpu_memory.slice(first * @sizeOf(u16), count * @sizeOf(u16)), .u16);
+        cmd.drawIndexed(count, 0, 0);
     } else {
-        cmd.draw(@intCast(mesh.vertex_count), 0);
+        cmd.draw(count, first);
     }
 }
 

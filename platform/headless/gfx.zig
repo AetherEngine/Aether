@@ -44,6 +44,7 @@ pub fn create_mesh(_: *const Mesh.Desc) gfx_api.CreateMeshError!Mesh.Handle {
 pub fn destroy_mesh(_: Mesh.Handle) void {}
 pub fn update_mesh(_: Mesh.Handle, _: *const Mesh.UpdateDesc) void {}
 pub fn draw_mesh(_: Mesh.Handle, _: *const Mat4) void {}
+pub fn draw_mesh_range(_: Mesh.Handle, _: *const Mat4, _: u32, _: u32) void {}
 
 pub fn create_texture(_: *const Texture.UploadDesc) gfx_api.CreateTextureError!Texture.Handle {
     return Texture.Handle.none;
