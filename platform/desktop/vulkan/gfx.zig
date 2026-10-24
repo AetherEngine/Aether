@@ -126,6 +126,7 @@ var swap_state: Swapchain.PresentState = .optimal;
 var last_recreate_error: ?anyerror = null;
 var alpha_blend_enabled: bool = true;
 var depth_write_enabled: bool = true;
+var depth_test_enabled: bool = true;
 var cull_enabled: bool = true;
 
 const depth_format: vk.Format = .d32_sfloat;
@@ -502,7 +503,7 @@ pub fn set_clear_color(r: f32, g: f32, b: f32, a: f32) void {
     clear_color[3] = a;
 }
 
-pub fn set_alpha_blend(enabled: bool) void {
+fn set_alpha_blend(enabled: bool) void {
     draw_state.alpha_blend_enabled = @intFromBool(enabled);
     if (enabled == alpha_blend_enabled) return;
     alpha_blend_enabled = enabled;
@@ -516,25 +517,31 @@ pub fn set_alpha_blend(enabled: bool) void {
     command_buffer.setColorBlendEnableEXT(0, @ptrCast(&[1]vk.Bool32{enable}));
 }
 
-pub fn set_depth_write(enabled: bool) void {
+fn set_depth_write(enabled: bool) void {
     if (enabled == depth_write_enabled) return;
     depth_write_enabled = enabled;
     command_buffer.setDepthWriteEnable(if (enabled) .true else .false);
 }
 
-pub fn set_clip_planes(_: bool) void {}
+fn set_depth_test(enabled: bool) void {
+    if (enabled == depth_test_enabled) return;
+    depth_test_enabled = enabled;
+    command_buffer.setDepthTestEnable(if (enabled) .true else .false);
+}
 
-pub fn set_culling(enabled: bool) void {
+fn set_clip_planes(_: bool) void {}
+
+fn set_culling(enabled: bool) void {
     if (enabled == cull_enabled) return;
     cull_enabled = enabled;
     command_buffer.setCullMode(if (enabled) .{ .back = true } else .{});
 }
 
-pub fn set_uv_offset(u: f32, v: f32) void {
+fn set_uv_offset(u: f32, v: f32) void {
     draw_state.uv_offset = .{ u, v };
 }
 
-pub fn set_fog(enabled: bool, _: f32, _: f32, start: f32, end: f32, r: f32, g: f32, b: f32) void {
+fn set_fog(enabled: bool, _: f32, _: f32, start: f32, end: f32, r: f32, g: f32, b: f32) void {
     draw_state.fog_enabled = @intFromBool(enabled);
     draw_state.fog_start = start;
     draw_state.fog_end = end;
@@ -627,6 +634,7 @@ pub fn start_frame() bool {
     // leaves these states undefined otherwise, which manifests as broken depth
     // writes or unexpected blend state on macOS.
     command_buffer.setDepthWriteEnable(if (depth_write_enabled) .true else .false);
+    command_buffer.setDepthTestEnable(if (depth_test_enabled) .true else .false);
     command_buffer.setCullMode(if (cull_enabled) .{ .back = true } else .{});
     if (!is_macos) {
         const enable: vk.Bool32 = if (alpha_blend_enabled) .true else .false;
@@ -781,13 +789,13 @@ pub fn set_vsync(v: bool) void {
     swap_state = .suboptimal;
 }
 
-pub fn set_proj_matrix(mat: *const Mat4) void {
+fn set_proj_matrix(mat: *const Mat4) void {
     if (std.meta.eql(pending_state.proj, mat.*)) return;
     pending_state.proj = mat.*;
     camera_dirty = true;
 }
 
-pub fn set_view_matrix(mat: *const Mat4) void {
+fn set_view_matrix(mat: *const Mat4) void {
     if (std.meta.eql(pending_state.view, mat.*)) return;
     pending_state.view = mat.*;
     camera_dirty = true;
@@ -796,6 +804,7 @@ pub fn set_view_matrix(mat: *const Mat4) void {
 pub fn set_render_state(state: *const Graphics.RenderState) void {
     set_alpha_blend(state.blend == .alpha);
     set_depth_write(state.depth_write);
+    set_depth_test(state.depth_test);
     set_culling(state.cull);
     set_clip_planes(state.clip_planes);
     set_uv_offset(state.uv_offset[0], state.uv_offset[1]);
@@ -966,8 +975,8 @@ fn init_pipeline(layout: vertex.VertexLayout) !PipelineData {
 
     // On macOS drop color_blend_enable_ext -- MoltenVK cannot back it. The
     // pipeline bakes blend_enable=true and set_alpha_blend is a no-op there.
-    const dynstate_mac = [_]vk.DynamicState{ .viewport, .scissor, .primitive_topology, .depth_write_enable, .cull_mode };
-    const dynstate_full = [_]vk.DynamicState{ .viewport, .scissor, .color_blend_enable_ext, .primitive_topology, .depth_write_enable, .cull_mode };
+    const dynstate_mac = [_]vk.DynamicState{ .viewport, .scissor, .primitive_topology, .depth_write_enable, .depth_test_enable, .cull_mode };
+    const dynstate_full = [_]vk.DynamicState{ .viewport, .scissor, .color_blend_enable_ext, .primitive_topology, .depth_write_enable, .depth_test_enable, .cull_mode };
     const dynstate: []const vk.DynamicState = if (is_macos) &dynstate_mac else &dynstate_full;
 
     const pipeline_dynamic_state_create_info = vk.PipelineDynamicStateCreateInfo{
@@ -1574,7 +1583,7 @@ pub fn update_texture_region(handle: Texture.Handle, data: []align(16) u8, x: u3
     dev.queueSubmit(context.graphics_queue.handle, @ptrCast(&submit), region_fences[slot]) catch return;
 }
 
-pub fn bind_texture(handle: Texture.Handle) void {
+fn bind_texture(handle: Texture.Handle) void {
     if (handle.is_null()) return;
     draw_state.tex_id = @intCast(textures.raw_index(handle) orelse Util.panic_invalid_handle("vulkan gfx", "bind_texture", handle));
 }

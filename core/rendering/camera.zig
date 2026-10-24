@@ -49,6 +49,11 @@ pub fn update_for_aspect(self: *Camera, aspect: f32) Error!void {
     self.frustum = result.frustum;
 }
 
+pub fn render_state(self: *const Camera, aspect: f32) Error!Rendering.RenderState {
+    const result = try self.matrices(aspect);
+    return .{ .proj = result.projection, .view = result.view };
+}
+
 /// Validated, surface-independent view, projection and matching culling planes.
 pub fn matrices(self: *const Camera, aspect: f32) Error!Matrices {
     const fov = self.radians(self.fov);

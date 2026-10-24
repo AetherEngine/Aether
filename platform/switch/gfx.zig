@@ -152,6 +152,7 @@ var initialized = false;
 var clear_color: [4]f32 = .{ 0.0, 0.0, 0.0, 1.0 };
 var vsync_enabled = true;
 var depth_write_enabled = true;
+var depth_test_enabled = true;
 var culling_enabled = true;
 var alpha_blend_enabled = true;
 var current_texture: Texture.Handle = .none;
@@ -236,49 +237,56 @@ pub fn set_clear_color(r: f32, g: f32, b: f32, a: f32) void {
     clear_color = .{ r, g, b, a };
 }
 
-pub fn set_alpha_blend(enabled: bool) void {
+fn set_alpha_blend(enabled: bool) void {
     draw_state.alpha_blend_enabled = @intFromBool(enabled);
     if (enabled == alpha_blend_enabled) return;
     alpha_blend_enabled = enabled;
     if (initialized and swapchain.recording) bind_color_state();
 }
 
-pub fn set_depth_write(enabled: bool) void {
+fn set_depth_write(enabled: bool) void {
     if (enabled == depth_write_enabled) return;
     depth_write_enabled = enabled;
     if (initialized and swapchain.recording) bind_depth_state();
 }
 
-pub fn set_fog(enabled: bool, _: f32, _: f32, start: f32, end: f32, r: f32, g: f32, b: f32) void {
+fn set_depth_test(enabled: bool) void {
+    if (enabled == depth_test_enabled) return;
+    depth_test_enabled = enabled;
+    if (initialized and swapchain.recording) bind_depth_state();
+}
+
+fn set_fog(enabled: bool, _: f32, _: f32, start: f32, end: f32, r: f32, g: f32, b: f32) void {
     draw_state.fog_enabled = @intFromBool(enabled);
     draw_state.fog_start = start;
     draw_state.fog_end = end;
     draw_state.fog_color = .{ r, g, b };
 }
 
-pub fn set_clip_planes(_: bool) void {}
+fn set_clip_planes(_: bool) void {}
 
-pub fn set_culling(enabled: bool) void {
+fn set_culling(enabled: bool) void {
     if (enabled == culling_enabled) return;
     culling_enabled = enabled;
     if (initialized and swapchain.recording) bind_rasterizer_state();
 }
 
-pub fn set_uv_offset(u: f32, v: f32) void {
+fn set_uv_offset(u: f32, v: f32) void {
     draw_state.uv_offset = .{ u, v };
 }
 
-pub fn set_proj_matrix(m: *const Mat4) void {
+fn set_proj_matrix(m: *const Mat4) void {
     pending_state.proj = m.*;
 }
 
-pub fn set_view_matrix(m: *const Mat4) void {
+fn set_view_matrix(m: *const Mat4) void {
     pending_state.view = m.*;
 }
 
 pub fn set_render_state(state: *const Graphics.RenderState) void {
     set_alpha_blend(state.blend == .alpha);
     set_depth_write(state.depth_write);
+    set_depth_test(state.depth_test);
     set_culling(state.cull);
     set_clip_planes(state.clip_planes);
     set_uv_offset(state.uv_offset[0], state.uv_offset[1]);
@@ -578,7 +586,7 @@ pub fn update_texture_region(handle: Texture.Handle, data: []align(16) u8, x: u3
     region_fence_pending[slot] = true;
 }
 
-pub fn bind_texture(handle: Texture.Handle) void {
+fn bind_texture(handle: Texture.Handle) void {
     if (handle.is_null()) return;
     const tex = texture_slots.get(handle) orelse Util.panic_invalid_handle("switch gfx", "bind_texture", handle);
     if (!tex.alive) return;
@@ -1193,6 +1201,6 @@ fn bind_blend_equation() void {
 }
 
 fn bind_depth_state() void {
-    var depth = dk.depthStencilBits(depth_write_enabled);
+    var depth = dk.depthStencilBits(depth_test_enabled, depth_write_enabled);
     dk.dkCmdBufBindDepthStencilState(swapchain.command_buffer, &depth);
 }

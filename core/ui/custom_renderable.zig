@@ -1,6 +1,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const layout = @import("layout.zig");
+const RenderState = @import("../rendering/rendering.zig").RenderState;
 
 pub const RendererId = enum(u8) {
     app0 = 0,
@@ -70,7 +71,7 @@ pub const Renderer = struct {
     ctx: *anyopaque,
     reset: *const fn (ctx: *anyopaque) void,
     prepare: *const fn (ctx: *anyopaque, commands: []const Command) anyerror!void,
-    draw: *const fn (ctx: *anyopaque, commands: []const Command) void,
+    draw: *const fn (ctx: *anyopaque, commands: []const Command, base: *const RenderState) void,
 };
 
 pub const Registry = struct {
@@ -106,9 +107,9 @@ pub const Registry = struct {
         }
     }
 
-    pub fn draw_group(self: *const Registry, commands: []const Command) void {
+    pub fn draw_group(self: *const Registry, commands: []const Command, base: *const RenderState) void {
         if (commands.len == 0) return;
         const renderer = self.get(commands[0].renderer) orelse return;
-        renderer.draw(renderer.ctx, commands);
+        renderer.draw(renderer.ctx, commands, base);
     }
 };

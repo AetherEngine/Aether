@@ -34,6 +34,7 @@ var textures = Util.ResourceTableType(gl.uint, 1024, Texture.Handle).init();
 var alpha_blend_enabled: bool = true;
 var cull_face_enabled: bool = true;
 var depth_write_enabled: bool = true;
+var depth_test_enabled: bool = true;
 var bound_texture: Texture.Handle = .none;
 var pipeline: PipelineData = undefined;
 var pipeline_initialized: bool = false;
@@ -108,7 +109,7 @@ pub fn set_clear_color(r: f32, g: f32, b: f32, a: f32) void {
     gl.ClearColor(r, g, b, a);
 }
 
-pub fn set_alpha_blend(enabled: bool) void {
+fn set_alpha_blend(enabled: bool) void {
     const flag: u32 = @intFromBool(enabled);
     if (shader.state.alpha_blend_enabled != flag) {
         shader.state.alpha_blend_enabled = flag;
@@ -119,27 +120,33 @@ pub fn set_alpha_blend(enabled: bool) void {
     if (enabled) gl.Enable(gl_constants.blend) else gl.Disable(gl_constants.blend);
 }
 
-pub fn set_depth_write(enabled: bool) void {
+fn set_depth_write(enabled: bool) void {
     if (depth_write_enabled == enabled) return;
     depth_write_enabled = enabled;
     gl.DepthMask(@intFromBool(enabled));
 }
 
-pub fn set_clip_planes(_: bool) void {}
+fn set_depth_test(enabled: bool) void {
+    if (depth_test_enabled == enabled) return;
+    depth_test_enabled = enabled;
+    if (enabled) gl.Enable(gl_constants.depth_test) else gl.Disable(gl_constants.depth_test);
+}
 
-pub fn set_culling(enabled: bool) void {
+fn set_clip_planes(_: bool) void {}
+
+fn set_culling(enabled: bool) void {
     if (enabled == cull_face_enabled) return;
     cull_face_enabled = enabled;
     if (enabled) gl.Enable(gl_constants.cull_face) else gl.Disable(gl_constants.cull_face);
 }
 
-pub fn set_uv_offset(u: f32, v: f32) void {
+fn set_uv_offset(u: f32, v: f32) void {
     if (shader.state.uv_offset[0] == u and shader.state.uv_offset[1] == v) return;
     shader.state.uv_offset = .{ u, v };
     shader.mark_dirty();
 }
 
-pub fn set_fog(enabled: bool, _: f32, _: f32, start: f32, end: f32, r: f32, g: f32, b: f32) void {
+fn set_fog(enabled: bool, _: f32, _: f32, start: f32, end: f32, r: f32, g: f32, b: f32) void {
     const fog_en: u32 = @intFromBool(enabled);
     if (shader.state.fog_enabled == fog_en and
         shader.state.fog_start == start and
@@ -202,13 +209,13 @@ pub fn set_vsync(v: bool) void {
     sdl3.video.gl.setSwapInterval(if (v) .synchronized else .immediate) catch {};
 }
 
-pub fn set_proj_matrix(mat: *const Mat4) void {
+fn set_proj_matrix(mat: *const Mat4) void {
     if (std.meta.eql(shader.state.proj, mat.*)) return;
     shader.state.proj = mat.*;
     shader.mark_dirty();
 }
 
-pub fn set_view_matrix(mat: *const Mat4) void {
+fn set_view_matrix(mat: *const Mat4) void {
     if (std.meta.eql(shader.state.view, mat.*)) return;
     shader.state.view = mat.*;
     shader.mark_dirty();
@@ -217,6 +224,7 @@ pub fn set_view_matrix(mat: *const Mat4) void {
 pub fn set_render_state(state: *const Graphics.RenderState) void {
     set_alpha_blend(state.blend == .alpha);
     set_depth_write(state.depth_write);
+    set_depth_test(state.depth_test);
     set_culling(state.cull);
     set_clip_planes(state.clip_planes);
     set_uv_offset(state.uv_offset[0], state.uv_offset[1]);
@@ -373,7 +381,7 @@ pub fn update_texture_region(handle: Texture.Handle, data: []align(16) u8, x: u3
     gl.TextureSubImage2D(tex, 0, @intCast(x), @intCast(y), @intCast(width), @intCast(height), gl_constants.rgba, gl_constants.unsigned_byte, data[start..].ptr);
 }
 
-pub fn bind_texture(handle: Texture.Handle) void {
+fn bind_texture(handle: Texture.Handle) void {
     if (handle.is_null() or bound_texture == handle) return;
     const tex = textures.get(handle) orelse Util.panic_invalid_handle("opengl gfx", "bind_texture", handle);
     bound_texture = handle;

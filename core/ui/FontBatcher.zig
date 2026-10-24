@@ -170,16 +170,18 @@ pub fn update(self: *FontBatcher) !void {
     }
 }
 
-pub fn draw(self: *FontBatcher) void {
+pub fn draw(self: *FontBatcher, base: *const Rendering.RenderState) void {
     if (self.count == 0) return;
 
-    Rendering.set_state(&.{ .texture = self.texture.handle });
+    var state = base.*;
+    state.texture = self.texture.handle;
+    Rendering.set_state(&state);
     self.mesh.draw(&Math.Mat4.identity());
 }
 
-pub fn flush(self: *FontBatcher) !void {
+pub fn flush(self: *FontBatcher, base: *const Rendering.RenderState) !void {
     try self.update();
-    self.draw();
+    self.draw(base);
 }
 
 /// Changes the application parser and invalidates cached geometry.

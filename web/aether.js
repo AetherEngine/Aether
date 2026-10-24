@@ -605,6 +605,9 @@ const host = {
     depthWriteEnabled = !!enabled;
     gl.depthMask(depthWriteEnabled);
   },
+  aether_webgl_set_depth_test(enabled) {
+    enabled ? gl.enable(gl.DEPTH_TEST) : gl.disable(gl.DEPTH_TEST);
+  },
   aether_webgl_set_culling(enabled) {
     enabled ? gl.enable(gl.CULL_FACE) : gl.disable(gl.CULL_FACE);
   },

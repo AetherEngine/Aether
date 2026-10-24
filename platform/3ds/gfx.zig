@@ -146,6 +146,7 @@ var bottom_touched = false;
 var bottom_presented = false;
 var vsync_enabled = true;
 var depth_write_enabled = true;
+var depth_test_enabled = true;
 var culling_enabled = true;
 var current_texture: Texture.Handle = .none;
 var command_pool: mango.CommandPool = .null;
@@ -276,7 +277,7 @@ pub fn set_clear_color(r: f32, g: f32, b: f32, a: f32) void {
     clear_color = .{ float_to_u8(r), float_to_u8(g), float_to_u8(b), float_to_u8(a) };
 }
 
-pub fn set_alpha_blend(enabled: bool) void {
+fn set_alpha_blend(enabled: bool) void {
     if (draw_state.alpha_blend_enabled == @intFromBool(enabled)) return;
     draw_state.alpha_blend_enabled = @intFromBool(enabled);
     const state = screen_state(current_screen);
@@ -286,7 +287,16 @@ pub fn set_alpha_blend(enabled: bool) void {
     }
 }
 
-pub fn set_depth_write(enabled: bool) void {
+fn set_depth_test(enabled: bool) void {
+    if (depth_test_enabled == enabled) return;
+    depth_test_enabled = enabled;
+    const state = screen_state(current_screen);
+    if (initialized and state.recording) {
+        state.command_buffer.setDepthTestEnable(depth_test_enabled);
+    }
+}
+
+fn set_depth_write(enabled: bool) void {
     if (depth_write_enabled == enabled) return;
     depth_write_enabled = enabled;
     const state = screen_state(current_screen);
@@ -295,7 +305,7 @@ pub fn set_depth_write(enabled: bool) void {
     }
 }
 
-pub fn set_fog(enabled: bool, near: f32, far: f32, start: f32, end: f32, r: f32, g: f32, b: f32) void {
+fn set_fog(enabled: bool, near: f32, far: f32, start: f32, end: f32, r: f32, g: f32, b: f32) void {
     const linear_depth = far > near and far > 0.0;
     assert(!enabled or linear_depth);
     draw_state.fog_enabled = @intFromBool(enabled);
@@ -355,9 +365,9 @@ const FogTableContext = struct {
     }
 };
 
-pub fn set_clip_planes(_: bool) void {}
+fn set_clip_planes(_: bool) void {}
 
-pub fn set_culling(enabled: bool) void {
+fn set_culling(enabled: bool) void {
     if (culling_enabled == enabled) return;
     culling_enabled = enabled;
     const state = screen_state(current_screen);
@@ -367,7 +377,7 @@ pub fn set_culling(enabled: bool) void {
     }
 }
 
-pub fn set_uv_offset(u: f32, v: f32) void {
+fn set_uv_offset(u: f32, v: f32) void {
     if (draw_state.uv_offset[0] == u and draw_state.uv_offset[1] == v) return;
     draw_state.uv_offset = .{ u, v };
     const state = screen_state(current_screen);
@@ -376,7 +386,7 @@ pub fn set_uv_offset(u: f32, v: f32) void {
     }
 }
 
-pub fn set_proj_matrix(m: *const Mat4) void {
+fn set_proj_matrix(m: *const Mat4) void {
     if (std.meta.eql(pending_state.proj, m.*)) return;
     pending_state.proj = m.*;
     update_projection_uniform_rows();
@@ -386,13 +396,14 @@ pub fn set_proj_matrix(m: *const Mat4) void {
     }
 }
 
-pub fn set_view_matrix(m: *const Mat4) void {
+fn set_view_matrix(m: *const Mat4) void {
     pending_state.view = m.*;
 }
 
 pub fn set_render_state(state: *const Graphics.RenderState) void {
     set_alpha_blend(state.blend == .alpha);
     set_depth_write(state.depth_write);
+    set_depth_test(state.depth_test);
     set_culling(state.cull);
     set_clip_planes(state.clip_planes);
     set_uv_offset(state.uv_offset[0], state.uv_offset[1]);
@@ -773,7 +784,7 @@ pub fn update_texture_region(handle: Texture.Handle, data: []align(16) u8, x: u3
     region_slot_values[slot] = texture_upload_next_sync_value;
 }
 
-pub fn bind_texture(handle: Texture.Handle) void {
+fn bind_texture(handle: Texture.Handle) void {
     if (!handle.is_null()) {
         const texture = texture_slots.get(handle) orelse Util.panic_invalid_handle("3ds gfx", "bind_texture", handle);
         if (!texture.alive) return;
@@ -982,7 +993,7 @@ fn set_default_graphics_state(cmd: mango.CommandBuffer, screen: gfx.Surface.Scre
     bind_primary_color_state(state, cmd);
     cmd.setBlendEquation(normal_blend_equation());
     cmd.setColorWriteMask(.rgba);
-    cmd.setDepthTestEnable(true);
+    cmd.setDepthTestEnable(depth_test_enabled);
     cmd.setDepthCompareOp(.lt);
     cmd.setDepthWriteEnable(depth_write_enabled);
     cmd.setLogicOpEnable(false);

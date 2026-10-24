@@ -17,6 +17,7 @@ extern "aether_host" fn aether_webgl_deinit() void;
 extern "aether_host" fn aether_webgl_set_clear_color(r: f32, g: f32, b: f32, a: f32) void;
 extern "aether_host" fn aether_webgl_set_alpha_blend(enabled: bool) void;
 extern "aether_host" fn aether_webgl_set_depth_write(enabled: bool) void;
+extern "aether_host" fn aether_webgl_set_depth_test(enabled: bool) void;
 extern "aether_host" fn aether_webgl_set_culling(enabled: bool) void;
 extern "aether_host" fn aether_webgl_set_uv_offset(u: f32, v: f32) void;
 extern "aether_host" fn aether_webgl_set_fog(enabled: bool, start: f32, end: f32, r: f32, g: f32, b: f32) void;
@@ -68,20 +69,26 @@ pub fn set_clear_color(r: f32, g: f32, b: f32, a: f32) void {
     aether_webgl_set_clear_color(r, g, b, a);
 }
 
-pub fn set_alpha_blend(enabled: bool) void {
+fn set_alpha_blend(enabled: bool) void {
     const blend: Graphics.BlendMode = if (enabled) .alpha else .solid;
     if (state_cache.blend == blend) return;
     state_cache.blend = blend;
     aether_webgl_set_alpha_blend(enabled);
 }
 
-pub fn set_depth_write(enabled: bool) void {
+fn set_depth_write(enabled: bool) void {
     if (state_cache.depth_write == enabled) return;
     state_cache.depth_write = enabled;
     aether_webgl_set_depth_write(enabled);
 }
 
-pub fn set_fog(enabled: bool, _: f32, _: f32, start: f32, end: f32, r: f32, g: f32, b: f32) void {
+fn set_depth_test(enabled: bool) void {
+    if (state_cache.depth_test == enabled) return;
+    state_cache.depth_test = enabled;
+    aether_webgl_set_depth_test(enabled);
+}
+
+fn set_fog(enabled: bool, _: f32, _: f32, start: f32, end: f32, r: f32, g: f32, b: f32) void {
     const fog: Graphics.FogState = .{ .enabled = enabled, .start = start, .end = end, .color = .{ r, g, b } };
     if (std.meta.eql(state_cache.fog, fog)) return;
     const changed = state_cache.fog.enabled != enabled or enabled;
@@ -90,27 +97,27 @@ pub fn set_fog(enabled: bool, _: f32, _: f32, start: f32, end: f32, r: f32, g: f
     aether_webgl_set_fog(enabled, start, end, r, g, b);
 }
 
-pub fn set_clip_planes(_: bool) void {}
+fn set_clip_planes(_: bool) void {}
 
-pub fn set_culling(enabled: bool) void {
+fn set_culling(enabled: bool) void {
     if (state_cache.cull == enabled) return;
     state_cache.cull = enabled;
     aether_webgl_set_culling(enabled);
 }
 
-pub fn set_uv_offset(u: f32, v: f32) void {
+fn set_uv_offset(u: f32, v: f32) void {
     if (state_cache.uv_offset[0] == u and state_cache.uv_offset[1] == v) return;
     state_cache.uv_offset = .{ u, v };
     aether_webgl_set_uv_offset(u, v);
 }
 
-pub fn set_proj_matrix(mat: *const Mat4) void {
+fn set_proj_matrix(mat: *const Mat4) void {
     if (std.meta.eql(state_cache.proj, mat.*)) return;
     state_cache.proj = mat.*;
     aether_webgl_set_proj_matrix(mat.ptr());
 }
 
-pub fn set_view_matrix(mat: *const Mat4) void {
+fn set_view_matrix(mat: *const Mat4) void {
     if (std.meta.eql(state_cache.view, mat.*)) return;
     state_cache.view = mat.*;
     aether_webgl_set_view_matrix(mat.ptr());
@@ -119,6 +126,7 @@ pub fn set_view_matrix(mat: *const Mat4) void {
 pub fn set_render_state(state: *const Graphics.RenderState) void {
     set_alpha_blend(state.blend == .alpha);
     set_depth_write(state.depth_write);
+    set_depth_test(state.depth_test);
     set_culling(state.cull);
     set_clip_planes(state.clip_planes);
     set_uv_offset(state.uv_offset[0], state.uv_offset[1]);
@@ -206,7 +214,7 @@ pub fn update_texture_region(handle: Texture.Handle, data: []align(16) u8, x: u3
     aether_webgl_update_texture_region(host_handle, data.ptr, x, y, width, height);
 }
 
-pub fn bind_texture(handle: Texture.Handle) void {
+fn bind_texture(handle: Texture.Handle) void {
     if (handle.is_null() or state_cache.texture == handle) return;
     const host_handle = textures.get(handle) orelse Util.panic_invalid_handle("webgl gfx", "bind_texture", handle);
     state_cache.texture = handle;

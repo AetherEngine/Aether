@@ -13,14 +13,6 @@ pub fn init() gfx_api.InitError!void {}
 pub fn deinit() void {}
 
 pub fn set_clear_color(_: f32, _: f32, _: f32, _: f32) void {}
-pub fn set_alpha_blend(_: bool) void {}
-pub fn set_depth_write(_: bool) void {}
-pub fn set_fog(_: bool, _: f32, _: f32, _: f32, _: f32, _: f32, _: f32, _: f32) void {}
-pub fn set_clip_planes(_: bool) void {}
-pub fn set_culling(_: bool) void {}
-pub fn set_uv_offset(_: f32, _: f32) void {}
-pub fn set_proj_matrix(_: *const Mat4) void {}
-pub fn set_view_matrix(_: *const Mat4) void {}
 pub fn set_render_state(_: *const Graphics.RenderState) void {}
 
 pub fn start_frame() bool {
@@ -52,6 +44,5 @@ pub fn create_texture(_: *const Texture.UploadDesc) gfx_api.CreateTextureError!T
 
 pub fn update_texture(_: Texture.Handle, _: []align(16) u8) void {}
 pub fn update_texture_region(_: Texture.Handle, _: []align(16) u8, _: u32, _: u32, _: u32, _: u32) void {}
-pub fn bind_texture(_: Texture.Handle) void {}
 pub fn destroy_texture(_: Texture.Handle) void {}
 pub fn force_texture_resident(_: Texture.Handle) void {}

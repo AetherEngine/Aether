@@ -139,6 +139,7 @@ var clip_planes_enabled: bool = false;
 var fog_enabled: bool = false;
 var cull_face_enabled: bool = true;
 var depth_write_enabled: bool = true;
+var depth_test_enabled: bool = true;
 var proj_matrix = Mat4.identity();
 var view_matrix = Mat4.identity();
 var fog_range: ?[2]f32 = null;
@@ -610,6 +611,7 @@ pub fn init() gfx.InitError!void {
     must(cmd.enable(.cull_face, true));
     cull_face_enabled = true;
     depth_write_enabled = true;
+    depth_test_enabled = true;
     fog_enabled = false;
     fog_range = null;
     fog_color = null;
@@ -787,7 +789,7 @@ pub fn resume_from_dialog() void {
     swapchain.prime_display() catch {};
 }
 
-pub fn set_alpha_blend(enabled: bool) void {
+fn set_alpha_blend(enabled: bool) void {
     if (enabled == alpha_blend_enabled) return;
     alpha_blend_enabled = enabled;
     must(cmd.enable(.alpha_blend, enabled));
@@ -795,7 +797,13 @@ pub fn set_alpha_blend(enabled: bool) void {
     advance_stall();
 }
 
-pub fn set_depth_write(enabled: bool) void {
+fn set_depth_test(enabled: bool) void {
+    if (enabled == depth_test_enabled) return;
+    depth_test_enabled = enabled;
+    must(cmd.enable(.depth_test, enabled));
+}
+
+fn set_depth_write(enabled: bool) void {
     if (enabled == depth_write_enabled) return;
     depth_write_enabled = enabled;
     // zmsk register uses mask semantics: 1 = block writes, 0 = allow writes.
@@ -803,21 +811,21 @@ pub fn set_depth_write(enabled: bool) void {
     advance_stall();
 }
 
-pub fn set_clip_planes(enabled: bool) void {
+fn set_clip_planes(enabled: bool) void {
     if (enabled == clip_planes_enabled) return;
     clip_planes_enabled = enabled;
     must(cmd.enable(.clip_planes, enabled));
     advance_stall();
 }
 
-pub fn set_culling(enabled: bool) void {
+fn set_culling(enabled: bool) void {
     if (enabled == cull_face_enabled) return;
     cull_face_enabled = enabled;
     must(cmd.enable(.cull_face, enabled));
     advance_stall();
 }
 
-pub fn set_uv_offset(u: f32, v: f32) void {
+fn set_uv_offset(u: f32, v: f32) void {
     if (uv_offset[0] == u and uv_offset[1] == v) return;
     uv_offset = .{ u, v };
     const bias: f32 = if (render_pipeline.uv_unorm8) 1.0 else 0.0;
@@ -825,7 +833,7 @@ pub fn set_uv_offset(u: f32, v: f32) void {
     advance_stall();
 }
 
-pub fn set_fog(enabled: bool, _: f32, _: f32, start: f32, end: f32, r: f32, g: f32, b: f32) void {
+fn set_fog(enabled: bool, _: f32, _: f32, start: f32, end: f32, r: f32, g: f32, b: f32) void {
     const before = cmd.current();
     if (enabled) {
         const ri: u32 = @intFromFloat(math.max(0.0, math.min(1.0, r)) * 255.0);
@@ -864,14 +872,14 @@ fn mat4_as_floats(mat: *const Mat4) *const [16]f32 {
     return @ptrCast(&mat.data);
 }
 
-pub fn set_proj_matrix(mat: *const Mat4) void {
+fn set_proj_matrix(mat: *const Mat4) void {
     if (std.meta.eql(proj_matrix, mat.*)) return;
     proj_matrix = mat.*;
     must(cmd.projection_matrix(mat4_as_floats(mat)));
     advance_stall();
 }
 
-pub fn set_view_matrix(mat: *const Mat4) void {
+fn set_view_matrix(mat: *const Mat4) void {
     if (std.meta.eql(view_matrix, mat.*)) return;
     view_matrix = mat.*;
     must(cmd.view_matrix(mat4_as_floats(mat)));
@@ -888,6 +896,7 @@ pub fn set_render_state(state: *const Graphics.RenderState) void {
 
     set_alpha_blend(state.blend == .alpha);
     set_depth_write(state.depth_write);
+    set_depth_test(state.depth_test);
     set_culling(state.cull);
     set_clip_planes(state.clip_planes);
     set_uv_offset(state.uv_offset[0], state.uv_offset[1]);
@@ -1225,7 +1234,7 @@ pub fn update_texture_region(handle: Texture.Handle, _: []align(16) u8, x: u32, 
     }
 }
 
-pub fn bind_texture(handle: Texture.Handle) void {
+fn bind_texture(handle: Texture.Handle) void {
     if (handle.is_null() or bound_texture == handle) return;
     bound_texture = handle;
     const tex = textures.get(handle) orelse Util.panic_invalid_handle("psp gfx", "bind_texture", handle);

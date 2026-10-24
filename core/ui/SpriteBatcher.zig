@@ -159,19 +159,21 @@ pub fn update(self: *SpriteBatcher) !void {
     }
 }
 
-pub fn draw(self: *SpriteBatcher) void {
+pub fn draw(self: *SpriteBatcher, base: *const Rendering.RenderState) void {
     if (self.count == 0) return;
 
     const ident = Math.Mat4.identity();
+    var state = base.*;
     for (self.batches.items) |*batch| {
-        Rendering.set_state(&.{ .texture = batch.texture.handle });
+        state.texture = batch.texture.handle;
+        Rendering.set_state(&state);
         batch.mesh.draw(&ident);
     }
 }
 
-pub fn flush(self: *SpriteBatcher) !void {
+pub fn flush(self: *SpriteBatcher, base: *const Rendering.RenderState) !void {
     try self.update();
-    self.draw();
+    self.draw(base);
 }
 
 fn rebuild_batches(self: *SpriteBatcher, screen_w: u32, screen_h: u32) !void {

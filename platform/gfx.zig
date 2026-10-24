@@ -60,6 +60,7 @@ pub const Interface = struct {
     switch_second_screen: fn () void,
 
     set_vsync: fn (bool) void,
+    set_clear_color: fn (f32, f32, f32, f32) void,
 
     create_mesh: fn (*const Mesh.Desc) CreateMeshError!Mesh.Handle,
     destroy_mesh: fn (Mesh.Handle) void,
