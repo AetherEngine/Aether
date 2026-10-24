@@ -20,6 +20,7 @@ const dk = @import("deko.zig");
 const Context = @import("context.zig");
 const Swapchain = @import("swapchain.zig");
 const GarbageCollector = @import("garbage_collector.zig");
+const MeshHeap = @import("mesh_heap.zig");
 const math = @import("math");
 
 pub const mesh_source_mode = Mesh.SourceMode.uploaded_copy;
@@ -30,7 +31,6 @@ const max_vertex_attribs = 32;
 const max_vertex_buffers = 16;
 const max_textures = 256;
 const uniform_slots = 4096;
-const retain_pending_upload_limit = 16 * 1024;
 const uniform_stride: u32 = dk.alignForward(@intCast(@sizeOf(DrawUniform)), dk.UniformBufferAlignment);
 const uniform_frame_size: u32 = uniform_stride * uniform_slots;
 const image_descriptor_tables_per_frame = 128;
@@ -47,24 +47,16 @@ const PipelineData = struct {
 };
 
 const MeshBuffer = struct {
-    mem_block: dk.DkMemBlock = null,
+    range: MeshHeap.Range = .{},
     gpu_addr: dk.DkGpuAddr = 0,
-    capacity: u32 = 0,
     size: u32 = 0,
 };
 
 const MeshData = struct {
-    vertex: MeshUpload = .{},
-    index: MeshUpload = .{},
+    vertex: MeshBuffer = .{},
+    index: MeshBuffer = .{},
     vertex_count: usize = 0,
     index_count: usize = 0,
-    dirty: bool = false,
-};
-
-const MeshUpload = struct {
-    buffer: MeshBuffer = .{},
-    pending: ?[]u8 = null,
-    pending_size: usize = 0,
 };
 
 const TextureData = struct {
@@ -116,6 +108,7 @@ var render_io: std.Io = undefined;
 pub var context: Context = undefined;
 pub var swapchain: Swapchain = undefined;
 pub var gc: GarbageCollector = undefined;
+var mesh_heap: MeshHeap = undefined;
 
 var code_mem: dk.DkMemBlock = null;
 var code_offset: u32 = 0;
@@ -133,7 +126,7 @@ var image_descriptor_count: u32 = 1;
 var image_descriptors_dirty = true;
 var image_descriptor_table_indices: [Swapchain.max_frames]u32 = @splat(0);
 
-var meshes = Util.ResourceTableType(MeshData, 8192, Mesh.Handle).init();
+var meshes = Util.ResourceTableType(MeshData, 32768, Mesh.Handle).init();
 var texture_slots = Util.ResourceTableType(TextureData, max_textures, Texture.Handle).init();
 var retired_texture_slots: std.ArrayList(RetiredTextureSlot) = .empty;
 var render_pipeline: PipelineData = undefined;
@@ -178,6 +171,9 @@ pub fn init() gfx.InitError!void {
 
     gc = GarbageCollector.init(render_alloc, &context);
     errdefer gc.deinit();
+    mesh_heap = MeshHeap.init(render_alloc, &context);
+    gc.mesh_heap = &mesh_heap;
+    errdefer mesh_heap.deinit();
 
     create_code_memory() catch return error.GfxInitFailed;
     errdefer destroy_code_memory();
@@ -216,6 +212,7 @@ pub fn deinit() void {
     context.wait_idle("switch gfx deinit");
     destroy_region_ring();
     destroy_all_meshes();
+    mesh_heap.deinit();
     destroy_all_textures();
     retired_texture_slots.deinit(render_alloc);
     retired_texture_slots = .empty;
@@ -354,12 +351,21 @@ pub fn update_mesh(handle: Mesh.Handle, desc: *const Mesh.UpdateDesc) void {
     const mesh = meshes.get_ptr(handle) orelse Util.panic_invalid_handle("switch gfx", "update_mesh", handle);
     const data = desc.vertices;
     const indices = desc.indices;
+    const in_flight = swapchain.pending_frame_mask();
 
-    update_mesh_upload(&mesh.vertex, data);
-    update_mesh_upload(&mesh.index, std.mem.sliceAsBytes(indices));
+    upload_mesh_buffer(&mesh.vertex, data, in_flight) catch {
+        mesh.vertex_count = 0;
+        mesh.index_count = 0;
+        return;
+    };
+    upload_mesh_buffer(&mesh.index, std.mem.sliceAsBytes(indices), in_flight) catch {
+        mesh.vertex_count = 0;
+        mesh.index_count = 0;
+        return;
+    };
     mesh.vertex_count = data.len / vertex.Layout.stride;
     mesh.index_count = indices.len;
-    mesh.dirty = true;
+    l2_invalidate_pending = true;
 }
 
 pub fn draw_mesh(handle: Mesh.Handle, model: *const Mat4) void {
@@ -374,14 +380,13 @@ pub fn draw_mesh_range(handle: Mesh.Handle, model: *const Mat4, first: u32, coun
     assert(@as(usize, first) + count <= (if (mesh.index_count > 0) mesh.index_count else mesh.vertex_count));
     const mesh_id = handle.raw_index();
     const frame_index = swapchain.frame_index;
-    if (mesh.dirty) {
-        if (upload_mesh(mesh, frame_index) catch return) {
-            dk.dkCmdBufBarrier(swapchain.command_buffer, dk.BarrierFull, dk.InvalidateL2Cache);
-        }
+    if (l2_invalidate_pending) {
+        dk.dkCmdBufBarrier(swapchain.command_buffer, dk.BarrierFull, dk.InvalidateL2Cache);
+        l2_invalidate_pending = false;
     }
 
-    const buffer = mesh.vertex.buffer;
-    if (buffer.mem_block == null or buffer.size == 0 or mesh.vertex_count == 0) return;
+    const buffer = mesh.vertex;
+    if (buffer.range.mem_block == null or buffer.size == 0 or mesh.vertex_count == 0) return;
     const vertex_stride = vertex.Layout.stride;
     if (mesh.vertex_count > std.math.maxInt(usize) / vertex_stride) {
         Util.engine_logger.err("Switch draw rejected: vertex byte count overflow mesh={d} count={d} stride={d}", .{ mesh_id, mesh.vertex_count, vertex_stride });
@@ -395,7 +400,7 @@ pub fn draw_mesh_range(handle: Mesh.Handle, model: *const Mat4, first: u32, coun
         );
         return;
     }
-    if (mesh.index_count > 0 and mesh.index.buffer.size < mesh.index_count * @sizeOf(Mesh.Index)) return;
+    if (mesh.index_count > 0 and mesh.index.size < mesh.index_count * @sizeOf(Mesh.Index)) return;
 
     ensure_image_descriptors_current();
     const texture_id = resolve_texture_index(draw_state.tex_id);
@@ -429,7 +434,7 @@ pub fn draw_mesh_range(handle: Mesh.Handle, model: *const Mat4, first: u32, coun
     }
     dk.dkCmdBufBindVtxBuffers(swapchain.command_buffer, 0, extents[0..].ptr, pl.vtx_buffer_count);
     if (mesh.index_count > 0) {
-        dk.dkCmdBufBindIdxBuffer(swapchain.command_buffer, dk.IdxFormatUint16, mesh.index.buffer.gpu_addr);
+        dk.dkCmdBufBindIdxBuffer(swapchain.command_buffer, dk.IdxFormatUint16, mesh.index.gpu_addr);
     }
     context.mark_gpu_draw(
         swapchain.command_buffer,
@@ -921,119 +926,32 @@ fn submit_upload_commands(comptime where: []const u8) void {
     context.wait_idle(where ++ " wait");
 }
 
-fn update_mesh_upload(upload: *MeshUpload, data: []const u8) void {
-    if (data.len > 0) {
-        if (upload.pending == null or upload.pending.?.len < data.len) {
-            if (upload.pending) |pending| render_alloc.free(pending);
-            var new_cap: usize = 256;
-            while (new_cap < data.len) new_cap *= 2;
-            upload.pending = render_alloc.alloc(u8, new_cap) catch {
-                upload.pending_size = 0;
-                return;
-            };
-        }
-        @memcpy(upload.pending.?[0..data.len], data);
+var l2_invalidate_pending = false;
+
+fn upload_mesh_buffer(buffer: *MeshBuffer, src: []const u8, in_flight: u32) !void {
+    if (src.len == 0) {
+        mesh_heap.free(buffer.range, in_flight);
+        buffer.* = .{};
+        return;
     }
-
-    upload.pending_size = data.len;
-}
-
-fn upload_mesh(mesh: *MeshData, frame_index: usize) !bool {
-    const had_vertex_data = mesh.vertex.pending_size > 0;
-    const vertex_updated = try upload_mesh_part(&mesh.vertex, frame_index);
-    const index_updated = try upload_mesh_part(&mesh.index, frame_index);
-    if (!had_vertex_data) {
-        mesh.vertex.buffer.size = 0;
-        mesh.dirty = false;
-        return false;
+    const needed: u32 = @intCast(src.len);
+    if (buffer.range.mem_block == null or buffer.range.capacity < needed or in_flight != 0) {
+        mesh_heap.free(buffer.range, in_flight);
+        buffer.* = .{};
+        buffer.range = try mesh_heap.alloc(needed);
+        buffer.gpu_addr = buffer.range.gpu_addr();
     }
-    mesh.dirty = false;
-    return vertex_updated or index_updated;
-}
-
-fn upload_mesh_part(upload: *MeshUpload, frame_index: usize) !bool {
-    if (upload.pending_size == 0) {
-        upload.buffer.size = 0;
-        return false;
-    }
-
-    const needed: u32 = @intCast(upload.pending_size);
-    const current_frame_bit_u32: u32 = @as(u32, 1) << @intCast(frame_index);
-    const submitted_frame_mask = swapchain.pending_frame_mask() & ~current_frame_bit_u32;
-    var target = &upload.buffer;
-
-    if (target.mem_block == null or target.capacity < needed) {
-        if (target.mem_block) |mem| {
-            gc.defer_destroy_mem_block_after_frame_mask(submitted_frame_mask, mem) catch {
-                context.wait_idle("mesh deferred destroy fallback");
-                dk.dkMemBlockDestroy(mem);
-            };
-        }
-        target.* = try create_mesh_buffer(needed);
-    } else if (submitted_frame_mask != 0) {
-        const old = target.*;
-        target.* = try create_mesh_buffer(needed);
-        gc.defer_destroy_mem_block_after_frame_mask(submitted_frame_mask, old.mem_block) catch {
-            context.wait_idle("mesh deferred destroy fallback");
-            dk.dkMemBlockDestroy(old.mem_block);
-        };
-    }
-
-    const dst: [*]u8 = @ptrCast(dk.dkMemBlockGetCpuAddr(target.mem_block) orelse return error.GfxInitFailed);
-    @memcpy(dst[0..upload.pending_size], upload.pending.?[0..upload.pending_size]);
-    _ = dk.dkMemBlockFlushCpuCache(target.mem_block, 0, needed);
-    target.size = needed;
-    if (upload.pending) |pending| {
-        if (pending.len > retain_pending_upload_limit) {
-            render_alloc.free(pending);
-            upload.pending = null;
-            upload.pending_size = 0;
-        }
-    }
-    return true;
-}
-
-fn create_mesh_buffer(needed: u32) !MeshBuffer {
-    var new_cap: u32 = 256;
-    while (new_cap < needed) new_cap *= 2;
-    const mem = try context.create_mem_block(new_cap, dk.MemCpuUncached | dk.MemGpuCached);
-    return .{
-        .mem_block = mem,
-        .capacity = dk.dkMemBlockGetSize(mem),
-        .gpu_addr = dk.dkMemBlockGetGpuAddr(mem),
-        .size = 0,
-    };
+    const dst = buffer.range.cpu() orelse return error.GfxInitFailed;
+    @memcpy(dst[0..src.len], src);
+    _ = dk.dkMemBlockFlushCpuCache(buffer.range.mem_block, buffer.range.offset, needed);
+    buffer.size = needed;
 }
 
 fn destroy_mesh_data(mesh: *MeshData, deferred: bool) void {
-    destroy_mesh_upload(&mesh.vertex, deferred);
-    destroy_mesh_upload(&mesh.index, deferred);
-    mesh.vertex_count = 0;
-    mesh.index_count = 0;
-    mesh.dirty = false;
-}
-
-fn destroy_mesh_upload(upload: *MeshUpload, deferred: bool) void {
-    if (upload.pending) |pending| {
-        render_alloc.free(pending);
-        upload.pending = null;
-    }
-    destroy_mesh_buffer(&upload.buffer, deferred);
-    upload.pending_size = 0;
-}
-
-fn destroy_mesh_buffer(buffer: *MeshBuffer, deferred: bool) void {
-    if (buffer.mem_block) |mem| {
-        if (deferred and initialized) {
-            gc.defer_destroy_mem_block_after_frame_mask(swapchain.pending_frame_mask(), mem) catch {
-                context.wait_idle("mesh deferred destroy fallback");
-                dk.dkMemBlockDestroy(mem);
-            };
-        } else {
-            dk.dkMemBlockDestroy(mem);
-        }
-    }
-    buffer.* = .{};
+    const in_flight: u32 = if (deferred and initialized) swapchain.pending_frame_mask() else 0;
+    mesh_heap.free(mesh.vertex.range, in_flight);
+    mesh_heap.free(mesh.index.range, in_flight);
+    mesh.* = .{};
 }
 
 fn destroy_all_meshes() void {

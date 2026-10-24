@@ -1,6 +1,7 @@
 const std = @import("std");
 const dk = @import("deko.zig");
 const Context = @import("context.zig");
+const MeshHeap = @import("mesh_heap.zig");
 
 const max_frames = 3;
 
@@ -12,6 +13,8 @@ const SharedItem = struct {
 allocator: std.mem.Allocator,
 context: *Context,
 shared: std.ArrayList(SharedItem) = .empty,
+/// Released mesh ranges wait on the same frame completions.
+mesh_heap: ?*MeshHeap = null,
 frame_index: usize = 0,
 completed_frames: u64 = 0,
 
@@ -51,6 +54,7 @@ pub fn retire_frame(self: *GarbageCollector, frame_index: usize, was_submitted: 
         }
     }
     self.shared.shrinkRetainingCapacity(write);
+    if (self.mesh_heap) |heap| heap.retire_frame(self.frame_index);
 }
 
 pub fn collect_all(self: *GarbageCollector) void {
