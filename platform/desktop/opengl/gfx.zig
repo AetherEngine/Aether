@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const sdl3 = @import("sdl3");
 const gl = @import("gl");
 const gl_constants = @import("constants.zig");
@@ -351,6 +352,19 @@ pub fn update_texture(handle: Texture.Handle, data: []align(16) u8) void {
     gl.GetTextureLevelParameteriv(tex, 0, gl_constants.texture_width, @ptrCast(&w));
     gl.GetTextureLevelParameteriv(tex, 0, gl_constants.texture_height, @ptrCast(&h));
     gl.TextureSubImage2D(tex, 0, 0, 0, w, h, gl_constants.rgba, gl_constants.unsigned_byte, data.ptr);
+}
+
+/// Upload one rectangle of `data` (linear RGBA8, full texture).
+pub fn update_texture_region(handle: Texture.Handle, data: []align(16) u8, x: u32, y: u32, width: u32, height: u32) void {
+    const tex = textures.get(handle) orelse Util.panic_invalid_handle("opengl gfx", "update_texture_region", handle);
+    var w: gl.int = 0;
+    gl.GetTextureLevelParameteriv(tex, 0, gl_constants.texture_width, @ptrCast(&w));
+    assert(x + width <= w);
+    gl.PixelStorei(gl_constants.unpack_row_length, w);
+    defer gl.PixelStorei(gl_constants.unpack_row_length, 0);
+
+    const start = (@as(usize, y) * @as(usize, @intCast(w)) + x) * 4;
+    gl.TextureSubImage2D(tex, 0, @intCast(x), @intCast(y), @intCast(width), @intCast(height), gl_constants.rgba, gl_constants.unsigned_byte, data[start..].ptr);
 }
 
 pub fn bind_texture(handle: Texture.Handle) void {

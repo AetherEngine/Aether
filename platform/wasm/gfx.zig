@@ -31,6 +31,7 @@ extern "aether_host" fn aether_webgl_update_mesh(handle: u32, vertex_ptr: [*]con
 extern "aether_host" fn aether_webgl_draw_mesh(handle: u32, model_ptr: *const f32) void;
 extern "aether_host" fn aether_webgl_create_texture(width: u32, height: u32, ptr: [*]const u8, len: usize) u32;
 extern "aether_host" fn aether_webgl_update_texture(handle: u32, ptr: [*]const u8, len: usize) void;
+extern "aether_host" fn aether_webgl_update_texture_region(handle: u32, ptr: [*]const u8, x: u32, y: u32, width: u32, height: u32) void;
 extern "aether_host" fn aether_webgl_bind_texture(handle: u32) void;
 extern "aether_host" fn aether_webgl_destroy_texture(handle: u32) void;
 extern "aether_host" fn aether_canvas_width() u32;
@@ -192,6 +193,11 @@ pub fn create_texture(desc: *const Texture.UploadDesc) gfx_api.CreateTextureErro
 pub fn update_texture(handle: Texture.Handle, data: []align(16) u8) void {
     const host_handle = textures.get(handle) orelse Util.panic_invalid_handle("webgl gfx", "update_texture", handle);
     aether_webgl_update_texture(host_handle, data.ptr, data.len);
+}
+
+pub fn update_texture_region(handle: Texture.Handle, data: []align(16) u8, x: u32, y: u32, width: u32, height: u32) void {
+    const host_handle = textures.get(handle) orelse Util.panic_invalid_handle("webgl gfx", "update_texture_region", handle);
+    aether_webgl_update_texture_region(host_handle, data.ptr, x, y, width, height);
 }
 
 pub fn bind_texture(handle: Texture.Handle) void {

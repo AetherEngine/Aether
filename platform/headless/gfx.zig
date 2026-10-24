@@ -50,6 +50,7 @@ pub fn create_texture(_: *const Texture.UploadDesc) gfx_api.CreateTextureError!T
 }
 
 pub fn update_texture(_: Texture.Handle, _: []align(16) u8) void {}
+pub fn update_texture_region(_: Texture.Handle, _: []align(16) u8, _: u32, _: u32, _: u32, _: u32) void {}
 pub fn bind_texture(_: Texture.Handle) void {}
 pub fn destroy_texture(_: Texture.Handle) void {}
 pub fn force_texture_resident(_: Texture.Handle) void {}

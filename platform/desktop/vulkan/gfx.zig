@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const builtin = @import("builtin");
 const Util = @import("../../util/util.zig");
 
@@ -484,6 +485,7 @@ pub fn deinit() void {
     destroy_descriptor_set_layout();
     destroy_uniform_buffers();
     destroy_depth_image();
+    destroy_region_ring();
     destroy_command_pool();
     swapchain.deinit();
     gc.deinit();
@@ -1426,6 +1428,144 @@ pub fn update_texture(handle: Texture.Handle, data: []align(16) u8) void {
     context.logical_device.freeCommandBuffers(command_pool, @ptrCast(&cmdbuf_handle));
     context.logical_device.destroyBuffer(staging, null);
     context.logical_device.freeMemory(staging_mem, null);
+}
+
+/// Region uploads rotate through slots, each with its own staging space,
+/// command buffer, and fence, so an upload only waits on the one issued
+/// `region_slots` uploads earlier. The full upload creates a staging buffer
+/// and waits for the queue to go idle every call.
+const region_slots = 4;
+const region_slot_bytes: u32 = 16 * 1024;
+var region_buffer: vk.Buffer = .null_handle;
+var region_memory: vk.DeviceMemory = .null_handle;
+var region_mapped: ?[*]u8 = null;
+var region_cmdbufs: [region_slots]vk.CommandBuffer = undefined;
+var region_cmdbufs_allocated = false;
+var region_fences: [region_slots]vk.Fence = @splat(.null_handle);
+var region_next: u32 = 0;
+
+fn ensure_region_ring() !void {
+    if (region_mapped != null) return;
+    const dev = context.logical_device;
+    region_buffer = try dev.createBuffer(&.{
+        .size = region_slots * region_slot_bytes,
+        .usage = .{ .transfer_src = true },
+        .sharing_mode = .exclusive,
+    }, null);
+    errdefer destroy_region_ring();
+    region_memory = try context.allocate_gpu_buffer(dev.getBufferMemoryRequirements(region_buffer), .{ .host_visible = true, .host_coherent = true });
+    try dev.bindBufferMemory(region_buffer, region_memory, 0);
+    try dev.allocateCommandBuffers(&.{
+        .command_pool = command_pool,
+        .level = .primary,
+        .command_buffer_count = region_slots,
+    }, &region_cmdbufs);
+    region_cmdbufs_allocated = true;
+    for (&region_fences) |*fence| fence.* = try dev.createFence(&.{ .flags = .{ .signaled = true } }, null);
+    region_mapped = @ptrCast(@alignCast(try dev.mapMemory(region_memory, 0, vk_constants.whole_size, .{})));
+}
+
+/// The device must be idle.
+fn destroy_region_ring() void {
+    const dev = context.logical_device;
+    if (region_mapped != null) dev.unmapMemory(region_memory);
+    region_mapped = null;
+    for (&region_fences) |*fence| {
+        if (fence.* != .null_handle) dev.destroyFence(fence.*, null);
+        fence.* = .null_handle;
+    }
+    if (region_cmdbufs_allocated) dev.freeCommandBuffers(command_pool, &region_cmdbufs);
+    region_cmdbufs_allocated = false;
+    if (region_buffer != .null_handle) dev.destroyBuffer(region_buffer, null);
+    region_buffer = .null_handle;
+    if (region_memory != .null_handle) dev.freeMemory(region_memory, null);
+    region_memory = .null_handle;
+}
+
+/// Upload one rectangle of `data` (linear RGBA8, full texture). The barriers
+/// order the copy after frames already submitted, so nothing waits for idle.
+pub fn update_texture_region(handle: Texture.Handle, data: []align(16) u8, x: u32, y: u32, width: u32, height: u32) void {
+    const rec = textures.get(handle) orelse Util.panic_invalid_handle("vulkan gfx", "update_texture_region", handle);
+    assert(x + width <= rec.width and y + height <= rec.height);
+    const bytes = width * height * 4;
+    if (bytes > region_slot_bytes) return update_texture(handle, data);
+    ensure_region_ring() catch return update_texture(handle, data);
+    const dev = context.logical_device;
+
+    const slot = region_next;
+    region_next = (region_next + 1) % region_slots;
+    _ = dev.waitForFences(@ptrCast(&region_fences[slot]), .true, std.math.maxInt(u64)) catch return;
+    dev.resetFences(@ptrCast(&region_fences[slot])) catch return;
+
+    const base = slot * region_slot_bytes;
+    const staging = region_mapped.? + base;
+    for (0..height) |row| {
+        const src = ((y + row) * rec.width + x) * 4;
+        @memcpy(staging[row * width * 4 ..][0 .. width * 4], data[src..][0 .. width * 4]);
+    }
+
+    const cmdbuf = vk.CommandBufferProxy.init(region_cmdbufs[slot], dev.wrapper);
+    cmdbuf.beginCommandBuffer(&.{ .flags = .{ .one_time_submit = true } }) catch return;
+    const subrange = vk.ImageSubresourceRange{
+        .aspect_mask = .{ .color = true },
+        .base_mip_level = 0,
+        .level_count = 1,
+        .base_array_layer = 0,
+        .layer_count = 1,
+    };
+    const pre_barrier = vk.ImageMemoryBarrier2{
+        .src_stage_mask = .{ .fragment_shader = true },
+        .src_access_mask = .{ .shader_read = true },
+        .dst_stage_mask = .{ .copy = true },
+        .dst_access_mask = .{ .transfer_write = true },
+        .old_layout = .shader_read_only_optimal,
+        .new_layout = .transfer_dst_optimal,
+        .src_queue_family_index = vk_constants.queue_family_ignored,
+        .dst_queue_family_index = vk_constants.queue_family_ignored,
+        .image = rec.image,
+        .subresource_range = subrange,
+    };
+    cmdbuf.pipelineBarrier2(&.{
+        .image_memory_barrier_count = 1,
+        .p_image_memory_barriers = @ptrCast(&pre_barrier),
+    });
+    const copy = vk.BufferImageCopy{
+        .buffer_offset = base,
+        .buffer_row_length = 0,
+        .buffer_image_height = 0,
+        .image_subresource = .{
+            .aspect_mask = .{ .color = true },
+            .mip_level = 0,
+            .base_array_layer = 0,
+            .layer_count = 1,
+        },
+        .image_offset = .{ .x = @intCast(x), .y = @intCast(y), .z = 0 },
+        .image_extent = .{ .width = width, .height = height, .depth = 1 },
+    };
+    cmdbuf.copyBufferToImage(region_buffer, rec.image, .transfer_dst_optimal, @ptrCast(&copy));
+    const post_barrier = vk.ImageMemoryBarrier2{
+        .src_stage_mask = .{ .copy = true },
+        .src_access_mask = .{ .transfer_write = true },
+        .dst_stage_mask = .{ .fragment_shader = true },
+        .dst_access_mask = .{ .shader_read = true },
+        .old_layout = .transfer_dst_optimal,
+        .new_layout = .shader_read_only_optimal,
+        .src_queue_family_index = vk_constants.queue_family_ignored,
+        .dst_queue_family_index = vk_constants.queue_family_ignored,
+        .image = rec.image,
+        .subresource_range = subrange,
+    };
+    cmdbuf.pipelineBarrier2(&.{
+        .image_memory_barrier_count = 1,
+        .p_image_memory_barriers = @ptrCast(&post_barrier),
+    });
+    cmdbuf.endCommandBuffer() catch return;
+
+    const submit = vk.SubmitInfo{
+        .command_buffer_count = 1,
+        .p_command_buffers = @ptrCast(&region_cmdbufs[slot]),
+    };
+    dev.queueSubmit(context.graphics_queue.handle, @ptrCast(&submit), region_fences[slot]) catch return;
 }
 
 pub fn bind_texture(handle: Texture.Handle) void {

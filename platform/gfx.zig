@@ -68,6 +68,8 @@ pub const Interface = struct {
 
     create_texture: fn (*const Texture.UploadDesc) CreateTextureError!Texture.Handle,
     update_texture: fn (Texture.Handle, []align(16) u8) void,
+    /// Re-upload the (x, y, width, height) rectangle of the full CPU pixels.
+    update_texture_region: fn (Texture.Handle, []align(16) u8, u32, u32, u32, u32) void,
     destroy_texture: fn (Texture.Handle) void,
     force_texture_resident: fn (Texture.Handle) void,
 };

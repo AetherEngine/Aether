@@ -6,6 +6,7 @@
 // gu's hidden globals.
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Util = @import("../util/util.zig");
 const Mat4 = @import("math").Mat4;
 const Graphics = @import("../graphics/graphics.zig");
@@ -1182,6 +1183,36 @@ pub fn update_texture(handle: Texture.Handle, data: []align(16) u8) void {
     } else {
         // The RAM buffer is the GE-visible buffer; just flush dcache.
         dcache_writeback(data.ptr, data.len);
+    }
+}
+
+/// Re-upload one rectangle of the CPU backing. Swizzled textures copy the
+/// rectangle's 16-byte x 8-row blocks; the rectangle should be block aligned
+/// (32-bit pixels: x multiple of 4, y and height multiples of 8).
+pub fn update_texture_region(handle: Texture.Handle, _: []align(16) u8, x: u32, y: u32, width: u32, height: u32) void {
+    const tex = textures.get(handle) orelse Util.panic_invalid_handle("psp gfx", "update_texture_region", handle);
+    assert(x + width <= tex.width and y + height <= tex.height and width > 0 and height > 0);
+    if (bound_texture == handle) texture_cache_dirty = true;
+    const row_bytes = tex.width * tex_bpp;
+    const dst_base: [*]u8 = if (tex.in_vram) (tex.vram_data orelse @panic("psp gfx: VRAM texture missing backing slice")).ptr else tex.cpu_data;
+    if (tex.swizzled) {
+        const blocks_per_row = row_bytes / 16;
+        const bx0 = x * tex_bpp / 16;
+        const bx1 = ((x + width) * tex_bpp + 15) / 16;
+        var block_row = y / 8;
+        while (block_row * 8 < y + height) : (block_row += 1) {
+            const start = (block_row * blocks_per_row + bx0) * 128;
+            const len = (bx1 - bx0) * 128;
+            if (tex.in_vram) @memcpy(dst_base[start..][0..len], tex.cpu_data[start..][0..len]);
+            dcache_writeback(dst_base + start, len);
+        }
+    } else {
+        for (y..y + height) |row| {
+            const start = row * row_bytes + x * tex_bpp;
+            const len = width * tex_bpp;
+            if (tex.in_vram) @memcpy(dst_base[start..][0..len], tex.cpu_data[start..][0..len]);
+            dcache_writeback(dst_base + start, len);
+        }
     }
 }
 

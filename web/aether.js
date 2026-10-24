@@ -716,6 +716,15 @@ const host = {
       copyBytes(ptr, len),
     );
   },
+  aether_webgl_update_texture_region(handle, ptr, x, y, width, height) {
+    const texture = textures.get(handle);
+    if (!texture) return;
+    bindTexture(texture.tex);
+    // WebGL reads the source synchronously, so a view of WASM memory needs no copy.
+    gl.pixelStorei(gl.UNPACK_ROW_LENGTH, texture.width);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, width, height, gl.RGBA, gl.UNSIGNED_BYTE, bytes(), ptr + (y * texture.width + x) * 4);
+    gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0);
+  },
   aether_webgl_bind_texture(handle) {
     const texture = textures.get(handle);
     currentTexture = texture ? texture.tex : null;

@@ -257,6 +257,7 @@ pub fn deinit() void {
     destroy_all_meshes();
     destroy_all_textures();
     destroy_pending_texture_uploads();
+    destroy_region_staging();
     collect_retired_resources();
     retired_texture_overflow.deinit(render_alloc);
     retired_texture_overflow = .empty;
@@ -670,6 +671,98 @@ pub fn update_texture(handle: Texture.Handle, data: []align(16) u8) void {
     upload_texture_pixels(texture, data) catch |err| {
         std.log.err("3DS Mango texture upload failed: {s}", .{@errorName(err)});
     };
+}
+
+/// Region uploads rotate through FCRAM staging slots, each tagged with the
+/// upload semaphore value of its last copy, so an update waits neither for
+/// frames nor for the GPU: only for the copy issued `region_slots` earlier.
+/// The full upload waits for frame sync, allocates and swizzles the whole
+/// texture, then waits for its copy.
+const region_slots = 4;
+const region_slot_bytes = 4096;
+const tile_bytes = 8 * 8 * tex_bpp;
+var region_staging: []align(16) u8 = &.{};
+var region_staging_gpu: mango.DeviceSlice = .empty;
+var region_slot_values: [region_slots]u64 = @splat(0);
+var region_next: u32 = 0;
+
+fn ensure_region_staging() !void {
+    if (region_staging.len != 0) return;
+    const device = gfx.surface.device;
+    const staging = try device.hostAllocator().alignedAlloc(u8, .fromByteUnits(16), region_slots * region_slot_bytes);
+    errdefer device.hostAllocator().free(staging);
+    region_staging_gpu = try device.hostToDevice(staging);
+    region_staging = staging;
+}
+
+/// The device must be idle.
+fn destroy_region_staging() void {
+    if (region_staging.len == 0) return;
+    gfx.surface.device.hostAllocator().free(region_staging);
+    region_staging = &.{};
+    region_staging_gpu = .empty;
+    region_slot_values = @splat(0);
+}
+
+/// Upload one 8-aligned rectangle of `data` (linear RGBA8, full texture).
+pub fn update_texture_region(handle: Texture.Handle, data: []align(16) u8, x: u32, y: u32, width: u32, height: u32) void {
+    const texture = texture_slots.get_ptr(handle) orelse Util.panic_invalid_handle("3ds gfx", "update_texture_region", handle);
+    if (!texture.alive) return;
+    assert(x + width <= texture.width and y + height <= texture.height);
+    const tile_aligned = (x | y | width | height) & 7 == 0;
+    if (!tile_aligned or width * height * tex_bpp > region_slot_bytes) return update_texture(handle, data);
+    ensure_region_staging() catch return update_texture(handle, data);
+    const device = gfx.surface.device;
+
+    const slot = region_next;
+    region_next = (region_next + 1) % region_slots;
+    if (region_slot_values[slot] != 0) {
+        device.waitSemaphores(.init(&.{texture_upload_semaphore}, &.{region_slot_values[slot]}), frame_sync_timeout_ns) catch |err| {
+            std.log.err("3DS Mango region upload wait failed: {s}", .{@errorName(err)});
+            return;
+        };
+    }
+
+    // Rows are stored bottom-up, so the region's tile rows start at the
+    // flipped bottom edge; within a tile row its tiles are contiguous.
+    const slot_base = slot * region_slot_bytes;
+    const staging: []u32 = @ptrCast(@alignCast(region_staging[slot_base..][0 .. width * height * tex_bpp]));
+    const src_words: []const u32 = @ptrCast(@alignCast(data));
+    const tiles_wide = width / 8;
+    const dst_y0 = texture.height - y - height;
+    for (0..height) |row| {
+        const ry: u32 = @intCast(row);
+        const dst_y = texture.height - 1 - (y + ry);
+        const local_y = dst_y - dst_y0;
+        for (0..width) |col| {
+            const rx: u32 = @intCast(col);
+            const subtile = pica.morton.toIndex(u3, 2, .{ @as(u3, @intCast(rx & 7)), @as(u3, @intCast(local_y & 7)) });
+            const tile = (local_y / 8) * tiles_wide + rx / 8;
+            write_abgr8888(&staging[tile * 64 + subtile], &src_words[(y + ry) * texture.width + x + rx]);
+        }
+    }
+    device.flushCachedMemoryRanges(&.{std.mem.sliceAsBytes(staging)}) catch |err| {
+        std.log.err("3DS Mango region upload flush failed: {s}", .{@errorName(err)});
+        return;
+    };
+
+    const run_bytes = tiles_wide * tile_bytes;
+    const tile_rows = height / 8;
+    const tiles_per_row = texture.width / 8;
+    texture_upload_next_sync_value += 1;
+    const signal_op = mango.SemaphoreOperation.init(texture_upload_semaphore, texture_upload_next_sync_value);
+    for (0..tile_rows) |r| {
+        const ru: u32 = @intCast(r);
+        const dst_off = ((dst_y0 / 8 + ru) * tiles_per_row + x / 8) * tile_bytes;
+        device.copyBuffer(null, if (ru + 1 == tile_rows) &signal_op else null, &.{
+            .src_buffer = region_staging_gpu.slice(slot_base + ru * run_bytes, run_bytes),
+            .dst_buffer = texture.gpu_memory.slice(dst_off, run_bytes),
+        }) catch |err| {
+            std.log.err("3DS Mango region upload copy failed: {s}", .{@errorName(err)});
+            return;
+        };
+    }
+    region_slot_values[slot] = texture_upload_next_sync_value;
 }
 
 pub fn bind_texture(handle: Texture.Handle) void {

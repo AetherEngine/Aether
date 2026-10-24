@@ -5,6 +5,7 @@
 //! owns renderer state plus backend resource records.
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Util = @import("../util/util.zig");
 const Mat4 = @import("math").Mat4;
 const Graphics = @import("../graphics/graphics.zig");
@@ -212,6 +213,7 @@ pub fn deinit() void {
     if (!initialized) return;
 
     context.wait_idle("switch gfx deinit");
+    destroy_region_ring();
     destroy_all_meshes();
     destroy_all_textures();
     retired_texture_slots.deinit(render_alloc);
@@ -477,6 +479,97 @@ pub fn update_texture(handle: Texture.Handle, data: []align(16) u8) void {
     if (!tex.alive) return;
     if (data.len < @as(usize, tex.width) * @as(usize, tex.height) * 4) return;
     upload_texture_pixels(handle, tex, data) catch return;
+}
+
+/// Region uploads rotate through slots, each with its own staging space,
+/// command memory, and fence, so an upload only waits on the one issued
+/// `region_slots` uploads earlier. Waiting on the previous upload stalled for
+/// up to a frame, since its copy queues behind the frames in flight.
+const region_slots = 4;
+const region_staging_size: u32 = 16 * 1024;
+const region_cmd_size: u32 = 4 * 1024;
+const region_slot_size: u32 = region_staging_size + region_cmd_size;
+var region_mem: dk.DkMemBlock = null;
+var region_cmdbuf: dk.DkCmdBuf = null;
+var region_fences: [region_slots]dk.DkFence = undefined;
+var region_fence_pending: [region_slots]bool = @splat(false);
+var region_next: u32 = 0;
+
+fn ensure_region_ring() !void {
+    if (region_mem != null) return;
+    region_mem = try context.create_mem_block(region_slot_size * region_slots, dk.MemCpuUncached | dk.MemGpuCached);
+    errdefer {
+        dk.dkMemBlockDestroy(region_mem);
+        region_mem = null;
+    }
+    var cmd_maker = dk.DkCmdBufMaker{
+        .device = context.device,
+        .userData = null,
+        .cbAddMem = null,
+    };
+    region_cmdbuf = dk.dkCmdBufCreate(&cmd_maker);
+    if (region_cmdbuf == null) return error.GfxInitFailed;
+}
+
+fn destroy_region_ring() void {
+    region_fence_pending = @splat(false);
+    if (region_cmdbuf) |_| dk.dkCmdBufDestroy(region_cmdbuf);
+    region_cmdbuf = null;
+    if (region_mem) |mem| dk.dkMemBlockDestroy(mem);
+    region_mem = null;
+}
+
+/// Upload one rectangle of `data` (linear RGBA8, full texture). Queue order
+/// already puts the copy after frames submitted earlier, so unlike a full
+/// upload this never drains the GPU.
+pub fn update_texture_region(handle: Texture.Handle, data: []align(16) u8, x: u32, y: u32, width: u32, height: u32) void {
+    const tex = texture_slots.get_ptr(handle) orelse Util.panic_invalid_handle("switch gfx", "update_texture_region", handle);
+    if (!tex.alive) return;
+    assert(x + width <= tex.width and y + height <= tex.height);
+    const bytes = width * height * 4;
+    if (!initialized or bytes > region_staging_size) return update_texture(handle, data);
+    ensure_region_ring() catch return update_texture(handle, data);
+
+    const slot = region_next;
+    region_next = (region_next + 1) % region_slots;
+    if (region_fence_pending[slot]) {
+        context.wait_fence(&region_fences[slot], "texture region slot");
+        region_fence_pending[slot] = false;
+    }
+    const base = slot * region_slot_size;
+    const cpu: [*]u8 = @ptrCast(dk.dkMemBlockGetCpuAddr(region_mem) orelse return);
+    const staging = cpu + base;
+    for (0..height) |row| {
+        const src = ((y + row) * tex.width + x) * 4;
+        @memcpy(staging[row * width * 4 ..][0 .. width * 4], data[src..][0 .. width * 4]);
+    }
+    _ = dk.dkMemBlockFlushCpuCache(region_mem, base, bytes);
+
+    dk.dkCmdBufClear(region_cmdbuf);
+    dk.dkCmdBufAddMemory(region_cmdbuf, region_mem, base + region_staging_size, region_cmd_size);
+    dk.dkCmdBufBarrier(region_cmdbuf, dk.BarrierFull, 0);
+    var copy_src = dk.DkCopyBuf{
+        .addr = dk.dkMemBlockGetGpuAddr(region_mem) + base,
+        .rowLength = 0,
+        .imageHeight = 0,
+    };
+    var copy_dst = dk.DkImageRect{
+        .x = x,
+        .y = y,
+        .z = 0,
+        .width = width,
+        .height = height,
+        .depth = 1,
+    };
+    dk.dkCmdBufCopyBufferToImage(region_cmdbuf, &copy_src, &tex.view, &copy_dst, 0);
+    dk.dkCmdBufBarrier(region_cmdbuf, dk.BarrierFull, dk.InvalidateImage);
+    const list = dk.dkCmdBufFinishList(region_cmdbuf);
+    if (list == 0) Context.panic_gpu("deko3d failed to finish texture region command list", .{});
+    dk.dkQueueSubmitCommands(context.queue, list);
+    region_fences[slot] = dk.emptyFence();
+    dk.dkQueueSignalFence(context.queue, &region_fences[slot], false);
+    context.flush_queue("texture region flush");
+    region_fence_pending[slot] = true;
 }
 
 pub fn bind_texture(handle: Texture.Handle) void {

@@ -36,6 +36,7 @@ pub const texture_wrap_t = gl.TEXTURE_WRAP_T;
 pub const triangles = gl.TRIANGLES;
 pub const true_value = gl.TRUE;
 pub const uniform_buffer = gl.UNIFORM_BUFFER;
+pub const unpack_row_length = gl.UNPACK_ROW_LENGTH;
 pub const unsigned_byte = gl.UNSIGNED_BYTE;
 pub const unsigned_short = gl.UNSIGNED_SHORT;
 pub const vendor = gl.VENDOR;
