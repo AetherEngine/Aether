@@ -724,10 +724,8 @@ pub fn draw_mesh_range(handle: Mesh.Handle, model: *const Mat4, first: u32, coun
         state.bound_vertex_buffer = vertex_gpu;
     }
     if (mesh.index_count > 0) {
-
-        // Zitrus bug workaround
-        cmd.bindIndexBuffer(index_gpu.slice(first * @sizeOf(u16), count * @sizeOf(u16)), .u16);
-        cmd.drawIndexed(count, 0, 0);
+        cmd.bindIndexBuffer(index_gpu, .u16);
+        cmd.drawIndexed(count, first, 0);
     } else {
         cmd.draw(count, first);
     }
